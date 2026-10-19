@@ -628,16 +628,19 @@ function App:close() return hub('hub.test.app.close', {name = self.name}) end
 -- in a test file). crash = true kills it (SIGKILL); else it stops (SIGTERM). `lazyrex-hub test` does
 -- the restart when it reads the request line; the runner waits until a new hub process is ready:
 -- every plugin registered and the agent face lists its exports. Returns the new status.
+-- The request goes out before any hub request: the hub can hold a call (a window hold), and then
+-- Rex delivers it no other request until that call times out. The new hub is the connected
+-- lazyrex-hub client with another client ID (a Rex client ID is not reused).
 function H.restart_hub(opts)
-  local old = hub('hub.test.status', {}).pid
+  local old = hub_id
   io.write('LRT restart ', opts and opts.crash and 'kill' or 'term', '\n')
   io.flush()
   -- The wait returns the hub's ID and status together (no upvalue: a restart test once got nil).
   local ready = wait('the restarted hub', function()
     local id = resolve('lazyrex-hub')
-    if not id then return nil end
+    if not id or id == old then return nil end
     local st = perform(id, 'hub.test.status', {})
-    if type(st) ~= 'table' or type(st.pid) ~= 'number' or st.pid == old then return nil end
+    if type(st) ~= 'table' or type(st.pid) ~= 'number' then return nil end
     for _, p in pairs(st.plugins or {}) do
       if not p.registered or #(p.face or {}) < #(p.exports or {}) then return nil end
     end

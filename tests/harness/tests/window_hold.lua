@@ -79,6 +79,10 @@ test('a crash during a hold leaves the leaves pending with one candidate pane ea
   wait('the held panes', function() return #spawn_panes(s) == 2 end, 20)
   local panes = spawn_panes(s)
   hub:restart({crash = true})
+  -- The crash came before the held call timed out for the fixture. A timeout would have let the
+  -- fixture record the error in window/h/crash; the crash ended the fixture (a hub plugin) with
+  -- the hub, so nothing is recorded.
+  expect(store('window/h/crash').value).to_be(nil)
   -- The restart ended the hold. The leaves are still unrecorded: the resolver never adopts an
   -- accessory pane by its label, so they stay pending with their candidates.
   local r = wait('the resolver', function()
