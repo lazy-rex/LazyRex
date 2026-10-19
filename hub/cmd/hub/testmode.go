@@ -35,7 +35,7 @@ const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put"}
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release"}
 
 type testState struct {
 	mu         sync.Mutex
@@ -45,6 +45,7 @@ type testState struct {
 	renderReq  map[string]int64                    // view_id -> the latest requested render generation
 	renderOut  map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
 	trees      map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
+	faults     []*testFault                        // armed and fired faults (testfaults.go)
 }
 
 type injection struct {
@@ -56,6 +57,7 @@ type injection struct {
 	Ops      []any  // committed before the matching batch (no if_rev)
 	Replay   bool   // commit a copy of the matching batch first
 	Fail     string // then fail the matching batch with this message; it commits nothing
+	FailCode string // the error code of that failure (default injected_failure)
 	Times    int    // -1: always
 	Consumed int
 }
@@ -262,12 +264,30 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return h.testInject(args)
+	case "hub.test.fault":
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		return h.testFaultArm(args, plugin)
+	case "hub.test.fault_release":
+		id, _ := args["id"].(float64)
+		return h.testFaultRelease(id)
+	case "hub.test.fault_state":
+		id, _ := args["id"].(float64)
+		h.test.mu.Lock()
+		defer h.test.mu.Unlock()
+		for _, f := range h.test.faults {
+			if float64(f.ID) == id { // exact: 1.5 is not fault 1
+				return map[string]any{"fired": f.Fired, "seen": f.seen, "gated": f.Gated}, nil
+			}
+		}
+		return nil, bad("invalid: no fault %v", args["id"])
 	case "hub.test.injection":
 		id, _ := args["id"].(float64)
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
 		for _, in := range h.test.injections {
-			if in.ID == int(id) {
+			if float64(in.ID) == id { // exact: 1.5 is not injection 1
 				return map[string]any{"consumed": in.Consumed, "remaining": in.remaining()}, nil
 			}
 		}
@@ -321,8 +341,15 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 				open = append(open, map[string]any{"id": in.ID, "plugin": in.Plugin, "consumed": in.Consumed, "times": in.Times})
 			}
 		}
+		var unfired []any
+		for _, f := range h.test.faults {
+			if !f.Fired || (f.Mode == "gate" && !f.Released) {
+				unfired = append(unfired, map[string]any{"id": f.ID, "point": f.Point, "mode": f.Mode, "action": f.Action, "when": f.When,
+					"fired": f.Fired})
+			}
+		}
 		h.test.mu.Unlock()
-		return boundReply(map[string]any{"unconsumed": orEmpty(open), "parity": par})
+		return boundReply(map[string]any{"unconsumed": orEmpty(open), "unfired": orEmpty(unfired), "parity": par})
 	}
 	return nil, bad("unknown action %s", p.Action)
 }
@@ -552,6 +579,13 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	}
 	in.Replay, _ = args["replay"].(bool)
 	in.Fail, _ = args["fail"].(string)
+	if v, ok := args["fail_code"]; ok {
+		code, _ := v.(string)
+		if code == "" || in.Fail == "" {
+			return nil, bad("invalid: fail_code must be nonempty text, and it needs fail")
+		}
+		in.FailCode = code
+	}
 	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
 		return nil, bad("invalid: an injection needs ops, replay or fail")
 	}
@@ -619,7 +653,11 @@ func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]an
 	}
 	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": ns})
 	if in.Fail != "" {
-		return refuse("injected_failure", "%s", in.Fail)
+		code := in.FailCode
+		if code == "" {
+			code = "injected_failure"
+		}
+		return refuse(code, "%s", in.Fail)
 	}
 	return nil
 }

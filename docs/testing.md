@@ -225,10 +225,45 @@ the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `
 or `{writes = <record key>}`. `replay = true` commits a copy of the matching batch first (another
 invocation saved the same operation). `times` is a count or `"always"`. `fail = '<message>'` then fails the
 matching batch with that message: it commits nothing, as a crash or a lost connection would.
+The error code is `injected_failure` (definite). `fail_code = '<code>'` sets another code, for
+example `unavailable` (transient). `fail_code` needs `fail` and must be nonempty.
 Injected commits never match an injection.
 
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
 with a count that is not used up at the end of the file fails the file.
+
+### Faults
+
+`fault(spec)` arms a one-shot hub fault and returns its id. `fault_fired(id)` reports whether it
+fired. A fault that has not fired at the end of the file fails the file. An unknown id is an error.
+
+| Spec | Effect |
+| --- | --- |
+| `{point = 'spawn-create', mode = 'drop', op = key}` | `hub.spawn` sends no create request and gets `disconnected`. The spawn stays pending; no pane exists. |
+| `{point = 'spawn-create', mode = 'refuse', op = key}` | No create request; Rex error `refused`. The spawn fails. |
+| `{point = 'spawn-create', mode = 'lose-answer', op = key}` | The create request runs. If Rex answers yes, the answer becomes `disconnected`: the pane exists and the spawn stays pending. An accessory pane is not adopted by its label, so it stays pending (resolveSpawns only counts candidate panes). If Rex answers with an error, that error stays and the fault stays armed. |
+| `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
+| `{point = 'action', action, when = 'after', mode, key, plugin}` | The handler runs once. If it succeeds, its reply is replaced (`failed` or `disconnected`). If it fails, its own error is the reply and the fault stays armed. |
+
+| `{point = 'action', action, when = 'before', mode = 'gate', key, plugin}` | A barrier for a caller that retries. From the call that fires it until `fault_release(id)`, every matching call gets code `unavailable` and runs no handler. The hub retries a view operation with that outcome every 500 ms, so the operation passes after the release. A gate that is still closed at the end of the file fails the file. `fault_state` reports `gated`, the number of refused calls. `fault_release` of a gate that has not fired is an error. |
+
+- `nth = n` (action faults only) fires on the n-th matching call; the default is 1. Every armed
+  fault that matches counts the call, also when another fault fires. An after fault counts only
+  calls whose handler succeeded. A call that a closed gate refuses counts for no fault: it does
+  not reach the hub.
+- A hub request cannot wait for a test: Rex delivers the hub's requests one at a time, and every
+  other caller waits behind a held request (rex-protocol.md, "The hub has one request queue"). So
+  a barrier refuses calls (gate); it does not hold them.
+- `op` matches the `hub.spawn` key. Only `hub.spawn` has the spawn-create point; `hub.spawn_window` does not.
+- `action` must be a hub action that a plugin can call. `hub.test.*` actions are refused. A field
+  that does not apply to the point is refused. Every field is a string, except `nth` (a positive
+  integer).
+- Action faults apply only to calls from a registered plugin. An agent call through the agent face
+  is not affected.
+- Limit: `lose-reply` and `disconnected` are injected error replies. The transport still delivers
+  them. A test proves the behavior for that error code, not for a real lost connection.
+- Faults exist only in test mode: a hub without `-test` does not declare `hub.test.fault`, and its
+  dispatch refuses `hub.test.*`.
 
 ### Assertions
 

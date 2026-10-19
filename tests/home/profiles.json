@@ -1,0 +1,49 @@
+{
+ "profiles": [
+  {
+   "id": "shell",
+   "name": "Shell",
+   "kind": "accessory",
+   "command": [
+    "/bin/sh",
+    "-c",
+    "exec sleep 600"
+   ]
+  },
+  {
+   "id": "task",
+   "name": "Task",
+   "kind": "accessory",
+   "command": [
+    "/bin/sh",
+    "-c",
+    "printf '%s|%s' \"$0\" \"$1\" > \"$HOME/task-args.tmp\" && mv \"$HOME/task-args.tmp\" \"$HOME/task-args\"; exec sleep 600",
+    "${task}",
+    "${mode}"
+   ],
+   "args": [
+    {
+     "name": "task",
+     "label": "Task",
+     "required": true,
+     "default": "Inspect changes"
+    },
+    {
+     "name": "mode",
+     "label": "Mode",
+     "default": "review"
+    }
+   ]
+  },
+  {
+   "id": "status",
+   "name": "Status",
+   "kind": "accessory",
+   "command": [
+    "/bin/sh",
+    "-c",
+    "printf '\\033]7501;state=idle:msg=%s\\033\\\\' \"$(printf Ready | base64)\"; exec sleep 600"
+   ]
+  }
+ ]
+}

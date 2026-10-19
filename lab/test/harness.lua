@@ -293,10 +293,23 @@ function H.operation(key, plugin) return hub('hub.test.operation', {plugin = plu
 -- ({op_key=}, {op_prefix=} or {writes=key}). spec: {match, ops, replay, times}. Returns its ID.
 function H.inject(spec)
   local a = {plugin = spec.plugin or A.plugin, match = spec.match, ops = spec.ops, replay = spec.replay, times = spec.times,
-    fail = spec.fail}
+    fail = spec.fail, fail_code = spec.fail_code}
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
+
+-- fault arms a one-shot hub fault (docs/testing.md, "Faults"): {point = 'spawn-create', mode, op}
+-- or {point = 'action', action, when, mode, key, plugin}. It returns the fault id. A fault that
+-- has not fired at the end of the file fails the file.
+function H.fault(spec)
+  local a = {plugin = spec.plugin or A.plugin}
+  for k, v in pairs(spec) do if k ~= 'plugin' then a[k] = v end end
+  return hub('hub.test.fault', a).id
+end
+function H.fault_fired(id) return hub('hub.test.fault_state', {id = id}).fired end
+-- fault_release opens a gate fault that has fired: later matching calls run. A gate that is still
+-- closed at the end of the file fails the file.
+function H.fault_release(id) return hub('hub.test.fault_release', {id = id}) end
 
 -- with_injection runs fn with an injection and checks that exactly n batches consumed it.
 function H.with_injection(spec, n, fn)
@@ -429,16 +442,21 @@ end
 
 -- view returns the open view of a tab key or a route (a form route, for example). session: only
 -- a view in that session (a panel or a form can be open in several sessions).
+-- It takes the newest matching view (hub.test.views lists the oldest first) and waits until it is
+-- attached. A replaced view can stay open for a moment beside its replacement, and the old one
+-- may still be attached; it is about to close, so it is never selected.
 function User:view(key, plugin, session)
   plugin = plugin or A.plugin
-  local info = wait('an open view of ' .. key, function()
+  local info = wait('an open, attached view of ' .. key, function()
+    local found
     for _, w in ipairs(H.views(plugin)) do
       if (w.tab == key or w.route == key or w.route == '/' .. key) and (not session or w.session_id == session) then
-        w.plugin = plugin
-        return w
+        found = w
       end
     end
-    return nil
+    if not (found and found.attached) then return nil end
+    found.plugin = plugin
+    return found
   end, 15)
   return view_of(info)
 end

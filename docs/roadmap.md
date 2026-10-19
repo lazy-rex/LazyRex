@@ -68,8 +68,6 @@ Ordered by value to LazyRex.
 
 ## Known defects
 
-- **`tests/home.mjs` is stale (observed in the lab, Rex 0.0.1792158932-g88fd41, 2026-10-19).** It fails at line 74 (the Exit LazyRex widget is missing from the tree), on main and on the `harness` branch. Plan (coordinator): port the home plugin tests to Lua tests (`docs/testing.md`) after the Messaging port.
-
 - **Messaging: a group send fails when its mailboxes are large (lab, Rex 1203, 2026-10-18).** The send writes every member's mailbox and the thread record in one `hub.store.batch`. The batch must fit in one 64 KiB control message (rex-protocol.md, "Rex Lua runtime"). In the lab, with no reader acknowledging, Team sends failed after 287 messages (`control message too large: encoded request is 65541 bytes`). Live mailboxes are small while agents read their mail, but a large group or an agent that never reads can reach the limit. Fix proposal: split the batch, or let the hub append to mailboxes.
 
 - **Lab: `rex send-key` sends a capital letter as lowercase (Rex 0.0.1792158932-g88fd41, 2026-10-17, inferred from the form screen).** `send-key M` typed `m` in a form text field. Tests type lowercase text.
