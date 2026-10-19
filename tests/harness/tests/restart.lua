@@ -38,3 +38,18 @@ test('a grant made before a restart admits its request after it, as the agent', 
   hub:restart()
   expect_error(function() carol:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'r/1', layout = layout}) end, 'revoked')
 end)
+
+-- The test renderer attaches again after a restart, as the real renderer does (view/client.go).
+for _, crash in ipairs({false, true}) do
+  test('a view opened before a restart answers render and action after it (crash ' .. tostring(crash) .. ')', function()
+    local home = user:open('home')
+    home:render()
+    hub:restart({crash = crash})
+    wait('the view attaches again', function()
+      for _, w in ipairs(H.views()) do if w.view_id == home.id then return w.attached end end
+    end, 10)
+    home:render()
+    local op = home:action('count', 'count', {n = 1}, 'after-restart-' .. tostring(crash))
+    expect(op.status).to_be('succeeded')
+  end)
+end
