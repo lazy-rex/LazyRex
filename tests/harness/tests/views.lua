@@ -78,3 +78,17 @@ test('seen reaches the plugin as view.seen through the hub', function()
   end)
   expect(r).to_equal({route = '/home', reason = 'focus'})
 end)
+
+test('a final operation answers its key again without calling the plugin', function()
+  local home = user:view('home')
+  home:render()
+  local first = home:action('count', 'count', {n = 1}, 'count-once')
+  expect(first.status).to_be('succeeded')
+  expect(first.result).to_equal({count = 1})
+  -- The same key and arguments: the stored operation answers; the plugin is not called.
+  expect(home:action('count', 'count', {n = 1}, 'count-once').result).to_equal({count = 1})
+  expect(store('count').value).to_be(1)
+  -- The same key with other arguments is refused.
+  expect_error(function() home:action('count', 'count', {n = 2}, 'count-once') end, 'operation_conflict')
+  expect(store('count').value).to_be(1)
+end)

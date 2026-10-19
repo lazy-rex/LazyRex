@@ -103,6 +103,8 @@ local function home_tree()
       action = {name = 'refresh', label = 'Refresh', enabled = true, user_only = 'redraws the view'}},
     {id = 'open_form', type = 'widget', text = 'Open the form',
       action = {name = 'open', label = 'Open', enabled = true, user_only = 'navigation'}},
+    {id = 'count', type = 'widget', text = 'Count calls',
+      action = {name = 'count', label = 'Count', enabled = true, tool = 'fix.put'}},
     {id = 'bad_nav', type = 'widget', text = 'Navigate to a missing tab',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
     {id = 'cross_nav', type = 'widget', text = 'Navigate to the LazyRex home',
@@ -167,6 +169,12 @@ local function view(action, args)
     if args.route == '/home' and args.node_id == 'open_form' then return {form = '/forms/fix'} end
     if args.route == '/home' and args.node_id == 'bad_nav' then return {navigate = 'missing'} end
     if args.route == '/home' and args.node_id == 'status' then return {} end
+    if args.route == '/home' and args.node_id == 'count' then
+      -- Counts the plugin's calls for an operation (views.lua: a final operation is not run again).
+      local n = get('count') or 0
+      put('count', n + 1)
+      return {count = n + 1}
+    end
     if args.route == '/home' and args.node_id == 'cross_nav' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
     if args.route == '/home' and args.node_id == 'cross_missing' then return {navigate = {plugin = 'nope', tab = 'x'}} end
     if args.route == '/home' and args.node_id == 'bad_target' then
