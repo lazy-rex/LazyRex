@@ -1,0 +1,12 @@
+{
+ "name": "lazyrex",
+ "main": "../../plugins/lazyrex.lua",
+ "requires": [
+  {"name": "messaging", "path": "messaging_stub.lua"},
+  {"name": "harnessfix", "path": "../harness/fixture.lua"}
+ ],
+ "test": {
+  "agents": [{"id": "codex", "name": "Codex"}],
+  "profiles": "profiles.json"
+ }
+}

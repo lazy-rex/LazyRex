@@ -1,0 +1,7 @@
+{"profiles": [
+ {"id": "shell", "name": "Shell", "kind": "accessory", "command": ["/bin/sh", "-c", "exec sleep 600"]},
+ {"id": "task", "name": "Task", "kind": "accessory",
+  "command": ["/bin/sh", "-c", "exec sleep 600", "${task}", "${mode}"],
+  "args": [{"name": "task", "label": "Task", "required": true, "default": "Inspect changes"},
+           {"name": "mode", "label": "Mode", "default": "review"}]}
+]}
