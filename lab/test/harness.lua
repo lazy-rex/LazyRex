@@ -288,7 +288,8 @@ function H.operation(key, plugin) return hub('hub.test.operation', {plugin = plu
 -- inject commits ops (store.batch ops) before the plugin's next batch that matches match
 -- ({op_key=}, {op_prefix=} or {writes=key}). spec: {match, ops, replay, times}. Returns its ID.
 function H.inject(spec)
-  local a = {plugin = spec.plugin or A.plugin, match = spec.match, ops = spec.ops, replay = spec.replay, times = spec.times}
+  local a = {plugin = spec.plugin or A.plugin, match = spec.match, ops = spec.ops, replay = spec.replay, times = spec.times,
+    fail = spec.fail}
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
@@ -300,6 +301,21 @@ function H.with_injection(spec, n, fn)
   local got = H.injection(id).consumed
   if got ~= n then fail(string.format('injection %d: expected %d matching batches, got %d', id, n, got), 2) end
   return (unpack or table.unpack)(r)
+end
+
+-- write commits store ops in the plugin's namespace now, as another writer: {key, value} or
+-- {key, delete = true}.
+function H.write(ops, plugin) return hub('hub.test.write', {plugin = plugin or A.plugin, ops = ops}) end
+
+-- put_operation saves an operation record {key, fingerprint, result}, as an older plugin saved it.
+function H.put_operation(op, plugin)
+  return hub('hub.test.op.put', {plugin = plugin or A.plugin, key = op.key, fingerprint = op.fingerprint, result = op.result})
+end
+
+-- close_session destroys a lab session (for example a thread's home).
+function H.close_session(id)
+  local _, err = rex.call('session.destroy', {session_id = id})
+  if err then error(err_of(err), 0) end
 end
 
 -- session creates a real lab session and returns its ID.

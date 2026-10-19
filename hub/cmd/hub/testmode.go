@@ -35,7 +35,7 @@ const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events"}
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put"}
 
 type testState struct {
 	mu         sync.Mutex
@@ -54,6 +54,7 @@ type injection struct {
 	Writes   string // match: the batch writes or deletes this record key
 	Ops      []any  // committed before the matching batch (no if_rev)
 	Replay   bool   // commit a copy of the matching batch first
+	Fail     string // then fail the matching batch with this message; it commits nothing
 	Times    int    // -1: always
 	Consumed int
 }
@@ -163,6 +164,16 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		return h.testStore(ctx, plugin, args)
 	case "hub.test.chunk":
 		return h.testChunk(ctx, args)
+	case "hub.test.write":
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		return h.testWrite(ctx, plugin, args)
+	case "hub.test.op.put":
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		return h.testOpPut(ctx, plugin, args)
 	case "hub.test.notice":
 		agent, _ := args["agent"].(string)
 		var pending bool
@@ -539,8 +550,9 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 		in.Ops = list
 	}
 	in.Replay, _ = args["replay"].(bool)
-	if len(in.Ops) == 0 && !in.Replay {
-		return nil, bad("invalid: an injection needs ops or replay")
+	in.Fail, _ = args["fail"].(string)
+	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
+		return nil, bad("invalid: an injection needs ops, replay or fail")
 	}
 	switch t := args["times"].(type) {
 	case nil:
@@ -605,7 +617,46 @@ func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]an
 		h.afterCommit(ns, out)
 	}
 	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": ns})
+	if in.Fail != "" {
+		return refuse("injected_failure", "%s", in.Fail)
+	}
 	return nil
+}
+
+// testWrite commits store ops in a plugin's namespace now, as another writer would: {key, value}
+// or {key, delete = true}, without if_rev. It never matches an injection.
+func (h *Hub) testWrite(ctx context.Context, plugin string, args map[string]any) (any, error) {
+	list, ok := asList(args["ops"])
+	if !ok || len(list) == 0 {
+		return nil, bad("invalid: ops must be a nonempty list")
+	}
+	out, err := h.db.storeBatch(ctx, plugin, map[string]any{"ops": list}, h.roster())
+	if err != nil {
+		return nil, err
+	}
+	if !out.committed {
+		return nil, bad("invalid: the write did not commit: %v", out.result)
+	}
+	h.afterCommit(plugin, out)
+	return out.result, nil
+}
+
+// testOpPut saves an operation record {key, fingerprint, result}, as an older plugin version
+// saved it. It replaces a record with the same key.
+func (h *Hub) testOpPut(ctx context.Context, plugin string, args map[string]any) (any, error) {
+	key, _ := args["key"].(string)
+	fp, _ := args["fingerprint"].(string)
+	if key == "" || fp == "" {
+		return nil, bad("invalid: key and fingerprint are required")
+	}
+	result, err := json.Marshal(args["result"])
+	if err != nil || args["result"] == nil {
+		return nil, bad("invalid: result is required")
+	}
+	if _, err := h.db.ExecContext(ctx, `INSERT OR REPLACE INTO ops VALUES (?, ?, ?, ?)`, plugin, key, fp, string(result)); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true}, nil
 }
 
 // testRender asks for a new render of one view and returns its generation. The production render

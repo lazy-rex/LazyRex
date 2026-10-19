@@ -24,7 +24,7 @@ local function put(key, value)
 end
 
 local obj = {type = 'object'}
-local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo'}
+local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -37,6 +37,7 @@ local actions = {
   {name = 'fix.fill', kind = 'client', title = 'Write a record of n copies of text',
     args = {type = 'object', properties = {key = {type = 'string'}, text = {type = 'string'}, n = {type = 'integer'}}, required = {'key', 'text', 'n'}}},
   {name = 'fix.echo', kind = 'client', title = 'Echo', args = obj},
+  {name = 'fix.op', kind = 'client', title = 'Read a saved operation', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
 }
 rex.call('client.keymap', {actions = actions})
 
@@ -60,6 +61,8 @@ local function domain(action, args, pid)
     return {ok = true}
   elseif action == 'fix.echo' then
     return args
+  elseif action == 'fix.op' then
+    return hub('hub.store.op', {key = args.key})
   end
   error({code = 'not_supported', message = 'unknown action ' .. tostring(action)})
 end

@@ -144,15 +144,24 @@ does not hide the result.
 | `operation(key)` | A view operation's durable state. |
 | `advance_rev(n)` | Moves the store revision counter forward (never back). |
 | `session(label)` | Creates a real lab session and returns its ID. |
+| `close_session(id)` | Destroys a lab session (`session.destroy`), for example a thread's home. |
 | `node(tree, id)` | A node of a tree, at any depth. |
+
+### Writes from outside the plugin
+
+`write(ops)` commits store ops in the plugin's namespace now, as another writer would:
+`{key, value}` or `{key, delete = true}`, without `if_rev`. Use it to set up data that an older
+plugin version wrote. `put_operation{key, fingerprint, result}` saves an operation record (what
+`hub.store.op` returns), for example the result of an older plugin version.
 
 ### Concurrent writes
 
 `inject{match, ops, replay, times}` commits `ops` (store batch ops, without `if_rev`) just before
 the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `{op_prefix = ...}`
 or `{writes = <record key>}`. `replay = true` commits a copy of the matching batch first (another
-invocation saved the same operation). `times` is a count or `"always"`. Injected commits never
-match an injection.
+invocation saved the same operation). `times` is a count or `"always"`. `fail = '<message>'` then fails the
+matching batch with that message: it commits nothing, as a crash or a lost connection would.
+Injected commits never match an injection.
 
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
 with a count that is not used up at the end of the file fails the file.
