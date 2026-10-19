@@ -378,3 +378,12 @@ Goal (the maintainer): "Start Session…" starts a saved template; "Save as Temp
 
 - `tunnels.forward` is an exported agent action. Forward Port… names it; its temporary `user_only` reason is removed.
 - A forward makes a local port public. The tool description says so: anyone with the URL can reach the port, and the tunnel does not ask visitors to sign in.
+
+## Decided: Replacing a side panel whose renderer is not attached (harness team and coordinator, 2026-10-19)
+
+- Each view records `attach_state`: `never`, `attached`, `claimed` or `unknown`. Rows from an older database get `unknown`.
+- A replacement claims a `never` view in one transaction with its move to `opening`. A renderer that attaches after the claim follows the replacement: it freezes, then reads that replacement's state once (`hub.view.replacement`) and resumes if the replacement ended. A read error starts recovery.
+- An `attached` or `unknown` view that has no attachment now (for example after a hub restart) gives the conflict "the side panel's renderer is reconnecting; try again in a moment". It can hold unsaved input.
+- A cancelled or superseded replacement undoes the claim only when no replacement of that view is still active. Hub start runs the same cleanup.
+- Limit: the claim belongs to the view, not to one replacement. While any replacement of the view stays active, the claim stays, and a new replacement gets a conflict. It never gets a second claim.
+- Test renderers (`lazyrex-hub testview`) attach again after a hub restart, retry a failed subscribe, and answer `view.release` before their subscribe returns.
