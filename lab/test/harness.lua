@@ -439,16 +439,21 @@ end
 
 -- view returns the open view of a tab key or a route (a form route, for example). session: only
 -- a view in that session (a panel or a form can be open in several sessions).
+-- It takes the newest matching view (hub.test.views lists the oldest first) and waits until it is
+-- attached. A replaced view can stay open for a moment beside its replacement, and the old one
+-- may still be attached; it is about to close, so it is never selected.
 function User:view(key, plugin, session)
   plugin = plugin or A.plugin
-  local info = wait('an open view of ' .. key, function()
+  local info = wait('an open, attached view of ' .. key, function()
+    local found
     for _, w in ipairs(H.views(plugin)) do
       if (w.tab == key or w.route == key or w.route == '/' .. key) and (not session or w.session_id == session) then
-        w.plugin = plugin
-        return w
+        found = w
       end
     end
-    return nil
+    if not (found and found.attached) then return nil end
+    found.plugin = plugin
+    return found
   end, 15)
   return view_of(info)
 end
