@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -137,9 +136,16 @@ func TestTabVisitsControlsInScreenOrder(t *testing.T) {
 		}},
 		{ID: "stop", Type: "widget", Text: "Forward 3000", Action: &Action{Name: "stop", Label: "Stop", Enabled: true}},
 	}}}
-	for name, snap := range map[string]Snapshot{"form": flowSnapshot(), "list": list} {
+	cases := map[string]struct {
+		snap Snapshot
+		want []string
+	}{
+		"form": {flowSnapshot(), []string{"edit:start/dir", "browse:start/dir", "choice:start/profile", "edit:start/title", "start:submit", "cancel:action"}},
+		"list": {list, []string{"items:a", "items:b", "stop:action"}},
+	}
+	for name, tc := range cases {
 		m := testModel()
-		m.apply(snap)
+		m.apply(tc.snap)
 		var screen []string
 		seen := map[string]bool{}
 		for _, r := range m.bodyRows() {
@@ -154,9 +160,10 @@ func TestTabVisitsControlsInScreenOrder(t *testing.T) {
 		for _, c := range m.controls() {
 			order = append(order, c.ID)
 		}
-		if strings.Join(order, ",") != strings.Join(screen, ",") || len(order) < 3 {
-			t.Fatalf("%s: Tab order %v is not the screen order %v", name, order, screen)
+		if strings.Join(screen, ",") != strings.Join(tc.want, ",") || strings.Join(order, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("%s: screen order %v, Tab order %v, want %v", name, screen, order, tc.want)
 		}
+		order = tc.want
 		m.setFocus(order[0])
 		for i := 1; i <= len(order); i++ {
 			m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -187,7 +194,7 @@ func TestEnterActivatesTheFocusedControl(t *testing.T) {
 	m.setFocus(cs[0].ID)
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if req := request(t, m, cmd); req.Node != "items" || req.Args["action"] != "open" || !strings.Contains(fmt.Sprint(req.Args["input"]), "b") {
+	if req := request(t, m, cmd); req.Node != "items" || req.Args["action"] != "open" || req.Args["input"].(map[string]any)["item_id"] != "b" {
 		t.Fatalf("Enter on the second item sent %+v", req)
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
