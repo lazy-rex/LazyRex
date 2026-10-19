@@ -373,7 +373,7 @@ func (h *Hub) testStatus() any {
 		sort.Strings(face)
 		plugins[name] = map[string]any{"registered": pl.ClientID != "", "client_id": pl.ClientID, "exports": orEmptyStrings(pl.Exports), "face": face}
 	}
-	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation)}
+	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation), "pid": os.Getpid()}
 }
 
 func orEmptyStrings(l []string) []string {

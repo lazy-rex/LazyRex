@@ -23,6 +23,8 @@ for _, name in ipairs({'expect', 'expect_error', 'assert_eq', 'assert_true', 'st
   env[name] = H[name]
 end
 env.H = H
+-- hub:restart{crash = true|false} (docs/testing.md, "Hub restart").
+env.hub = {restart = function(_, opts) return H.restart_hub(opts) end}
 env.test = function(name, fn)
   if type(name) ~= 'string' or type(fn) ~= 'function' then error('test(name, function) expected', 2) end
   for _, t in ipairs(tests) do

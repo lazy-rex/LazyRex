@@ -248,6 +248,7 @@ type lab struct {
 	tracked             map[int]string               // pid -> start time: every process seen under the server or the hub
 	args                map[string]map[string]string // plugin args after expansion (manifest test.args)
 	profiles            string                       // LAB/profiles.json, the hub's profile file
+	restarts            int                          // hub:restart() calls (restartHub)
 }
 
 // home is the lab HOME, the working directory of every lab process.
@@ -347,7 +348,7 @@ func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, 
 	w := watch(cmd)
 	exit := make(chan error, 1)
 	go func() {
-		o.parse(stdout, res, logf)
+		o.parse(stdout, res, logf, func(mode string) error { return o.restartHub(ctx, l, mode) })
 		stdout.Close()
 		exit <- <-w.done
 	}()
@@ -730,11 +731,14 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 	return res
 }
 
-var lrtLine = regexp.MustCompile(`^LRT (plan (\d+)|ok (\d+) (.*)|fail (\d+) (.*)|done (\d+) (\d+)|note (.*))$`)
+var lrtLine = regexp.MustCompile(`^LRT (plan (\d+)|ok (\d+) (.*)|fail (\d+) (.*)|done (\d+) (\d+)|note (.*)|restart (term|kill))$`)
 
 // parse reads LRT lines. The file fails without a plan, without a done line, with counts that do
 // not match the plan, with a malformed LRT line, or with zero tests.
-func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer) {
+//
+// "LRT restart term|kill" (hub:restart() in the runner) restarts the hub now; the runner waits for
+// the new hub itself. A failed restart is a problem of the file.
+func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer, restart func(mode string) error) {
 	plan, seen := -1, 0
 	done := false
 	sc := bufio.NewScanner(r)
@@ -784,6 +788,12 @@ func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer) {
 			}
 		case m[9] != "":
 			fmt.Printf("  note %s\n", unescapeLRT(m[9]))
+		case m[10] != "":
+			if restart == nil {
+				res.problems = append(res.problems, "a hub restart is not available here")
+			} else if err := restart(m[10]); err != nil {
+				res.problems = append(res.problems, "hub restart: "+err.Error())
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -822,4 +832,34 @@ func tail(path string, res *fileResult, all bool) {
 	for _, line := range lines {
 		fmt.Println("  |", line)
 	}
+}
+
+// restartHub stops the lab hub that this command started and starts it again with the same config,
+// lab server and state (hub:restart() in a test; the coordinator, 2026-10-19). mode term sends
+// SIGTERM to the hub's process group (a stop), kill sends SIGKILL (a crash). Only the hub's own
+// group gets a signal, through its waiter: a reaped hub gets none. The old hub's log is kept as
+// hub.<n>.log. Processes that the old hub left stay tracked, so the lab cleanup still checks them.
+func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
+	if l.hubW == nil || l.hubExit == nil {
+		return fmt.Errorf("the hub is not running")
+	}
+	sig := syscall.SIGTERM
+	if mode == "kill" {
+		sig = syscall.SIGKILL
+	}
+	l.snapshot()
+	l.hubW.signal(sig)
+	select {
+	case <-l.hubExit:
+	case <-time.After(10 * time.Second):
+		l.hubW.signal(syscall.SIGKILL)
+		<-l.hubExit
+		return fmt.Errorf("the hub did not stop in 10 s after %v; sent SIGKILL", sig)
+	}
+	l.hubExit = nil
+	l.restarts++
+	if err := os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts))); err != nil {
+		return err
+	}
+	return o.startHub(ctx, l)
 }

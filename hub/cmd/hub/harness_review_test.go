@@ -47,7 +47,7 @@ func (reviewerReadError) Read([]byte) (int, error) { return 0, errors.New("reade
 func TestReviewerParserRejectsReaderFailureAfterDone(t *testing.T) {
 	r := io.MultiReader(strings.NewReader("LRT plan 1\nLRT ok 1 test\nLRT done 1 0\n"), reviewerReadError{})
 	result := &fileResult{}
-	(&testOpts{}).parse(r, result, io.Discard)
+	(&testOpts{}).parse(r, result, io.Discard, nil)
 	if result.ok() {
 		t.Fatal("parser accepted a failed reader")
 	}

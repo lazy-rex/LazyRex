@@ -571,6 +571,29 @@ end
 
 -- --- Setup ---
 
+-- restart_hub stops the hub and starts it again on the same lab server and state (hub:restart()
+-- in a test file). crash = true kills it (SIGKILL); else it stops (SIGTERM). `lazyrex-hub test` does
+-- the restart when it reads the request line; the runner waits until a new hub process is ready:
+-- every plugin registered and the agent face lists its exports. Returns the new status.
+function H.restart_hub(opts)
+  local old = hub('hub.test.status', {}).pid
+  io.write('LRT restart ', opts and opts.crash and 'kill' or 'term', '\n')
+  io.flush()
+  local status
+  hub_id = wait('the restarted hub', function()
+    local id = resolve('lazyrex-hub')
+    if not id then return nil end
+    local st = perform(id, 'hub.test.status', {})
+    if st.pid == old then return nil end
+    for _, p in pairs(st.plugins or {}) do
+      if not p.registered or #(p.face or {}) < #(p.exports or {}) then return nil end
+    end
+    status = st
+    return id
+  end, 60)
+  return status
+end
+
 function H.setup(args)
   A = args
   H.args = A

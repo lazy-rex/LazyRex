@@ -230,6 +230,21 @@ Injected commits never match an injection.
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
 with a count that is not used up at the end of the file fails the file.
 
+### Hub restart
+
+`hub:restart()` stops the hub (SIGTERM to its process group) and starts it again with the same
+config, lab server and state. `hub:restart({crash = true})` kills it (SIGKILL) instead, as a crash
+would. The call returns when a new hub process is ready: every plugin is registered and the agent
+face lists its exports. It returns the new `hub.test.status` (with `pid`).
+
+- The runner asks for the restart with the result line `LRT restart term|kill`; `lazyrex-hub test`
+  restarts the hub when it reads that line. Only the hub's own process group gets a signal, and
+  only while its waiter has not reaped it.
+- Processes that the old hub left stay tracked: the lab cleanup checks them at the end.
+- The old hub log stays as `hub.<n>.log`.
+- Agents and views are lab panes: they stay. What the hub does with plugins and views at a restart
+  is the hub's own behavior, which the test checks.
+
 ### Assertions
 
 `expect(v).to_be(x)`, `.to_equal(x)` (deep), `.not_to_be(x)`, `.to_match(pattern)`,

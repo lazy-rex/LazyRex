@@ -91,7 +91,7 @@ func TestParseResultLines(t *testing.T) {
 	for _, c := range cases {
 		o := &testOpts{run: c.run}
 		res := &fileResult{}
-		o.parse(strings.NewReader(c.out), res, io.Discard)
+		o.parse(strings.NewReader(c.out), res, io.Discard, nil)
 		joined := strings.Join(res.problems, "; ")
 		if c.want == "" && joined != "" || c.want != "" && !strings.Contains(joined, c.want) {
 			t.Errorf("%s: problems %q, want %q", c.name, joined, c.want)
