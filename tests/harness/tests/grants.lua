@@ -35,7 +35,8 @@ test('a grant made during a forward admits its exact request later, as the agent
   expect_error(function() alice:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/w2', title = 'Dev', layout = layout}) end, 'does not cover')
   for _, s in ipairs(alice:hub('hub.workers', {}).workers) do
     if s.window_id == w.window_id then
-      expect_error(function() bob:hub('hub.stop', {spawn_id = s.spawn_id}) end, 'did not start')
+      -- Any agent may stop any worker (decisions.md, 2026-10-19); a repeat is closed again.
+      expect(bob:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed')
       expect(alice:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed')
     end
   end

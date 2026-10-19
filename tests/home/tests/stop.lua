@@ -30,13 +30,20 @@ test('agent path: an agent stops its own worker; a replay under the same key is 
   expect(codex:call('hub.stop', {spawn_id = w.spawn_id, key = 'stop-own-1'})).to_equal(first)
 end)
 
-test('an agent cannot stop a worker that the user started', function()
+test('an agent can stop a worker that the user started', function()
+  -- Any agent may stop any worker (decisions.md, 2026-10-19).
   local op = home():action('launch/shell', 'launch', {values = {title = 'User worker'}}, 'stop-user-launch')
   local id = op.result.spawn_id
-  expect_error(function() codex:call('hub.stop', {spawn_id = id, key = 'stop-not-mine'}) end, 'did not start')
-  expect(listed(id), 'the worker still runs').to_be_truthy()
-  expect(home():action('stop', 'stop', {values = {worker = id}}, 'stop-form-2').status).to_be('succeeded')
+  expect(codex:call('hub.stop', {spawn_id = id, key = 'stop-not-mine'}).status).to_be('closed')
   gone(id)
+  -- A repeat through the user's stop form is closed again (stop is idempotent by spawn_id).
+  local after = home():action('stop', 'stop', {values = {worker = id}}, 'stop-form-2')
+  expect(after.status).to_be('succeeded')
+  -- hub.stop ignores its key (idempotent by spawn_id). The operation key is checked at the view
+  -- boundary: the same key with another request is refused there.
+  local other = codex:call('hub.spawn', {profile = 'shell', key = 'stop-other', title = 'Other'})
+  expect_error(function() home():action('stop', 'stop', {values = {worker = other.spawn_id}}, 'stop-form-2') end, 'different arguments')
+  expect(listed(other.spawn_id), 'the refused request stopped nothing').to_be_truthy()
 end)
 
 test('a failed launch is dismissed on both paths', function()
