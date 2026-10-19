@@ -388,3 +388,10 @@ Goal (the maintainer): "Start Session…" starts a saved template; "Save as Temp
 - Limit: the claim belongs to the view, not to one replacement. While any replacement of the view stays active, the claim stays, and a new replacement gets a conflict. It never gets a second claim.
 - Reason: the old rule cancelled every replacement of a new panel whose renderer was still starting ("renderer is not attached"). The hub must not wait for a renderer in its request queue. Reviewed by the harness reviewer through 41c639b.
 - Test renderers (`lazyrex-hub testview`) attach again after a hub restart, retry a failed subscribe, and answer `view.release` before their subscribe returns.
+
+## Decided: Templates run grants and size bounds (coordinator, 2026-10-19)
+
+Full text: `Templates/tests/templates-run.md` (Templates ab6bcb5).
+- **Grant provenance.** A resumed agent run finds its grant by the plugin-scoped key `run/<id>`. Only `start_core` creates that key, in the initial call or a replay of the run's operation key. The lookup covers the identity set (identity plus legacy IDs) of the run's agent, compares the exact entries, and needs an active grant. It does not compare `grant.agent` with `request.by`: after an identity migration, `request.by` can keep the legacy ID.
+- **Size.** Admission refuses a run whose final record would exceed 62 KiB (`invalid_input`, before any write); input IDs are checked by their encoded size. Stored error texts are cut to 512 bytes. Reason: a plugin's own request or reply is limited to 64 KiB (observed; see `rex-protocol.md`).
+- **Agent IDs.** An identity or legacy ID over 128 bytes, or with control characters, refuses the agent as a whole. No ID is dropped, because a dropped legacy ID would change the ownership check silently.
