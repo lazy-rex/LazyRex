@@ -221,8 +221,10 @@ plugin version wrote. `put_operation{key, fingerprint, result}` saves an operati
 ### Concurrent writes
 
 `inject{match, ops, replay, times}` commits `ops` (store batch ops, without `if_rev`) just before
-the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `{op_prefix = ...}`
-or `{writes = <record key>}`. `replay = true` commits a copy of the matching batch first (another
+the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `{op_prefix = ...}`,
+`{writes = <record key>}` or `{updates = <record key>}`. `updates` matches a batch that writes the
+key with an `if_rev` other than `'0'`: a change of a record that the plugin read, not its creation.
+`replay = true` commits a copy of the matching batch first (another
 invocation saved the same operation). `times` is a count or `"always"`. `fail = '<message>'` then fails the
 matching batch with that message: it commits nothing, as a crash or a lost connection would.
 Injected commits never match an injection.

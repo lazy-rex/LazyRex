@@ -55,6 +55,7 @@ type injection struct {
 	OpKey    string // match: the batch's op.key equals this
 	OpPrefix string // match: the batch's op.key starts with this
 	Writes   string // match: the batch writes or deletes this record key
+	Updates  string // match: the batch writes this record key with an if_rev other than "0"
 	Ops      []any  // committed before the matching batch (no if_rev)
 	Replay   bool   // commit a copy of the matching batch first
 	Fail     string // then fail the matching batch with this message; it commits nothing
@@ -538,6 +539,20 @@ func (in *injection) matches(plugin string, args map[string]any) bool {
 			return false
 		}
 	}
+	if in.Updates != "" {
+		found := false
+		ops, _ := asList(args["ops"])
+		for _, o := range ops {
+			if m, ok := o.(map[string]any); ok && m["key"] == in.Updates {
+				if rev, ok := m["if_rev"].(string); ok && rev != "0" {
+					found = true
+				}
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	return true
 }
 
@@ -548,8 +563,9 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	in.OpKey, _ = match["op_key"].(string)
 	in.OpPrefix, _ = match["op_prefix"].(string)
 	in.Writes, _ = match["writes"].(string)
-	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" {
-		return nil, bad("invalid: match needs op_key, op_prefix or writes")
+	in.Updates, _ = match["updates"].(string)
+	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" {
+		return nil, bad("invalid: match needs op_key, op_prefix, writes or updates")
 	}
 	if ops, ok := args["ops"]; ok {
 		list, ok := asList(ops)

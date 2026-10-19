@@ -52,3 +52,13 @@ test('put_operation saves an operation that the plugin reads', function()
   expect(op.fingerprint).to_be('fp-v1')
   expect(op.result).to_equal({id = 'old'})
 end)
+
+test('updates matches a change of a read record, not its creation', function()
+  local a = agent('alice')
+  with_injection({match = {updates = 'upd'}, fail = 'injected update failure'}, 1, function()
+    a:call('fix.put', {key = 'upd', value = 1, if_rev = '0'})
+    local rev = store('upd').rev
+    expect_error(function() a:call('fix.put', {key = 'upd', value = 2, if_rev = rev}) end, 'injected update failure')
+  end)
+  expect(store('upd').value).to_be(1)
+end)

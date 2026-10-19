@@ -19,8 +19,8 @@ local function get(key)
   return r and r.value, r and r.rev or '0'
 end
 
-local function put(key, value)
-  return hub('hub.store.batch', {ops = {{key = key, value = value}}})
+local function put(key, value, if_rev)
+  return hub('hub.store.batch', {ops = {{key = key, value = value, if_rev = if_rev}}})
 end
 
 local obj = {type = 'object'}
@@ -61,8 +61,8 @@ end
 
 local function domain(action, args, pid)
   if action == 'fix.put' then
-    put(args.key, args.value)
-    return {ok = true, by = who(pid)}
+    local r = put(args.key, args.value, args.if_rev)
+    return {ok = true, by = who(pid), conflict = r.conflict and true or nil}
   elseif action == 'fix.get' then
     local v, rev = get(args.key)
     return {value = v, rev = rev}
