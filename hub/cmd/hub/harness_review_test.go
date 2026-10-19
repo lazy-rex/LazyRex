@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestReviewerRenderFailureRemainsFinal(t *testing.T) {
@@ -107,5 +109,32 @@ func TestWaiterSendsNoGroupSignalAfterReap(t *testing.T) {
 	}
 	if w.signal(syscall.SIGKILL) {
 		t.Fatal("signal sent to the group of a reaped leader")
+	}
+}
+
+// The runner exits at once, and its child keeps the output open for 8 s. The leader is reaped,
+// so its group gets no signal. The wait after the timeout must still end, within its limit.
+func TestRunnerTimeoutEndsWhenAChildHoldsTheOutput(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "sleep 8 & exit 0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	o := &testOpts{timeout: time.Second}
+	l := &lab{tracked: map[int]string{}}
+	res := &fileResult{}
+	fctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
+	began := time.Now()
+	o.waitRunner(context.Background(), fctx, l, cmd, stdout, res, io.Discard)
+	if d := time.Since(began); d > 7*time.Second {
+		t.Fatalf("the wait took %s", d)
+	}
+	if !strings.Contains(strings.Join(res.problems, "\n"), "output stayed open") {
+		t.Fatalf("problems: %v", res.problems)
 	}
 }

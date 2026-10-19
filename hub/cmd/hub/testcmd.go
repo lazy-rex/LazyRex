@@ -228,6 +228,7 @@ type lab struct {
 	dir, socket, server string
 	env                 []string
 	srv, hub            *exec.Cmd
+	runner              *exec.Cmd // the current runner: a snapshot root while it lives
 	srvW, hubW          *waiter
 	srvExit, hubExit    chan error
 	r                   *rex.Rex
@@ -305,6 +306,44 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 		}
 		if time.Now().After(deadline) {
 			return l, errors.New("lab server: not ready after 10 s")
+		}
+	}
+}
+
+// waitRunner reads the runner's result lines until the runner exits, or until fctx ends. Every
+// wait after fctx ends has a limit.
+func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, stdout io.ReadCloser, res *fileResult, logf io.Writer) {
+	l.track(cmd.Process.Pid)
+	l.runner = cmd
+	w := watch(cmd)
+	exit := make(chan error, 1)
+	go func() {
+		o.parse(stdout, res, logf)
+		stdout.Close()
+		exit <- <-w.done
+	}()
+	select {
+	case err := <-exit:
+		if err != nil {
+			res.problems = append(res.problems, "runner exited: "+err.Error())
+		}
+	case <-fctx.Done():
+		l.snapshot() // the runner's children, so that the lab cleanup checks them
+		w.signal(syscall.SIGKILL)
+		select {
+		case <-exit:
+		case <-time.After(5 * time.Second):
+			// The runner is gone, but another process keeps its output open (for example a
+			// child after the runner exited: its group gets no signal then). Close the output
+			// so that the parser ends. The lab cleanup reports a tracked survivor.
+			stdout.Close()
+			<-exit
+			res.problems = append(res.problems, "runner: its output stayed open 5 s after the runner was stopped")
+		}
+		if ctx.Err() != nil {
+			res.problems = append(res.problems, "interrupted")
+		} else {
+			res.problems = append(res.problems, fmt.Sprintf("timeout: the file did not finish in %s", o.timeout))
 		}
 	}
 }
@@ -398,7 +437,7 @@ func (l *lab) snapshot() {
 		start string
 	}
 	var roots []proc
-	for _, c := range []*exec.Cmd{l.srv, l.hub} {
+	for _, c := range []*exec.Cmd{l.srv, l.hub, l.runner} {
 		if c == nil || c.Process == nil {
 			continue
 		}
@@ -647,28 +686,7 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		res.problems = append(res.problems, "runner: "+err.Error())
 		return res
 	}
-	l.track(cmd.Process.Pid)
-	w := watch(cmd)
-	exit := make(chan error, 1)
-	go func() {
-		o.parse(stdout, res, logf)
-		stdout.Close()
-		exit <- <-w.done
-	}()
-	select {
-	case err := <-exit:
-		if err != nil {
-			res.problems = append(res.problems, "runner exited: "+err.Error())
-		}
-	case <-fctx.Done():
-		w.signal(syscall.SIGKILL)
-		<-exit
-		if ctx.Err() != nil {
-			res.problems = append(res.problems, "interrupted")
-		} else {
-			res.problems = append(res.problems, fmt.Sprintf("timeout: the file did not finish in %s", o.timeout))
-		}
-	}
+	o.waitRunner(ctx, fctx, l, cmd, stdout, res, logf)
 	logf.Close()
 	if !res.ok() || o.verbose {
 		for _, name := range []string{"runner.log", "hub.log"} {
