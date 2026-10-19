@@ -378,3 +378,13 @@ Goal (the maintainer): "Start Session…" starts a saved template; "Save as Temp
 
 - `tunnels.forward` is an exported agent action. Forward Port… names it; its temporary `user_only` reason is removed.
 - A forward makes a local port public. The tool description says so: anyone with the URL can reach the port, and the tunnel does not ask visitors to sign in.
+
+## Decided: A replacement claims a never-attached panel view (2026-10-19)
+
+- The hub does not ask a renderer that never attached to release its view. It claims the view
+  in one transaction (`views.attach_state`) and opens the replacement.
+- A view that attached before and is not attached now is a conflict, not a claim: its renderer
+  can hold unsaved input when it reconnects. The hub does not wait for it in its request queue.
+- A late attach freezes through its attach reply and reads `hub.view.replacement` once.
+- Reason: the old rule cancelled every replacement of a new panel whose renderer was still
+  starting ("renderer is not attached"). Reviewed by the harness reviewer through 41c639b.
