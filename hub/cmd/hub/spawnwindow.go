@@ -370,6 +370,17 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 		h.kickSpawns()
 		return h.windowResult(ctx, key, string(idsJSON))
 	}
+	if h.test != nil {
+		// Test mode only: a window hold stops here, after Rex created the window and before the
+		// hub records it (testmode.go, testWindowHold).
+		if hold := h.testWindowHold(p, caller, key); hold != nil {
+			select {
+			case <-hold:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
 	for i, s := range rows {
 		if err := h.openSpawn(ctx, s, out.WindowID, out.BlockIDs[i]); err != nil {
 			return nil, err

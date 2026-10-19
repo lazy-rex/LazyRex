@@ -241,6 +241,23 @@ no later batch, and the file check counts it as used up.
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
 with a count that is not used up at the end of the file fails the file.
 
+A window hold, `inject{match = {window = key, caller = c}, hold = true}`, matches no batch. It holds
+one `hub.spawn_window` call of the plugin with that key (and that caller, if `caller` is set). The
+hub holds the call after Rex created the window, and before the hub records the window: the leaves
+stay `sending`, as after a crash at that point. A hold has no `ops`, `replay`, `fail`, `skip` or
+`times`; it holds one call. Then:
+
+- `hub:restart{crash = true}` ends the hold with the hub process. Use it for the crash case.
+- `cancel_injection(id)` releases a held call: the hub records the window as usual.
+- A replay of the same key returns the recorded rows and never reaches the hold.
+
+Rex delivers one request at a time to the hub. While a call is held, the next hub request waits
+until the held call's caller times out (a plugin's `client.perform` timeout). So a test sees a hold
+through Rex (the labeled panes of the new window), and restarts the hub before that timeout when it
+tests the crash case. `hub:restart` does not use the hub: the runner signals the hub process. A
+window hold is for this crash case only; for a caller that retries, use a gate fault ("Faults"),
+which refuses calls and does not hold them. `tests/harness/tests/window_hold.lua` shows both cases.
+
 ### Fake Rex apps
 
 No Rex app runs in a lab, so `hub.app.select_session` and `hub.view.app_action` refuse with

@@ -65,6 +65,16 @@ type injection struct {
 	Skip     int    // the first Skip matching batches pass unchanged (Skipped counts them)
 	Skipped  int
 	Consumed int
+	// A window hold (match {window = key}, hold = true) matches no batch. It holds one
+	// hub.spawn_window call of the plugin with this key (and this caller, if set) after Rex
+	// created the window and before the hub records it: the leaves stay sending, as after a
+	// crash at that point. The held call waits until the injection is cancelled (then it goes on
+	// as usual) or the hub process ends (hub:restart()). Rex delivers one request at a time to the
+	// hub: while a call is held, the next request waits until the held call's caller times out. So
+	// a test sees the hold through Rex (the new panes), and hub:restart() does not use the hub.
+	Window  string
+	Caller  string
+	release chan struct{}
 }
 
 type renderOutcome struct {
@@ -283,6 +293,10 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		for _, in := range h.test.injections {
 			if float64(in.ID) == id { // exact: 1.5 is not injection 1
 				in.Times = in.Consumed
+				if in.release != nil {
+					close(in.release) // a held window call goes on
+					in.release = nil
+				}
 				return map[string]any{"consumed": in.Consumed}, nil
 			}
 		}
@@ -555,7 +569,7 @@ func (in *injection) remaining() any {
 }
 
 func (in *injection) matches(plugin string, args map[string]any) bool {
-	if in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
+	if in.Window != "" || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
 		return false
 	}
 	opKey := ""
@@ -605,8 +619,14 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	in.OpPrefix, _ = match["op_prefix"].(string)
 	in.Writes, _ = match["writes"].(string)
 	in.Updates, _ = match["updates"].(string)
+	if _, ok := match["window"]; ok {
+		return h.testWindowInject(in, match, args)
+	}
 	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" {
-		return nil, bad("invalid: match needs op_key, op_prefix, writes or updates")
+		return nil, bad("invalid: match needs op_key, op_prefix, writes, updates or window")
+	}
+	if _, ok := args["hold"]; ok {
+		return nil, bad("invalid: hold needs match {window = key}")
 	}
 	if ops, ok := args["ops"]; ok {
 		list, ok := asList(ops)
@@ -654,6 +674,59 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	in.ID = len(h.test.injections) + 1
 	h.test.injections = append(h.test.injections, in)
 	return map[string]any{"id": in.ID}, nil
+}
+
+// testWindowInject arms a window hold: match {window = key, caller?} and hold = true, once.
+func (h *Hub) testWindowInject(in *injection, match, args map[string]any) (any, error) {
+	for k := range match {
+		if k != "window" && k != "caller" {
+			return nil, bad("invalid: a window hold matches only window and caller, not %s", k)
+		}
+	}
+	in.Window, _ = match["window"].(string)
+	if in.Window == "" {
+		return nil, bad("invalid: match.window must be a spawn_window key")
+	}
+	if v, ok := match["caller"]; ok {
+		if in.Caller, _ = v.(string); in.Caller == "" {
+			return nil, bad("invalid: match.caller must be nonempty text")
+		}
+	}
+	if hold, _ := args["hold"].(bool); !hold {
+		return nil, bad("invalid: a window match needs hold = true")
+	}
+	for _, k := range []string{"ops", "replay", "fail", "fail_code", "skip", "times"} {
+		if _, ok := args[k]; ok {
+			return nil, bad("invalid: a window hold has no %s (it holds one call)", k)
+		}
+	}
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	in.ID = len(h.test.injections) + 1
+	h.test.injections = append(h.test.injections, in)
+	return map[string]any{"id": in.ID}, nil
+}
+
+// testWindowHold takes the first window hold that matches this call, and returns the channel that
+// releases the call (nil: no hold). spawnWindow calls it only after a valid success answer of Rex.
+// The test mutex is not held while the call waits.
+func (h *Hub) testWindowHold(p perform, caller, key string) <-chan struct{} {
+	pl := h.pluginByClient(p.Requester.ClientID)
+	if pl == nil {
+		return nil
+	}
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	for _, in := range h.test.injections {
+		if in.Window == key && in.Plugin == pl.Name && (in.Caller == "" || in.Caller == caller) && in.Consumed < in.Times {
+			in.Consumed++
+			in.release = make(chan struct{})
+			h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": pl.Name, "window": key})
+			log.Printf("test: window hold %d holds spawn_window %q", in.ID, key)
+			return in.release
+		}
+	}
+	return nil
 }
 
 // testBeforeBatch counts a plugin's batch and commits the first matching injection before it.
