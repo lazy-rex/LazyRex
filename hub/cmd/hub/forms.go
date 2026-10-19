@@ -59,6 +59,10 @@ type paletteCommand struct {
 	Route       string   `json:"route"`
 	Surface     string   `json:"surface,omitempty"` // "form" (default) or "panel" (panels.go)
 	Landing     bool     `json:"landing,omitempty"` // the panel a Home click opens; one per plugin
+	// Agent parity (docs/testing.md): the exported agent action that does what the command's form
+	// does, or the reason that only the user can do it.
+	Action   string `json:"action,omitempty"`
+	UserOnly string `json:"user_only,omitempty"`
 }
 
 type formContext struct {

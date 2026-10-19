@@ -33,6 +33,7 @@ type Config struct {
 	// no palette entries.
 	PaletteLua string `json:"palette_lua"`
 	Real       bool   `json:"-"` // set from -real-server; renderers get -real-server too
+	Test       bool   `json:"-"` // set from -test (testmode.go)
 	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
 	// pane (pair.go). Off: those tabs open as one view, as before.
 	Transcript bool `json:"transcript"`
@@ -106,6 +107,7 @@ type Hub struct {
 	paletteKick    chan struct{} // wakes paletteLoop (kickPalette)
 	paletteLoaded  string        // the palette file content of the last config reload (paletteLoop only)
 	lock           *os.File      // holds the flock; kept for the life of the process
+	test           *testState    // test mode (-test, testmode.go); nil otherwise
 
 	mu           sync.Mutex
 	identMu      sync.Mutex // serializes identity reports (identity.go)
@@ -191,13 +193,27 @@ func findRex(configured string) (string, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "test":
+			os.Exit(testMain(os.Args[2:]))
+		case "testview":
+			os.Exit(testViewMain(os.Args[2:]))
+		case "testagent":
+			os.Exit(testAgentMain(os.Args[2:]))
+		}
+	}
 	fs := &faults{}
 	configPath := flag.String("config", "", "hub configuration JSON (required)")
 	flag.Var(fs, "lab-fault", "lab-only fault, for example point=store-commit,mode=exit (repeatable)")
 	realServer := flag.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
+	testMode := flag.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
 	flag.Parse()
 	if *realServer && len(fs.list) > 0 {
 		log.Fatal("-lab-fault is refused with -real-server")
+	}
+	if *realServer && *testMode {
+		log.Fatal("-test is refused with -real-server")
 	}
 	if *configPath == "" {
 		flag.Usage()
@@ -208,6 +224,12 @@ func main() {
 		log.Fatal(err)
 	}
 	cfg.Real = *realServer
+	cfg.Test = *testMode
+	if cfg.Test {
+		if err := checkLabProof(cfg.Server); err != nil {
+			log.Fatal(err)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	h, err := start(ctx, cfg, fs)
@@ -273,6 +295,9 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	for _, p := range cfg.Plugins {
 		h.plugins[p.Name] = &Plugin{Name: p.Name, Path: p.Path, Notice: p.Notice, Events: p.Events}
 	}
+	if cfg.Test {
+		h.test = newTestState()
+	}
 
 	var actions []map[string]any
 	for _, name := range []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
@@ -283,6 +308,11 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
 	}
 	actions = append(actions, hubToolActions...)
+	if h.test != nil {
+		for _, name := range testActions {
+			actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
+		}
+	}
 	if err := r.Call(ctx, "client.keymap", map[string]any{"actions": actions}, nil); err != nil {
 		return nil, err
 	}
@@ -545,6 +575,12 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		args = map[string]any{}
 	}
 	pid := p.Requester.Principal.PID
+	if strings.HasPrefix(p.Action, "hub.test.") {
+		if h.test == nil {
+			return nil, bad("unknown action %s", p.Action)
+		}
+		return h.testDispatch(ctx, p, args)
+	}
 
 	switch p.Action {
 	case "hub.register":
@@ -677,20 +713,17 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.store.op":
 		return h.db.storeOp(ctx, ns, args)
 	case "hub.store.batch":
+		if h.test != nil {
+			if err := h.testBeforeBatch(ctx, ns, args); err != nil {
+				return nil, err
+			}
+		}
 		out, err := h.db.storeBatch(ctx, ns, args, h.roster())
 		if err != nil {
 			return nil, err
 		}
 		if out.committed {
-			fields := map[string]any{"plugin": ns, "revs": out.revs}
-			if out.opKey != "" {
-				fields["op_key"] = out.opKey
-			}
-			h.ev.emit("store_committed", fields)
-			if len(out.intentRev) > 0 {
-				h.kickNotices()
-			}
-			h.kickViews(ns, true) // the plugin's data changed: render its open views again
+			h.afterCommit(ns, out)
 			if f := h.faults.take("store-commit", "", out.opKey); f != nil {
 				h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "op_key": out.opKey})
 				if f.mode == "exit" {
@@ -702,6 +735,19 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return out.result, nil
 	}
 	return nil, bad("unknown action %s", p.Action)
+}
+
+// afterCommit announces a committed batch: the event log, pending notices, and the plugin's views.
+func (h *Hub) afterCommit(ns string, out *batchOutcome) {
+	fields := map[string]any{"plugin": ns, "revs": out.revs}
+	if out.opKey != "" {
+		fields["op_key"] = out.opKey
+	}
+	h.ev.emit("store_committed", fields)
+	if len(out.intentRev) > 0 {
+		h.kickNotices()
+	}
+	h.kickViews(ns, true) // the plugin's data changed: render its open views again
 }
 
 // callerInManagedPane reports whether pid runs inside an agent or plugin pane.

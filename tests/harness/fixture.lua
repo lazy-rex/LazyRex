@@ -1,0 +1,134 @@
+-- A small plugin that tests the Lua test harness itself (docs/testing.md, "Harness self-tests").
+-- Its behavior is set by records in its own store namespace, so a test changes it through the
+-- real hub:
+--   mode = 'fail'  /home renders an error
+--   mode = 'big'   /home renders a tree larger than one control message
+--   mode = 'noparity'  /home has an action with neither tool nor user_only
+local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
+local instance_id = assert(rex.args.instance_id, 'instance_id is required')
+
+local function hub(action, args)
+  local res, err = rex.call('client.perform', {client_id = hub_id, action = action, args = args or {}, timeout_ms = 10000})
+  if err or not res then error({code = 'hub_failed', message = tostring(err)}) end
+  return res.result
+end
+
+local function get(key)
+  local out = hub('hub.store.get', {keys = {key}})
+  local r = out.records[key]
+  return r and r.value, r and r.rev or '0'
+end
+
+local function put(key, value)
+  return hub('hub.store.batch', {ops = {{key = key, value = value}}})
+end
+
+local obj = {type = 'object'}
+local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo'}
+local actions = {
+  {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
+  {name = 'view.render', kind = 'client', title = 'Render', args = obj},
+  {name = 'view.action', kind = 'client', title = 'Action', args = obj},
+  {name = 'fix.put', kind = 'client', title = 'Put a record', description = 'Write {key, value}.',
+    args = {type = 'object', properties = {key = {type = 'string'}, value = {}}, required = {'key', 'value'}}},
+  {name = 'fix.get', kind = 'client', title = 'Get a record', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
+  {name = 'fix.who', kind = 'client', title = 'Who is calling', args = obj},
+  {name = 'fix.fill', kind = 'client', title = 'Write a record of n copies of text',
+    args = {type = 'object', properties = {key = {type = 'string'}, text = {type = 'string'}, n = {type = 'integer'}}, required = {'key', 'text', 'n'}}},
+  {name = 'fix.echo', kind = 'client', title = 'Echo', args = obj},
+}
+rex.call('client.keymap', {actions = actions})
+
+local function who(pid)
+  local r = hub('hub.identify', {pid = pid})
+  if not r.found then error({code = 'unknown_caller', message = 'the hub does not recognize the caller'}) end
+  return r.agent
+end
+
+local function domain(action, args, pid)
+  if action == 'fix.put' then
+    put(args.key, args.value)
+    return {ok = true, by = who(pid)}
+  elseif action == 'fix.get' then
+    local v, rev = get(args.key)
+    return {value = v, rev = rev}
+  elseif action == 'fix.who' then
+    return {agent = who(pid)}
+  elseif action == 'fix.fill' then
+    put(args.key, {text = string.rep(args.text, args.n)})
+    return {ok = true}
+  elseif action == 'fix.echo' then
+    return args
+  end
+  error({code = 'not_supported', message = 'unknown action ' .. tostring(action)})
+end
+
+local function home_tree()
+  local mode = get('mode')
+  if mode == 'fail' then error({code = 'render_error', message = 'mode is fail'}) end
+  local nodes = {
+    {id = 'status', type = 'widget', text = 'mode ' .. tostring(mode or 'normal'),
+      action = {name = 'refresh', label = 'Refresh', enabled = true, user_only = 'redraws the view'}},
+    {id = 'open_form', type = 'widget', text = 'Open the form',
+      action = {name = 'open', label = 'Open', enabled = true, user_only = 'navigation'}},
+    {id = 'bad_nav', type = 'widget', text = 'Navigate to a missing tab',
+      action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+  }
+  if mode == 'noparity' then
+    nodes[#nodes + 1] = {id = 'bare', type = 'widget', text = 'no parity', action = {name = 'poke', label = 'Poke', enabled = true}}
+  end
+  if mode == 'big' then
+    nodes[#nodes + 1] = {id = 'big', type = 'widget', text = string.rep('x', 70000)}
+  end
+  return {title = 'Fixture', back = nil, nodes = nodes}
+end
+
+local function form_tree()
+  return {title = 'Fixture form', nodes = {
+    {id = 'form', type = 'form', fields = {{id = 'value', label = 'Value', kind = 'text', value = ''}},
+      submit_action = {name = 'submit', label = 'Save', enabled = true, tool = 'fix.put'}},
+    {id = 'cancel', type = 'widget', text = 'Cancel', action = {name = '$cancel', label = 'Cancel', enabled = true}},
+  }}
+end
+
+local function view(action, args)
+  if action == 'view.render' then
+    if args.route == '/home' then return {tree = home_tree()} end
+    if args.route == '/forms/fix' then return {tree = form_tree()} end
+    return {tree = {title = 'Unknown', nodes = {{id = 'unknown', type = 'error', text = 'no route ' .. tostring(args.route)}}}}
+  elseif action == 'view.action' then
+    if args.route == '/home' and args.node_id == 'open_form' then return {form = '/forms/fix'} end
+    if args.route == '/home' and args.node_id == 'bad_nav' then return {navigate = 'missing'} end
+    if args.route == '/home' and args.node_id == 'status' then return {} end
+    if args.route == '/forms/fix' and args.node_id == 'form' then
+      put('form', {value = args.input and args.input.values and args.input.values.value or ''})
+      return {close_form = true}
+    end
+    error({code = 'invalid_input', message = 'unknown node ' .. tostring(args.node_id)})
+  end
+end
+
+rex.on('client_perform_requested', function(ctx, ev)
+  local ok, result = pcall(function()
+    if ev.action == 'hub.forward' or ev.action:sub(1, 5) == 'view.' then
+      if ev.requester.client_id ~= hub_id then error({code = 'refused', message = 'Only the hub may call ' .. ev.action}) end
+    end
+    if ev.action == 'hub.forward' then
+      return domain(ev.args.action, ev.args.args or {}, ev.args.requester_pid)
+    elseif ev.action:sub(1, 5) == 'view.' then
+      return view(ev.action, ev.args)
+    end
+    return domain(ev.action, ev.args or {}, ev.requester.principal and ev.requester.principal.pid)
+  end)
+  if ok then
+    rex.call('client.reply', {call_id = ev.call_id, result = result})
+  else
+    local e = type(result) == 'table' and result or {code = 'internal', message = tostring(result)}
+    rex.call('client.reply', {call_id = ev.call_id, error = e})
+  end
+end)
+
+hub('hub.register', {plugin = 'harnessfix', instance_id = instance_id, exports = exports,
+  commands = {{id = 'fix_form', title = 'Fixture form', route = '/forms/fix', action = 'fix.put'}}})
+hub('hub.ui.tabs', {tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}})
+rex.call('client.set_label', {label = 'lazyrex-plugin:harnessfix'})

@@ -592,12 +592,20 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		var out struct {
 			Tree map[string]any `json:"tree"`
 		}
+		gen := h.testRenderStart(t.id) // test mode: the requested render that this one covers
 		err := h.callPlugin(ctx, plugin, "view.render", viewArgs(t.id, t.route, t.context), &out)
 		if _, definite := definiteFailure(err); err != nil && !definite {
 			// The plugin is not there yet or did not answer. Keep the current tree; plugin
 			// registration renders again.
 			log.Printf("views %s: render %s: %v (transient)", plugin, t.route, err)
+			h.testRenderDone(t.id, gen, false, "transient: "+err.Error()+" (the hub kept the previous tree)", 0, nil)
 			continue
+		}
+		renderErr := ""
+		if err != nil {
+			renderErr = err.Error()
+		} else if out.Tree == nil {
+			renderErr = "the plugin returned no tree"
 		}
 		if err != nil || out.Tree == nil {
 			tree := map[string]any{"title": "Error", "back": nil, "nodes": []any{map[string]any{"id": "$error", "type": "error", "text": "The plugin could not render this view.", "retry_action": nil}}}
@@ -622,6 +630,10 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 				}
 			}
 		}
+		if renderErr == "" {
+			h.parityLog(plugin, t.route, out.Tree)
+			h.testRecordTree(plugin, t.route, out.Tree)
+		}
 		tree, _ := json.Marshal(out.Tree)
 		h.vs.mu.Lock()
 		s := h.vs.snaps[t.id]
@@ -635,6 +647,7 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		delete(h.vs.notify, t.id)
 		rev := s.rev
 		h.vs.mu.Unlock()
+		h.testRenderDone(t.id, gen, renderErr == "", renderErr, rev, tree)
 		if send {
 			go h.viewChanged(ctx, t.client, t.id, t.attachment, rev, h.composerAttachment)
 			if pr, ok := printers[t.id]; ok {

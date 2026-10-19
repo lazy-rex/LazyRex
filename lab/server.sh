@@ -16,6 +16,9 @@ echo "lab server: unix://$LAB_DIR/rex.sock" >&2
 # from inside a Rex pane would pass the REAL server's address, and `rex` in a lab pane would reach
 # the real server. Without REX_SERVER, `rex` falls back to the default (real) server too.
 # So set it to the lab socket. (Observed 2026-10-15, Rex 0.0.1792088193-g7a93ec.)
+# The lab proof for a hub started with -test (hub/cmd/hub/testmode.go, checkLabProof): exec keeps
+# this shell's pid, so server_pid is the server.
+printf '{"socket":"unix://%s/rex.sock","server_pid":%d,"nonce":"%s"}\n' "$LAB_DIR" $$ "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" > "$LAB_DIR/lab.json"
 exec env -u REX_SESSION -u REX_BLOCK -u REX_CLIENT REX_SERVER="unix://$LAB_DIR/rex.sock" rex -v server run \
   --listen "unix://$LAB_DIR/rex.sock" \
   --state-dir "$LAB_DIR/state" \

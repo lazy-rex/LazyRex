@@ -124,6 +124,9 @@ func (r *Rex) readLoop() {
 	}
 }
 
+// Close ends the connection.
+func (r *Rex) Close() error { return r.conn.Close(websocket.StatusNormalClosure, "") }
+
 // Closed reports whether the connection has ended.
 func (r *Rex) Closed() bool { return r.closed.Load() }
 

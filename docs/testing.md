@@ -1,0 +1,220 @@
+# Testing plugins
+
+A plugin repository contains only Lua: the plugin and its tests. `lazyrex-hub test` runs the
+tests against the **real hub**, on an isolated lab Rex server that the command starts and stops.
+No test touches your own Rex server.
+
+Status: observed on Rex 0.0.1792158932-g88fd41 (lab), 2026-10-19.
+
+## Run
+
+Build the hub binary in a LazyRex checkout, then run it in the plugin repository:
+
+```sh
+cd LazyRex/hub && go build -o ~/bin/lazyrex-hub ./cmd/hub
+cd ../../Messaging && lazyrex-hub test
+```
+
+Flags:
+
+| Flag | Effect |
+| --- | --- |
+| `-file send.lua` | Run only this file of `tests/`. |
+| `-run <Lua pattern>` | Run only tests whose name matches. The run fails if no test matches. |
+| `-timeout 120s` | The time limit for one test file. |
+| `-keep` | Keep each lab directory (logs, events, state). The processes stop anyway. |
+| `-v` | Print the hub, plugin and runner logs. |
+| `-lazyrex <dir>` | The LazyRex checkout. Default: `../LazyRex` beside the plugin, `LAZYREX_DIR`, or the checkout of the binary. |
+
+Exit status: 0 when every file passes, 1 when a test or a check fails, 2 for a harness error (for
+example a bad manifest).
+
+## What one run does
+
+1. The command reads `lazyrex.json`.
+2. A **parity sweep** runs first, in its own lab (see "Agent parity"). A failure fails the run.
+3. For each `tests/*.lua` file, in name order:
+   1. The command starts a new Rex server in a new directory `/tmp/lrt-*`. Every child gets
+      `REX_SERVER` = that server. The command writes the lab proof `lab.json`.
+   2. It starts the hub (this binary, `-test`) with new state. The config loads the LazyRex home
+      plugin, the plugins in `requires`, and the plugin under test.
+   3. It waits until each plugin is registered and the agent face lists the plugin's exports.
+   4. It runs the file with `rex do lab/test/runner.lua`.
+   5. It stops the hub and the server, and checks that every process that it saw under them is
+      gone. A survivor gets SIGKILL and fails the file.
+4. Tests in one file share one hub and run in order. Files do not share anything.
+
+The same cleanup runs after a failure, a startup failure, a timeout and an interrupt (Ctrl-C).
+
+## The manifest: `lazyrex.json`
+
+```json
+{
+  "name": "messaging",
+  "main": "messaging.lua",
+  "events": "session",
+  "requires": [{"name": "profiles", "path": "../Profiles/profiles.lua"}],
+  "test": {
+    "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}],
+    "transcript": false,
+    "parity_fixture": "tests/parity_fixture.lua",
+    "parity_routes": ["/forms/thread-menu"]
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name`, `main` | The plugin name and its main file. Required. |
+| `events` | `session` (default) or `all`, as in the hub config. |
+| `requires` | Other plugins that the hub loads for the tests. Paths are relative to the plugin. |
+| `test.agents` | Roster agents in the test hub config. `user` is always there. |
+| `test.transcript` | The hub config `transcript` option. |
+| `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
+| `test.parity_routes` | Those contextual routes. The fixture must render each one. |
+
+Unknown fields are refused.
+
+## Writing tests
+
+A test file declares tests with `test(name, function)`. The functions below are global.
+
+```lua
+test('a reply acknowledges its question', function()
+  local alice, bob = agent('alice'), agent('bob')
+  local q = alice:call('messaging.send', {to = 'bob', body = 'Ready?', key = 'q1'})
+  bob:call('messaging.send', {to = 'alice', body = 'Yes', key = 'a1', reply_to = q.id})
+  expect(bob:call('messaging.read', {}).messages).to_equal({})
+end)
+```
+
+### Agents
+
+`agent(id, opts)` opens a test agent: a real lab pane that runs `lazyrex-hub testagent`. The hub
+sees real pane ancestry for its calls. Options:
+
+- `join`: the roster agent to join as (default `id`). `false`: do not join.
+- `title`: the tab label (default `id`). The hub uses it as the identity name.
+- `session`: the session of the pane (default: the tests session).
+
+Methods:
+
+| Method | Path |
+| --- | --- |
+| `a:call(action, args)` | Through the agent face (`rex -C lazyrex`, the MCP path) to the plugin. |
+| `a:direct(action, args)` | To the plugin client itself. |
+| `a:hub(action, args)` | To the hub. |
+| `a:report{kind, conversation_id, source}` | `hub.identity.report` from a new process in the pane, like an agent hook. |
+
+A call from the runner itself (`H.perform(client, action, args)`) comes from outside every pane.
+Use it to test the plugin's refusal of an unknown caller.
+
+### The UI user
+
+`user` drives real renderer panes. The test hub config sets `view` to `lazyrex-hub testview`.
+The hub starts it like the real renderer, so the hub's own view path runs: admission, durable
+operations, effects and retries.
+
+| Call | Effect |
+| --- | --- |
+| `user:open(tab)` | `hub.ui.navigate` to a tab, then waits for its view. |
+| `user:view(tab or route)` | An open view (for example a form that an effect opened). |
+| `user:command(id)` | Runs a palette command, as the Rex palette does (`hub.palette.run`). |
+| `user:plugin_view(action, args)` | Calls the plugin's `view.*` from the runner, which is not the hub: for refusals. |
+| `v:render()` | Asks for a new render and returns the tree. Fails if that render failed, even when the hub kept an older tree. |
+| `v:try_render()` | `{status = 'ok', tree}` or `{status = 'failed', error}`. |
+| `v:action(node, action, input, key)` | A view action. Returns the final operation: `{status, result or error, effects, effects_error}`. |
+| `v:draft(node, text, base_revision, key)`, `v:send(node, text, draft_revision, key)` | Draft save and send. |
+| `v:effect_retry(key)`, `v:history(before)` | Retry failed effects; read an older history page. |
+
+An operation is final when its status is not `pending` and its effects are not `pending`. The
+helpers read the durable record from the hub, so a `close_form` effect that closes the renderer
+does not hide the result.
+
+### Hub state
+
+| Call | Returns |
+| --- | --- |
+| `store(key, plugin?)` | `{value, rev}`; an absent record is `{rev = '0'}`. |
+| `notice(agent)` | `{found, pending, intent_rev}` |
+| `batches()` | The number of `hub.store.batch` calls of the plugin. |
+| `tabs()`, `tab(key)`, `views()` | The declared tabs and the open views. |
+| `operation(key)` | A view operation's durable state. |
+| `advance_rev(n)` | Moves the store revision counter forward (never back). |
+| `session(label)` | Creates a real lab session and returns its ID. |
+| `node(tree, id)` | A node of a tree, at any depth. |
+
+### Concurrent writes
+
+`inject{match, ops, replay, times}` commits `ops` (store batch ops, without `if_rev`) just before
+the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `{op_prefix = ...}`
+or `{writes = <record key>}`. `replay = true` commits a copy of the matching batch first (another
+invocation saved the same operation). `times` is a count or `"always"`. Injected commits never
+match an injection.
+
+`with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
+with a count that is not used up at the end of the file fails the file.
+
+### Assertions
+
+`expect(v).to_be(x)`, `.to_equal(x)` (deep), `.not_to_be(x)`, `.to_match(pattern)`,
+`.to_contain(x)`, `.not_to_contain(x)`, `.to_have_length(n)`, `.to_be_truthy()`,
+`.to_be_falsy()`. The colon form `expect(v):to_be(x)` works too. `assert_eq(a, b, msg)`,
+`assert_true(v, msg)`. `expect_error(fn, pattern)` returns the error; `pattern` matches the
+message or equals the code. A failure names the line in the test file.
+
+## Agent parity
+
+Every user action must also be an agent action (an MCP tool). The harness checks it.
+
+- A palette command names `action = '<export>'` or `user_only = '<reason>'`.
+- An action descriptor in a view tree (a form submit, a list item, a menu, a widget, a composer
+  action, nested nodes too) names `tool = '<export>'` or `user_only = '<reason>'`.
+- The named export must be in the plugin's `exports`, and the agent face must list it: the plugin
+  must declare `hub.forward`.
+- `$back`, `$cancel` and the history `load` action are exempt (renderer mechanics). The exempt list
+  is `parityExemptNames` in `hub/cmd/hub/testmode.go`.
+
+The parity sweep renders every declared tab and opens every palette command. Then it fails on
+any violation and on any required route that no render reached: an unchecked route does not pass.
+A form that opens only from another view needs the manifest fixture (`test.parity_fixture`). Each
+file also ends with a check of every tree that it rendered.
+
+Limit: the check proves export and discovery. It does not prove that the view action and the
+agent action run the same handler. Test both paths for each flow: `user:...` through the view and
+`agent(...):call(...)` as a tool.
+
+Outside test mode, the hub only logs a descriptor that names neither field (once per route, node
+and action). It does not change behavior.
+
+## Limits that tests must respect
+
+- **One control message is at most 64 KiB** for a `rex do` script (rex-protocol.md, "Rex Lua
+  runtime"). The runner measures each request before it sends it and fails with
+  `request_too_large`. Hub test replies stay under 48 KiB. A larger record or tree arrives in
+  chunks of one revision; a change during the read starts it again. Nothing is truncated.
+- **The hub has one request queue** (rex-protocol.md). No `hub.test.*` handler calls a plugin. The
+  runner never answers a callback, so it polls instead: short sleeps, then a deadline.
+- A render waits up to 25 s, which is longer than the hub's 10 s plugin call timeout. So a render
+  that times out (for example a tree over 64 KiB) is reported as failed.
+
+## Test mode in the hub
+
+`-test` declares the `hub.test.*` actions and refuses them at dispatch without it. The hub refuses
+`-test` with `-real-server`, and it refuses `-test` without a positive lab proof:
+
+- the config server is `unix://<dir>/rex.sock`;
+- `<dir>/lab.json` belongs to the current user and names that socket and a server pid;
+- that pid is alive, and its command line has `--listen unix://<dir>/rex.sock` and
+  `--state-dir <dir>/state`.
+
+`lazyrex-hub test` and `lab/server.sh` both write `lab.json`. So a hub started by hand with
+`-test` on a `lab/server.sh` lab passes the proof.
+
+## Harness self-tests
+
+- `tests/harness/`: a fixture plugin and tests of the harness itself (agents, views, effects,
+  limits, injections, assertions). Run `lazyrex-hub test tests/harness`.
+- `tests/harness-fail/`: files that must fail, each for the reason in its first line.
+- `HARNESS_LAB=1 go test -run TestHarness ./cmd/hub` (in `hub/`) runs both, and also checks an
+  empty `-run` match and an interrupt. It checks that no lab process survives.

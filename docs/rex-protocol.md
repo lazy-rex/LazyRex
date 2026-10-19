@@ -150,6 +150,7 @@ Observed on Rex 0.0.1792088193-g7a93ec (lab, 2026-10-15):
 - This happened once in a real-agent test: a lab Claude ran `rex -C lazyrex-plugin:messaging do messaging.send ...`. The call reached the user's real server, failed with "client target not found", and changed nothing.
 - Codex's audit of its own lab runs: its explicit test commands used lab endpoints. Its earlier wake runs kept the user's Codex `SessionStart` hook, which runs a bare `rex __internal session-start --agent codex`. With the inherited `REX_SERVER`, that call may have reached the real server. Those runs are not proven isolated. Later runs disabled the hook.
 - Lab servers also write outside their `--state-dir`: each one created `~/Library/Application Support/rex/servers/<hash>/start.lock` in the user's real Rex directory (about 20 folders on 2026-10-15). They are startup locks, not state. Not cleaned up yet.
+- A pane command is a child of the lab server, in its own process group (observed on Rex 0.0.1792158932-g88fd41, lab `/tmp/rexlab-h1`, 2026-10-19: `sleep` pane pid 92747, pgid 92747, ppid = server 92358). SIGTERM to the server ended the pane process. So a harness that kills the server's process group does not reach panes directly; `lazyrex-hub test` records every descendant and checks each one after the server stops (docs/testing.md).
 - Fix: `spikes/lab/server.sh` starts the server with `REX_SERVER=unix://<lab>/rex.sock` and without the inherited `REX_SESSION`, `REX_BLOCK` and `REX_CLIENT`. Verified: `rex whoami` in a lab pane then reports the lab endpoint.
 
 ## Network admission without a tailnet
@@ -179,7 +180,7 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
 
 - `rex do script.lua` runs gopher-lua (`_VERSION` "Lua 5.1") in the CLI process, as a Rex control client.
 - Available: `io` (including `io.open`, `io.popen`), `os` (including `os.execute`, `os.getenv`), `require`, `package`, `load`, `loadstring`, `coroutine`, `debug`, and the gopher-lua `channel` global.
-- Missing: sockets, JSON, SQLite, `utf8`. A pure-Lua JSON library can be loaded with `require`. SQLite would need the `sqlite3` CLI through `io.popen`.
+- Missing: sockets, JSON, SQLite, `utf8`. Correction (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-19): `rex.json.encode` and `rex.json.decode` exist (Rex docs, "rex.json"). `rex.json.encode({a = "x\0\""})` gave `{"a":"x\u0000\""}`, and an empty table encodes as `{}`. A pure-Lua JSON library can be loaded with `require`. SQLite would need the `sqlite3` CLI through `io.popen`.
 - Network (lab): `require("socket")` and `require("http")` fail. `package.cpath` is empty and `package.loadlib` raises "loadlib is not supported", so C modules cannot load. Outbound HTTP works through a helper process: `io.popen("curl ...")` returned `200`. No native WebSocket.
 - `io.read` reads the script's stdin (lab: a JSON line piped into `rex do -e` came back intact). So a `rex do` script could act as a stdio program, for example an MCP stdio server. Untested as MCP.
 - Other clients reach a Lua script through Rex: an anonymous TCP client (`rex -S http://127.0.0.1:<port>`) called a `rex do` script's action with `client.perform` and got the result (lab). Its `requester.principal` has no `pid`, so a hub must handle every principal kind.

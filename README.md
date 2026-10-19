@@ -14,7 +14,7 @@ Status: early. The design came from a series of spikes; `docs/` keeps their find
 | `view/` | The renderer (Go, Bubble Tea): forms, lists, thread composer, transcript pane |
 | `plugins/lazyrex.lua` | The home plugin: plugins, agents and workers |
 | `lib/rex-client.mjs` | A dependency-free Rex control and data client for Node tests |
-| `lab/` | `server.sh` starts an isolated Rex server for tests; `lab.mjs` checks the lab socket |
+| `lab/` | `server.sh` starts an isolated Rex server for tests; `lab.mjs` checks the lab socket; `test/` is the Lua test runner and API |
 | `tests/` | Hub and renderer tests (most need a lab server) |
 | `hooks/`, `skills/` | Agent session hook and the LazyRex skill for agents |
 | `docs/` | Architecture, decisions, the Rex protocol notes and the hub design |
@@ -48,6 +48,9 @@ Requirements: Rex, Go, and Node 22 or later for the tests.
 `dev.sh` builds the hub and the renderer, watches the sources, and reloads what changed.
 
 ## Tests
+
+Plugin tests are Lua files that run against the real hub on an isolated lab server:
+`lazyrex-hub test` in the plugin repository (see [docs/testing.md](docs/testing.md)).
 
 - `cd hub && go test ./...` and `cd view && go test ./...`
 - Node tests need an isolated lab server:
