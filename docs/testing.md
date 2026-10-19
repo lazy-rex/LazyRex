@@ -229,6 +229,10 @@ invocation saved the same operation). `times` is a count or `"always"`. `fail = 
 matching batch with that message: it commits nothing, as a crash or a lost connection would.
 Injected commits never match an injection.
 
+`inject` returns the injection ID. `injection(id)` gives `{consumed, remaining}`.
+`cancel_injection(id)` ends an injection now (for example one with `times = "always"`): it matches
+no later batch, and the file check counts it as used up.
+
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
 with a count that is not used up at the end of the file fails the file.
 

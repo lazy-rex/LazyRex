@@ -34,7 +34,7 @@ import (
 const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
-	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
+	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
 	"hub.test.app", "hub.test.app.calls", "hub.test.app.close"}
 
@@ -271,6 +271,18 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return h.testInject(args)
+	case "hub.test.inject.cancel":
+		// The injection matches no later batch. Its count is used up, so the file check passes.
+		id, _ := args["id"].(float64)
+		h.test.mu.Lock()
+		defer h.test.mu.Unlock()
+		for _, in := range h.test.injections {
+			if in.ID == int(id) {
+				in.Times = in.Consumed
+				return map[string]any{"consumed": in.Consumed}, nil
+			}
+		}
+		return nil, bad("invalid: no injection %v", args["id"])
 	case "hub.test.injection":
 		id, _ := args["id"].(float64)
 		h.test.mu.Lock()

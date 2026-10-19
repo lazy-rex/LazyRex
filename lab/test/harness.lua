@@ -297,6 +297,8 @@ function H.inject(spec)
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
+-- cancel_injection ends an injection (for example times = 'always'): it matches no later batch.
+function H.cancel_injection(id) return hub('hub.test.inject.cancel', {id = id}) end
 
 -- with_injection runs fn with an injection and checks that exactly n batches consumed it.
 function H.with_injection(spec, n, fn)
