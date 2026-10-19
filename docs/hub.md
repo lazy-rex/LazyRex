@@ -647,8 +647,10 @@ this error and stays connected:
   result or an error, and gives the attempted frame size.
 - The guard does not know the outcome: a result can be a pending or failed operation, and an
   error can follow partial changes. The error does not undo changes and does not tell the final
-  state. Before a caller retries a change, it keeps the operation key and checks the status. The
-  same key replays the same result, and so the same error.
+  state. Before a caller retries a change, it keeps the operation key and checks the status.
+  If the action stored its result under that key and the stored result is still too large, a
+  replay gives the same error. The guard adds no replay of its own: a pending operation's status
+  can change, and some actions (for example `hub.stop`) ignore the key.
 
 The margin: Rex's response to the caller is larger than the reply frame (16 to 32 bytes in the
 lab), and a caller with a 1 MiB limit refuses a larger response with `too_large`. 1 KiB covers
