@@ -1,5 +1,10 @@
 # Decisions
 
+> **Frozen (the maintainer, 2026-10-19).** Decisions now live in the maintainer's knowledge vault.
+> Do not add entries here. Record a new decision as the workspace agent guide says. This file
+> stays as a read-only copy until the vault migration is done. Then it becomes an index of the
+> decision titles. Code and tests cite a decision by its title.
+
 > Note: this document was written during the spike phase. Paths such as `spikes/03-ui-framework/`
 > refer to the original research repository. In this repository, that code is at the root
 > (`hub/`, `view/`, `plugins/`, `tests/`), and each plugin has its own repository.
