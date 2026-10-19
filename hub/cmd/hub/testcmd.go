@@ -635,12 +635,18 @@ func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer) {
 			}
 			plan, _ = strconv.Atoi(m[2])
 		case m[3] != "":
+			if i, _ := strconv.Atoi(m[3]); i != seen+1 {
+				res.problems = append(res.problems, fmt.Sprintf("result %d out of order (expected %d): %s", i, seen+1, line))
+			}
 			seen++
 			res.passed++
 			if o.verbose {
 				fmt.Printf("  ok %s\n", m[4])
 			}
 		case m[5] != "":
+			if i, _ := strconv.Atoi(m[5]); i != seen+1 {
+				res.problems = append(res.problems, fmt.Sprintf("result %d out of order (expected %d): %s", i, seen+1, line))
+			}
 			seen++
 			res.failed++
 			fmt.Printf("  FAIL %s\n", unescapeLRT(m[6]))
@@ -654,6 +660,9 @@ func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer) {
 		case m[9] != "":
 			fmt.Printf("  note %s\n", unescapeLRT(m[9]))
 		}
+	}
+	if err := sc.Err(); err != nil {
+		res.problems = append(res.problems, "reading the runner output: "+err.Error())
 	}
 	switch {
 	case plan < 0:

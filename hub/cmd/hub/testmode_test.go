@@ -22,7 +22,8 @@ func TestParityProblem(t *testing.T) {
 		{"user_only with a reason", actionDesc{Name: "open", UserOnly: "navigation", userSet: true}, ""},
 		{"exempt back", actionDesc{Name: "$back"}, ""},
 		{"exempt cancel", actionDesc{Name: "$cancel"}, ""},
-		{"exempt load", actionDesc{Name: "load"}, ""},
+		{"exempt history load", actionDesc{Name: "load", Field: "load_action"}, ""},
+		{"load outside history paging", actionDesc{Name: "load", Field: "submit_action"}, "names no tool"},
 		{"neither field", actionDesc{Name: "open"}, "names no tool"},
 		{"empty reason", actionDesc{Name: "open", UserOnly: "  ", userSet: true}, "user_only is empty"},
 		{"both fields", actionDesc{Name: "x", Tool: "m.send", toolSet: true, UserOnly: "r", userSet: true}, "both"},
@@ -79,6 +80,8 @@ func TestParseResultLines(t *testing.T) {
 		{"bad counts", "LRT plan 1\nLRT ok 1 a\nLRT done 0 1\n", "the done line says", ""},
 		{"malformed", "LRT plan 1\nLRT okay\nLRT ok 1 a\nLRT done 1 0\n", "malformed", ""},
 		{"after done", "LRT plan 1\nLRT ok 1 a\nLRT done 1 0\nLRT ok 2 b\n", "after the done line", ""},
+		{"index out of order", "LRT plan 2\nLRT ok 2 a\nLRT ok 1 b\nLRT done 2 0\n", "out of order", ""},
+		{"repeated index", "LRT plan 2\nLRT ok 1 a\nLRT fail 1 b # x\nLRT done 1 1\n", "out of order", ""},
 	}
 	for _, c := range cases {
 		o := &testOpts{run: c.run}

@@ -51,3 +51,19 @@ test('an effect that fails is final and reported', function()
   expect(op.effects).to_be('failed')
   expect(op.effects_error).to_match('missing')
 end)
+
+-- Reviewer probe (Codex, reviewer_render.lua): a completed generation keeps its outcome.
+test('a completed failed generation stays failed after later renders', function()
+  local a = agent('alice')
+  local v = user:view('home')
+  a:call('fix.put', {key = 'mode', value = 'fail'})
+  local g = H.hub('hub.test.view.render', {view_id = v.id}).generation
+  local first = wait('failed generation', function()
+    local x = H.hub('hub.test.view.result', {view_id = v.id, generation = g})
+    if x.status ~= 'pending' then return x end
+  end)
+  expect(first.status).to_be('failed')
+  a:call('fix.put', {key = 'mode', value = 'normal'})
+  v:render()
+  expect(H.hub('hub.test.view.result', {view_id = v.id, generation = g}).status).to_be('failed')
+end)

@@ -40,10 +40,10 @@ var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk"
 type testState struct {
 	mu         sync.Mutex
 	injections []*injection
-	batches    map[string]int            // plugin -> hub.store.batch calls, including refused and conflicting ones
-	renderReq  map[string]int64          // view_id -> the latest requested render generation
-	renderOut  map[string]*renderOutcome // view_id -> the outcome of the latest finished render
-	trees      map[string]*renderedTree  // plugin + "\x00" + route -> the descriptors of its last rendered tree
+	batches    map[string]int                      // plugin -> hub.store.batch calls, including refused and conflicting ones
+	renderReq  map[string]int64                    // view_id -> the latest requested render generation
+	renderOut  map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
+	trees      map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
 }
 
 type injection struct {
@@ -73,7 +73,7 @@ type renderedTree struct {
 }
 
 func newTestState() *testState {
-	return &testState{batches: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]*renderOutcome{},
+	return &testState{batches: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
 		trees: map[string]*renderedTree{}}
 }
 
@@ -454,9 +454,9 @@ func (h *Hub) testChunk(ctx context.Context, args map[string]any) (any, error) {
 		view, _ := args["view_id"].(string)
 		gen, _ := args["generation"].(float64)
 		h.test.mu.Lock()
-		out := h.test.renderOut[view]
+		out := h.test.renderOut[view][int64(gen)]
 		h.test.mu.Unlock()
-		if out == nil || out.gen != int64(gen) || !out.ok {
+		if out == nil || !out.ok {
 			return nil, bad("changed: view %q has no successful render of generation %v; render again", view, args["generation"])
 		}
 		text = string(out.tree)
@@ -639,37 +639,54 @@ func (h *Hub) testRenderStart(view string) int64 {
 	return h.test.renderReq[view]
 }
 
+// testRenderDone records a finished render that started when gen was the newest requested
+// generation. It completes every requested generation up to gen that has no outcome yet. A
+// completed generation keeps its outcome: a later render cannot change it.
 func (h *Hub) testRenderDone(view string, gen int64, ok bool, errText string, rev int64, tree json.RawMessage) {
-	if h.test == nil {
+	if h.test == nil || gen < 1 {
 		return
 	}
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
-	// The first render that finishes for a generation decides it: a later render of the same
-	// generation (a store commit renders again) must not hide a failure.
-	if cur := h.test.renderOut[view]; cur != nil && cur.gen >= gen {
-		return
+	outs := h.test.renderOut[view]
+	if outs == nil {
+		outs = map[int64]*renderOutcome{}
+		h.test.renderOut[view] = outs
 	}
-	h.test.renderOut[view] = &renderOutcome{gen: gen, ok: ok, err: errText, rev: rev, tree: tree}
+	out := &renderOutcome{gen: gen, ok: ok, err: errText, rev: rev, tree: tree}
+	for g := gen; g >= 1 && g > gen-renderKeep; g-- {
+		if outs[g] != nil {
+			break // older generations completed before this one
+		}
+		outs[g] = out
+	}
+	for g := range outs {
+		if g <= gen-renderKeep {
+			delete(outs, g) // bounded memory; an older generation then reads as invalid
+		}
+	}
 }
 
-// testRenderResult answers for one requested generation: pending until a render that started after
-// the request finished. A later render answers for an earlier request too.
+// renderKeep is the number of recent generations per view whose outcomes the hub keeps.
+const renderKeep = 32
+
+// testRenderResult answers for one requested generation: pending until a render that started
+// after the request finished, then that render's outcome, unchanged by later renders.
 func (h *Hub) testRenderResult(args map[string]any) (any, error) {
 	view, _ := args["view_id"].(string)
 	g, _ := args["generation"].(float64)
 	gen := int64(g)
 	h.test.mu.Lock()
-	out := h.test.renderOut[view]
+	out := h.test.renderOut[view][gen]
 	req := h.test.renderReq[view]
 	h.test.mu.Unlock()
-	if gen < 1 || gen > req {
-		return nil, bad("invalid: view %q has no requested generation %v", view, args["generation"])
+	if gen < 1 || gen > req || gen <= req-renderKeep {
+		return nil, bad("invalid: view %q has no requested generation %v in the last %d", view, args["generation"], renderKeep)
 	}
-	if out == nil || out.gen < gen {
+	if out == nil {
 		return map[string]any{"status": "pending"}, nil
 	}
-	res := map[string]any{"generation": out.gen}
+	res := map[string]any{"generation": gen, "render_generation": out.gen}
 	if !out.ok {
 		res["status"], res["error"] = "failed", out.err
 		return res, nil
@@ -697,7 +714,7 @@ func (h *Hub) testRecordTree(plugin, route string, tree map[string]any) {
 		h.test.trees[k] = t
 	}
 	for _, d := range descs {
-		id := fmt.Sprintf("%s\x00%s\x00%v%s\x00%v%s", d.Node, d.Name, d.toolSet, d.Tool, d.userSet, d.UserOnly)
+		id := fmt.Sprintf("%s\x00%s\x00%s\x00%v%s\x00%v%s", d.Node, d.Field, d.Name, d.toolSet, d.Tool, d.userSet, d.UserOnly)
 		if !t.seen[id] {
 			t.seen[id] = true
 			t.descs = append(t.descs, d)
@@ -799,14 +816,20 @@ func (h *Hub) testParity(ctx context.Context) (map[string]any, error) {
 // actionDesc is one user action in a view tree or a palette command.
 type actionDesc struct {
 	Node, Name, Tool, UserOnly string
-	toolSet, userSet           bool // the field is present (an empty string is a violation, not an absence)
+	Field                      string // the tree field that holds it: action, submit_action, load_action, ...
+	toolSet, userSet           bool   // the field is present (an empty string is a violation, not an absence)
 }
 
 // parityExemptNames are renderer mechanics with no domain effect: Back, a form's Cancel, and
-// history paging (coordinator, 2026-10-19). This is the only exempt list.
-var parityExemptNames = map[string]bool{"$back": true, "$cancel": true, "load": true}
+// history paging (coordinator, 2026-10-19). The value is the descriptor field that the exemption
+// needs ("" = any field): "load" is exempt only as a history node's load_action. This is the only
+// exempt list.
+var parityExemptNames = map[string]string{"$back": "", "$cancel": "", "load": "load_action"}
 
-func parityExempt(d actionDesc) bool { return parityExemptNames[d.Name] }
+func parityExempt(d actionDesc) bool {
+	field, ok := parityExemptNames[d.Name]
+	return ok && (field == "" || field == d.Field)
+}
 
 // parityProblem returns "" when the action names an exported agent action that the agent face
 // lists, or gives a user_only reason. This proves export and discovery, not that the view action
@@ -858,7 +881,7 @@ func treeActions(tree map[string]any) []actionDesc {
 				child := t[k]
 				if m, ok := child.(map[string]any); ok && actionFields[k] {
 					if name, ok := m["name"].(string); ok {
-						d := actionDesc{Node: node, Name: name}
+						d := actionDesc{Node: node, Name: name, Field: k}
 						if k == "back" && node == "" {
 							d.Node = "$root"
 						}
