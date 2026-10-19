@@ -189,6 +189,7 @@ func testViewMain(argv []string) int {
 	viewID := fs.String("view-id", "", "view ID (from the hub)")
 	fs.Bool("transcript", false, "transcript role (pair.go); the test renderer takes the composer role only")
 	real := fs.Bool("real-server", false, "refused")
+	hold := fs.String("hold", "", "a file; while it names this route, the renderer waits before each subscribe (lab tests)")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -244,35 +245,18 @@ func testViewMain(argv []string) int {
 		mu.Lock()
 		hub, attachment = h, att.Attachment
 		mu.Unlock()
+		holdBeforeSubscribe(*hold, fs.Arg(1))
 		if _, err := c.perform(ctx, h, "hub.view.subscribe", map[string]any{"view_id": *viewID, "attachment": att.Attachment}); err != nil {
 			return fmt.Errorf("subscribe: %w", err)
 		}
 		log.Printf("attached %s %s through %s", att.Plugin, att.Route, h)
 		return nil
 	}
-	if err := attach(); err != nil {
-		log.Print(err)
-		return 1
-	}
 	current := func() (string, string) {
 		mu.Lock()
 		defer mu.Unlock()
 		return hub, attachment
 	}
-	go func() {
-		// A new hub client means a restarted hub. While no hub is connected, the resolve fails and
-		// the watcher waits. A failed attach is tried again.
-		for !c.r.Closed() {
-			time.Sleep(200 * time.Millisecond)
-			h, err := c.resolveClient(ctx, "lazyrex-hub")
-			if was, _ := current(); err != nil || h == was {
-				continue
-			}
-			if err := attach(); err != nil {
-				log.Printf("attach again: %v", err)
-			}
-		}
-	}()
 	exit := make(chan int, 1)
 	go c.serve(func(p perform, args map[string]any) {
 		hub, attachment := current()
@@ -340,6 +324,27 @@ func testViewMain(argv []string) int {
 			c.reply(p.CallID, nil, &rex.RexError{Code: "not_found", Message: "no action " + p.Action})
 		}
 	})
+	// Callbacks are served before the first subscribe: the hub can ask view.release while the
+	// subscribe waits in its queue behind that request (rex-protocol.md, "The hub has one request
+	// queue").
+	if err := attach(); err != nil {
+		log.Print(err)
+		return 1
+	}
+	go func() {
+		// A new hub client means a restarted hub. While no hub is connected, the resolve fails and
+		// the watcher waits. A failed attach is tried again.
+		for !c.r.Closed() {
+			time.Sleep(200 * time.Millisecond)
+			h, err := c.resolveClient(ctx, "lazyrex-hub")
+			if was, _ := current(); err != nil || h == was {
+				continue
+			}
+			if err := attach(); err != nil {
+				log.Printf("attach again: %v", err)
+			}
+		}
+	}()
 	select {
 	case code := <-exit:
 		time.Sleep(200 * time.Millisecond) // let the reply leave
@@ -348,6 +353,21 @@ func testViewMain(argv []string) int {
 		log.Print("rex connection closed")
 		return 1
 	}
+}
+
+// holdBeforeSubscribe waits while the file path names route, at most 20 s. A test uses it to hold a
+// renderer between its attach and its subscribe.
+func holdBeforeSubscribe(path, route string) {
+	if path == "" {
+		return
+	}
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		b, err := os.ReadFile(path)
+		if err != nil || strings.TrimSpace(string(b)) != route {
+			return
+		}
+	}
+	log.Printf("hold: %s still names %s after 20 s; subscribing", path, route)
 }
 
 // closed returns a channel that is closed when the connection ends.

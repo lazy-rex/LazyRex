@@ -598,7 +598,7 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	agents := []manifestAgent{{ID: "user", Name: "User"}}
 	agents = append(agents, o.m.Test.Agents...)
 	view := filepath.Join(l.dir, "testview.sh")
-	script := "#!/bin/sh\nexec " + shellQuote(o.self) + " testview \"$@\"\n"
+	script := "#!/bin/sh\nexec " + shellQuote(o.self) + " testview -hold " + shellQuote(filepath.Join(l.dir, "testview-hold")) + " \"$@\"\n"
 	if err := os.WriteFile(view, []byte(script), 0o700); err != nil {
 		return "", err
 	}

@@ -294,6 +294,10 @@ face lists its exports. It returns the new `hub.test.status` (with `pid`).
 - A test view attaches again after a restart, as the real renderer does: it watches for a new hub
   client every 200 ms, then attaches and subscribes. Wait for `attached` in `H.views()` before a
   view action (restart.lua).
+- A test view serves the hub's callbacks (view.release, view.changed) before its first subscribe,
+  as the real renderer does. The file `LAB/testview-hold` holds every test view of the route that
+  it names between its attach and its subscribe (at most 20 s), so a test can request a release
+  in that state.
 
 ### Faults
 
