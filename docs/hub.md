@@ -643,10 +643,12 @@ and on the agent face (`agentAnswer`). The limit is `max_message_bytes` minus 1 
 bytes). A welcome without limits gets the reference value, 64 KiB. Over the limit, the hub sends
 this error and stays connected:
 
-- Code `reply_too_large`. The message names the action and the attempted frame size.
-- For a result: "The action completed and its changes stay." A caller must not repeat a change
-  with a new operation key. The same key replays the same result, and so the same error.
-- For an error: "The action failed."
+- Code `reply_too_large`. The message names the action, says whether its handler returned a
+  result or an error, and gives the attempted frame size.
+- The guard does not know the outcome: a result can be a pending or failed operation, and an
+  error can follow partial changes. The error does not undo changes and does not tell the final
+  state. Before a caller retries a change, it keeps the operation key and checks the status. The
+  same key replays the same result, and so the same error.
 
 The margin: Rex's response to the caller is larger than the reply frame (16 to 32 bytes in the
 lab), and a caller with a 1 MiB limit refuses a larger response with `too_large`. 1 KiB covers

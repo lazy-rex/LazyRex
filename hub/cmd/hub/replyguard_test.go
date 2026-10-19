@@ -75,11 +75,12 @@ func TestGuardReplyBoundary(t *testing.T) {
 			if !strings.Contains(got.Error.Message, "("+strconv.Itoa(limit+1)+" bytes, limit 100000)") {
 				t.Fatalf("no attempted size: %s", got.Error.Message)
 			}
-			want := "The action completed"
+			want := "returned a result"
 			if failed {
-				want = "The action failed"
+				want = "returned an error"
 			}
-			if !strings.Contains(got.Error.Message, want) || !strings.Contains(got.Error.Message, "too large to send") {
+			if !strings.Contains(got.Error.Message, want) || !strings.Contains(got.Error.Message, "too large to send") ||
+				!strings.Contains(got.Error.Message, "does not undo changes") || !strings.Contains(got.Error.Message, "keep its operation key") {
 				t.Fatalf("%q failed=%v: %s", unit, failed, got.Error.Message)
 			}
 		}

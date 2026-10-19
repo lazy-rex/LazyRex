@@ -37,8 +37,9 @@ func replyLimit(r *rex.Rex) int {
 
 // guardReply encodes reply ({call_id, result} or {call_id, error}). When its client.reply frame
 // is over limit, it returns the encoded reply_too_large error instead, with the attempted size.
-// The action ran: the message says so, so a caller does not repeat a completed change with a
-// new key.
+// The guard knows only that the handler returned a result or an error. A result can be an
+// operation that is pending or failed, and an error can follow partial changes. So the message
+// states no outcome; it tells the caller to keep the operation key and check the status.
 func guardReply(action string, reply map[string]any, limit int) (json.RawMessage, bool) {
 	raw, err := json.Marshal(reply)
 	if err != nil {
@@ -50,12 +51,12 @@ func guardReply(action string, reply map[string]any, limit int) (json.RawMessage
 	if n <= limit {
 		return raw, true
 	}
-	var msg string
+	what := "a result"
 	if _, failed := reply["error"]; failed {
-		msg = fmt.Sprintf("the error of %s was too large to send (%d bytes, limit %d). The action failed.", shortName(action), n, limit)
-	} else {
-		msg = fmt.Sprintf("the result of %s was too large to send (%d bytes, limit %d). The action completed and its changes stay. Do not repeat a change with a new key; ask for less at a time.", shortName(action), n, limit)
+		what = "an error"
 	}
+	msg := fmt.Sprintf("the handler of %s returned %s that was too large to send (%d bytes, limit %d). This error does not undo changes and does not tell the operation's final state. Before you retry a change, keep its operation key and check its status; ask for less at a time.",
+		shortName(action), what, n, limit)
 	raw, _ = json.Marshal(map[string]any{"call_id": reply["call_id"], "error": &rex.RexError{Code: "reply_too_large", Message: msg}})
 	return raw, false
 }

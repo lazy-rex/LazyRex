@@ -125,7 +125,7 @@ local function domain(action, args, pid)
     if err then
       local text = type(err) == 'table' and (err.message or '') or tostring(err)
       local code = type(err) == 'table' and err.code or text:match('code=([%w_%-%.]+)%)%s*$')
-      return {arrived = false, code = code, message_bytes = #text, message = text:sub(1, 300)}
+      return {arrived = false, code = code, message_bytes = #text, message = text:sub(1, 600)}
     end
     local r = res and res.result or {}
     return {arrived = true, lua_bytes = #rex.json.encode(r), envelope_bytes = #rex.json.encode(res)}
