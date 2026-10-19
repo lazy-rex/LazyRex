@@ -497,6 +497,11 @@ function View:send(node, text, draft_revision, key)
   local _, k = self:admit('send', {node_id = node, text = text, draft_revision = draft_revision, operation_key = key})
   return self:settle(k)
 end
+-- seen reports that the user looks at this view, as the renderer does on focus (hub.view.seen).
+-- The hub sends view.seen to the plugin later, from its view worker. Wait for the result.
+function View:seen(reason)
+  return perform(self.client, 'testview.seen', {reason = reason or 'focus'})
+end
 function View:effect_retry(key)
   perform(self.client, 'testview.effect_retry', {operation_key = key})
   return self:settle(key)

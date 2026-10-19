@@ -30,6 +30,7 @@ local actions = {
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
   {name = 'view.action', kind = 'client', title = 'Action', args = obj},
   {name = 'view.open', kind = 'client', title = 'Open a lazy tab', args = obj},
+  {name = 'view.seen', kind = 'client', title = 'The user looks at a view', args = obj},
   {name = 'fix.put', kind = 'client', title = 'Put a record', description = 'Write {key, value}.',
     args = {type = 'object', properties = {key = {type = 'string'}, value = {}}, required = {'key', 'value'}}},
   {name = 'fix.get', kind = 'client', title = 'Get a record', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
@@ -129,6 +130,7 @@ end
 
 local function view(action, args)
   if action == 'view.open' then return view_open(args) end
+  if action == 'view.seen' then put('seen', {route = args.route, reason = args.reason}); return {} end
   if action == 'view.render' then
     if args.route == '/home' then return {tree = home_tree()} end
     if args.route == '/forms/fix' then return {tree = form_tree()} end

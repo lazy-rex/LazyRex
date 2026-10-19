@@ -129,6 +129,7 @@ operations, effects and retries.
 | `v:action(node, action, input, key)` | A view action. Returns the final operation: `{status, result or error, effects, effects_error}`. |
 | `v:draft(node, text, base_revision, key)`, `v:send(node, text, draft_revision, key)` | Draft save and send. |
 | `v:effect_retry(key)`, `v:history(before)` | Retry failed effects; read an older history page. |
+| `v:seen(reason)` | Reports that the user looks at the view (`hub.view.seen`, default reason `focus`), as the renderer does. The plugin gets `view.seen` later. In the lab no app is connected, so a navigation alone does not count as seen. |
 
 An operation is final when its status is not `pending` and its effects are not `pending`. The
 helpers read the durable record from the hub, so a `close_form` effect that closes the renderer

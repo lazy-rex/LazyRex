@@ -203,7 +203,7 @@ func testViewMain(argv []string) int {
 		actions = append(actions, clientAction(n, n, nil))
 	}
 	for _, n := range []string{"testview.status", "testview.get", "testview.action", "testview.draft", "testview.send", "testview.operation",
-		"testview.effect_retry", "testview.history", "testview.close"} {
+		"testview.effect_retry", "testview.history", "testview.close", "testview.seen"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testview:"+*viewID, actions)
@@ -304,6 +304,8 @@ func testViewMain(argv []string) int {
 			call("hub.view.history")
 		case "testview.close":
 			call("hub.view.close")
+		case "testview.seen": // the renderer reports focus or new content (hub.view.seen {reason})
+			call("hub.view.seen")
 		default:
 			c.reply(p.CallID, nil, &rex.RexError{Code: "not_found", Message: "no action " + p.Action})
 		}

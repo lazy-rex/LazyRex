@@ -67,3 +67,14 @@ test('a completed failed generation stays failed after later renders', function(
   v:render()
   expect(H.hub('hub.test.view.result', {view_id = v.id, generation = g}).status).to_be('failed')
 end)
+
+test('seen reaches the plugin as view.seen through the hub', function()
+  local v = user:open('home')
+  v:render()
+  v:seen()
+  local r = wait('view.seen', function()
+    local x = store('seen')
+    if x.value then return x.value end
+  end)
+  expect(r).to_equal({route = '/home', reason = 'focus'})
+end)
