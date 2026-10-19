@@ -28,7 +28,7 @@ Superlogical is building iOS and web apps for Rex. LazyRex uses their apps and d
 - The hub is a state machine that decides what the user sees. It changes the layout with server methods (`detach_block`, `move_block`, `focus_block`, layers, zoom) and the app's view with app actions (`session.select`, `client.tab.goto`). Both verified on the real machine (see `rex-protocol.md`, "Driving the Rex app" (and the Rex agent guide, `rex __internal skill`)). This needs Remote Control on in the app, which the maintainer turned on.
 - Each plugin gets a Rex session as its home. For messaging: the hub screen has "Messages"; it opens the messaging session; threads are views there; "back" returns to the hub. Cost: Rex has no session hide, so plugin sessions stay in the sidebar. `session.move` can group them.
 - The user talks to agents through threads, not by typing in agent panes. This also removes the problem of a notice submitting the user's unfinished text.
-- Proposed (Claude): plugins declare views as data (lists, threads, composers, forms), and one Go renderer draws them. Lua plugins then get a UI with no TUI code, and every plugin looks the same. A plugin that needs a custom screen ships its own program in a pane. This is the pattern of `botster-tui-kit` (a Ratatui renderer for a declarative `UiNode` tree); its Rust code is not reused.
+- Proposed (Claude): plugins declare views as data (lists, threads, composers, forms), and one Go renderer draws them. Lua plugins then get a UI with no TUI code, and every plugin looks the same. A plugin that needs a custom screen ships its own program in a pane.
 - Proposed library: Bubble Tea v2 (`charm.land/bubbletea/v2` v2.1.0), Lip Gloss v2 (v2.0.6), Bubbles v2 (v2.2.1), Huh v2 (v2.0.3) for forms. Versions from the Go module proxy on 2026-10-16. Alternatives: tview v0.42.0 (dated look, last release 2025-08), tcell v3 (too low level alone).
 - A message from the user (`user`, shown as "User") has the user's authority. A message from a peer agent does not. `AGENTS.md` must say this before the user messages agents through threads.
 - The maintainer's refinement (2026-10-16): the hub's home shows widgets that plugins declare. Entering a plugin opens its session: one tab for the plugin's home page and one tab per thread. Every terminal opens at a route. Tabs follow the declared set and snap back. All apps follow navigation. Enter sends; Shift+Enter adds a new line. Design: `architecture.md`, "UI framework".
@@ -101,11 +101,11 @@ The maintainer: use Rex program status (https://www.superlogical.com/rex/docs/bu
 
 Each plugin runs in its own Rex pane, in a **plugin host** process. Proposed by Claude and Codex, 2026-10-15. Not tested.
 
-**Partly superseded (same day):** The maintainer dropped all Botster compatibility (see below). The Rust/mlua 5.4 host existed only for that requirement and is no longer proposed. The points about storage ownership, one writer, the RPC boundary and the gate still apply to a plugin host in any language.
+**Partly superseded (same day):** The Rust/mlua 5.4 host is no longer proposed. The points about storage ownership, one writer, the RPC boundary and the gate still apply to a plugin host in any language.
 
 - The plugin host owns its plugin's database (SQLite). Each plugin's data is scoped to that plugin. So database calls stay local and atomic batches stay local: the host never waits on a hub RPC for a database call. This does not make a handler invocation exactly-once. A plugin can commit locally, then crash or disconnect before it returns the result, so the caller gets "outcome unknown" and must reconcile durable state before it retries (see `architecture.md`).
 - Calls that need the hub (events, `entity_publish`, coordination, session spawn, config) go over one full-duplex RPC socket. Neither side may block its read loop while it waits for a reply.
-- Each plugin store has exactly one writer: its plugin host. The host keeps atomic batches and revisions (a lesson from botster-hub).
+- Each plugin store has exactly one writer: its plugin host. The host keeps atomic batches and revisions.
 - (Superseded) This decouples the hub language from the Lua runtime. A Go hub plus a Rust plugin host is a sound process boundary.
 - Gate: one real LazyRex plugin must pass through the new socket protocol, and survive a hub restart during a mutation or spawn without duplicate effects, before this is selected. The hub language stays provisional until then.
 - Still open: what a host may do while the hub is disconnected (Codex's question). Claude proposes that the host keeps writing its own store, because it is the only writer.
@@ -134,7 +134,7 @@ Rex is Go. LazyRex does not need a systems language, because Rex does the PTY an
 |---|---|---|
 | **Go** (Claude's recommendation) | Same language as Rex (read and contribute upstream when it is open source). pion/webrtc is a mature WebRTC stack. Official MCP Go SDK. One static binary for hub, plugin host and MCP shim. gopher-lua is the same Lua that Rex uses, so plugins use Rex's Lua dialect | Needs a compile step |
 | TypeScript (Bun) | Fastest to write. Official MCP TS SDK. Shares code with the web client. Built-in SQLite. `bun build --compile` makes one executable | WebRTC outside the browser: library choice not evaluated. Lua embedding: not evaluated (wasmoon is one candidate; a separate plugin process could also use another runtime) |
-| Rust | Team experience from botster-hub (mlua, rmcp, WebRTC) | The slow, tedious language that we want to leave. No code reuse is planned |
+| Rust | Team experience (mlua, rmcp, WebRTC) | The slow, tedious language that we want to leave. No code reuse is planned |
 | Lua as the host | Same language as plugins | Needs a host runtime anyway (for example luvit). WebRTC and MCP libraries not evaluated |
 | Lua in `rex do` | No compile step. Most Rex native. Rex carries RPC with attested callers (verified in a lab) | No sockets, JSON or SQLite built in. Handlers run one at a time. See "Option under study" above |
 | Ruby with Spinel | The maintainer's language | Spinel (Matz's AOT Ruby-to-C compiler, RubyKaigi 2026) is described by its author as experimental with many limitations, and supports a subset of Ruby. Its MCP, WebRTC and socket libraries were not evaluated |
@@ -142,12 +142,6 @@ Rex is Go. LazyRex does not need a systems language, because Rex does the PTY an
 Performance is not a criterion: the hub moves messages between sockets, JSON and SQLite. The criteria are Rex-nativeness, one executable, and libraries (MCP, WebRTC, SQLite, Lua).
 
 Plugins stay in Lua whatever the host language is.
-
-## 2026-10-15: No Botster compatibility of any kind
-
-The maintainer: LazyRex starts from first principles as a Rex platform. It needs **no** Botster compatibility: not the plugin API, not data formats, not protocols. Botster was learning; LazyRex takes the lessons and experience, not the interfaces.
-
-Background, kept for the record (it no longer drives any decision): first the maintainer dropped "run Botster plugins unchanged" and allowed adaptation. Then the maintainer dropped adaptation as a goal too. A grep-based scan of all Botster Lua (about 15,900 lines without comment lines) found 4 `utf8.*` calls, 4 `require` calls and no `goto`, integer division, bitwise operators or other Lua 5.3+ syntax. A grep is a heuristic, not a parse. Lua 5.4 also separates integers from floats, which 5.1 does not; that can change JSON output and `string.format`. That scan only showed that gopher-lua (Lua 5.1, the Lua that Rex uses) would not have blocked Botster-style code. The Rust plugin host proposal served the compatibility requirement, so it no longer drives the architecture.
 
 ## 2026-10-15: The first spike is hub messaging through a plugin
 
@@ -182,7 +176,7 @@ The maintainer does not want LazyRex to require a tailnet. Rex has no other auth
 
 ## Proposed: a paired gateway for remote browsers
 
-The maintainer asked for pairing with a key exchange in front of Rex (a lesson from Botster). Rex has no auth hook. A gateway can do the pairing instead:
+The maintainer asked for pairing with a key exchange in front of Rex. Rex has no auth hook. A gateway can do the pairing instead:
 
 - Rex listens only on its Unix socket. No TCP or tailnet listener.
 - A LazyRex gateway pairs with the browser (key exchange, for example over a WebRTC data channel). After pairing, it carries separate control and data connections from the browser to the Rex socket, without parsing them.
@@ -196,7 +190,7 @@ The maintainer asked for pairing with a key exchange in front of Rex (a lesson f
 A lab test (Chrome, Rex 0.0.1792088193-g7a93ec) showed that a page on an allowed origin (`--websocket-origin-pattern`) is a full Rex client. It gets its own data tickets and the GHOSTSNP snapshot, with no relay. Rex's hosted web client (`rex.superlogical.com`) is allowed browser WebSockets by the app, which suggests the same model; its behavior is not observed.
 
 - For: the hub leaves the byte path, spike 1b needs no relay, and hub restarts do not interrupt terminals in the browser.
-- Against: remote use needs a network path from the browser to Rex. The tailnet (`--tailscale`) is one option. It is not a protocol requirement. The paired gateway above is another. Botster's WebRTC pairing needed no direct browser-to-Rex listener; WebRTC still needs its own network path.
+- Against: remote use needs a network path from the browser to Rex. The tailnet (`--tailscale`) is one option. It is not a protocol requirement. The paired gateway above is another.
 - Verified only on anonymous loopback TCP in a lab. Authenticated tailnet access is untested.
 - Still open: how the browser reaches the hub's own API. Needs the maintainer's approval.
 

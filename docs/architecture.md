@@ -101,7 +101,7 @@ Proposed (2026-10-15), after a lab test in Chrome. See "Browser access" in `rex-
 Two access options. Neither is chosen.
 
 1. **Direct network access.** The browser opens its own admitted Rex connection and gets its own tickets. Verified only on anonymous loopback TCP. Remote use needs a reachable, authenticated transport, such as a tailnet. Authenticated remote access is untested.
-2. **Paired gateway.** A LazyRex gateway authenticates the browser (pairing with a key exchange, a lesson from Botster), then carries separate control and data connections to the Rex Unix socket. Rex sees the gateway's Unix-peer principal, not a browser identity. Rex has no per-method authorization, so a paired browser gets the complete Rex API. A byte-forwarding gateway cannot give the browser a separate identity or method limits inside Rex without more work. If WebRTC carries the traffic, the logical channels and the close and error mapping must be defined. Untested.
+2. **Paired gateway.** A LazyRex gateway authenticates the browser (pairing with a key exchange), then carries separate control and data connections to the Rex Unix socket. Rex sees the gateway's Unix-peer principal, not a browser identity. Rex has no per-method authorization, so a paired browser gets the complete Rex API. A byte-forwarding gateway cannot give the browser a separate identity or method limits inside Rex without more work. If WebRTC carries the traffic, the logical channels and the close and error mapping must be defined. Untested.
 
 In both options:
 
@@ -171,12 +171,11 @@ The maintainer's direction, with design review by Claude and Codex. Not built. S
 
 The messaging home and two thread tabs. Checks: duplicate open, native close, renderer crash, hub restart during a spawn and during a send, draft restore, continuous layout drift, two apps with different sizes.
 
-## Relation to Botster
+## Dependencies
 
-LazyRex is a new Rex platform, designed from first principles. It has **no Botster compatibility requirement of any kind**: no plugin API, data format, protocol or code. Botster is a source of lessons only.
+LazyRex is a new Rex platform, designed from first principles.
 
 - **Used as a library:** restty (`~/Projects/restty`) for the browser terminal. Spike 0 shows that it imports Rex snapshots.
-- **Lessons only:** the Botster plugin API (`botster-plugin-api.md`), botster-web's UI and WebRTC pairing, and botster-hub's recovery experience. LazyRex may borrow an idea, but it designs each API for Rex.
 
 ## Rex ownership audit — 2026-10-16
 
