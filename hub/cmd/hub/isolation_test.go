@@ -58,14 +58,18 @@ func TestCheckPath(t *testing.T) {
 		}
 	}
 	bad := map[string]string{
-		filepath.Join(plugin, "escape", "f"):  "outside",  // a symlink escape
-		plugin + "/escape/../x":               "..",       // a symlink followed by ..
-		lab + "/../outside":                   "..",       // traversal
-		filepath.Join(base, "lab-other", "f"): "outside",  // a sibling with the same prefix
-		"cache/../../outside":                 "absolute", // relative traversal
-		"relative/file":                       "absolute",
-		"~/x":                                 "~",
-		"/":                                   "outside",
+		filepath.Join(plugin, "escape", "f"):    "outside",  // a symlink escape
+		plugin + "/escape/../x":                 "..",       // a symlink followed by ..
+		lab + "/../outside":                     "..",       // traversal
+		filepath.Join(base, "lab-other", "f"):   "outside",  // a sibling with the same prefix
+		"cache/../../outside":                   "absolute", // relative traversal
+		"relative/file":                         "absolute",
+		"~/x":                                   "~",
+		"/":                                     "outside",
+		filepath.Join(lab, "dangling", "data"):  "does not resolve", // a dangling symlink out of the lab
+		filepath.Join(lab, "dangling"):          "does not resolve",
+		filepath.Join(lab, "loop", "x"):         "does not resolve",
+		filepath.Join(lab, "locked", "in", "f"): "does not resolve", // a permission error
 	}
 	for p, want := range bad {
 		if err := checkPath(p, roots); err == nil || !strings.Contains(err.Error(), want) {
