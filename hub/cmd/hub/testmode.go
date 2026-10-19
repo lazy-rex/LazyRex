@@ -225,19 +225,19 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		}
 		return boundReply(map[string]any{"tabs": list})
 	case "hub.test.views":
-		rows, err := h.db.QueryContext(ctx, `SELECT view_id, tab, route, attachment != '', context FROM views WHERE plugin = ? AND status = 'open' ORDER BY rowid`, plugin)
+		rows, err := h.db.QueryContext(ctx, `SELECT view_id, tab, route, attachment != '', context, session_id, window_id, block_id FROM views WHERE plugin = ? AND status = 'open' ORDER BY rowid`, plugin)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
 		list := []any{}
 		for rows.Next() {
-			var id, tab, route, vctx string
+			var id, tab, route, vctx, sess, win, block string
 			var attached bool
-			if err := rows.Scan(&id, &tab, &route, &attached, &vctx); err != nil {
+			if err := rows.Scan(&id, &tab, &route, &attached, &vctx, &sess, &win, &block); err != nil {
 				return nil, err
 			}
-			e := map[string]any{"view_id": id, "tab": tab, "route": route, "attached": attached}
+			e := map[string]any{"view_id": id, "tab": tab, "route": route, "attached": attached, "session_id": sess, "window_id": win, "block_id": block}
 			if vctx != "" {
 				e["context"] = json.RawMessage(vctx)
 			}

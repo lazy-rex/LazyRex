@@ -343,10 +343,10 @@ function H.agent(id, opts)
   local cmd = {A.hub_bin, 'testagent', '-id', id}
   if join then cmd[#cmd + 1] = '-join'; cmd[#cmd + 1] = join end
   local sess = opts.session or A.tests_session
-  local _, err = rex.call('session.new_window', {session_id = sess, window_label = opts.title or id,
+  local win, err = rex.call('session.new_window', {session_id = sess, window_label = opts.title or id,
     layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = cmd}}}})
   if err then error(err_of(err), 0) end
-  local a = setmetatable({id = id, label = 'lazyrex-testagent:' .. id, session = sess}, Agent)
+  local a = setmetatable({id = id, label = 'lazyrex-testagent:' .. id, session = sess, window = win.window_id}, Agent)
   a.client = wait('agent ' .. id .. ' to start', function() return resolve(a.label) end, 15)
   local st = wait('agent ' .. id .. ' to join', function()
     local s = perform(a.client, 'agent.status', {})
@@ -357,6 +357,13 @@ function H.agent(id, opts)
   a.pid = st.pid
   agents[id] = a
   return a
+end
+
+-- set_label renames the agent's tab, as the user does in Rex. The hub names an identity by its
+-- tab label. An empty label gives the window its generated default label.
+function Agent:set_label(label)
+  local _, err = rex.call('session.set_window_label', {session_id = self.session, window_id = self.window, label = label})
+  if err then error(err_of(err), 0) end
 end
 
 -- call runs an exported plugin action through the agent face: the MCP path.
@@ -386,7 +393,7 @@ H.user = setmetatable({}, User)
 
 local function view_of(info)
   local v = setmetatable({id = info.view_id, route = info.route, tab = info.tab, plugin = info.plugin or A.plugin,
-    label = 'lazyrex-testview:' .. info.view_id, context = info.context}, View)
+    label = 'lazyrex-testview:' .. info.view_id, context = info.context, session = info.session_id, window = info.window_id, block = info.block_id}, View)
   v.client = wait('the renderer of ' .. v.route .. ' to attach', function()
     for _, w in ipairs(H.views(v.plugin)) do
       if w.view_id == v.id and w.attached then return resolve(v.label) end
@@ -416,11 +423,17 @@ function User:view(key, plugin)
 end
 
 -- command runs a palette command (plugin.id) from a pane, as the Rex palette does.
-function User:command(id, from_block, plugin)
+-- from: a View (the palette opens in that view's pane, so the view is the source), or a block
+-- in the tests session (default: its first block).
+function User:command(id, from, plugin)
   plugin = plugin or A.plugin
-  local blocks = rex.call('session.list_blocks', {session_id = A.tests_session})
-  from_block = from_block or (blocks and blocks.blocks and blocks.blocks[1] and blocks.blocks[1].block_id)
-  return hub('hub.palette.run', {command = plugin .. '.' .. id, ctx = {client_id = self_id, session_id = A.tests_session, block_id = from_block}})
+  local session, block = A.tests_session, from
+  if type(from) == 'table' then session, block = from.session, from.block end
+  if not block then
+    local blocks = rex.call('session.list_blocks', {session_id = A.tests_session})
+    block = blocks and blocks.blocks and blocks.blocks[1] and blocks.blocks[1].block_id
+  end
+  return hub('hub.palette.run', {command = plugin .. '.' .. id, ctx = {client_id = self_id, session_id = session, block_id = block}})
 end
 
 -- plugin_view calls the plugin's view.* action from this runner, which is not the hub: for refusals.
@@ -455,6 +468,12 @@ function View:try_render()
 end
 
 function View:get() return perform(self.client, 'testview.get', {}) end
+
+-- rename_tab renames the view's Rex tab, as the user does. The hub then sends view.rename.
+function View:rename_tab(label)
+  local _, err = rex.call('session.set_window_label', {session_id = self.session, window_id = self.window, label = label})
+  if err then error(err_of(err), 0) end
+end
 function View:status() return perform(self.client, 'testview.status', {}) end
 
 local op_seq = 0

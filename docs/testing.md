@@ -107,6 +107,7 @@ Methods:
 | `a:call_raw(action, json)` | `call` with the arguments as JSON text, for an empty array: Rex Lua encodes `{}` as an object. |
 | `a:direct(action, args)` | To the plugin client itself. |
 | `a:hub(action, args)` | To the hub. |
+| `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
 | `a:report{kind, conversation_id, source}` | `hub.identity.report` from a new process in the pane, like an agent hook. |
 
 A call from the runner itself (`H.perform(client, action, args)`) comes from outside every pane.
@@ -122,13 +123,15 @@ operations, effects and retries.
 | --- | --- |
 | `user:open(tab)` | `hub.ui.navigate` to a tab, then waits for its view. |
 | `user:view(tab or route)` | An open view (for example a form that an effect opened). |
-| `user:command(id)` | Runs a palette command, as the Rex palette does (`hub.palette.run`). |
+| `user:command(id, from)` | Runs a palette command, as the Rex palette does (`hub.palette.run`). `from` is a View: the palette opens in its pane, so the view is the source. |
 | `user:plugin_view(action, args)` | Calls the plugin's `view.*` from the runner, which is not the hub: for refusals. |
 | `v:render()` | Asks for a new render and returns the tree. Fails if that render failed, even when the hub kept an older tree. |
+| `v:get()` | The snapshot that the renderer gets (`hub.view.get`). The hub moves a tree's `status` here. |
 | `v:try_render()` | `{status = 'ok', tree}` or `{status = 'failed', error}`. |
 | `v:action(node, action, input, key)` | A view action. Returns the final operation: `{status, result or error, effects, effects_error}`. |
 | `v:draft(node, text, base_revision, key)`, `v:send(node, text, draft_revision, key)` | Draft save and send. |
 | `v:effect_retry(key)`, `v:history(before)` | Retry failed effects; read an older history page. |
+| `v:rename_tab(label)` | Renames the view's Rex tab, as the user does. The hub sends `view.rename`. |
 | `v:seen(reason)` | Reports that the user looks at the view (`hub.view.seen`, default reason `focus`), as the renderer does. The plugin gets `view.seen` later. In the lab no app is connected, so a navigation alone does not count as seen. |
 
 An operation is final when its status is not `pending` and its effects are not `pending`. The
