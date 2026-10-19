@@ -62,10 +62,12 @@ func (h *Hub) testApp(ctx context.Context, args map[string]any) (any, error) {
 		h.test.apps[name] = app
 		h.test.mu.Unlock()
 	}
-	fail, _ := args["fail"].(string)
-	app.mu.Lock()
-	app.fail = fail
-	app.mu.Unlock()
+	// Without fail, the answer does not change (App:show only attaches).
+	if fail, ok := args["fail"].(string); ok {
+		app.mu.Lock()
+		app.fail = fail
+		app.mu.Unlock()
+	}
 	list, _ := args["sessions"].([]any)
 	for _, s := range list {
 		id, _ := s.(string)
