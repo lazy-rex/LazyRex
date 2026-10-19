@@ -97,7 +97,7 @@ and workers are Rex blocks, so they inherit the server environment) a private en
 | Variable | Value |
 | --- | --- |
 | `PATH` | Copied from the harness. |
-| `HOME` | `LAB/home`. It is also the working directory of every lab process. |
+| `HOME` | `LAB/home`. It is also the working directory of the server, the hub, the runner and the plugins, and the default `cwd` of a worker (a profile or a spawn can set another `cwd` inside the roots). |
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | `LAB/home/.config`, `LAB/home/.local/share`, `LAB/home/.local/state`, `LAB/home/.cache` |
 | `TMPDIR` | `LAB/tmp/` |
 | `REX_SERVER` | The lab server. |
@@ -201,7 +201,7 @@ does not hide the result.
 | `store(key, plugin?)` | `{value, rev}`; an absent record is `{rev = '0'}`. |
 | `notice(agent)` | `{found, pending, intent_rev}` |
 | `batches()` | The number of `hub.store.batch` calls of the plugin. |
-| `invalidates(plugin?)` | The number of `hub.ui.invalidate` calls of the plugin. A count that stays the same while nothing changes proves that no idle render loop runs. |
+| `invalidates(plugin?)` | The number of `hub.ui.invalidate` calls of the plugin. A count that stays the same over an interval proves only that the plugin made no `hub.ui.invalidate` call in that interval. It does not prove that no other idle render loop runs. |
 | `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
 | `H.args.lab` | The lab dir. |
 | `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |

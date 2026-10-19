@@ -266,8 +266,8 @@ end
 function H.notice(agent, plugin) return hub('hub.test.notice', {plugin = plugin or A.plugin, agent = agent}) end
 function H.batches(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).batches end
 
--- invalidates counts the plugin's hub.ui.invalidate calls (for example to prove that no idle
--- render loop runs: the count stays the same while nothing changes).
+-- invalidates counts the plugin's hub.ui.invalidate calls. A count that stays the same over an
+-- interval proves only that the plugin made no such call in that interval.
 function H.invalidates(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).invalidates end
 function H.advance_rev(at) return hub('hub.test.rev', {at = tostring(at)}).rev end
 
