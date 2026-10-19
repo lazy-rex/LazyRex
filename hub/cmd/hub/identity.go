@@ -742,3 +742,123 @@ func (h *Hub) resolveAgent(args map[string]any) (any, error) {
 	}
 	return nil, bad("unknown: no agent matches %q", to)
 }
+
+// aliasSet is every ID of one agent: its identity and each legacy ID that the identity took over
+// (identity_aliases, read now). Spawn rows keep the ID that made them; replay and stop accept any
+// ID of the set (the coordinator, 2026-10-19), so they follow a migration, a resume back and forth
+// between panes, and aliases from before this rule, with no row rewrite.
+func (h *Hub) aliasSet(ctx context.Context, id string) ([]string, error) {
+	return aliasSetIn(ctx, h.db, id)
+}
+
+// dbQuerier is *sql.DB or *sql.Tx.
+type dbQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func aliasSetIn(ctx context.Context, q dbQuerier, id string) ([]string, error) {
+	if id == "" || id == "user" {
+		return []string{id}, nil
+	}
+	root := id
+	switch err := q.QueryRowContext(ctx, `SELECT identity FROM identity_aliases WHERE legacy = ?`, id).Scan(&root); {
+	case errors.Is(err, sql.ErrNoRows):
+		root = id
+	case err != nil:
+		return nil, err
+	}
+	set := []string{root}
+	rows, err := q.QueryContext(ctx, `SELECT legacy FROM identity_aliases WHERE identity = ? ORDER BY legacy`, root)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			return nil, err
+		}
+		set = append(set, l)
+	}
+	return set, rows.Err()
+}
+
+// sameAgent reports whether a and b are IDs of one agent.
+func (h *Hub) sameAgent(ctx context.Context, a, b string) (bool, error) {
+	if a == b {
+		return true, nil
+	}
+	set, err := h.aliasSet(ctx, a)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range set {
+		if id == b {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// callerKeyRow finds the row of key made by any ID of caller's agent: the query selects the
+// columns in cols from table. Two rows (two IDs of one agent used the key before they became
+// one) are refused: a replay cannot tell which request it repeats.
+func (h *Hub) callerKeyRow(ctx context.Context, table, cols, caller, key string) (*sql.Row, error) {
+	set, err := h.aliasSet(ctx, caller)
+	if err != nil {
+		return nil, err
+	}
+	in := strings.TrimSuffix(strings.Repeat("?,", len(set)), ",")
+	params := []any{key}
+	for _, id := range set {
+		params = append(params, id)
+	}
+	var owners []string
+	rows, err := h.db.QueryContext(ctx, `SELECT caller FROM `+table+` WHERE key = ? AND caller IN (`+in+`) ORDER BY caller`, params...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		owners = append(owners, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(owners) > 1 {
+		return nil, refuse("conflict", "key %q was used by %s before they became one identity; use a new key", key, strings.Join(owners, " and by "))
+	}
+	return h.db.QueryRowContext(ctx, `SELECT `+cols+` FROM `+table+` WHERE key = ? AND caller IN (`+in+`)`, params...), nil
+}
+
+// errKeyTaken: another ID of the caller's agent admitted the key after this call's lookup.
+var errKeyTaken = refuse("conflict", "another ID of this agent admitted the same key at the same time; retry with the same key")
+
+// keyTakenIn checks, inside the admission transaction, that no ID of caller's agent has a row
+// for key. The hub's database has one connection, so the check and the insert are atomic with
+// respect to every other admission and every alias write.
+func keyTakenIn(ctx context.Context, tx *sql.Tx, table, caller, key string) error {
+	set, err := aliasSetIn(ctx, tx, caller)
+	if err != nil {
+		return err
+	}
+	in := strings.TrimSuffix(strings.Repeat("?,", len(set)), ",")
+	params := []any{key}
+	for _, id := range set {
+		params = append(params, id)
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE key = ? AND caller IN (`+in+`)`, params...).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return errKeyTaken
+	}
+	return nil
+}

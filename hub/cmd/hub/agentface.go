@@ -110,7 +110,7 @@ func (h *Hub) agentKeymap(ctx context.Context) error {
 	var actions []map[string]any
 	for _, a := range hubToolActions {
 		if agentHubActions[a["name"].(string)] {
-			actions = append(actions, a)
+			actions = append(actions, agentFaceAction(a))
 		}
 	}
 	actions = append(actions, agentListActions...)
@@ -224,10 +224,70 @@ func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
 	var res struct {
 		Result json.RawMessage `json:"result"`
 	}
+	h.beginForward(client, p.Requester.Principal.PID)
+	defer h.endForward(client, p.Requester.Principal.PID)
 	err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "hub.forward",
 		"args": map[string]any{"action": p.Action, "args": args, "requester_pid": p.Requester.Principal.PID}, "timeout_ms": 10000}, &res)
 	if err != nil {
 		return nil, err
 	}
 	return res.Result, nil
+}
+
+// A plugin that handles a forwarded agent call can act for that agent with on_behalf = the
+// forward's requester_pid (the coordinator, 2026-10-19). The hub accepts it only while that
+// forward to that plugin client is in flight, so a plugin cannot choose an agent by itself. This
+// serves synchronous work only: work that runs after the forward returns needs another proof.
+func (h *Hub) beginForward(client string, pid int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.forwards == nil {
+		h.forwards = map[string]map[int]int{}
+	}
+	if h.forwards[client] == nil {
+		h.forwards[client] = map[int]int{}
+	}
+	h.forwards[client][pid]++
+}
+
+func (h *Hub) endForward(client string, pid int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.forwards[client][pid]--; h.forwards[client][pid] <= 0 {
+		delete(h.forwards[client], pid)
+	}
+	if len(h.forwards[client]) == 0 {
+		delete(h.forwards, client)
+	}
+}
+
+func (h *Hub) forwarding(client string, pid int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return client != "" && h.forwards[client][pid] > 0
+}
+
+// agentFaceAction is a hub tool as agents see it: without on_behalf, which only a plugin that
+// handles a forward can use.
+func agentFaceAction(a map[string]any) map[string]any {
+	args, _ := a["args"].(map[string]any)
+	props, _ := args["properties"].(map[string]any)
+	if _, ok := props["on_behalf"]; !ok {
+		return a
+	}
+	out, outArgs, outProps := map[string]any{}, map[string]any{}, map[string]any{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range args {
+		outArgs[k] = v
+	}
+	for k, v := range props {
+		if k != "on_behalf" {
+			outProps[k] = v
+		}
+	}
+	outArgs["properties"] = outProps
+	out["args"] = outArgs
+	return out
 }

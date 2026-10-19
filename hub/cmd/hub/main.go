@@ -120,12 +120,13 @@ type Hub struct {
 	mu           sync.Mutex
 	identMu      sync.Mutex // serializes identity reports (identity.go)
 	agents       map[string]*Agent
-	agentOrder   []string          // config agents first, then spawned agents in creation order
-	agentRex     *rex.Rex          // the agent face (agentface.go)
-	agentKick    chan struct{}     // wakes agentKeymapLoop
-	agentForward map[string]string // plugin action -> plugin client, as last declared on the agent face
-	idents       map[string]*Agent // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
-	aliases      map[string]string // legacy agent ID -> the identity that took it over
+	agentOrder   []string               // config agents first, then spawned agents in creation order
+	agentRex     *rex.Rex               // the agent face (agentface.go)
+	agentKick    chan struct{}          // wakes agentKeymapLoop
+	agentForward map[string]string      // plugin action -> plugin client, as last declared on the agent face
+	forwards     map[string]map[int]int // plugin client -> requester pid -> hub.forward calls in flight (agentface.go)
+	idents       map[string]*Agent      // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
+	aliases      map[string]string      // legacy agent ID -> the identity that took it over
 	plugins      map[string]*Plugin
 	selfClosed   map[string]bool // blocks the hub closed itself; their removal is not a user stop
 	titleRenames map[string]bool // sessions with a pending identityRenamesSoon
@@ -327,7 +328,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.rebind",
 		"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.ui.exit", "hub.ui.mode", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 		"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-		"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec"} {
+		"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"} {
 		actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
 	}
 	actions = append(actions, hubToolActions...)
@@ -696,6 +697,12 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	}
 	ns := pl.Name
 	switch p.Action {
+	case "hub.grant.create":
+		return h.grantCreate(ctx, p, ns, args)
+	case "hub.grant.get":
+		return h.grantGet(ctx, ns, args)
+	case "hub.grant.revoke":
+		return h.grantRevoke(ctx, ns, args)
 	case "hub.ui.tabs":
 		return h.uiTabs(ctx, ns, args)
 	case "hub.ui.invalidate":

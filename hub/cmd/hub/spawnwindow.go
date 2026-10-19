@@ -24,8 +24,10 @@ package main
 // placement {focus: {source_window_id}} (user spawns only, spawnfocus.go): on the first success
 // the hub focuses the first leaf (depth-first), only while the source tab is still active in the
 // target session. A retry or a late adoption never focuses. It is part of the retry identity.
-// Callers: the same policy as hub.spawn (spawnCaller): a registered plugin acting for "user", or
-// an identified agent pane. The action is not in hubToolActions, so MCP does not offer it.
+// Callers: the same policy as hub.spawn (spawnCaller): a registered plugin acting for "user" or
+// on_behalf of the agent of a forwarded call in flight, a plugin with a durable grant of this exact
+// request (grant_id, grants.go), or an identified agent pane. The action is not in
+// hubToolActions, so MCP does not offer it.
 // Window status: pending if a leaf is sending, else failed if a leaf failed, else closed if a leaf
 // closed, else open.
 
@@ -176,13 +178,19 @@ func (n *windowNode) rexLayout(blocks []map[string]any, next *int) map[string]an
 }
 
 func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (any, error) {
-	caller, err := h.spawnCaller(ctx, p, args)
+	var caller string
+	var err error
+	if _, ok := args["grant_id"]; ok {
+		caller, err = h.grantCaller(ctx, h.db, p, "hub.spawn_window", args) // grants.go
+	} else {
+		caller, err = h.spawnCaller(ctx, p, args)
+	}
 	if err != nil {
 		return nil, err
 	}
 	for k := range args {
 		switch k {
-		case "key", "session", "title", "layout", "for", "placement":
+		case "key", "session", "title", "layout", "for", "on_behalf", "placement", "grant_id":
 		default:
 			return nil, bad("unknown field %q", k)
 		}
@@ -244,7 +252,11 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	fp, _ := json.Marshal(request)
 
 	var prevReq, prevIDs string
-	switch err := h.db.QueryRowContext(ctx, `SELECT request, spawn_ids FROM spawn_windows WHERE caller = ? AND key = ?`, caller, key).Scan(&prevReq, &prevIDs); {
+	row, err := h.callerKeyRow(ctx, "spawn_windows", "request, spawn_ids", caller, key)
+	if err != nil {
+		return nil, err
+	}
+	switch err := row.Scan(&prevReq, &prevIDs); {
 	case err == nil:
 		if prevReq != string(fp) {
 			return nil, bad("key %q was used for a different request", key)
@@ -305,6 +317,16 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 			return nil, err
 		}
 		rows[i], ids[i] = s, s.ID
+	}
+	if err := keyTakenIn(ctx, tx, "spawn_windows", caller, key); err != nil {
+		return nil, err
+	}
+	if _, ok := args["grant_id"]; ok {
+		// The grant again, inside the admission: a revoke that committed since the first check
+		// refuses this call (grants.go).
+		if _, err := h.grantCaller(ctx, tx, p, "hub.spawn_window", args); err != nil {
+			return nil, err
+		}
 	}
 	idsJSON, _ := json.Marshal(ids)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO spawn_windows VALUES (?, ?, ?, ?, ?, ?)`, caller, key, string(fp), sess, string(idsJSON), now); err != nil {

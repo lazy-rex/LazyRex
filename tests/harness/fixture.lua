@@ -24,7 +24,7 @@ local function put(key, value)
 end
 
 local obj = {type = 'object'}
-local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate'}
+local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -40,6 +40,15 @@ local actions = {
   {name = 'fix.echo', kind = 'client', title = 'Echo', args = obj},
   {name = 'fix.op', kind = 'client', title = 'Read a saved operation', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
   {name = 'fix.invalidate', kind = 'client', title = 'Call hub.ui.invalidate', args = obj},
+  {name = 'fix.grant', kind = 'client', title = 'Make a grant for the caller (on_behalf = as_pid or the caller pid)',
+    args = {type = 'object', properties = {key = {type = 'string'}, entries = {type = 'array'}, as_pid = {type = 'integer'}}, required = {'key', 'entries'}}},
+  -- Direct calls only (not exports): deferred work of the plugin, outside any forward.
+  {name = 'fix.grant_spawn', kind = 'client', title = 'hub.spawn_window with a grant', args = obj},
+  {name = 'fix.grant_revoke', kind = 'client', title = 'hub.grant.revoke', args = obj},
+  {name = 'fix.grant_get', kind = 'client', title = 'hub.grant.get', args = obj},
+  {name = 'fix.ensure', kind = 'client', title = 'hub.session.ensure', args = obj},
+  {name = 'fix.spawn', kind = 'client', title = 'Start a shell on behalf of the caller (on_behalf = as_pid or the caller pid)',
+    args = {type = 'object', properties = {key = {type = 'string'}, as_pid = {type = 'integer'}}, required = {'key'}}},
 }
 rex.call('client.keymap', {actions = actions})
 
@@ -67,6 +76,18 @@ local function domain(action, args, pid)
     return hub('hub.store.op', {key = args.key})
   elseif action == 'fix.invalidate' then
     return hub('hub.ui.invalidate', {})
+  elseif action == 'fix.grant' then
+    return hub('hub.grant.create', {on_behalf = args.as_pid or pid, key = args.key, entries = args.entries})
+  elseif action == 'fix.grant_spawn' then
+    return hub('hub.spawn_window', args)
+  elseif action == 'fix.grant_revoke' then
+    return hub('hub.grant.revoke', args)
+  elseif action == 'fix.grant_get' then
+    return hub('hub.grant.get', args)
+  elseif action == 'fix.ensure' then
+    return hub('hub.session.ensure', args)
+  elseif action == 'fix.spawn' then
+    return {spawn = hub('hub.spawn', {profile = 'shell', key = args.key, on_behalf = args.as_pid or pid}), pid = pid}
   end
   error({code = 'not_supported', message = 'unknown action ' .. tostring(action)})
 end

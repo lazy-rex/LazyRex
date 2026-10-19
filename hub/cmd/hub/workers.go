@@ -183,7 +183,7 @@ func validProfile(p Profile) error {
 }
 
 func (h *Hub) workersSchemaStart(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema); err != nil {
+	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema+grantsSchema); err != nil {
 		return err
 	}
 	for _, m := range []string{
@@ -232,15 +232,37 @@ func (h *Hub) workersRun(ctx context.Context) {
 	h.checkProfiles() // the baseline
 }
 
-// spawnCaller is who asks: an agent (from its pane) or the user (a plugin view action).
+// spawnCaller is who asks: an agent (from its pane), the user (a plugin view action), or the agent
+// of a forwarded call that a plugin handles now (on_behalf, agentface.go).
 func (h *Hub) spawnCaller(ctx context.Context, p perform, args map[string]any) (string, error) {
+	if raw, ok := args["on_behalf"]; ok {
+		if _, ok := args["for"]; ok {
+			return "", bad("on_behalf cannot be combined with for")
+		}
+		pid, ok := raw.(float64)
+		if !ok || pid <= 0 || pid != math.Trunc(pid) || pid > math.MaxInt32 {
+			return "", bad("on_behalf must be the requester_pid of a forwarded call")
+		}
+		if h.pluginByClient(p.Requester.ClientID) == nil {
+			return "", bad("only a registered plugin may act on behalf of an agent")
+		}
+		if !h.forwarding(p.Requester.ClientID, int(pid)) {
+			return "", bad("on_behalf names no agent call that the hub is forwarding to this plugin now")
+		}
+		return h.agentOfPID(ctx, int(pid))
+	}
 	if who, _ := args["for"].(string); who != "" {
 		if who != "user" || h.pluginByClient(p.Requester.ClientID) == nil {
 			return "", bad(`only a registered plugin may act for "user"`)
 		}
 		return "user", nil
 	}
-	_, block, _, err := h.paneOf(ctx, p.Requester.Principal.PID)
+	return h.agentOfPID(ctx, p.Requester.Principal.PID)
+}
+
+// agentOfPID is the joined agent or current conversation identity of the pane that runs pid.
+func (h *Hub) agentOfPID(ctx context.Context, pid int) (string, error) {
+	_, block, _, err := h.paneOf(ctx, pid)
 	if err != nil {
 		return "", err
 	}
@@ -499,7 +521,11 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	}
 	fp, _ := json.Marshal(fingerprint)
 	var prevReq string
-	if prev, err := scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+`, request FROM spawns WHERE caller = ? AND key = ?`, caller, key), &prevReq); err == nil {
+	row, err := h.callerKeyRow(ctx, "spawns", spawnCols+", request", caller, key)
+	if err != nil {
+		return nil, err
+	}
+	if prev, err := scanSpawn(row, &prevReq); err == nil {
 		if prevReq != string(fp) {
 			return nil, bad("key %q was used for a different request", key)
 		}
@@ -611,6 +637,9 @@ func (h *Hub) effectiveCwd(prof Profile, cwdArg string) (string, error) {
 // admitSpawn inserts one spawn row in tx and, for an agent profile, its new agent. It returns the
 // agent's name. The caller commits, then calls spawnAdmitted.
 func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Profile, title, request string, effective map[string]string) (string, error) {
+	if err := keyTakenIn(ctx, tx, "spawns", s.Caller, s.Key); err != nil {
+		return "", err
+	}
 	now := s.Created
 	name := ""
 	if prof.Kind == "agent" {
@@ -1126,7 +1155,11 @@ func (h *Hub) stop(ctx context.Context, p perform, args map[string]any) (any, er
 	if err != nil {
 		return nil, err
 	}
-	if caller != "user" && caller != s.Parent {
+	same, err := h.sameAgent(ctx, caller, s.Parent)
+	if err != nil {
+		return nil, err
+	}
+	if caller != "user" && !same {
 		return nil, bad("%s did not start %s", caller, id)
 	}
 	if _, err := h.workerBlocks(ctx, s); err != nil {
@@ -1355,7 +1388,7 @@ var hubToolActions = []map[string]any{
 			}},
 			"args": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string", "maxLength": 16000},
 				"description": "Named values for the profile, for example {\"task\": \"Fix the login test\"}. hub.profiles lists each profile's args."},
-			"for": map[string]any{"type": "string"}},
+			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
 			"required": []string{"profile", "key"}, "additionalProperties": false}},
 	{"name": "hub.workers", "kind": "client", "title": "List workers",
 		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status.",
@@ -1364,7 +1397,7 @@ var hubToolActions = []map[string]any{
 		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. An agent can stop only workers it started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
 			"spawn_id": map[string]any{"type": "string", "minLength": 1}, "key": map[string]any{"type": "string", "maxLength": 128},
-			"for": map[string]any{"type": "string"}},
+			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
 			"required": []string{"spawn_id"}, "additionalProperties": false}},
 }
 

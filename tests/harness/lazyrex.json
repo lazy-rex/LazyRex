@@ -2,6 +2,7 @@
  "name": "harnessfix",
  "main": "fixture.lua",
  "test": {
-  "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}]
+  "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"},
+    {"id": "carol", "name": "Carol"}, {"id": "dave", "name": "Dave"}]
  }
 }
