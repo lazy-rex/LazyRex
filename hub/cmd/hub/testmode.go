@@ -57,6 +57,7 @@ type injection struct {
 	Ops      []any  // committed before the matching batch (no if_rev)
 	Replay   bool   // commit a copy of the matching batch first
 	Fail     string // then fail the matching batch with this message; it commits nothing
+	FailCode string // the error code of that failure (default injected_failure)
 	Times    int    // -1: always
 	Consumed int
 }
@@ -574,6 +575,13 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	}
 	in.Replay, _ = args["replay"].(bool)
 	in.Fail, _ = args["fail"].(string)
+	if v, ok := args["fail_code"]; ok {
+		code, _ := v.(string)
+		if code == "" || in.Fail == "" {
+			return nil, bad("invalid: fail_code must be nonempty text, and it needs fail")
+		}
+		in.FailCode = code
+	}
 	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
 		return nil, bad("invalid: an injection needs ops, replay or fail")
 	}
@@ -641,7 +649,11 @@ func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]an
 	}
 	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": ns})
 	if in.Fail != "" {
-		return refuse("injected_failure", "%s", in.Fail)
+		code := in.FailCode
+		if code == "" {
+			code = "injected_failure"
+		}
+		return refuse(code, "%s", in.Fail)
 	}
 	return nil
 }

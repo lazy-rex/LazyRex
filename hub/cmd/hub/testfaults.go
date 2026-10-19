@@ -21,6 +21,7 @@ type testFault struct {
 	Op                   string // spawn-create: the spawn key ("" = any)
 	Plugin, Action, When string // action
 	Key                  string // action: the call's args.key ("" = any)
+	FailCode             string // action, mode fail: the reply's error code (default failed)
 	Fired                bool
 }
 
@@ -28,7 +29,7 @@ var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop",
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
-	"action": {"point", "mode", "action", "when", "key", "plugin"}}
+	"action": {"point", "mode", "action", "when", "key", "plugin", "fail_code"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -67,6 +68,12 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		f.Action, _ = args["action"].(string)
 		f.When, _ = args["when"].(string)
 		f.Key, _ = args["key"].(string)
+		if v, ok := args["fail_code"]; ok {
+			// lose-reply always means disconnected; only fail takes a code.
+			if f.FailCode, _ = v.(string); f.FailCode == "" || f.Mode != "fail" {
+				return nil, bad("invalid: fail_code must be nonempty text, and it needs mode fail")
+			}
+		}
 		f.Plugin = plugin
 		if f.When != "before" && f.When != "after" {
 			return nil, bad("invalid: when must be before or after")
@@ -144,9 +151,12 @@ func (h *Hub) spawnCreateFaulted(ctx context.Context, key, method string, req ma
 	return &rex.RexError{Code: "refused", Message: "injected fault: Rex refused the create"}
 }
 
-func faultReply(mode string) error {
-	if mode == "lose-reply" {
+func faultReply(f *testFault) error {
+	if f.Mode == "lose-reply" {
 		return refuse("disconnected", "injected fault: the reply was lost")
+	}
+	if f.FailCode != "" {
+		return refuse(f.FailCode, "injected fault")
 	}
 	return refuse("failed", "injected fault")
 }
@@ -171,7 +181,7 @@ func (h *Hub) dispatchFaulted(ctx context.Context, p perform) (any, error) {
 		}
 	}
 	if f := h.takeFault(match("before")); f != nil {
-		return nil, faultReply(f.Mode) // no handler runs
+		return nil, faultReply(f) // no handler runs
 	}
 	armed := h.peekFault(match("after"))
 	result, err := h.dispatch(ctx, p)
@@ -179,7 +189,7 @@ func (h *Hub) dispatchFaulted(ctx context.Context, p perform) (any, error) {
 		return result, err // a genuine error is the reply; the fault stays armed
 	}
 	if f := h.takeFault(match("after")); f != nil {
-		return nil, faultReply(f.Mode)
+		return nil, faultReply(f)
 	}
 	return result, nil
 }

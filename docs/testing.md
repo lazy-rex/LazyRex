@@ -225,6 +225,8 @@ the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `
 or `{writes = <record key>}`. `replay = true` commits a copy of the matching batch first (another
 invocation saved the same operation). `times` is a count or `"always"`. `fail = '<message>'` then fails the
 matching batch with that message: it commits nothing, as a crash or a lost connection would.
+The error code is `injected_failure` (definite). `fail_code = '<code>'` sets another code, for
+example `unavailable` (transient). `fail_code` needs `fail` and must be nonempty.
 Injected commits never match an injection.
 
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
@@ -240,7 +242,7 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'spawn-create', mode = 'drop', op = key}` | `hub.spawn` sends no create request and gets `disconnected`. The spawn stays pending; no pane exists. |
 | `{point = 'spawn-create', mode = 'refuse', op = key}` | No create request; Rex error `refused`. The spawn fails. |
 | `{point = 'spawn-create', mode = 'lose-answer', op = key}` | The create request runs. If Rex answers yes, the answer becomes `disconnected`: the pane exists and the spawn stays pending. An accessory pane is not adopted by its label, so it stays pending (resolveSpawns only counts candidate panes). If Rex answers with an error, that error stays and the fault stays armed. |
-| `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`; `lose-reply` replies code `disconnected`. |
+| `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
 | `{point = 'action', action, when = 'after', mode, key, plugin}` | The handler runs once. If it succeeds, its reply is replaced (`failed` or `disconnected`). If it fails, its own error is the reply and the fault stays armed. |
 
 - `op` matches the `hub.spawn` key. Only `hub.spawn` has the spawn-create point; `hub.spawn_window` does not.
