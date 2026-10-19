@@ -40,8 +40,10 @@ example a bad manifest).
       plugin, the plugins in `requires`, and the plugin under test.
    3. It waits until each plugin is registered and the agent face lists the plugin's exports.
    4. It runs the file with `rex do lab/test/runner.lua`.
-   5. It stops the hub and the server, and checks that every process that it saw under them is
-      gone. A survivor gets SIGKILL and fails the file.
+   5. It stops the hub and the server with signals to their own process groups, and checks that
+      every process that it saw under them is gone. A survivor fails the file, and the output
+      names its pid, start time and command. The harness sends a survivor no signal: on macOS a
+      pid can be reused between a check and a signal, so the harness cannot prove that it owns it.
 4. Tests in one file share one hub and run in order. Files do not share anything.
 
 The same cleanup runs after a failure, a startup failure, a timeout and an interrupt (Ctrl-C).

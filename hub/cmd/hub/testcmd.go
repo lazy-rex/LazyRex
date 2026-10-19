@@ -422,7 +422,7 @@ func (l *lab) snapshot() {
 }
 
 // stop ends the hub, then the server, and checks that every tracked process is gone. A process
-// that survives gets SIGKILL and makes the cleanup fail.
+// that survives makes the cleanup fail; it gets no signal.
 func (l *lab) stop() []string {
 	var problems []string
 	l.snapshot()
@@ -430,7 +430,7 @@ func (l *lab) stop() []string {
 		l.r.Close()
 	}
 	// A leader that already exited gets no group signal (waiter.signal). Its group members are in
-	// tracked and get the checked per-process signal below.
+	// tracked; a member that survives fails the cleanup below.
 	stopGroup := func(w *waiter, exit chan error, what string) {
 		if w == nil || exit == nil {
 			return
@@ -459,15 +459,15 @@ func (l *lab) stop() []string {
 			break
 		}
 		if time.Now().After(deadline) {
+			// The harness sends a survivor no signal: between a lifetime check and kill() its pid
+			// can be reused, and macOS has no process handle to close that gap. A survivor is a
+			// harness bug. The run fails and names it.
 			sort.Ints(alive)
 			for _, pid := range alive {
-				// Check the lifetime again just before the signal. A pid can be reused between
-				// that check and the signal: macOS has no process handle that closes this gap.
-				if startTime(pid) == l.tracked[pid] {
-					syscall.Kill(pid, syscall.SIGKILL)
-				}
+				cmd, _ := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+				problems = append(problems, fmt.Sprintf("cleanup: process survived the lab server: pid %d, start %s, command %s (not signaled)",
+					pid, l.tracked[pid], strings.TrimSpace(string(cmd))))
 			}
-			problems = append(problems, fmt.Sprintf("cleanup: processes survived the lab server: %v (sent SIGKILL)", alive))
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
