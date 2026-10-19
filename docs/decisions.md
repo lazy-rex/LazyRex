@@ -386,4 +386,5 @@ Goal (the maintainer): "Start Session…" starts a saved template; "Save as Temp
 - An `attached` or `unknown` view that has no attachment now (for example after a hub restart) gives the conflict "the side panel's renderer is reconnecting; try again in a moment". It can hold unsaved input.
 - A cancelled or superseded replacement undoes the claim only when no replacement of that view is still active. Hub start runs the same cleanup.
 - Limit: the claim belongs to the view, not to one replacement. While any replacement of the view stays active, the claim stays, and a new replacement gets a conflict. It never gets a second claim.
+- Reason: the old rule cancelled every replacement of a new panel whose renderer was still starting ("renderer is not attached"). The hub must not wait for a renderer in its request queue. Reviewed by the harness reviewer through 41c639b.
 - Test renderers (`lazyrex-hub testview`) attach again after a hub restart, retry a failed subscribe, and answer `view.release` before their subscribe returns.

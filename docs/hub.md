@@ -932,6 +932,18 @@ An unresolved mutation or draft conflict disables discard.
 A completed source action releases automatically only when all input is safe.
 Input typed after submission still needs confirmation.
 A matching `view.resume` restores input. Attachment recovery reads the durable replacement state.
+
+A view that no renderer ever attached holds no input. A replacement claims it without
+`view.release` (`views.attach_state`: never, attached, claimed, unknown).
+- The claim and the move to opening are one transaction. Only one replacement can claim a view.
+- A renderer that attaches after the claim gets the replacement in its attach reply and freezes.
+  It then reads `hub.view.replacement` once.
+- A view that attached before and has no renderer now is a conflict: "try again in a moment".
+  A row from an older database is `unknown` and counts as attached before.
+- The claim belongs to the view, not to one replacement. A replacement that ends undoes the claim
+  only when no replacement of that view is still active. While one is active, the claim stays,
+  and a new replacement gets the conflict. Hub start undoes the claims that no active
+  replacement holds.
 Esc and Ctrl+Q close a panel through `hub.view.close`.
 
 Threads and Worktrees declare landing panels. Home returns a declared panel effect.
