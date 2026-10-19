@@ -60,6 +60,8 @@ type injection struct {
 	Replay   bool   // commit a copy of the matching batch first
 	Fail     string // then fail the matching batch with this message; it commits nothing
 	Times    int    // -1: always
+	Skip     int    // the first Skip matching batches pass unchanged (Skipped counts them)
+	Skipped  int
 	Consumed int
 }
 
@@ -586,6 +588,13 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 		}
 		in.Ops = list
 	}
+	if v, ok := args["skip"]; ok {
+		n, ok := v.(float64)
+		if !ok || n < 0 || n != float64(int(n)) {
+			return nil, bad("invalid: skip must be a count")
+		}
+		in.Skip = int(n)
+	}
 	in.Replay, _ = args["replay"].(bool)
 	in.Fail, _ = args["fail"].(string)
 	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
@@ -621,6 +630,10 @@ func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]an
 	var in *injection
 	for _, c := range h.test.injections {
 		if c.matches(ns, args) {
+			if c.Skipped < c.Skip {
+				c.Skipped++
+				break // this batch passes; no other injection matches it
+			}
 			in = c
 			c.Consumed++
 			break

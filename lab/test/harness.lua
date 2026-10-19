@@ -293,7 +293,7 @@ function H.operation(key, plugin) return hub('hub.test.operation', {plugin = plu
 -- ({op_key=}, {op_prefix=} or {writes=key}). spec: {match, ops, replay, times}. Returns its ID.
 function H.inject(spec)
   local a = {plugin = spec.plugin or A.plugin, match = spec.match, ops = spec.ops, replay = spec.replay, times = spec.times,
-    fail = spec.fail}
+    fail = spec.fail, skip = spec.skip}
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
