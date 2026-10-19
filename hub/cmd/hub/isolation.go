@@ -101,9 +101,12 @@ func checkPath(p string, roots []string) error {
 	if pathTool(p) {
 		return nil
 	}
-	r := resolveExisting(p)
+	r, err := resolveExisting(p)
+	if err != nil {
+		return err
+	}
 	for _, root := range roots {
-		if within(r, resolveExisting(root)) {
+		if rr, err := resolveExisting(root); err == nil && within(r, rr) {
 			return nil
 		}
 	}
@@ -111,16 +114,21 @@ func checkPath(p string, roots []string) error {
 }
 
 // resolveExisting resolves symlinks in the longest existing prefix of the absolute path p, then
-// adds the rest of p.
-func resolveExisting(p string) string {
+// adds the rest of p. A component that exists but does not resolve (a dangling symlink, a loop, a
+// permission error) is an error: only a component that does not exist ends the prefix.
+func resolveExisting(p string) (string, error) {
 	p = filepath.Clean(p)
 	rest := ""
 	for d := p; ; d = filepath.Dir(d) {
-		if r, err := filepath.EvalSymlinks(d); err == nil {
-			return filepath.Join(r, rest)
+		r, err := filepath.EvalSymlinks(d)
+		if err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		if _, lerr := os.Lstat(d); !os.IsNotExist(lerr) {
+			return "", fmt.Errorf("%q does not resolve: %v", d, err)
 		}
 		if d == "/" {
-			return p
+			return "", fmt.Errorf("%q does not resolve: %v", p, err)
 		}
 		rest = filepath.Join(filepath.Base(d), rest)
 	}

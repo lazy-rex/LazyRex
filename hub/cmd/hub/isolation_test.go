@@ -43,6 +43,12 @@ func TestCheckPath(t *testing.T) {
 	os.Symlink(other, filepath.Join(plugin, "escape"))
 	os.Symlink(filepath.Join(plugin, "deep"), filepath.Join(lab, "inside"))
 	os.MkdirAll(filepath.Join(plugin, "deep", "x"), 0o700)
+	os.Symlink(filepath.Join(base, "absent"), filepath.Join(lab, "dangling")) // an outside target that does not exist
+	os.Symlink(filepath.Join(lab, "loop"), filepath.Join(lab, "loop"))
+	locked := filepath.Join(lab, "locked")
+	os.MkdirAll(filepath.Join(locked, "in"), 0o700)
+	os.Chmod(locked, 0)
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
 	roots := []string{lab, plugin}
 	good := []string{lab, filepath.Join(lab, "new", "file"), filepath.Join(plugin, "deep"), filepath.Join(lab, "inside", "x"),
 		filepath.Join(lab, "missing-final")}
