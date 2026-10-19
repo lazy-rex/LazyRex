@@ -110,7 +110,7 @@ func (h *Hub) agentKeymap(ctx context.Context) error {
 	var actions []map[string]any
 	for _, a := range hubToolActions {
 		if agentHubActions[a["name"].(string)] {
-			actions = append(actions, a)
+			actions = append(actions, agentFaceAction(a))
 		}
 	}
 	actions = append(actions, agentListActions...)
@@ -265,4 +265,29 @@ func (h *Hub) forwarding(client string, pid int) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return client != "" && h.forwards[client][pid] > 0
+}
+
+// agentFaceAction is a hub tool as agents see it: without on_behalf, which only a plugin that
+// handles a forward can use.
+func agentFaceAction(a map[string]any) map[string]any {
+	args, _ := a["args"].(map[string]any)
+	props, _ := args["properties"].(map[string]any)
+	if _, ok := props["on_behalf"]; !ok {
+		return a
+	}
+	out, outArgs, outProps := map[string]any{}, map[string]any{}, map[string]any{}
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range args {
+		outArgs[k] = v
+	}
+	for k, v := range props {
+		if k != "on_behalf" {
+			outProps[k] = v
+		}
+	}
+	outArgs["properties"] = outProps
+	out["args"] = outArgs
+	return out
 }

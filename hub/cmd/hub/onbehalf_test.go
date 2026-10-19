@@ -47,3 +47,24 @@ func TestOnBehalfRefusals(t *testing.T) {
 		t.Fatalf("forwards left: %#v", h.forwards)
 	}
 }
+
+// The agent face shows no on_behalf: an agent cannot use it. The plugin path keeps it.
+func TestAgentFaceHasNoOnBehalf(t *testing.T) {
+	seen := 0
+	for _, a := range hubToolActions {
+		name := a["name"].(string)
+		if !agentHubActions[name] {
+			continue
+		}
+		face := agentFaceAction(a)
+		if props, _ := face["args"].(map[string]any)["properties"].(map[string]any); props["on_behalf"] != nil {
+			t.Fatalf("%s: the agent face lists on_behalf", name)
+		}
+		if props := a["args"].(map[string]any)["properties"].(map[string]any); props["on_behalf"] != nil {
+			seen++
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("hub.spawn and hub.stop keep on_behalf on the plugin path; saw %d", seen)
+	}
+}
