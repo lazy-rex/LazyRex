@@ -291,6 +291,9 @@ face lists its exports. It returns the new `hub.test.status` (with `pid`).
 - The old hub log stays as `hub.<n>.log`.
 - Agents and views are lab panes: they stay. What the hub does with plugins and views at a restart
   is the hub's own behavior, which the test checks.
+- A test view attaches again after a restart, as the real renderer does: it watches for a new hub
+  client every 200 ms, then attaches and subscribes. Wait for `attached` in `H.views()` before a
+  view action (restart.lua).
 
 ### Faults
 

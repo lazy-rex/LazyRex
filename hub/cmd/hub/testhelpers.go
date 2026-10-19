@@ -211,44 +211,74 @@ func testViewMain(argv []string) int {
 		log.Print(err)
 		return 1
 	}
-	hub, err := c.resolveClient(ctx, "lazyrex-hub")
-	if err != nil {
+	// attach binds this renderer to the view through the current hub and subscribes. After a hub
+	// restart the hub is a new client and the old attachment is gone: the watcher attaches again,
+	// as the real renderer does (view/client.go).
+	var mu sync.Mutex
+	var hub, attachment string
+	announced := "0"
+	attach := func() error {
+		h, err := c.resolveClient(ctx, "lazyrex-hub")
+		if err != nil {
+			return err
+		}
+		var att struct {
+			Plugin     string `json:"plugin"`
+			Route      string `json:"route"`
+			Attachment string `json:"attachment"`
+		}
+		for i := 0; ; i++ {
+			raw, err := c.perform(ctx, h, "hub.view.attach", map[string]any{"view_id": *viewID, "schema_version": 1})
+			if err == nil {
+				json.Unmarshal(raw, &att)
+				break
+			}
+			if i == 30 || !strings.Contains(err.Error(), "not_ready") {
+				return fmt.Errorf("attach: %w", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if att.Plugin != fs.Arg(0) || att.Route != fs.Arg(1) {
+			return fmt.Errorf("attach: the hub bound %s %s, the launch named %s %s", att.Plugin, att.Route, fs.Arg(0), fs.Arg(1))
+		}
+		mu.Lock()
+		hub, attachment = h, att.Attachment
+		mu.Unlock()
+		if _, err := c.perform(ctx, h, "hub.view.subscribe", map[string]any{"view_id": *viewID, "attachment": att.Attachment}); err != nil {
+			return fmt.Errorf("subscribe: %w", err)
+		}
+		log.Printf("attached %s %s through %s", att.Plugin, att.Route, h)
+		return nil
+	}
+	if err := attach(); err != nil {
 		log.Print(err)
 		return 1
 	}
-	var att struct {
-		Plugin     string `json:"plugin"`
-		Route      string `json:"route"`
-		Attachment string `json:"attachment"`
+	current := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return hub, attachment
 	}
-	for i := 0; ; i++ {
-		raw, err := c.perform(ctx, hub, "hub.view.attach", map[string]any{"view_id": *viewID, "schema_version": 1})
-		if err == nil {
-			json.Unmarshal(raw, &att)
-			break
+	go func() {
+		// A new hub client means a restarted hub. While no hub is connected, the resolve fails and
+		// the watcher waits. A failed attach is tried again.
+		for !c.r.Closed() {
+			time.Sleep(200 * time.Millisecond)
+			h, err := c.resolveClient(ctx, "lazyrex-hub")
+			if was, _ := current(); err != nil || h == was {
+				continue
+			}
+			if err := attach(); err != nil {
+				log.Printf("attach again: %v", err)
+			}
 		}
-		if i == 30 || !strings.Contains(err.Error(), "not_ready") {
-			log.Printf("attach: %v", err)
-			return 1
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if att.Plugin != fs.Arg(0) || att.Route != fs.Arg(1) {
-		log.Printf("attach: the hub bound %s %s, the launch named %s %s", att.Plugin, att.Route, fs.Arg(0), fs.Arg(1))
-		return 1
-	}
-	var mu sync.Mutex
-	announced := "0"
-	if _, err := c.perform(ctx, hub, "hub.view.subscribe", map[string]any{"view_id": *viewID, "attachment": att.Attachment}); err != nil {
-		log.Printf("subscribe: %v", err)
-		return 1
-	}
-	log.Printf("attached %s %s", att.Plugin, att.Route)
+	}()
 	exit := make(chan int, 1)
 	go c.serve(func(p perform, args map[string]any) {
+		hub, attachment := current()
 		if strings.HasPrefix(p.Action, "view.") {
 			// Callbacks from the hub: answer at once (the hub must not wait for a renderer).
-			if p.Requester.ClientID != hub || args["view_id"] != *viewID || args["attachment"] != att.Attachment {
+			if p.Requester.ClientID != hub || args["view_id"] != *viewID || args["attachment"] != attachment {
 				c.reply(p.CallID, nil, &rex.RexError{Code: "refused", Message: "The notification does not match the current view attachment"})
 				return
 			}
@@ -274,7 +304,7 @@ func testViewMain(argv []string) int {
 			}
 			return
 		}
-		base := map[string]any{"view_id": *viewID, "attachment": att.Attachment}
+		base := map[string]any{"view_id": *viewID, "attachment": attachment}
 		for k, v := range args {
 			base[k] = v
 		}
@@ -287,7 +317,7 @@ func testViewMain(argv []string) int {
 			mu.Lock()
 			a := announced
 			mu.Unlock()
-			c.reply(p.CallID, map[string]any{"view_id": *viewID, "plugin": att.Plugin, "route": att.Route, "announced": a, "pid": os.Getpid()}, nil)
+			c.reply(p.CallID, map[string]any{"view_id": *viewID, "plugin": fs.Arg(0), "route": fs.Arg(1), "announced": a, "pid": os.Getpid()}, nil)
 		case "testview.get":
 			call("hub.view.get")
 		case "testview.action":
