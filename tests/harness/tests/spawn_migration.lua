@@ -20,7 +20,7 @@ test('a migrated identity replays the old key and stops the old worker', functio
   expect(alice:hub('hub.stop', {spawn_id = id}).status).to_be('closed')
 end)
 
-test('another conversation in the same pane does not get the first identity\'s workers', function()
+test('another conversation in the same pane does not replay the first identity\'s spawn keys', function()
   local carol = agent('carol')
   expect(carol:report({kind = 'claude', conversation_id = 'first'}).identity).to_be('claude:first')
   local w = carol:hub('hub.spawn', {profile = 'shell', key = 'own'})
