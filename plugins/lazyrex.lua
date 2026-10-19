@@ -12,7 +12,14 @@ local function hub(action, args)
   if type(response.result) ~= 'table' then fail('internal', 'Invalid hub result') end
   return response.result
 end
-local function action(name, label) return {name = name, label = label, enabled = true} end
+-- Every user action names its agent tool, or why it is user-only (docs/testing.md, "Agent parity").
+-- Navigation changes only what the user sees; agents start and stop workers with the hub tools.
+local function action(name, label, parity)
+  local a = {name = name, label = label, enabled = true}
+  for k, v in pairs(parity) do a[k] = v end
+  return a
+end
+local navigation = {user_only = 'navigation'}
 local function find(list, field, value)
   for _, item in ipairs(list or {}) do if item[field] == value then return item end end
   fail('not_found', 'The selected item is no longer available. Refresh the view.')
@@ -40,7 +47,7 @@ local function render()
   local nodes, plugin_items, agent_items, worker_items, stop_options = {}, {}, {}, {}, {}
   for _, plugin in ipairs(plugins) do
     if plugin.id ~= 'lazyrex' and (plugin.panel or plugin.tab) then
-      plugin_items[#plugin_items + 1] = {id = plugin.id, label = plugin.name or plugin.id, action = action('open', 'Open')}
+      plugin_items[#plugin_items + 1] = {id = plugin.id, label = plugin.name or plugin.id, action = action('open', 'Open', navigation)}
     end
   end
   if navigation_notice then nodes[#nodes + 1] = {id = 'navigation_notice', type = 'widget', text = navigation_notice} end
@@ -49,7 +56,7 @@ local function render()
     if agent.id ~= 'user' then
       agent_items[#agent_items + 1] = {id = agent.id, label = agent.name or agent.id,
         detail = agent.joined and (agent.ready and 'Ready' or 'Connected') or 'Not connected',
-        action = has_messages and action('message', 'Message') or nil}
+        action = has_messages and action('message', 'Message', navigation) or nil}
     end
   end
   nodes[#nodes + 1] = {id = 'agents', type = 'list', label = 'Agents', items = agent_items}
@@ -57,8 +64,8 @@ local function render()
     local label = worker.title or worker.agent_id or worker.spawn_id
     local item_label = worker.state == 'failed' and (label .. ' · Dismiss') or label
     worker_items[#worker_items + 1] = {id = worker.spawn_id, label = item_label, detail = worker_detail(worker),
-      action = worker.state == 'failed' and action('dismiss', 'Dismiss')
-        or worker.window_id and worker.state ~= 'closed' and action('open', 'Open') or nil}
+      action = worker.state == 'failed' and action('dismiss', 'Dismiss', {tool = 'hub.stop'})
+        or worker.window_id and worker.state ~= 'closed' and action('open', 'Open', navigation) or nil}
     if active(worker) then stop_options[#stop_options + 1] = {value = worker.spawn_id, label = label} end
   end
   nodes[#nodes + 1] = {id = 'workers', type = 'list', label = 'Workers and accessories', items = worker_items}
@@ -69,7 +76,7 @@ local function render()
         kind = arg.name == 'task' and 'multiline' or 'text', required = arg.required == true, value = arg.default or ''}
     end
     nodes[#nodes + 1] = {id = 'launch/' .. profile.id, type = 'form', label = 'Launch ' .. (profile.name or profile.id),
-      fields = fields, submit_action = action('launch', 'Launch')}
+      fields = fields, submit_action = action('launch', 'Launch', {tool = 'hub.spawn'})}
   end
   if not profiles_ok then
     local reason = type(profile_result) == 'table' and profile_result.message or tostring(profile_result)
@@ -80,7 +87,7 @@ local function render()
   if #stop_options > 0 then
     nodes[#nodes + 1] = {id = 'stop', type = 'form', label = 'Stop a worker or accessory', fields = {
       {id = 'worker', label = 'Worker', kind = 'select', required = true, value = stop_options[1].value, options = stop_options}
-    }, submit_action = action('stop', 'Stop')}
+    }, submit_action = action('stop', 'Stop', {tool = 'hub.stop'})}
   end
   return {title = 'LazyRex', nodes = nodes}
 end
