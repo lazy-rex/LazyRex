@@ -342,7 +342,9 @@ func (h *Hub) testStatus() any {
 		sort.Strings(face)
 		plugins[name] = map[string]any{"registered": pl.ClientID != "", "client_id": pl.ClientID, "exports": orEmptyStrings(pl.Exports), "face": face}
 	}
-	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation)}
+	var nav string
+	h.db.QueryRow(`SELECT value FROM ui_state WHERE key = 'nav'`).Scan(&nav)
+	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation), "nav": nav}
 }
 
 func orEmptyStrings(l []string) []string {

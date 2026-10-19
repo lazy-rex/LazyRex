@@ -29,6 +29,7 @@ local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
   {name = 'view.action', kind = 'client', title = 'Action', args = obj},
+  {name = 'view.open', kind = 'client', title = 'Open a lazy tab', args = obj},
   {name = 'fix.put', kind = 'client', title = 'Put a record', description = 'Write {key, value}.',
     args = {type = 'object', properties = {key = {type = 'string'}, value = {}}, required = {'key', 'value'}}},
   {name = 'fix.get', kind = 'client', title = 'Get a record', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
@@ -91,10 +92,29 @@ local function form_tree()
   }}
 end
 
+-- Lazy tabs (/lazy/<name>) are declared on view.open, as the messaging plugin declares an empty
+-- direct thread. The declaration calls the hub while the hub waits for view.open: the case of
+-- rex-protocol.md, "The hub has one request queue". /lazy/slow waits 2 s first; /nope/* declares
+-- nothing. view.open counts its calls in the record opens.
+local tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}
+
+local function view_open(args)
+  local opens = get('opens') or 0
+  put('opens', opens + 1)
+  local name = args.route:match('^/lazy/(.+)$')
+  if not name then return {} end
+  if name == 'slow' then rex.sleep(2) end
+  tabs[#tabs + 1] = {key = 'lazy/' .. name, title = 'Lazy ' .. name, route = args.route}
+  hub('hub.ui.tabs', {tabs = tabs})
+  return {}
+end
+
 local function view(action, args)
+  if action == 'view.open' then return view_open(args) end
   if action == 'view.render' then
     if args.route == '/home' then return {tree = home_tree()} end
     if args.route == '/forms/fix' then return {tree = form_tree()} end
+    if args.route:match('^/lazy/') then return {tree = {title = 'Lazy', nodes = {{id = 'lazy', type = 'widget', text = args.route}}}} end
     return {tree = {title = 'Unknown', nodes = {{id = 'unknown', type = 'error', text = 'no route ' .. tostring(args.route)}}}}
   elseif action == 'view.action' then
     if args.route == '/home' and args.node_id == 'open_form' then return {form = '/forms/fix'} end
@@ -130,5 +150,5 @@ end)
 
 hub('hub.register', {plugin = 'harnessfix', instance_id = instance_id, exports = exports,
   commands = {{id = 'fix_form', title = 'Fixture form', route = '/forms/fix', action = 'fix.put'}}})
-hub('hub.ui.tabs', {tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}})
+hub('hub.ui.tabs', {tabs = tabs})
 rex.call('client.set_label', {label = 'lazyrex-plugin:harnessfix'})
