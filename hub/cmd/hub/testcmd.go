@@ -47,6 +47,13 @@ type manifest struct {
 		Transcript    bool            `json:"transcript"`
 		ParityFixture string          `json:"parity_fixture"` // a Lua file that renders the contextual routes
 		ParityRoutes  []string        `json:"parity_routes"`  // contextual routes that the fixture must render
+		// Env adds variables to the lab environment (isolation.go). Args are plugin args (hub config
+		// plugins[].args), keyed by plugin name. Values may name ${LAB} and ${PLUGIN}.
+		Env  map[string]string            `json:"env"`
+		Args map[string]map[string]string `json:"args"`
+		// Profiles is a profile file (relative to the manifest dir) that the harness copies to
+		// LAB/profiles.json, the hub's profile file.
+		Profiles string `json:"profiles"`
 	} `json:"test"`
 }
 
@@ -88,6 +95,9 @@ func loadManifest(dir string) (*manifest, error) {
 		if a.ID == "" || a.ID == "user" {
 			return nil, fmt.Errorf("%s: test.agents need an id other than user", path)
 		}
+	}
+	if err := m.checkIsolation(dir); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &m, nil
 }
@@ -235,8 +245,13 @@ type lab struct {
 	srvW, hubW          *waiter
 	srvExit, hubExit    chan error
 	r                   *rex.Rex
-	tracked             map[int]string // pid -> start time: every process seen under the server or the hub
+	tracked             map[int]string               // pid -> start time: every process seen under the server or the hub
+	args                map[string]map[string]string // plugin args after expansion (manifest test.args)
+	profiles            string                       // LAB/profiles.json, the hub's profile file
 }
+
+// home is the lab HOME, the working directory of every lab process.
+func (l *lab) home() string { return filepath.Join(l.dir, "home") }
 
 func newNonce() string {
 	b := make([]byte, 12)
@@ -260,23 +275,34 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 			return l, err
 		}
 	}
-	// The lab environment for every child: no inherited pane identity, REX_SERVER = the lab.
-	for _, kv := range os.Environ() {
-		k, _, _ := strings.Cut(kv, "=")
-		switch k {
-		case "REX_SERVER", "REX_SESSION", "REX_BLOCK", "REX_CLIENT":
-			continue
+	for _, d := range labHomeDirs {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
+			return l, err
 		}
-		l.env = append(l.env, kv)
 	}
-	l.env = append(l.env, "REX_SERVER="+l.server)
+	// The lab environment for every child (isolation.go): no inherited variables except PATH.
+	extra, err := o.m.labValues(o.dir, dir)
+	if err != nil {
+		return l, err
+	}
+	l.env = labEnv(dir, l.server, extra.env)
+	l.args, l.profiles = extra.args, filepath.Join(dir, "profiles.json")
+	if o.m.Test.Profiles != "" {
+		b, err := os.ReadFile(filepath.Join(o.dir, o.m.Test.Profiles))
+		if err != nil {
+			return l, fmt.Errorf("test.profiles: %w", err)
+		}
+		if err := os.WriteFile(l.profiles, b, 0o600); err != nil {
+			return l, err
+		}
+	}
 	logf, err := os.Create(filepath.Join(dir, "server.log"))
 	if err != nil {
 		return l, err
 	}
 	l.srv = exec.Command(o.rexBin, "-v", "server", "run", "--listen", l.server, "--state-dir", filepath.Join(dir, "state"),
 		"--block-dir", filepath.Join(dir, "blocks"), "--config", "/dev/null")
-	l.srv.Env, l.srv.Stdout, l.srv.Stderr = l.env, logf, logf
+	l.srv.Env, l.srv.Dir, l.srv.Stdout, l.srv.Stderr = l.env, l.home(), logf, logf
 	l.srv.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := l.srv.Start(); err != nil {
 		return l, err
@@ -524,9 +550,10 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		return filepath.Join(o.dir, p)
 	}
 	type plug struct {
-		Name   string `json:"name"`
-		Path   string `json:"path"`
-		Events string `json:"events,omitempty"`
+		Name   string            `json:"name"`
+		Path   string            `json:"path"`
+		Events string            `json:"events,omitempty"`
+		Args   map[string]string `json:"args,omitempty"`
 	}
 	plugins := []plug{}
 	seen := map[string]bool{}
@@ -541,6 +568,9 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		}
 	}
 	plugins = append(plugins, plug{Name: o.m.Name, Path: abs(o.m.Main), Events: o.m.Events})
+	for i := range plugins {
+		plugins[i].Args = l.args[plugins[i].Name]
+	}
 	agents := []manifestAgent{{ID: "user", Name: "User"}}
 	agents = append(agents, o.m.Test.Agents...)
 	view := filepath.Join(l.dir, "testview.sh")
@@ -549,7 +579,8 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		return "", err
 	}
 	cfg := map[string]any{"server": l.server, "state": filepath.Join(l.dir, "hub"), "rex": o.rexBin, "view": view,
-		"agents": agents, "plugins": plugins, "transcript": o.m.Test.Transcript}
+		"agents": agents, "plugins": plugins, "transcript": o.m.Test.Transcript,
+		"profiles": l.profiles, "test_roots": o.m.roots(o.dir, l.dir)}
 	b, _ := json.MarshalIndent(cfg, "", " ")
 	path := filepath.Join(l.dir, "hub.json")
 	return path, os.WriteFile(path, b, 0o600)
@@ -569,7 +600,7 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 		return err
 	}
 	l.hub = exec.Command(o.self, "-config", cfg, "-test")
-	l.hub.Env, l.hub.Stdout, l.hub.Stderr = l.env, logf, logf
+	l.hub.Env, l.hub.Dir, l.hub.Stdout, l.hub.Stderr = l.env, l.home(), logf, logf
 	l.hub.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := l.hub.Start(); err != nil {
 		return err
@@ -665,7 +696,8 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		return res
 	}
 	args := []string{"-S", l.server, "--autostart=false", "do", filepath.Join(o.lazyrex, "lab", "test", "runner.lua"), "-s", sess.SessionID,
-		"file=" + file, "lib=" + filepath.Join(o.lazyrex, "lab", "test"), "hub_bin=" + o.self, "plugin=" + o.m.Name, "tests_session=" + sess.SessionID}
+		"file=" + file, "lib=" + filepath.Join(o.lazyrex, "lab", "test"), "hub_bin=" + o.self, "plugin=" + o.m.Name, "tests_session=" + sess.SessionID,
+		"lab=" + l.dir, "profiles=" + l.profiles}
 	if o.run != "" && !parity {
 		args = append(args, "run="+o.run)
 	}
@@ -679,7 +711,7 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 	fctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
 	cmd := exec.Command(o.rexBin, args...)
-	cmd.Env = l.env
+	cmd.Env, cmd.Dir = l.env, l.home()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, _ := cmd.StdoutPipe()
 	logf, _ := os.Create(filepath.Join(l.dir, "runner.log"))

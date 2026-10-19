@@ -35,6 +35,9 @@ type Config struct {
 	PaletteLua string `json:"palette_lua"`
 	Real       bool   `json:"-"` // set from -real-server; renderers get -real-server too
 	Test       bool   `json:"-"` // set from -test (testmode.go)
+	// TestRoots are the directories that test-mode profiles and spawn cwds must stay in (the lab,
+	// the plugin and the manifest directories; isolation.go). Only -test accepts it.
+	TestRoots []string `json:"test_roots"`
 	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
 	// pane (pair.go). Off: those tabs open as one view, as before.
 	Transcript bool `json:"transcript"`
@@ -239,6 +242,12 @@ func main() {
 	}
 	cfg.Real = *realServer
 	cfg.Test = *testMode
+	if !cfg.Test && len(cfg.TestRoots) > 0 {
+		log.Fatal("test_roots needs -test")
+	}
+	if cfg.Test && len(cfg.TestRoots) == 0 {
+		log.Fatal("-test needs test_roots in the config (lazyrex-hub test writes it)")
+	}
 	if cfg.Test {
 		if err := checkLabProof(cfg.Server); err != nil {
 			log.Fatal(err)
@@ -692,6 +701,11 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.ui.invalidate":
 		// The plugin's own data changed outside the store (for example a scan finished): render its
 		// open views again. Fast; the view worker does the render.
+		if h.test != nil {
+			h.test.mu.Lock()
+			h.test.invalidate[ns]++
+			h.test.mu.Unlock()
+		}
 		h.kickViews(ns, true)
 		return map[string]any{"status": "accepted"}, nil
 	case "hub.cwd.lock":

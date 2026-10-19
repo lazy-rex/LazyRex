@@ -265,6 +265,10 @@ end
 
 function H.notice(agent, plugin) return hub('hub.test.notice', {plugin = plugin or A.plugin, agent = agent}) end
 function H.batches(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).batches end
+
+-- invalidates counts the plugin's hub.ui.invalidate calls (for example to prove that no idle
+-- render loop runs: the count stays the same while nothing changes).
+function H.invalidates(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).invalidates end
 function H.advance_rev(at) return hub('hub.test.rev', {at = tostring(at)}).rev end
 
 function H.tabs(plugin)
@@ -310,6 +314,19 @@ function H.write(ops, plugin) return hub('hub.test.write', {plugin = plugin or A
 -- put_operation saves an operation record {key, fingerprint, result}, as an older plugin saved it.
 function H.put_operation(op, plugin)
   return hub('hub.test.op.put', {plugin = plugin or A.plugin, key = op.key, fingerprint = op.fingerprint, result = op.result})
+end
+
+-- write_profiles replaces the hub's profile file (LAB/profiles.json; it is the only target).
+-- profiles is a table, encoded as JSON, or a string, written as it is (for example malformed JSON).
+-- Rex Lua encodes an empty table as {}: for no profiles, pass the string {"profiles":[]}.
+-- The hub reads the file again on each profile call. In test mode it refuses a profile with a
+-- reserved env key or a path outside the lab and plugin directories.
+function H.write_profiles(profiles)
+  local text = type(profiles) == 'string' and profiles or rex.json.encode(profiles)
+  local f, err = io.open(A.profiles, 'w')
+  if not f then error('write_profiles: ' .. tostring(err), 0) end
+  f:write(text)
+  f:close()
 end
 
 -- close_session destroys a lab session (for example a thread's home).

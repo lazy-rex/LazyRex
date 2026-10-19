@@ -41,6 +41,7 @@ type testState struct {
 	mu         sync.Mutex
 	injections []*injection
 	batches    map[string]int                      // plugin -> hub.store.batch calls, including refused and conflicting ones
+	invalidate map[string]int                      // plugin -> hub.ui.invalidate calls
 	renderReq  map[string]int64                    // view_id -> the latest requested render generation
 	renderOut  map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
 	trees      map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
@@ -74,7 +75,7 @@ type renderedTree struct {
 }
 
 func newTestState() *testState {
-	return &testState{batches: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
+	return &testState{batches: map[string]int{}, invalidate: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
 		trees: map[string]*renderedTree{}}
 }
 
@@ -189,7 +190,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 	case "hub.test.stats":
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
-		return map[string]any{"batches": h.test.batches[plugin]}, nil
+		return map[string]any{"batches": h.test.batches[plugin], "invalidates": h.test.invalidate[plugin]}, nil
 	case "hub.test.rev":
 		at, err := parseRevArg(args["at"])
 		if err != nil {

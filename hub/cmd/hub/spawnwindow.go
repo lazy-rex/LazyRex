@@ -269,7 +269,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 		if resolved[i], err = resolveArgs(prof, l.Args); err != nil {
 			return nil, err
 		}
-		if cwds[i], err = effectiveCwd(prof, l.Cwd); err != nil {
+		if cwds[i], err = h.effectiveCwd(prof, l.Cwd); err != nil {
 			return nil, err
 		}
 		profs[i] = prof

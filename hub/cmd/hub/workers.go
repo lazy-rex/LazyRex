@@ -116,6 +116,11 @@ func (h *Hub) loadFrom(files []string) (map[string]Profile, []string, error) {
 			if err := validProfile(p); err != nil {
 				return nil, nil, fmt.Errorf("%s: profile %d: %w", path, i, err)
 			}
+			if h.cfg.Test {
+				if err := testProfileCheck(p, h.cfg.TestRoots); err != nil {
+					return nil, nil, fmt.Errorf("%s: profile %d: %w", path, i, err)
+				}
+			}
 			if seen[p.ID] {
 				return nil, nil, fmt.Errorf("%s: profile %q appears twice", path, p.ID)
 			}
@@ -528,7 +533,7 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	// Commit the intent: the spawn row and, for an agent profile, its new agent.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	s := &spawnRow{ID: randomID("spawn-"), Caller: caller, Key: key, Profile: prof.ID, Parent: caller, Status: "sending", Created: now, Session: sess}
-	if s.Cwd, err = effectiveCwd(prof, cwdArg); err != nil {
+	if s.Cwd, err = h.effectiveCwd(prof, cwdArg); err != nil {
 		return nil, err
 	}
 	tx, err := h.db.BeginTx(ctx, nil)
@@ -587,13 +592,18 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 
 // effectiveCwd is always explicit (the argument, the profile's, else the home directory) and
 // passed to Rex, so the record says where the worker runs (cwd locks depend on it).
-func effectiveCwd(prof Profile, cwdArg string) (string, error) {
+func (h *Hub) effectiveCwd(prof Profile, cwdArg string) (string, error) {
 	dir := cwdArg
 	if dir == "" {
 		dir = prof.Cwd
 	}
 	if dir == "" {
 		dir, _ = os.UserHomeDir()
+	}
+	if h.cfg.Test {
+		if err := checkPath(dir, h.cfg.TestRoots); err != nil {
+			return "", bad("test mode: cwd %s", err)
+		}
 	}
 	return realDir(dir)
 }
