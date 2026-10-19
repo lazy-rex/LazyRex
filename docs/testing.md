@@ -38,8 +38,8 @@ warning never fails the run.
 1. The command reads `lazyrex.json`.
 2. A **parity sweep** runs first, in its own lab (see "Agent parity"). A failure fails the run.
 3. For each `tests/*.lua` file, in name order:
-   1. The command starts a new Rex server in a new directory `/tmp/lrt-*`. Every child gets
-      `REX_SERVER` = that server. The command writes the lab proof `lab.json`.
+   1. The command starts a new Rex server in a new directory `/tmp/lrt-*`. Every child gets the
+      lab environment (see "Isolation"). The command writes the lab proof `lab.json`.
    2. It starts the hub (this binary, `-test`) with new state. The config loads the LazyRex home
       plugin, the plugins in `requires`, and the plugin under test.
    3. It waits until each plugin is registered and the agent face lists the plugin's exports.
@@ -64,7 +64,10 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
     "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}],
     "transcript": false,
     "parity_fixture": "tests/parity_fixture.lua",
-    "parity_routes": ["/forms/thread-menu"]
+    "parity_routes": ["/forms/thread-menu"],
+    "env": {"GIT_AUTHOR_NAME": "Lab", "WT_CACHE": "${LAB}/cache"},
+    "args": {"worktrees": {"worktrees_root": "${LAB}/worktrees"}},
+    "profiles": "tests/profiles.json"
   }
 }
 ```
@@ -78,8 +81,57 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.transcript` | The hub config `transcript` option. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
+| `test.env` | Variables added to the lab environment. See "Isolation". |
+| `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `requires` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id` and `plugin_session` are refused. |
+| `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
 
-Unknown fields are refused.
+Unknown fields are refused. The harness owns the rest of the hub config (`server`, `state`,
+`rex`, `view`, `home`, `agents`, `plugins`, `transcript`, `palette_lua`, `profiles`,
+`test_roots`). The manifest cannot set them.
+
+## Isolation
+
+The harness gives the lab server, the hub, the runner and every process that they start (plugins
+and workers are Rex blocks, so they inherit the server environment) a private environment:
+
+| Variable | Value |
+| --- | --- |
+| `PATH` | Copied from the harness. |
+| `HOME` | `LAB/home`. It is also the working directory of every lab process. |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | `LAB/home/.config`, `LAB/home/.local/share`, `LAB/home/.local/state`, `LAB/home/.cache` |
+| `TMPDIR` | `LAB/tmp/` |
+| `REX_SERVER` | The lab server. |
+| `test.env` | As the manifest gives them. |
+
+No other variable is copied. `LANG`, `TERM` and similar variables are not set: Rex and the self-tests
+do not need them (observed on the Rex build 88fd41c of 2026-10-16). If a tool needs one, set a fixed value in `test.env`.
+
+Rules for `test.env` and `test.args`:
+
+- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `LAZYREX_AGENT`, any `XDG_*` or any `REX_*`.
+- A value can name `${LAB}` (the lab dir) and `${PLUGIN}` (the dir of `main`). Any other
+  placeholder is an error. `~` is not expanded and is refused.
+- A value with a `/`, or one that starts with `.` or `~`, is a path. After expansion a path must be
+  absolute, must have no `..` component, and must resolve inside the lab, the plugin dir or the
+  manifest dir. Symlinks resolve on the longest existing prefix, so a symlink escape fails.
+  `LAB-other` is not inside `LAB`. A relative path such as `cache/../../x` is refused.
+- Exception: a regular executable file in a `PATH` directory (a tool, for example
+  `/opt/homebrew/bin/git`).
+- Other values (for example `Lab User`) are passed as they are.
+
+In test mode the hub config has `test_roots` (the lab, the plugin dir and the manifest dir). The
+hub then refuses a profile whose env sets a reserved key or names a path outside the roots, and
+a profile `cwd` outside the roots. A spawn `cwd` must also stay in the roots. The default `cwd` is
+`HOME`, which is the lab home.
+
+Limits:
+
+- This is not filesystem confinement. It stops accidental use of real-home state through `HOME`,
+  `XDG_*` and `TMPDIR`. An explicit absolute path stays readable and writable by the same OS user.
+- A profile `command` is trusted test code and is not checked.
+- The path check runs when the lab starts (and when the hub loads profiles). A symlink that a test
+  creates later is not checked.
+- URLs contain `/`, so a URL value is refused as a relative path.
 
 ## Writing tests
 
@@ -149,6 +201,9 @@ does not hide the result.
 | `store(key, plugin?)` | `{value, rev}`; an absent record is `{rev = '0'}`. |
 | `notice(agent)` | `{found, pending, intent_rev}` |
 | `batches()` | The number of `hub.store.batch` calls of the plugin. |
+| `invalidates(plugin?)` | The number of `hub.ui.invalidate` calls of the plugin. A count that stays the same while nothing changes proves that no idle render loop runs. |
+| `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
+| `H.args.lab` | The lab dir. |
 | `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |
 | `operation(key)` | A view operation's durable state. |
 | `advance_rev(n)` | Moves the store revision counter forward (never back). |
@@ -192,6 +247,10 @@ Every user action must also be an agent action (an MCP tool). The harness checks
   action, nested nodes too) names `tool = '<export>'` or `user_only = '<reason>'`.
 - The named export must be in the plugin's `exports`, and the agent face must list it: the plugin
   must declare `hub.forward`.
+- The tool can also be a hub action that agents can call (`agentHubActions` in
+  `hub/cmd/hub/agentface.go`, for example `hub.spawn` or `hub.stop`). The parity report reads the
+  agent face from Rex (`client.inspect`), and the action must be on it. Another `hub.*` name fails
+  as not an export.
 - `$back`, `$cancel` and the history `load` action are exempt (renderer mechanics). The exempt list
   is `parityExemptNames` in `hub/cmd/hub/testmode.go`.
 
@@ -229,12 +288,20 @@ and action). It does not change behavior.
   `--state-dir <dir>/state`.
 
 `lazyrex-hub test` and `lab/server.sh` both write `lab.json`. So a hub started by hand with
-`-test` on a `lab/server.sh` lab passes the proof.
+`-test` on a `lab/server.sh` lab passes the proof. `-test` also needs `test_roots` in the config
+(see "Isolation"); without `-test`, the hub refuses `test_roots`.
 
 ## Harness self-tests
 
 - `tests/harness/`: a fixture plugin and tests of the harness itself (agents, views, effects,
   limits, injections, assertions). Run `lazyrex-hub test tests/harness`.
 - `tests/harness-fail/`: files that must fail, each for the reason in its first line.
+- `tests/isolation/`: a probe plugin, loaded as the plugin under test and as a dependency, and a
+  spawned worker. They report their environment, args and working directory. The tests also check
+  the test-mode profile refusals.
+- `TestHarnessIsolation` runs `tests/isolation` with an outer `HOME` and `XDG_CONFIG_HOME` in a
+  temporary dir (never the real home) that hold a sentinel, and an outer secret variable. No lab
+  process finds the sentinel through `HOME` or `XDG_CONFIG_HOME` or gets the secret. The outer
+  `HOME` does not change, and no lab file contains the secret.
 - `HARNESS_LAB=1 go test -run TestHarness ./cmd/hub` (in `hub/`) runs both, and also checks an
   empty `-run` match and an interrupt. It checks that no lab process survives.
