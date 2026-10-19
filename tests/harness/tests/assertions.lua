@@ -37,3 +37,13 @@ test('each matcher passes on a match', function()
   expect({1, 2}).to_have_length(2)
   expect(expect_error(function() error('boom') end, 'boom').message).to_match('boom')
 end)
+
+test('a label that is not text keeps the real failure visible', function()
+  for _, label in ipairs({{step = 2}, 7, true}) do
+    local ok, err = pcall(function() expect(1, label).to_be(2) end)
+    expect(ok).to_be(false)
+    local text = type(err) == 'table' and tostring(err.message) or tostring(err)
+    expect(text).to_match('expected 2, got 1')
+    expect(text:find('concatenate', 1, true), 'no concatenation error').to_be(nil)
+  end
+end)

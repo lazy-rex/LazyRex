@@ -159,7 +159,12 @@ function H.expect(v, label)
   return bound
 end
 
-local function what(e) return e.label and (e.label .. ': ') or '' end
+-- what returns the label prefix of a failure. A label that is not text is shown, so the real
+-- failure stays visible.
+local function what(e)
+  if e.label == nil then return '' end
+  return (type(e.label) == 'string' and e.label or show(e.label)) .. ': '
+end
 
 function Expect:to_equal(x)
   if not equal(self.v, x) then fail(what(self) .. 'expected ' .. show(x) .. ', got ' .. show(self.v), 2) end
