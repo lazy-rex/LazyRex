@@ -361,6 +361,11 @@ end
 
 -- call runs an exported plugin action through the agent face: the MCP path.
 function Agent:call(action, args) return perform(self.client, 'agent.call', {action = action, args = args or {}}) end
+-- call_raw is call with the arguments as JSON text. Rex Lua encodes an empty table as {}
+-- (observed on Rex 0.0.1792158932-g88fd41), so an empty array needs it: '{"ids":[]}'.
+function Agent:call_raw(action, json_text)
+  return perform(self.client, 'agent.call', {action = action, args_json = json_text})
+end
 -- direct calls the plugin client itself (not through the hub).
 function Agent:direct(action, args, plugin)
   return perform(self.client, 'agent.direct', {plugin = plugin or A.plugin, action = action, args = args or {}})

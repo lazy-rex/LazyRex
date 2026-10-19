@@ -104,6 +104,7 @@ Methods:
 | Method | Path |
 | --- | --- |
 | `a:call(action, args)` | Through the agent face (`rex -C lazyrex`, the MCP path) to the plugin. |
+| `a:call_raw(action, json)` | `call` with the arguments as JSON text, for an empty array: Rex Lua encodes `{}` as an object. |
 | `a:direct(action, args)` | To the plugin client itself. |
 | `a:hub(action, args)` | To the hub. |
 | `a:report{kind, conversation_id, source}` | `hub.identity.report` from a new process in the pane, like an agent hook. |

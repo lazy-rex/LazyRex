@@ -376,6 +376,16 @@ func testAgentMain(argv []string) int {
 	go c.serve(func(p perform, args map[string]any) {
 		action, _ := args["action"].(string)
 		inner := args["args"]
+		// args_json: the arguments as JSON text, used verbatim. Rex Lua encodes an empty table
+		// as {}, so a Lua test cannot send an empty array any other way.
+		if text, ok := args["args_json"].(string); ok {
+			var v any
+			if err := json.Unmarshal([]byte(text), &v); err != nil {
+				c.reply(p.CallID, nil, fmt.Errorf("args_json: %w", err))
+				return
+			}
+			inner = v
+		}
 		target := func(label string) (string, error) { return c.resolveClient(ctx, label) }
 		switch p.Action {
 		case "agent.status":
