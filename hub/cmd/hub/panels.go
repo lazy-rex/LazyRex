@@ -12,6 +12,10 @@ package main
 //   - The hub asks the old renderer view.release {replacement_id}. "released": the renderer froze
 //     its input. "confirm": unsaved input; the renderer asks the user (Keep editing / Discard and
 //     replace) and answers with hub.view.release_confirm.
+//   - A view that no renderer has attached to (attach_state never) holds no input: the hub claims
+//     it without view.release (claimUnattached). A renderer that attaches later follows the
+//     replacement from hub.view.attach and reads its state once (hub.view.replacement). A view
+//     that attached before and is not attached now, or a row from an older hub, is a conflict.
 //   - The new pane opens with new_split anchored at the old pane, then the hub closes the old pane.
 //     The new pane gets the old pane's area (lab: spikes/lab/slot-replace-probe.mjs).
 //   - Each replacement is a durable row (ui_replacements). The new pane is asked for once per

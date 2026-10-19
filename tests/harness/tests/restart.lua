@@ -84,8 +84,8 @@ local function replace_form(first)
     for _, w in ipairs(H.views()) do if w.view_id == first.id then return nil end end
     return true
   end, 10)
-  -- The new form must attach before the next command replaces it (a never-attached view cannot
-  -- be replaced yet: the askrelease branch).
+  -- The new form attaches before the next command, so the next replacement asks its renderer
+  -- (a never-attached view is claimed without a renderer: panels.go askRelease).
   user:view('/forms/fix')
 end
 
