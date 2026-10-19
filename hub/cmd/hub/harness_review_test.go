@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -185,4 +186,32 @@ func TestRunnerEndDuringRestartWaitsForTheRestart(t *testing.T) {
 			t.Fatalf("interrupt=%v: problems: %v", interrupt, res.problems)
 		}
 	}
+}
+
+// The reviewer's reproducer: a restart that still writes l.hub after the timeout. The timeout
+// snapshot reads l.hub, so it must wait for the restart (go test -race).
+func TestRunnerTimeoutSnapshotWaitsForTheRestart(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "echo 'LRT plan 1'; echo 'LRT restart term'; exec sleep 30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	l := &lab{tracked: map[int]string{}}
+	o := &testOpts{timeout: 200 * time.Millisecond}
+	o.restartFn = func(ctx context.Context, l *lab, mode string) error {
+		<-ctx.Done()
+		until := time.Now().Add(300 * time.Millisecond)
+		for time.Now().Before(until) {
+			l.hub = cmd // as startHub assigns it
+			runtime.Gosched()
+		}
+		return ctx.Err()
+	}
+	fctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
+	o.waitRunner(context.Background(), fctx, l, cmd, stdout, &fileResult{}, io.Discard)
 }

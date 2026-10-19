@@ -353,10 +353,16 @@ func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, 
 	if o.restartFn != nil {
 		restart = o.restartFn
 	}
+	// mu serializes a restart and the timeout snapshot: both read and write l.hub and l.tracked.
+	var mu sync.Mutex
 	parsed := make(chan struct{})
 	exit := make(chan error, 1)
 	go func() {
-		o.parse(stdout, res, logf, func(mode string) error { return restart(fctx, l, mode) })
+		o.parse(stdout, res, logf, func(mode string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			return restart(fctx, l, mode)
+		})
 		close(parsed)
 		stdout.Close()
 		exit <- <-w.done
@@ -367,7 +373,11 @@ func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, 
 			res.problems = append(res.problems, "runner exited: "+err.Error())
 		}
 	case <-fctx.Done():
-		l.snapshot() // the runner's children, so that the lab cleanup checks them
+		// The runner's children, so that the lab cleanup checks them. A restart that runs now ends
+		// soon (it stops at fctx; the stop of the old hub has a limit), and the runner waits for it.
+		mu.Lock()
+		l.snapshot()
+		mu.Unlock()
 		w.signal(syscall.SIGKILL)
 		// Close the output before the wait: another process can keep it open (for example a
 		// child after the runner exited; that group gets no signal). The file fails anyway, so
