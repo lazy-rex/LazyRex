@@ -266,9 +266,6 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 			if err := h.identityLog(ctx, tx, id, block, "aliased", map[string]any{"legacy": agentID}); err != nil {
 				return nil, err
 			}
-			if err := h.migrateSpawns(ctx, tx, agentID, id, block); err != nil {
-				return nil, err
-			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -746,47 +743,86 @@ func (h *Hub) resolveAgent(args map[string]any) (any, error) {
 	return nil, bad("unknown: no agent matches %q", to)
 }
 
-// migrateSpawns moves the spawns of a legacy agent to the identity that took it over, in the
-// alias transaction (the coordinator, 2026-10-19). The identity replays the legacy spawn keys
-// ((caller, key) rows of spawns and spawn_windows) and stops the legacy workers (parent). When
-// both IDs already used one key, both rows stay (the legacy row keeps its legacy caller) and the
-// key is recorded in spawn_key_conflicts: a later call with it is refused, because a replay
-// cannot tell which request it repeats. Parents always move, so the identity stops both workers.
-func (h *Hub) migrateSpawns(ctx context.Context, tx *sql.Tx, legacy, id, block string) error {
-	for _, table := range []string{"spawns", "spawn_windows"} {
-		rows, err := tx.QueryContext(ctx, `SELECT key FROM `+table+` WHERE caller = ? AND key IN (SELECT key FROM `+table+` WHERE caller = ?)`, legacy, id)
-		if err != nil {
-			return err
+// aliasSet is every ID of one agent: its identity and each legacy ID that the identity took over
+// (identity_aliases, read now). Spawn rows keep the ID that made them; replay and stop accept any
+// ID of the set (the coordinator, 2026-10-19), so they follow a migration, a resume back and forth
+// between panes, and aliases from before this rule, with no row rewrite.
+func (h *Hub) aliasSet(ctx context.Context, id string) ([]string, error) {
+	if id == "" || id == "user" {
+		return []string{id}, nil
+	}
+	root := id
+	switch err := h.db.QueryRowContext(ctx, `SELECT identity FROM identity_aliases WHERE legacy = ?`, id).Scan(&root); {
+	case errors.Is(err, sql.ErrNoRows):
+		root = id
+	case err != nil:
+		return nil, err
+	}
+	set := []string{root}
+	rows, err := h.db.QueryContext(ctx, `SELECT legacy FROM identity_aliases WHERE identity = ? ORDER BY legacy`, root)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			return nil, err
 		}
-		var kept []string
-		for rows.Next() {
-			var k string
-			if err := rows.Scan(&k); err != nil {
-				rows.Close()
-				return err
-			}
-			kept = append(kept, k)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		kind := map[string]string{"spawns": "spawn", "spawn_windows": "window"}[table]
-		for _, k := range kept {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO spawn_key_conflicts VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-				kind, id, k, legacy, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-				return err
-			}
-		}
-		if len(kept) > 0 {
-			if err := h.identityLog(ctx, tx, id, block, "spawn_keys_conflict", map[string]any{"legacy": legacy, "table": table, "keys": kept}); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET caller = ? WHERE caller = ? AND key NOT IN (SELECT key FROM `+table+` WHERE caller = ?)`, id, legacy, id); err != nil {
-			return err
+		set = append(set, l)
+	}
+	return set, rows.Err()
+}
+
+// sameAgent reports whether a and b are IDs of one agent.
+func (h *Hub) sameAgent(ctx context.Context, a, b string) (bool, error) {
+	if a == b {
+		return true, nil
+	}
+	set, err := h.aliasSet(ctx, a)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range set {
+		if id == b {
+			return true, nil
 		}
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE spawns SET parent = ? WHERE parent = ?`, id, legacy)
-	return err
+	return false, nil
+}
+
+// callerKeyRow finds the row of key made by any ID of caller's agent: the query selects the
+// columns in cols from table. Two rows (two IDs of one agent used the key before they became
+// one) are refused: a replay cannot tell which request it repeats.
+func (h *Hub) callerKeyRow(ctx context.Context, table, cols, caller, key string) (*sql.Row, error) {
+	set, err := h.aliasSet(ctx, caller)
+	if err != nil {
+		return nil, err
+	}
+	in := strings.TrimSuffix(strings.Repeat("?,", len(set)), ",")
+	params := []any{key}
+	for _, id := range set {
+		params = append(params, id)
+	}
+	var owners []string
+	rows, err := h.db.QueryContext(ctx, `SELECT caller FROM `+table+` WHERE key = ? AND caller IN (`+in+`) ORDER BY caller`, params...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		owners = append(owners, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(owners) > 1 {
+		return nil, refuse("conflict", "key %q was used by %s before they became one identity; use a new key", key, strings.Join(owners, " and by "))
+	}
+	return h.db.QueryRowContext(ctx, `SELECT `+cols+` FROM `+table+` WHERE key = ? AND caller IN (`+in+`)`, params...), nil
 }
