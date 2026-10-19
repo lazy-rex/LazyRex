@@ -253,3 +253,24 @@ func TestNewPanelFocusesItsFirstControl(t *testing.T) {
 		}
 	}
 }
+
+// Ctrl+U in a form text field deletes the text before the cursor, so a user can clear a prefilled
+// Directory and type a new one. This replaces the Profiles lab check that cleared the field.
+func TestCtrlUClearsAFormTextField(t *testing.T) {
+	m := testModel()
+	m.apply(Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/forms/start", Revision: "1", Tree: Tree{Nodes: []Node{
+		{ID: "start", Type: "form", Fields: []Field{{ID: "dir", Label: "Directory", Kind: "text", Value: "/repo/sub"}},
+			SubmitAction: &Action{Name: "submit", Label: "Start", Enabled: true}},
+	}}})
+	m.setFocus("edit:start/dir")
+	e := m.editors[editorID("start", "dir")]
+	e.Area.CursorEnd()
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	if got := e.Area.Value(); got != "" {
+		t.Fatalf("Ctrl+U left %q", got)
+	}
+	m.Update(tea.KeyPressMsg{Code: 'w', Text: "/work"})
+	if got := e.Area.Value(); got != "/work" {
+		t.Fatalf("Typing after Ctrl+U gave %q", got)
+	}
+}
