@@ -15,7 +15,8 @@ test('a migrated identity replays the old key and stops the old worker', functio
   -- The same key from the new identity is a replay, not a second worker.
   expect(alice:hub('hub.spawn', {profile = 'shell', key = 'mig-1'}).spawn_id).to_be(id)
   expect(worker(alice, id).parent).to_be('alice') -- the recorded parent does not change
-  expect_error(function() bob:hub('hub.stop', {spawn_id = id}) end, 'did not start')
+  -- Any agent may stop any worker (decisions.md, 2026-10-19); a repeat is closed again.
+  expect(bob:hub('hub.stop', {spawn_id = id}).status).to_be('closed')
   expect(alice:hub('hub.stop', {spawn_id = id}).status).to_be('closed')
 end)
 
@@ -26,7 +27,8 @@ test('another conversation in the same pane does not get the first identity\'s w
   -- The pane starts another conversation: carol stays the alias of claude:first.
   expect(carol:report({kind = 'claude', conversation_id = 'second', source = 'clear'}).identity).to_be('claude:second')
   expect(carol:hub('hub.spawn', {profile = 'shell', key = 'own'}).spawn_id).not_to_be(w.spawn_id)
-  expect_error(function() carol:hub('hub.stop', {spawn_id = w.spawn_id}) end, 'did not start')
+  -- The new conversation may still stop the old identity's worker: any agent may stop any worker.
+  expect(carol:hub('hub.stop', {spawn_id = w.spawn_id}).status).to_be('closed')
 end)
 
 test('a migrated identity replays the old spawn_window key', function()

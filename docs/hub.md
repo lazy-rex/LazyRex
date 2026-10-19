@@ -373,7 +373,7 @@ Verification (Codex, Rex 1203): `workers_placement_test.go` exercises four split
 - Rex answers: `open` (the spawn row and the agent binding commit in one transaction) or `failed` (Rex refused).
 - No answer (hub crash or disconnect), or a success answer without exactly one nonempty block ID: the spawn stays `sending`. Rex said yes, so a pane may exist (`TestSpawnMalformedSuccessLab`). A label is only a hint, so the hub never adopts or closes a pane by label. An agent spawn opens when its agent joins from the one pane with the spawn's label. An accessory spawn stays pending in the worker list, with "outcome unknown", and `hub.stop` refuses it.
 - Join admission for a spawned agent: `sending` gives `not_ready` (or adoption, above), `open` accepts only the recorded block, `failed` and `closed` refuse (the ID is retired).
-- `hub.stop` is idempotent by `spawn_id`. The user may stop any worker; an agent only the workers it started. Stop on a failed spawn dismisses it from the list.
+- `hub.stop` is idempotent by `spawn_id`. The user and every agent may stop any worker, also one that another identity started (decisions.md, 2026-10-19). Stop on a failed spawn dismisses it from the list.
 - The hub tells the plugins (`hub.changed`) when workers, agents, profiles or plugins change, including a worker exit and a program status change.
 
 No cap on workers is configured, and nothing starts or restarts a worker automatically.

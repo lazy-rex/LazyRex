@@ -10,12 +10,13 @@ test('a stopped hub restarts with its state; agents keep working', function()
   expect(alice:call('fix.who', {}).agent).to_be('alice')
 end)
 
-test('a crashed hub restarts; a spawn key replays and its owner stops it', function()
+test('a crashed hub restarts; a spawn key replays and another agent stops it', function()
   local alice, bob = agent('alice'), agent('bob')
   local first = alice:hub('hub.spawn', {profile = 'shell', key = 'across'})
   hub:restart({crash = true})
   expect(alice:hub('hub.spawn', {profile = 'shell', key = 'across'}).spawn_id).to_be(first.spawn_id)
-  expect_error(function() bob:hub('hub.stop', {spawn_id = first.spawn_id}) end, 'did not start')
+  -- Any agent may stop any worker (decisions.md, 2026-10-19); a repeat is closed again.
+  expect(bob:hub('hub.stop', {spawn_id = first.spawn_id}).status).to_be('closed')
   expect(alice:hub('hub.stop', {spawn_id = first.spawn_id}).status).to_be('closed')
 end)
 
@@ -29,7 +30,7 @@ test('a grant made before a restart admits its request after it, as the agent', 
   for _, s in ipairs(carol:hub('hub.workers', {}).workers) do
     if s.window_id == w.window_id then
       expect(s.parent).to_be('carol')
-      expect_error(function() bob:hub('hub.stop', {spawn_id = s.spawn_id}) end, 'did not start')
+      expect(bob:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed')
       expect(carol:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed')
     end
   end

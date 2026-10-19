@@ -1140,7 +1140,8 @@ func (h *Hub) spawnByID(ctx context.Context, id string) (*spawnRow, error) {
 	return s, err
 }
 
-// stop closes a worker's pane. The user may stop any worker; an agent only the ones it started.
+// stop closes a worker's pane. The user and every agent may stop any worker, also one that another
+// identity started (decisions.md, 2026-10-19: agents may act on anything a user can).
 // Stop is idempotent by spawn_id: a retry of a finished stop returns status closed. The optional
 // key is accepted so that the renderer can send its operation key, but stop does not need it.
 // Stop refuses a pending spawn: its pane is not identified, and its process can still start.
@@ -1154,13 +1155,6 @@ func (h *Hub) stop(ctx context.Context, p perform, args map[string]any) (any, er
 	s, err := h.spawnByID(ctx, id)
 	if err != nil {
 		return nil, err
-	}
-	same, err := h.sameAgent(ctx, caller, s.Parent)
-	if err != nil {
-		return nil, err
-	}
-	if caller != "user" && !same {
-		return nil, bad("%s did not start %s", caller, id)
 	}
 	if _, err := h.workerBlocks(ctx, s); err != nil {
 		return nil, err
@@ -1394,7 +1388,7 @@ var hubToolActions = []map[string]any{
 		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status.",
 		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
 	{"name": "hub.stop", "kind": "client", "title": "Stop a worker",
-		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. An agent can stop only workers it started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
+		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. Any agent can stop any worker, also one that another agent or the user started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
 			"spawn_id": map[string]any{"type": "string", "minLength": 1}, "key": map[string]any{"type": "string", "maxLength": 128},
 			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
