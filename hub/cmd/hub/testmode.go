@@ -281,7 +281,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
 		for _, in := range h.test.injections {
-			if in.ID == int(id) {
+			if float64(in.ID) == id { // exact: 1.5 is not injection 1
 				in.Times = in.Consumed
 				return map[string]any{"consumed": in.Consumed}, nil
 			}
