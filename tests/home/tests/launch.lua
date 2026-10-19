@@ -58,10 +58,30 @@ test('named inputs reach the worker as profile args, on both paths', function()
   expect(read_args()).to_be('Read code\nExplain findings|review')
 end)
 
+test('user path: the hub retry after a profile removal rebuilds the same named inputs', function()
+  -- The first attempt commits the spawn and loses its reply. A gate holds the hub's retry while
+  -- the test removes the profile. After the release the plugin must send the same request
+  -- (args from the form values, not from the profile), or the hub refuses it.
+  local lost = fault({point = 'action', action = 'hub.spawn', when = 'after', mode = 'lose-reply'})
+  local gate = fault({point = 'action', action = 'hub.spawn', when = 'before', mode = 'gate', nth = 2})
+  local before = #workers()
+  os.remove(args_file)
+  local v = home()
+  local _, key = v:admit('action', {node_id = 'launch/task', action = 'launch', revision = v.revision,
+    input = {values = {title = 'Rebuilt', ['arg/task'] = 'Rebuild\nthe inputs', ['arg/mode'] = 'retry'}}})
+  wait('the retry reaches the gate', function() return fault_fired(gate) end)
+  expect(fault_fired(lost)).to_be(true)
+  expect(read_args(), 'the first attempt started the worker').to_be('Rebuild\nthe inputs|retry')
+  write_profiles({profiles = {{id = 'other', name = 'Other', kind = 'accessory', command = {'/bin/sh', '-c', 'exec sleep 600'}}}})
+  expect(H.node(home():render(), 'launch/task'), 'the profile is gone').to_be(nil)
+  fault_release(gate)
+  local op = v:settle(key)
+  expect(op.status).to_be('succeeded')
+  expect(op.result.status).to_be('open')
+  expect(#workers(), 'the retry replayed the first spawn').to_be(before + 1)
+end)
+
 -- hub.spawn replays a used key before it loads profiles, so a retry survives a profile removal.
--- The user path reaches it only through the hub's own retry of a view operation (errors.lua, a
--- lost reply). That retry runs 300 ms later, so a test cannot remove the profile in between
--- without a race; the agent path checks the hub contract.
 test('agent path: a retry after the profile was removed replays the first launch', function()
   write_profiles({profiles = {{id = 'other', name = 'Other', kind = 'accessory', command = {'/bin/sh', '-c', 'exec sleep 600'}}}})
   local before = #workers()

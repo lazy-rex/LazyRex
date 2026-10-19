@@ -8,7 +8,8 @@ lazyrex-hub test tests/home
 
 The manifest loads a messaging stub (`messaging_stub.lua`: a landing panel and lazy `thread/<id>`
 tabs) and the harness fixture (a plugin with a tab). Profiles come from `profiles.json`. The
-`task` profile writes its two args to `LAB/home/task-args`.
+`task` profile writes its two args to `LAB/home/task-args`. The `status` profile reports an
+OSC 7501 status record.
 
 ## Coverage map: tests/home.mjs
 
@@ -20,7 +21,7 @@ tests cover the behavior on the real hub.
 | 50, 52 | Registration and one tab `home` at `/` | render.lua "declares one tab" |
 | 53-54 | `view.render` returns `{tree}` | every `View:render` (the hub reads `tree`) |
 | 56-58 | Title; other plugins only; agents without the user | render.lua "the tree lists" |
-| 59 | Worker detail from the status record (`idle · Ready`) | Not ported: a status record needs a program that reports status. The detail text is plugin code; render.lua checks the failed detail. |
+| 59 | Worker detail from the status record (`idle · Ready`) | render.lua "a worker detail shows its program status record" (the `status` profile reports OSC 7501) |
 | 60 | Stop options: active workers only | render.lua "workers" |
 | 61 | Failed detail `failed · <error>` | render.lua "workers" (a spawn-create refuse fault) |
 | 62-65 | Launch form fields, defaults, multiline task | render.lua "the tree lists" |
@@ -32,9 +33,9 @@ tests cover the behavior on the real hub.
 | 111-112 | Open a worker | navigation.lua "open a worker" |
 | 113-115 | Launch with a title, then show the worker | launch.lua "user path"; agent path: "agent path" |
 | 116-119 | Named inputs reach the spawn | launch.lua "named inputs" (both paths; the worker receives the args) |
-| 120-122 | Named inputs survive a retry after profile removal | launch.lua "agent path: a retry after the profile was removed". The user path retries only through the hub (errors.lua "a disconnected reply"); see the comment in launch.lua. |
+| 120-122 | Named inputs survive a retry after profile removal | launch.lua "user path: the hub retry after a profile removal" (a lose-reply fault, then a gate holds the retry while the test removes the profile); agent path: "agent path: a retry after the profile was removed" |
 | 123 | Launch inputs must be text | launch.lua "launch inputs must be text" |
-| 125-126 | A launch retry reaches the hub after profile removal | launch.lua (same row as 120-122) |
+| 125-126 | A launch retry reaches the hub after profile removal | launch.lua (same tests as 120-122) |
 | 127-129 | Dismiss a failed worker | stop.lua "a failed launch is dismissed" (both paths) |
 | 130-131 | Stop form | stop.lua "user path", "agent path" |
 | — | An agent stops only workers it started | stop.lua "an agent cannot stop" (new) |

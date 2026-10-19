@@ -62,6 +62,16 @@ test('workers: a running worker opens and can be stopped; a failed launch can be
   expect(stop.submit_action.tool).to_be('hub.stop')
 end)
 
+test('a worker detail shows its program status record (OSC 7501)', function()
+  -- The status profile prints a root record: state idle, msg Ready (base64 in the escape).
+  local w = codex:call('hub.spawn', {profile = 'status', key = 'render-status', title = 'Reports status'})
+  local item = wait('the status record reaches the worker list', function()
+    local x = find(H.node(home(), 'workers').items, w.spawn_id)
+    if x and x.detail ~= 'running' and x.detail ~= 'starting' then return x end
+  end)
+  expect(item.detail).to_be('idle · Ready')
+end)
+
 test('a worker whose pane closed leaves the list and the stop options', function()
   -- The real hub lists only sending, open and failed spawns; a closed pane closes the spawn.
   local w = codex:call('hub.spawn', {profile = 'shell', key = 'render-closed', title = 'Closed by hand'})
