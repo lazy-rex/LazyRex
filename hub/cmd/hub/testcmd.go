@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -227,6 +228,7 @@ type lab struct {
 	dir, socket, server string
 	env                 []string
 	srv, hub            *exec.Cmd
+	srvW, hubW          *waiter
 	srvExit, hubExit    chan error
 	r                   *rex.Rex
 	tracked             map[int]string // pid -> start time: every process seen under the server or the hub
@@ -276,7 +278,8 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 		return l, err
 	}
 	l.track(l.srv.Process.Pid)
-	l.srvExit = waitCh(l.srv)
+	l.srvW = watch(l.srv)
+	l.srvExit = l.srvW.done
 	proof, _ := json.Marshal(map[string]any{"socket": l.server, "server_pid": l.srv.Process.Pid, "nonce": newNonce()})
 	if err := os.WriteFile(filepath.Join(dir, "lab.json"), proof, 0o600); err != nil {
 		return l, err
@@ -306,10 +309,62 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 	}
 }
 
-func waitCh(c *exec.Cmd) chan error {
-	ch := make(chan error, 1)
-	go func() { ch <- c.Wait() }()
-	return ch
+// waiter reaps one started process. It reaps only while it holds mu, and signal holds mu too. So
+// a process that signal finds unreaped still owns its pid, and its process group ID (the same
+// number) cannot belong to another process. The harness never calls exec.Cmd.Wait for it.
+type waiter struct {
+	pid    int
+	mu     sync.Mutex
+	reaped bool
+	done   chan error // the exit status, sent once
+}
+
+func watch(c *exec.Cmd) *waiter {
+	w := &waiter{pid: c.Process.Pid, done: make(chan error, 1)}
+	go func() {
+		for {
+			w.mu.Lock()
+			var ws syscall.WaitStatus
+			pid, err := syscall.Wait4(w.pid, &ws, syscall.WNOHANG, nil)
+			if err == syscall.EINTR {
+				w.mu.Unlock()
+				continue
+			}
+			if pid == w.pid || err != nil {
+				w.reaped = true
+				w.mu.Unlock()
+				switch {
+				case err != nil:
+					w.done <- err
+				case ws.Signaled():
+					w.done <- fmt.Errorf("signal: %v", ws.Signal())
+				case ws.ExitStatus() != 0:
+					w.done <- fmt.Errorf("exit status %d", ws.ExitStatus())
+				default:
+					w.done <- nil
+				}
+				return
+			}
+			w.mu.Unlock()
+			time.Sleep(25 * time.Millisecond)
+		}
+	}()
+	return w
+}
+
+// signal sends sig to the process group of the process. It sends nothing and returns false when
+// the process is already reaped: its group ID can then name an unrelated group.
+func (w *waiter) signal(sig syscall.Signal) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.reaped {
+		return false
+	}
+	syscall.Kill(-w.pid, sig)
+	return true
 }
 
 func (l *lab) track(pid int) {
@@ -335,19 +390,34 @@ func (l *lab) snapshot() {
 		ppid, _ := strconv.Atoi(f[1])
 		children[ppid] = append(children[ppid], pid)
 	}
-	var roots []int
+	// A root is a process that the harness started, in the lifetime that it recorded at the start.
+	// A pid that now belongs to another process is not a root. A descendant is claimed only when
+	// its parent, checked now, is a claimed process: a pid in the old ps listing can be reused.
+	type proc struct {
+		pid   int
+		start string
+	}
+	var roots []proc
 	for _, c := range []*exec.Cmd{l.srv, l.hub} {
-		if c != nil && c.Process != nil {
-			roots = append(roots, c.Process.Pid)
+		if c == nil || c.Process == nil {
+			continue
+		}
+		pid := c.Process.Pid
+		if s, ok := l.tracked[pid]; ok && s != "" && startTime(pid) == s {
+			roots = append(roots, proc{pid, s})
 		}
 	}
 	for len(roots) > 0 {
-		pid := roots[0]
+		p := roots[0]
 		roots = roots[1:]
-		if _, seen := l.tracked[pid]; !seen {
-			l.track(pid)
+		for _, c := range children[p.pid] {
+			ppid, s, ok := procInfo(c)
+			if !ok || ppid != p.pid || startTime(p.pid) != p.start {
+				continue // gone, or not a child of the claimed process any more
+			}
+			l.tracked[c] = s
+			roots = append(roots, proc{c, s})
 		}
-		roots = append(roots, children[pid]...)
 	}
 }
 
@@ -359,22 +429,24 @@ func (l *lab) stop() []string {
 	if l.r != nil {
 		l.r.Close()
 	}
-	stopGroup := func(c *exec.Cmd, exit chan error, what string) {
-		if c == nil || c.Process == nil || exit == nil {
+	// A leader that already exited gets no group signal (waiter.signal). Its group members are in
+	// tracked and get the checked per-process signal below.
+	stopGroup := func(w *waiter, exit chan error, what string) {
+		if w == nil || exit == nil {
 			return
 		}
-		syscall.Kill(-c.Process.Pid, syscall.SIGTERM)
+		w.signal(syscall.SIGTERM)
 		select {
 		case <-exit:
 		case <-time.After(10 * time.Second):
 			problems = append(problems, what+" did not stop in 10 s after SIGTERM; sent SIGKILL")
-			syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
+			w.signal(syscall.SIGKILL)
 			<-exit
 		}
 	}
-	stopGroup(l.hub, l.hubExit, "hub")
+	stopGroup(l.hubW, l.hubExit, "hub")
 	l.snapshot()
-	stopGroup(l.srv, l.srvExit, "lab server")
+	stopGroup(l.srvW, l.srvExit, "lab server")
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var alive []int
@@ -389,7 +461,11 @@ func (l *lab) stop() []string {
 		if time.Now().After(deadline) {
 			sort.Ints(alive)
 			for _, pid := range alive {
-				syscall.Kill(pid, syscall.SIGKILL)
+				// Check the lifetime again just before the signal. A pid can be reused between
+				// that check and the signal: macOS has no process handle that closes this gap.
+				if startTime(pid) == l.tracked[pid] {
+					syscall.Kill(pid, syscall.SIGKILL)
+				}
 			}
 			problems = append(problems, fmt.Sprintf("cleanup: processes survived the lab server: %v (sent SIGKILL)", alive))
 			break
@@ -458,7 +534,8 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 		return err
 	}
 	l.track(l.hub.Process.Pid)
-	l.hubExit = waitCh(l.hub)
+	l.hubW = watch(l.hub)
+	l.hubExit = l.hubW.done
 	c := &helperConn{r: l.r}
 	deadline := time.Now().Add(20 * time.Second)
 	var last string
@@ -571,14 +648,20 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		return res
 	}
 	l.track(cmd.Process.Pid)
-	exit := waitChAfter(cmd, stdout, func(r io.Reader) { o.parse(r, res, logf) })
+	w := watch(cmd)
+	exit := make(chan error, 1)
+	go func() {
+		o.parse(stdout, res, logf)
+		stdout.Close()
+		exit <- <-w.done
+	}()
 	select {
 	case err := <-exit:
 		if err != nil {
 			res.problems = append(res.problems, "runner exited: "+err.Error())
 		}
 	case <-fctx.Done():
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		w.signal(syscall.SIGKILL)
 		<-exit
 		if ctx.Err() != nil {
 			res.problems = append(res.problems, "interrupted")
@@ -593,16 +676,6 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		}
 	}
 	return res
-}
-
-// waitChAfter reads stdout to its end with read, then waits for the process.
-func waitChAfter(c *exec.Cmd, stdout io.Reader, read func(io.Reader)) chan error {
-	ch := make(chan error, 1)
-	go func() {
-		read(stdout)
-		ch <- c.Wait()
-	}()
-	return ch
 }
 
 var lrtLine = regexp.MustCompile(`^LRT (plan (\d+)|ok (\d+) (.*)|fail (\d+) (.*)|done (\d+) (\d+)|note (.*))$`)
