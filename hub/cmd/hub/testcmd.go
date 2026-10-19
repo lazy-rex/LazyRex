@@ -330,15 +330,14 @@ func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, 
 	case <-fctx.Done():
 		l.snapshot() // the runner's children, so that the lab cleanup checks them
 		w.signal(syscall.SIGKILL)
+		// Close the output before the wait: another process can keep it open (for example a
+		// child after the runner exited; that group gets no signal). The file fails anyway, so
+		// lines after the timeout do not count.
+		stdout.Close()
 		select {
 		case <-exit:
-		case <-time.After(5 * time.Second):
-			// The runner is gone, but another process keeps its output open (for example a
-			// child after the runner exited: its group gets no signal then). Close the output
-			// so that the parser ends. The lab cleanup reports a tracked survivor.
-			stdout.Close()
-			<-exit
-			res.problems = append(res.problems, "runner: its output stayed open 5 s after the runner was stopped")
+		case <-time.After(10 * time.Second):
+			res.problems = append(res.problems, "runner: not reaped 10 s after the timeout")
 		}
 		if ctx.Err() != nil {
 			res.problems = append(res.problems, "interrupted")

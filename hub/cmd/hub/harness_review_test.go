@@ -113,7 +113,7 @@ func TestWaiterSendsNoGroupSignalAfterReap(t *testing.T) {
 }
 
 // The runner exits at once, and its child keeps the output open for 8 s. The leader is reaped,
-// so its group gets no signal. The wait after the timeout must still end, within its limit.
+// so its group gets no signal. The wait must end at the timeout, not when the child exits.
 func TestRunnerTimeoutEndsWhenAChildHoldsTheOutput(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c", "sleep 8 & exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -131,10 +131,10 @@ func TestRunnerTimeoutEndsWhenAChildHoldsTheOutput(t *testing.T) {
 	defer cancel()
 	began := time.Now()
 	o.waitRunner(context.Background(), fctx, l, cmd, stdout, res, io.Discard)
-	if d := time.Since(began); d > 7*time.Second {
+	if d := time.Since(began); d > 3*time.Second {
 		t.Fatalf("the wait took %s", d)
 	}
-	if !strings.Contains(strings.Join(res.problems, "\n"), "output stayed open") {
+	if !strings.Contains(strings.Join(res.problems, "\n"), "timeout: the file did not finish") {
 		t.Fatalf("problems: %v", res.problems)
 	}
 }
