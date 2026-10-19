@@ -218,6 +218,11 @@ func testViewMain(argv []string) int {
 	var mu sync.Mutex
 	var hub, attachment string
 	announced := "0"
+	// subscribed: the current attachment has a subscription. The watcher attaches again while it is
+	// false, also on the same hub. held, holdExpired, failures: test evidence (testview.status).
+	var subscribed, held bool
+	var holdExpired, failures int
+	failOnce := true
 	attach := func() error {
 		h, err := c.resolveClient(ctx, "lazyrex-hub")
 		if err != nil {
@@ -243,12 +248,43 @@ func testViewMain(argv []string) int {
 			return fmt.Errorf("attach: the hub bound %s %s, the launch named %s %s", att.Plugin, att.Route, fs.Arg(0), fs.Arg(1))
 		}
 		mu.Lock()
-		hub, attachment = h, att.Attachment
+		hub, attachment, subscribed = h, att.Attachment, false
 		mu.Unlock()
-		holdBeforeSubscribe(*hold, fs.Arg(1))
+		mode := readHold(*hold, fs.Arg(1))
+		if mode == "hold" {
+			mu.Lock()
+			held = true
+			mu.Unlock()
+			expired := holdBeforeSubscribe(*hold, fs.Arg(1))
+			mu.Lock()
+			held = false
+			if expired {
+				holdExpired++
+			}
+			mu.Unlock()
+		}
+		mu.Lock()
+		fail := mode == "fail-subscribe-once" && failOnce
+		if fail {
+			failOnce = false
+			failures++
+		}
+		mu.Unlock()
+		if fail {
+			// Simulated by the test view: the subscribe is not sent. It tests the retry.
+			return errors.New("subscribe: simulated refusal (hold file: fail-subscribe-once)")
+		}
 		if _, err := c.perform(ctx, h, "hub.view.subscribe", map[string]any{"view_id": *viewID, "attachment": att.Attachment}); err != nil {
+			mu.Lock()
+			failures++
+			mu.Unlock()
 			return fmt.Errorf("subscribe: %w", err)
 		}
+		mu.Lock()
+		if attachment == att.Attachment {
+			subscribed = true
+		}
+		mu.Unlock()
 		log.Printf("attached %s %s through %s", att.Plugin, att.Route, h)
 		return nil
 	}
@@ -301,7 +337,11 @@ func testViewMain(argv []string) int {
 			mu.Lock()
 			a := announced
 			mu.Unlock()
-			c.reply(p.CallID, map[string]any{"view_id": *viewID, "plugin": fs.Arg(0), "route": fs.Arg(1), "announced": a, "pid": os.Getpid()}, nil)
+			mu.Lock()
+			st := map[string]any{"view_id": *viewID, "plugin": fs.Arg(0), "route": fs.Arg(1), "announced": a, "pid": os.Getpid(),
+				"subscribed": subscribed, "held": held, "hold_expired": holdExpired, "subscribe_failures": failures}
+			mu.Unlock()
+			c.reply(p.CallID, st, nil)
 		case "testview.get":
 			call("hub.view.get")
 		case "testview.action":
@@ -328,16 +368,18 @@ func testViewMain(argv []string) int {
 	// subscribe waits in its queue behind that request (rex-protocol.md, "The hub has one request
 	// queue").
 	if err := attach(); err != nil {
-		log.Print(err)
-		return 1
+		log.Printf("%v; the watcher tries again", err) // a closed view ends with its pane
 	}
 	go func() {
 		// A new hub client means a restarted hub. While no hub is connected, the resolve fails and
-		// the watcher waits. A failed attach is tried again.
+		// the watcher waits. An attach or subscribe that failed is tried again on the same hub.
 		for !c.r.Closed() {
 			time.Sleep(200 * time.Millisecond)
 			h, err := c.resolveClient(ctx, "lazyrex-hub")
-			if was, _ := current(); err != nil || h == was {
+			mu.Lock()
+			done := subscribed
+			mu.Unlock()
+			if was, _ := current(); err != nil || h == was && done {
 				continue
 			}
 			if err := attach(); err != nil {
@@ -355,19 +397,36 @@ func testViewMain(argv []string) int {
 	}
 }
 
-// holdBeforeSubscribe waits while the file path names route, at most 20 s. A test uses it to hold a
-// renderer between its attach and its subscribe.
-func holdBeforeSubscribe(path, route string) {
+// The hold file (lab tests): the first line is a route, the second a mode, "hold" (the default) or
+// "fail-subscribe-once". readHold returns the mode when the file names route, else "".
+func readHold(path, route string) string {
 	if path == "" {
-		return
+		return ""
 	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if strings.TrimSpace(lines[0]) != route {
+		return ""
+	}
+	if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
+		return strings.TrimSpace(lines[1])
+	}
+	return "hold"
+}
+
+// holdBeforeSubscribe waits while the hold file holds route, at most 20 s. It reports whether the
+// 20 s expired. A test uses it to keep a renderer between its attach and its subscribe.
+func holdBeforeSubscribe(path, route string) bool {
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		b, err := os.ReadFile(path)
-		if err != nil || strings.TrimSpace(string(b)) != route {
-			return
+		if readHold(path, route) != "hold" {
+			return false
 		}
 	}
-	log.Printf("hold: %s still names %s after 20 s; subscribing", path, route)
+	log.Printf("hold: %s still holds %s after 20 s; subscribing", path, route)
+	return true
 }
 
 // closed returns a channel that is closed when the connection ends.

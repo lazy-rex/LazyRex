@@ -295,9 +295,12 @@ face lists its exports. It returns the new `hub.test.status` (with `pid`).
   client every 200 ms, then attaches and subscribes. Wait for `attached` in `H.views()` before a
   view action (restart.lua).
 - A test view serves the hub's callbacks (view.release, view.changed) before its first subscribe,
-  as the real renderer does. The file `LAB/testview-hold` holds every test view of the route that
-  it names between its attach and its subscribe (at most 20 s), so a test can request a release
-  in that state.
+  as the real renderer does. An attach or subscribe that fails is tried again, also on the same hub.
+- The file `LAB/testview-hold` controls the test views of one route: line 1 is the route, line 2
+  the mode. `hold` (the default) keeps them between attach and subscribe, at most 20 s; the
+  subscribe is not sent yet. `fail-subscribe-once` makes the first subscribe fail, simulated by
+  the test view. `testview.status` reports `held`, `hold_expired`, `subscribed` and
+  `subscribe_failures`.
 
 ### Faults
 
