@@ -31,6 +31,10 @@ example a bad manifest).
 
 ## What one run does
 
+First the command warns about each Lua multiple assignment where a later value reads an earlier
+target, with file and line (`a, b = b, a`; rex-protocol.md, "Lua swap assignment is wrong"). A
+warning never fails the run.
+
 1. The command reads `lazyrex.json`.
 2. A **parity sweep** runs first, in its own lab (see "Agent parity"). A failure fails the run.
 3. For each `tests/*.lua` file, in name order:

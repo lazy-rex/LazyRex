@@ -141,6 +141,9 @@ func testMain(argv []string) int {
 	if o.m, err = loadManifest(o.dir); err != nil {
 		return fail(err)
 	}
+	for _, w := range luaWarnings(o.dir) {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	if o.self, err = os.Executable(); err != nil {
 		return fail(err)
 	}
