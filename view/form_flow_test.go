@@ -124,3 +124,132 @@ func TestCtrlOClosesAMenuForm(t *testing.T) {
 		}
 	}
 }
+
+// Tab visits every control in screen order (rows top to bottom, then left to right inside a row),
+// and wraps at both ends. Shift+Tab visits them in reverse. This replaces the key-press checks of
+// the plugin Node lab tests (Tab to a button, Enter on the focused item).
+func TestTabVisitsControlsInScreenOrder(t *testing.T) {
+	list := Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/x", Revision: "1", Tree: Tree{Nodes: []Node{
+		{ID: "items", Type: "list", Items: []Item{
+			{ID: "a", Label: "First", Action: &Action{Name: "open", Enabled: true}},
+			{ID: "b", Label: "Second", Action: &Action{Name: "open", Enabled: true}},
+		}},
+		{ID: "stop", Type: "widget", Text: "Forward 3000", Action: &Action{Name: "stop", Label: "Stop", Enabled: true}},
+	}}}
+	cases := map[string]struct {
+		snap Snapshot
+		want []string
+	}{
+		"form": {flowSnapshot(), []string{"edit:start/dir", "browse:start/dir", "choice:start/profile", "edit:start/title", "start:submit", "cancel:action"}},
+		"list": {list, []string{"items:a", "items:b", "stop:action"}},
+	}
+	for name, tc := range cases {
+		m := testModel()
+		m.apply(tc.snap)
+		var screen []string
+		seen := map[string]bool{}
+		for _, r := range m.bodyRows() {
+			for _, c := range r.rowControls() {
+				if !seen[c.ID] { // a box spans several rows
+					seen[c.ID] = true
+					screen = append(screen, c.ID)
+				}
+			}
+		}
+		var order []string
+		for _, c := range m.controls() {
+			order = append(order, c.ID)
+		}
+		if strings.Join(screen, ",") != strings.Join(tc.want, ",") || strings.Join(order, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("%s: screen order %v, Tab order %v, want %v", name, screen, order, tc.want)
+		}
+		order = tc.want
+		m.setFocus(order[0])
+		for i := 1; i <= len(order); i++ {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			if want := order[i%len(order)]; m.focus != want {
+				t.Fatalf("%s: Tab %d focused %q, want %q", name, i, m.focus, want)
+			}
+		}
+		for i := len(order) - 1; i >= 0; i-- {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+			if m.focus != order[i] {
+				t.Fatalf("%s: Shift+Tab focused %q, want %q", name, m.focus, order[i])
+			}
+		}
+	}
+}
+
+// Enter activates the focused control: the second list item, and a widget button reached by Tab.
+func TestEnterActivatesTheFocusedControl(t *testing.T) {
+	m := testModel()
+	m.apply(Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/x", Revision: "1", Tree: Tree{Nodes: []Node{
+		{ID: "items", Type: "list", Items: []Item{
+			{ID: "a", Label: "First", Action: &Action{Name: "open", Enabled: true}},
+			{ID: "b", Label: "Second", Action: &Action{Name: "open", Enabled: true}},
+		}},
+		{ID: "stop", Type: "widget", Text: "Forward 3000", Action: &Action{Name: "stop", Label: "Stop", Enabled: true}},
+	}}})
+	cs := m.controls()
+	m.setFocus(cs[0].ID)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if req := request(t, m, cmd); req.Node != "items" || req.Args["action"] != "open" || req.Args["input"].(map[string]any)["item_id"] != "b" {
+		t.Fatalf("Enter on the second item sent %+v", req)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if req := request(t, m, cmd); req.Node != "stop" || req.Args["action"] != "stop" {
+		t.Fatalf("Enter on Stop sent %+v", req)
+	}
+}
+
+// A closed select shows the label of its selected option, then ▾. It does not show the raw value.
+// This replaces the Tunnels lab check of the Forward Port form ("<port> · node · web").
+func TestClosedSelectShowsTheSelectedLabel(t *testing.T) {
+	m := testModel()
+	m.themeReady = true
+	m.apply(Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/forms/forward", Revision: "1", Tree: Tree{Nodes: []Node{
+		{ID: "forward", Type: "form", Fields: []Field{
+			{ID: "port", Label: "Port", Kind: "select", Value: "3000", Options: []Option{
+				{Value: "3000", Label: "3000 · node · web"},
+				{Value: "other", Label: "Other port…"},
+			}},
+		}, SubmitAction: &Action{Name: "forward", Label: "Forward", Enabled: true}},
+	}}})
+	out := ansi.Strip(m.View().Content)
+	if !strings.Contains(out, "3000 · node · web ▾") || strings.Contains(out, "Other port…") {
+		t.Fatalf("The closed select does not show only its selected label:\n%s", out)
+	}
+	if m.focus != "choice:forward/port" {
+		t.Fatalf("The form opened with focus %q, want the select", m.focus)
+	}
+}
+
+// A newly opened panel puts the focus on its first control, so Enter activates it. This holds in a
+// new renderer (a plugin replaces the form pane with a panel pane) and in a renderer whose form is
+// replaced by the panel. This replaces the Tunnels lab check "the panel opens with focus on Show Logs".
+func TestNewPanelFocusesItsFirstControl(t *testing.T) {
+	panel := Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/tunnels", Revision: "2", Tree: Tree{Nodes: []Node{
+		{ID: "forward/b1", Type: "list", Items: []Item{
+			{ID: "show_logs", Label: "Show Logs", Action: &Action{Name: "show_logs", Enabled: true}},
+			{ID: "stop", Label: "Stop", Action: &Action{Name: "stop", Enabled: true}},
+		}},
+		{ID: "new", Type: "widget", Text: "Forward a port from a pane", Action: &Action{Name: "new", Label: "Forward Port…", Enabled: true}},
+	}}}
+	fresh := newModel(&viewClient{ViewID: "v1", Plugin: "tunnels", Route: "/panels/tunnels", Requests: make(chan mutation, 16)})
+	fresh.ready = true
+	replaced := testModel()
+	replaced.apply(flowSnapshot())
+	replaced.setFocus("choice:start/profile")
+	for name, m := range map[string]*model{"new renderer": fresh, "form replaced": replaced} {
+		m.apply(panel)
+		if m.focus != "forward/b1:show_logs" {
+			t.Fatalf("%s: the panel opened with focus %q, want the first item", name, m.focus)
+		}
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if req := request(t, m, cmd); req.Node != "forward/b1" || req.Args["action"] != "show_logs" || req.Args["input"].(map[string]any)["item_id"] != "show_logs" {
+			t.Fatalf("%s: Enter sent %+v", name, req)
+		}
+	}
+}

@@ -193,6 +193,13 @@ func loadConfig(path string, realServer bool) (Config, error) {
 var pluginArgKey = regexp.MustCompile(`^[a-z0-9_]+$`)
 var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true}
 
+// hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
+var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
+	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.rebind",
+	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.ui.exit", "hub.ui.mode", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
+	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
+	"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"}
+
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
 const installedRex = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
@@ -324,11 +331,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	}
 
 	var actions []map[string]any
-	for _, name := range []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
-		"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.rebind",
-		"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.ui.exit", "hub.ui.mode", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
-		"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-		"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"} {
+	for _, name := range hubActionNames {
 		actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
 	}
 	actions = append(actions, hubToolActions...)
@@ -531,7 +534,7 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 }
 
 func (h *Hub) answer(ctx context.Context, p perform) {
-	result, err := h.dispatch(ctx, p)
+	result, err := h.dispatchFaulted(ctx, p)
 	reply := map[string]any{"call_id": p.CallID}
 	if err != nil {
 		var se *storeError

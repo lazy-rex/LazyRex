@@ -19,7 +19,7 @@ end
 local tests = {}
 local env = setmetatable({}, {__index = _G})
 for _, name in ipairs({'expect', 'expect_error', 'assert_eq', 'assert_true', 'store', 'notice', 'batches', 'advance_rev',
-  'tabs', 'tab', 'views', 'operation', 'inject', 'injection', 'cancel_injection', 'with_injection', 'session', 'close_session', 'write', 'put_operation', 'write_profiles', 'invalidates', 'agent', 'user', 'node', 'wait', 'show', 'equal', 'is_error', 'app'}) do
+  'tabs', 'tab', 'views', 'operation', 'inject', 'injection', 'cancel_injection', 'with_injection', 'session', 'close_session', 'write', 'put_operation', 'write_profiles', 'invalidates', 'fault', 'fault_fired', 'fault_release', 'agent', 'user', 'node', 'wait', 'show', 'equal', 'is_error', 'app'}) do
   env[name] = H[name]
 end
 env.H = H
@@ -114,6 +114,10 @@ else
   for _, u in ipairs(fin.unconsumed or {}) do
     problems[#problems + 1] = string.format('injection %d (plugin %s) consumed %d of %d', u.id, u.plugin, u.consumed, u.times)
   end
+  for _, f in ipairs(fin.unfired or {}) do
+    local what = f.fired and 'was not released' or 'did not fire'
+    problems[#problems + 1] = string.format('fault %d (%s %s %s %s) %s', f.id, f.point, f.mode, f.action or '', f.when or '', what)
+  end
   for _, v in ipairs((fin.parity or {}).violations or {}) do
     if v.plugin == A.plugin then
       problems[#problems + 1] = string.format('parity: %s %s %s: %s', v.route or ('command ' .. tostring(v.command)),
@@ -123,7 +127,7 @@ else
 end
 if #problems == 0 then
   passed = passed + 1
-  out('ok ' .. last .. ' file checks (injections consumed, parity of rendered trees)')
+  out('ok ' .. last .. ' file checks (injections consumed, faults fired, parity of rendered trees)')
 else
   failed = failed + 1
   out('fail ' .. last .. ' file checks # ' .. table.concat(problems, '\n'))
