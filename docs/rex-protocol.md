@@ -616,6 +616,7 @@ Standard Lua evaluates all right-hand values before it assigns, so `a, b` must s
 Workaround: swap through a temporary local (`local t = a; a = b; b = t`).
 Impact found: the messaging plugin wrote some thread records under `thread/<x><x>` (one agent twice) when the two IDs needed a swap.
 Probe: `spikes/lab/lua-swap-probe.lua`.
+Still wrong on Rex 0.0.1792158932-g88fd41 (lab, 2026-10-19). The rule: in a plain multiple assignment to existing variables, a later value that reads an earlier target sees the new value. `x, y = y, x + 10` with x = 1, y = 2 gives 2, 12 (Lua: 2, 11). A `local` declaration (`local a, b = b, a`) and table fields (`t[1], t[2] = t[2], t[1]`) are correct, and the values are evaluated left to right. A scan of the LazyRex plugin repositories (2026-10-19) found this pattern only in the probe and in two test helpers, which now use a temporary.
 
 ### move_block stays inside one session (observed 2026-10-16, Rex 1203, lab)
 
