@@ -632,6 +632,33 @@ The three focused hub checks also passed on that version.
 Observed on Rex `0.0.1792158932-g88fd41`: the real-hub test passed with an owned shared clone of restty.
 Creation completed in 657 ms in that run. This measurement is not a performance guarantee.
 
+## Reply size
+
+Rex closes a client's connection when one frame from that client is larger than the welcome's
+`max_message_bytes` (1 MiB on the Unix socket; rex-protocol.md, "Rex Lua runtime"). One large
+result, for example a `hub.store.get` of many records, closed the hub's connection for every caller.
+
+The hub measures every `client.reply` frame before it sends it, on the plugin face (`Hub.answer`)
+and on the agent face (`agentAnswer`). The limit is `max_message_bytes` minus 1 KiB (1 047 552
+bytes). A welcome without limits gets the reference value, 64 KiB. Over the limit, the hub sends
+this error and stays connected:
+
+- Code `reply_too_large`. The message names the action and the attempted frame size.
+- For a result: "The action completed and its changes stay." A caller must not repeat a change
+  with a new operation key. The same key replays the same result, and so the same error.
+- For an error: "The action failed."
+
+The margin: Rex's response to the caller is larger than the reply frame (16 to 32 bytes in the
+lab), and a caller with a 1 MiB limit refuses a larger response with `too_large`. 1 KiB covers
+that difference and the length of the request ID.
+
+What a Lua plugin sends is still limited to 64 KiB (its replies, view trees and writes). The guard
+does not change that limit.
+
+Tests: `hub/cmd/hub/replyguard_test.go` (unit), `replyguard_lab_test.go` (`REPLY_LAB_SOCKET`: the
+server's limits, both faces), and `tests/harness/tests/replyguard.lua` (the plugin face through
+the real hub; the hub client and process stay the same).
+
 ## Agent actions through Rex
 
 The hub owns a second Rex client labeled `lazyrex`. This client exposes agent actions and never attaches a session.
