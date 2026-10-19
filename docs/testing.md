@@ -291,6 +291,16 @@ face lists its exports. It returns the new `hub.test.status` (with `pid`).
 - The old hub log stays as `hub.<n>.log`.
 - Agents and views are lab panes: they stay. What the hub does with plugins and views at a restart
   is the hub's own behavior, which the test checks.
+- A test view attaches again after a restart, as the real renderer does: it watches for a new hub
+  client every 200 ms, then attaches and subscribes. Wait for `attached` in `H.views()` before a
+  view action (restart.lua).
+- A test view serves the hub's callbacks (view.release, view.changed) before its first subscribe,
+  as the real renderer does. An attach or subscribe that fails is tried again, also on the same hub.
+- The file `LAB/testview-hold` controls the test views of one route: line 1 is the route, line 2
+  the mode. `hold` (the default) keeps them between attach and subscribe, at most 20 s; the
+  subscribe is not sent yet. `fail-subscribe-once` makes the first subscribe fail, simulated by
+  the test view. `testview.status` reports `held`, `hold_expired`, `subscribed` and
+  `subscribe_failures`.
 
 ### Faults
 

@@ -189,6 +189,7 @@ func testViewMain(argv []string) int {
 	viewID := fs.String("view-id", "", "view ID (from the hub)")
 	fs.Bool("transcript", false, "transcript role (pair.go); the test renderer takes the composer role only")
 	real := fs.Bool("real-server", false, "refused")
+	hold := fs.String("hold", "", "a file; while it names this route, the renderer waits before each subscribe (lab tests)")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
@@ -211,44 +212,93 @@ func testViewMain(argv []string) int {
 		log.Print(err)
 		return 1
 	}
-	hub, err := c.resolveClient(ctx, "lazyrex-hub")
-	if err != nil {
-		log.Print(err)
-		return 1
-	}
-	var att struct {
-		Plugin     string `json:"plugin"`
-		Route      string `json:"route"`
-		Attachment string `json:"attachment"`
-	}
-	for i := 0; ; i++ {
-		raw, err := c.perform(ctx, hub, "hub.view.attach", map[string]any{"view_id": *viewID, "schema_version": 1})
-		if err == nil {
-			json.Unmarshal(raw, &att)
-			break
-		}
-		if i == 30 || !strings.Contains(err.Error(), "not_ready") {
-			log.Printf("attach: %v", err)
-			return 1
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if att.Plugin != fs.Arg(0) || att.Route != fs.Arg(1) {
-		log.Printf("attach: the hub bound %s %s, the launch named %s %s", att.Plugin, att.Route, fs.Arg(0), fs.Arg(1))
-		return 1
-	}
+	// attach binds this renderer to the view through the current hub and subscribes. After a hub
+	// restart the hub is a new client and the old attachment is gone: the watcher attaches again,
+	// as the real renderer does (view/client.go).
 	var mu sync.Mutex
+	var hub, attachment string
 	announced := "0"
-	if _, err := c.perform(ctx, hub, "hub.view.subscribe", map[string]any{"view_id": *viewID, "attachment": att.Attachment}); err != nil {
-		log.Printf("subscribe: %v", err)
-		return 1
+	// subscribed: the current attachment has a subscription. The watcher attaches again while it is
+	// false, also on the same hub. held, holdExpired, failures: test evidence (testview.status).
+	var subscribed, held bool
+	var holdExpired, failures int
+	failOnce := true
+	attach := func() error {
+		h, err := c.resolveClient(ctx, "lazyrex-hub")
+		if err != nil {
+			return err
+		}
+		var att struct {
+			Plugin     string `json:"plugin"`
+			Route      string `json:"route"`
+			Attachment string `json:"attachment"`
+		}
+		for i := 0; ; i++ {
+			raw, err := c.perform(ctx, h, "hub.view.attach", map[string]any{"view_id": *viewID, "schema_version": 1})
+			if err == nil {
+				json.Unmarshal(raw, &att)
+				break
+			}
+			if i == 30 || !strings.Contains(err.Error(), "not_ready") {
+				return fmt.Errorf("attach: %w", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if att.Plugin != fs.Arg(0) || att.Route != fs.Arg(1) {
+			return fmt.Errorf("attach: the hub bound %s %s, the launch named %s %s", att.Plugin, att.Route, fs.Arg(0), fs.Arg(1))
+		}
+		mu.Lock()
+		hub, attachment, subscribed = h, att.Attachment, false
+		mu.Unlock()
+		mode := readHold(*hold, fs.Arg(1))
+		if mode == "hold" {
+			mu.Lock()
+			held = true
+			mu.Unlock()
+			expired := holdBeforeSubscribe(*hold, fs.Arg(1))
+			mu.Lock()
+			held = false
+			if expired {
+				holdExpired++
+			}
+			mu.Unlock()
+		}
+		mu.Lock()
+		fail := mode == "fail-subscribe-once" && failOnce
+		if fail {
+			failOnce = false
+			failures++
+		}
+		mu.Unlock()
+		if fail {
+			// Simulated by the test view: the subscribe is not sent. It tests the retry.
+			return errors.New("subscribe: simulated refusal (hold file: fail-subscribe-once)")
+		}
+		if _, err := c.perform(ctx, h, "hub.view.subscribe", map[string]any{"view_id": *viewID, "attachment": att.Attachment}); err != nil {
+			mu.Lock()
+			failures++
+			mu.Unlock()
+			return fmt.Errorf("subscribe: %w", err)
+		}
+		mu.Lock()
+		if attachment == att.Attachment {
+			subscribed = true
+		}
+		mu.Unlock()
+		log.Printf("attached %s %s through %s", att.Plugin, att.Route, h)
+		return nil
 	}
-	log.Printf("attached %s %s", att.Plugin, att.Route)
+	current := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return hub, attachment
+	}
 	exit := make(chan int, 1)
 	go c.serve(func(p perform, args map[string]any) {
+		hub, attachment := current()
 		if strings.HasPrefix(p.Action, "view.") {
 			// Callbacks from the hub: answer at once (the hub must not wait for a renderer).
-			if p.Requester.ClientID != hub || args["view_id"] != *viewID || args["attachment"] != att.Attachment {
+			if p.Requester.ClientID != hub || args["view_id"] != *viewID || args["attachment"] != attachment {
 				c.reply(p.CallID, nil, &rex.RexError{Code: "refused", Message: "The notification does not match the current view attachment"})
 				return
 			}
@@ -274,7 +324,7 @@ func testViewMain(argv []string) int {
 			}
 			return
 		}
-		base := map[string]any{"view_id": *viewID, "attachment": att.Attachment}
+		base := map[string]any{"view_id": *viewID, "attachment": attachment}
 		for k, v := range args {
 			base[k] = v
 		}
@@ -287,7 +337,11 @@ func testViewMain(argv []string) int {
 			mu.Lock()
 			a := announced
 			mu.Unlock()
-			c.reply(p.CallID, map[string]any{"view_id": *viewID, "plugin": att.Plugin, "route": att.Route, "announced": a, "pid": os.Getpid()}, nil)
+			mu.Lock()
+			st := map[string]any{"view_id": *viewID, "plugin": fs.Arg(0), "route": fs.Arg(1), "announced": a, "pid": os.Getpid(),
+				"subscribed": subscribed, "held": held, "hold_expired": holdExpired, "subscribe_failures": failures}
+			mu.Unlock()
+			c.reply(p.CallID, st, nil)
 		case "testview.get":
 			call("hub.view.get")
 		case "testview.action":
@@ -310,6 +364,29 @@ func testViewMain(argv []string) int {
 			c.reply(p.CallID, nil, &rex.RexError{Code: "not_found", Message: "no action " + p.Action})
 		}
 	})
+	// Callbacks are served before the first subscribe: the hub can ask view.release while the
+	// subscribe waits in its queue behind that request (rex-protocol.md, "The hub has one request
+	// queue").
+	if err := attach(); err != nil {
+		log.Printf("%v; the watcher tries again", err) // a closed view ends with its pane
+	}
+	go func() {
+		// A new hub client means a restarted hub. While no hub is connected, the resolve fails and
+		// the watcher waits. An attach or subscribe that failed is tried again on the same hub.
+		for !c.r.Closed() {
+			time.Sleep(200 * time.Millisecond)
+			h, err := c.resolveClient(ctx, "lazyrex-hub")
+			mu.Lock()
+			done := subscribed
+			mu.Unlock()
+			if was, _ := current(); err != nil || h == was && done {
+				continue
+			}
+			if err := attach(); err != nil {
+				log.Printf("attach again: %v", err)
+			}
+		}
+	}()
 	select {
 	case code := <-exit:
 		time.Sleep(200 * time.Millisecond) // let the reply leave
@@ -318,6 +395,38 @@ func testViewMain(argv []string) int {
 		log.Print("rex connection closed")
 		return 1
 	}
+}
+
+// The hold file (lab tests): the first line is a route, the second a mode, "hold" (the default) or
+// "fail-subscribe-once". readHold returns the mode when the file names route, else "".
+func readHold(path, route string) string {
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if strings.TrimSpace(lines[0]) != route {
+		return ""
+	}
+	if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
+		return strings.TrimSpace(lines[1])
+	}
+	return "hold"
+}
+
+// holdBeforeSubscribe waits while the hold file holds route, at most 20 s. It reports whether the
+// 20 s expired. A test uses it to keep a renderer between its attach and its subscribe.
+func holdBeforeSubscribe(path, route string) bool {
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if readHold(path, route) != "hold" {
+			return false
+		}
+	}
+	log.Printf("hold: %s still holds %s after 20 s; subscribing", path, route)
+	return true
 }
 
 // closed returns a channel that is closed when the connection ends.
