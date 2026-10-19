@@ -35,7 +35,7 @@ const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands"}
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events"}
 
 type testState struct {
 	mu         sync.Mutex
@@ -263,6 +263,24 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		return h.testRender(ctx, args)
 	case "hub.test.view.result":
 		return h.testRenderResult(args)
+	case "hub.test.events":
+		// The hub's event log (events.jsonl) lines with this event name, oldest first, at most 50.
+		name, _ := args["event"].(string)
+		b, err := os.ReadFile(filepath.Join(h.cfg.State, "events.jsonl"))
+		if err != nil {
+			return nil, err
+		}
+		var list []any
+		for _, line := range strings.Split(string(b), "\n") {
+			var m map[string]any
+			if json.Unmarshal([]byte(line), &m) == nil && m["event"] == name {
+				list = append(list, m)
+			}
+		}
+		if len(list) > 50 {
+			list = list[len(list)-50:]
+		}
+		return boundReply(map[string]any{"events": orEmpty(list)})
 	case "hub.test.commands":
 		var raw string
 		err := h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, plugin).Scan(&raw)
@@ -342,9 +360,7 @@ func (h *Hub) testStatus() any {
 		sort.Strings(face)
 		plugins[name] = map[string]any{"registered": pl.ClientID != "", "client_id": pl.ClientID, "exports": orEmptyStrings(pl.Exports), "face": face}
 	}
-	var nav string
-	h.db.QueryRow(`SELECT value FROM ui_state WHERE key = 'nav'`).Scan(&nav)
-	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation), "nav": nav}
+	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation)}
 }
 
 func orEmptyStrings(l []string) []string {
