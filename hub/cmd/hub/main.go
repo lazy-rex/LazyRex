@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -50,6 +51,9 @@ type Config struct {
 		// `rex do --all`). Use "all" only when the plugin needs other sessions' events: each such
 		// plugin receives every server event.
 		Events string `json:"events"`
+		// Args are extra key=value arguments of `rex do` (rex.args in the plugin), for example
+		// worktrees_root. The hub's own keys (pluginArgReserved) are refused.
+		Args map[string]string `json:"args"`
 	} `json:"plugins"`
 }
 
@@ -77,8 +81,9 @@ func (a *Agent) ready() bool {
 
 type Plugin struct {
 	Name, Path, Notice string
-	Events             string // "all": launched with --all and plugin_session=<session>
-	Desired            string // running or stopped
+	Events             string            // "all": launched with --all and plugin_session=<session>
+	Args               map[string]string // extra key=value arguments of `rex do` (config)
+	Desired            string            // running or stopped
 	InstanceID         string
 	SessionID          string // the session of the instance's block ("" in rows from before it was recorded)
 	BlockID            string
@@ -160,6 +165,11 @@ func loadConfig(path string, realServer bool) (Config, error) {
 		if e := c.Plugins[i].Events; e != "" && e != "session" && e != "all" {
 			return c, fmt.Errorf("plugin %s: events must be \"session\" or \"all\"", c.Plugins[i].Name)
 		}
+		for k := range c.Plugins[i].Args {
+			if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
+				return c, fmt.Errorf("plugin %s: arg %q is not allowed", c.Plugins[i].Name, k)
+			}
+		}
 		if c.Plugins[i].Notice == "" {
 			c.Plugins[i].Notice = "New message. Call messaging_read."
 		}
@@ -174,6 +184,10 @@ func loadConfig(path string, realServer bool) (Config, error) {
 	}
 	return c, nil
 }
+
+// pluginArgKey is the form of a plugin arg key. The hub sets pluginArgReserved itself.
+var pluginArgKey = regexp.MustCompile(`^[a-z0-9_]+$`)
+var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true}
 
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
@@ -293,7 +307,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.agentOrder = append(h.agentOrder, a.ID)
 	}
 	for _, p := range cfg.Plugins {
-		h.plugins[p.Name] = &Plugin{Name: p.Name, Path: p.Path, Notice: p.Notice, Events: p.Events}
+		h.plugins[p.Name] = &Plugin{Name: p.Name, Path: p.Path, Notice: p.Notice, Events: p.Events, Args: p.Args}
 	}
 	if cfg.Test {
 		h.test = newTestState()

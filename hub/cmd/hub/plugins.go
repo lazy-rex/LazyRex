@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
@@ -330,6 +331,14 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin) error {
 		// Rex refuses --all with -s (lab, Rex 1203). The plugin gets its session as an argument.
 		command = []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", pl.Path, "--all",
 			"plugin_session=" + sess, "hub_client_id=" + h.clientID, "instance_id=" + instance}
+	}
+	keys := make([]string, 0, len(pl.Args))
+	for k := range pl.Args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		command = append(command, k+"="+pl.Args[k])
 	}
 	// A detached block: callable and gets lifecycle events, but takes no tab or layout space.
 	// `rex move` or session.move_block can show it.
