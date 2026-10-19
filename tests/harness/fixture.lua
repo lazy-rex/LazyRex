@@ -78,6 +78,8 @@ local function home_tree()
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
     {id = 'cross_missing', type = 'widget', text = 'Navigate to a plugin that is not there',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+    {id = 'bad_target', type = 'widget', text = 'A malformed navigate effect (input.kind picks it)',
+      action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
     {id = 'gated_nav', type = 'widget', text = 'Navigate to a tab that view.open declares only when gate is set',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
   }
@@ -135,6 +137,12 @@ local function view(action, args)
     if args.route == '/home' and args.node_id == 'status' then return {} end
     if args.route == '/home' and args.node_id == 'cross_nav' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
     if args.route == '/home' and args.node_id == 'cross_missing' then return {navigate = {plugin = 'nope', tab = 'x'}} end
+    if args.route == '/home' and args.node_id == 'bad_target' then
+      local kind = args.input and args.input.kind
+      local targets = {tab_number = {plugin = 'lazyrex', tab = 7}, plugin_number = {plugin = 7, tab = 'home'},
+        boolean = true, empty_string = '', empty_table = {}, no_tab = {plugin = 'lazyrex'}}
+      return {navigate = targets[kind]}
+    end
     if args.route == '/home' and args.node_id == 'gated_nav' then return {navigate = {plugin = 'harnessfix', tab = 'gated/a'}} end
     if args.route == '/forms/fix' and args.node_id == 'go_home' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
     if args.route == '/forms/fix' and args.node_id == 'form' then

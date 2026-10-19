@@ -61,3 +61,14 @@ test('the home plugin reports a failed navigation target on the operation', func
   expect(op.effects).to_be('failed')
   expect(op.effects_error).to_match('messaging')
 end)
+
+test('a malformed navigate target is a failed effect, not a successful no-op', function()
+  local home = user:view('home')
+  for kind, msg in pairs({tab_number = 'target must be', plugin_number = 'target must be', boolean = 'target must be',
+      empty_string = 'names no tab', empty_table = 'names no tab', no_tab = 'names no tab'}) do
+    local op = home:action('bad_target', 'go', {kind = kind}, 'bad-target-' .. kind)
+    expect(op.status, kind).to_be('succeeded')
+    expect(op.effects, kind).to_be('failed')
+    expect(op.effects_error, kind).to_match(msg)
+  end
+end)

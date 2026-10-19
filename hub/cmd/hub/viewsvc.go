@@ -535,10 +535,12 @@ func (h *Hub) runOps(ctx context.Context, plugin string) bool {
 		}
 		// The effects are recorded with the result, in one write: a crash after it runs them at the
 		// next start (applyEffects).
-		var eff viewEffects
+		// A malformed effect is pending too: applyEffects then records it as failed.
 		effect := ""
-		if status == "succeeded" && o.kind == "action" && json.Unmarshal(result, &eff) == nil && eff.any() {
-			effect = "pending"
+		if status == "succeeded" && o.kind == "action" {
+			if eff, err := decodeEffects(result); err != nil || eff.any() {
+				effect = "pending"
+			}
 		}
 		if _, err := h.db.ExecContext(ctx, `UPDATE view_ops SET status = ?, result = ?, effect_state = ? WHERE plugin = ? AND user = ? AND op_key = ?`,
 			status, stored, effect, plugin, viewUser, o.key); err != nil {

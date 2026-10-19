@@ -22,6 +22,7 @@ package main
 // that ran it ({close_form: true}), or navigate, which also closes the form that ran it.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -648,20 +649,50 @@ type navTarget struct {
 }
 
 func (n *navTarget) UnmarshalJSON(b []byte) error {
+	if string(bytes.TrimSpace(b)) == "null" {
+		return nil // no navigation
+	}
+	n.set = true // present: from here on, a bad target is a failed effect, never a no-op
 	var key string
 	if json.Unmarshal(b, &key) == nil {
-		n.Tab, n.set = key, key != ""
+		n.Tab = key
 		return nil
 	}
 	var t struct {
-		Plugin string `json:"plugin"`
-		Tab    string `json:"tab"`
+		Plugin *string `json:"plugin"`
+		Tab    *string `json:"tab"`
 	}
-	if err := json.Unmarshal(b, &t); err != nil {
-		return nil // not a navigation: checked in applyEffects
+	if b = bytes.TrimSpace(b); len(b) == 0 || b[0] != '{' || json.Unmarshal(b, &t) != nil {
+		return errBadNavigate
 	}
-	n.Plugin, n.Tab, n.set = t.Plugin, t.Tab, true
+	if t.Plugin != nil {
+		n.Plugin = *t.Plugin
+	}
+	if t.Tab != nil {
+		n.Tab = *t.Tab
+	}
 	return nil
+}
+
+var errBadNavigate = errors.New("navigate: the target must be a tab key or {plugin, tab} with string values")
+
+// decodeEffects reads the effects of a view action result. A result that is not a JSON object
+// has no effects (an empty Lua table can encode as []). An object with a malformed effect field
+// returns the error: the effect must fail, not vanish.
+func decodeEffects(result []byte) (viewEffects, error) {
+	var e viewEffects
+	b := bytes.TrimSpace(result)
+	if len(b) == 0 || b[0] != '{' {
+		return e, nil
+	}
+	if err := json.Unmarshal(b, &e); err != nil {
+		var ute *json.UnmarshalTypeError
+		if errors.As(err, &ute) && ute.Field != "" {
+			return e, fmt.Errorf("effects: field %s: wrong type %s", ute.Field, ute.Value)
+		}
+		return e, fmt.Errorf("effects: %w", err)
+	}
+	return e, nil
 }
 
 // applyEffects runs the effects of one succeeded view action, in order: navigate, open a form,
@@ -672,8 +703,7 @@ func (n *navTarget) UnmarshalJSON(b []byte) error {
 // error, which the renderer gets from hub.view.operation; the form that ran the action stays
 // open. It returns true when a step must run again later.
 func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, result json.RawMessage) bool {
-	var e viewEffects
-	json.Unmarshal(result, &e)
+	e, decodeErr := decodeEffects(result)
 	var navDone int
 	if err := h.db.QueryRowContext(ctx, `SELECT effect_nav FROM view_ops WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key).Scan(&navDone); err != nil {
 		log.Printf("views %s: effects of %s: %v (retry)", plugin, key, err)
@@ -698,6 +728,9 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 		h.ev.emit("view_effect_failed", map[string]any{"plugin": plugin, "op_key": key, "view_id": viewID, "error": err.Error()})
 		h.notifyView(plugin, viewID)
 		return false
+	}
+	if decodeErr != nil {
+		return fail(decodeErr)
 	}
 	if e.Navigate.set && navDone == 0 {
 		target := e.Navigate.Plugin
