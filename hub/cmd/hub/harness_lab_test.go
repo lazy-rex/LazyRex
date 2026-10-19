@@ -132,3 +132,54 @@ func TestHarnessInterrupt(t *testing.T) {
 	}
 	assertLabsGone(t, out)
 }
+
+// TestHarnessIsolation runs tests/isolation with an outer HOME, XDG_CONFIG_HOME and TMPDIR in a
+// temporary directory (never the real home). The outer HOME holds a sentinel; an outer variable
+// holds a secret. The Lua tests check that no lab process finds the sentinel through HOME or
+// XDG_CONFIG_HOME and that none gets the secret. This test checks that the outer HOME is not
+// changed and that no lab file contains the secret.
+func TestHarnessIsolation(t *testing.T) {
+	bin, root := harnessBinary(t)
+	outer := t.TempDir()
+	home := filepath.Join(outer, "home")
+	for _, d := range []string{filepath.Join(home, ".config"), filepath.Join(outer, "tmp")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{filepath.Join(home, ".lrt-sentinel"), filepath.Join(home, ".config", ".lrt-sentinel")} {
+		if err := os.WriteFile(f, []byte("sentinel"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listing := func() string {
+		var names []string
+		filepath.Walk(home, func(p string, _ os.FileInfo, _ error) error { names = append(names, p); return nil })
+		return strings.Join(names, "\n")
+	}
+	before := listing()
+	const secret = "lrt-outer-secret-7f3a"
+	cmd := exec.Command(bin, "test", "-keep", filepath.Join(root, "tests", "isolation"))
+	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"TMPDIR="+filepath.Join(outer, "tmp"), "LRT_OUTER_SECRET="+secret)
+	outb, err := cmd.CombinedOutput()
+	out := string(outb)
+	if err != nil || !strings.Contains(out, "tests/isolation.lua: 6 passed, 0 failed") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if after := listing(); after != before {
+		t.Errorf("the outer HOME changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+		filepath.Walk(m[1], func(p string, fi os.FileInfo, err error) error {
+			if err != nil || !fi.Mode().IsRegular() || fi.Size() > 8<<20 {
+				return nil
+			}
+			if b, err := os.ReadFile(p); err == nil && strings.Contains(string(b), secret) {
+				t.Errorf("lab file %s contains the outer secret", p)
+			}
+			return nil
+		})
+	}
+	assertLabsGone(t, out)
+}

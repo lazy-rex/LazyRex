@@ -1,0 +1,4 @@
+{"profiles": [
+ {"id": "probe", "name": "Probe worker", "kind": "accessory",
+  "command": ["/bin/sh", "-c", "env > \"$HOME/worker-env\"; pwd > \"$HOME/worker-pwd\"; exec sleep 600"]}
+]}
