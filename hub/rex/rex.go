@@ -50,7 +50,11 @@ func SocketPath(server string) (string, error) {
 	return url.PathUnescape(strings.TrimPrefix(server, "unix://"))
 }
 
-func Dial(ctx context.Context, socket string) (*Rex, error) {
+func Dial(ctx context.Context, socket string) (*Rex, error) { return DialHello(ctx, socket, nil) }
+
+// DialHello connects with extra hello fields, for example {"client": {"kind": "app", "name": n,
+// "label": n}} for a fake app in test mode (rex-client.mjs connectControl does the same).
+func DialHello(ctx context.Context, socket string, hello map[string]any) (*Rex, error) {
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -66,8 +70,24 @@ func Dial(ctx context.Context, socket string) (*Rex, error) {
 	conn.SetReadLimit(16 << 20) // session.list_blocks and block methods can be large
 	r := &Rex{conn: conn, pending: map[string]chan frame{}, Events: make(chan json.RawMessage, 256)}
 
-	if err := r.write(ctx, frame{Type: "hello"}); err != nil {
-		return nil, err
+	if len(hello) == 0 {
+		if err := r.write(ctx, frame{Type: "hello"}); err != nil {
+			return nil, err
+		}
+	} else {
+		f := map[string]any{"type": "hello"}
+		for k, v := range hello {
+			if k != "type" {
+				f[k] = v
+			}
+		}
+		data, err := json.Marshal(f)
+		if err != nil {
+			return nil, err
+		}
+		if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+			return nil, err
+		}
 	}
 	var welcome frame
 	_, data, err := conn.Read(ctx)

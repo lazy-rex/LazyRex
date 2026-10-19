@@ -35,7 +35,8 @@ const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put"}
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
+	"hub.test.app", "hub.test.app.calls", "hub.test.app.close"}
 
 type testState struct {
 	mu         sync.Mutex
@@ -45,6 +46,7 @@ type testState struct {
 	renderReq  map[string]int64                    // view_id -> the latest requested render generation
 	renderOut  map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
 	trees      map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
+	apps       map[string]*testFakeApp             // fake Rex apps by name (testapp.go)
 }
 
 type injection struct {
@@ -76,7 +78,7 @@ type renderedTree struct {
 
 func newTestState() *testState {
 	return &testState{batches: map[string]int{}, invalidate: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
-		trees: map[string]*renderedTree{}}
+		trees: map[string]*renderedTree{}, apps: map[string]*testFakeApp{}}
 }
 
 // checkLabProof is the positive proof that -test points at a lab server that a harness (or
@@ -158,6 +160,12 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 	switch p.Action {
 	case "hub.test.status":
 		return h.testStatus(), nil
+	case "hub.test.app":
+		return h.testApp(ctx, args)
+	case "hub.test.app.calls":
+		return h.testAppCalls(args)
+	case "hub.test.app.close":
+		return h.testAppClose(args)
 	case "hub.test.store":
 		if err := needPlugin(); err != nil {
 			return nil, err

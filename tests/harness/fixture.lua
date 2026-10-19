@@ -47,6 +47,7 @@ local actions = {
   {name = 'fix.grant_revoke', kind = 'client', title = 'hub.grant.revoke', args = obj},
   {name = 'fix.grant_get', kind = 'client', title = 'hub.grant.get', args = obj},
   {name = 'fix.ensure', kind = 'client', title = 'hub.session.ensure', args = obj},
+  {name = 'fix.select', kind = 'client', title = 'hub.app.select_session', args = obj},
   {name = 'fix.spawn', kind = 'client', title = 'Start a shell on behalf of the caller (on_behalf = as_pid or the caller pid)',
     args = {type = 'object', properties = {key = {type = 'string'}, as_pid = {type = 'integer'}}, required = {'key'}}},
 }
@@ -86,6 +87,8 @@ local function domain(action, args, pid)
     return hub('hub.grant.get', args)
   elseif action == 'fix.ensure' then
     return hub('hub.session.ensure', args)
+  elseif action == 'fix.select' then
+    return hub('hub.app.select_session', args)
   elseif action == 'fix.spawn' then
     return {spawn = hub('hub.spawn', {profile = 'shell', key = args.key, on_behalf = args.as_pid or pid}), pid = pid}
   end

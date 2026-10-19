@@ -230,6 +230,25 @@ Injected commits never match an injection.
 `with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
 with a count that is not used up at the end of the file fails the file.
 
+### Fake Rex apps
+
+No Rex app runs in a lab, so `hub.app.select_session` and `hub.view.app_action` refuse with
+`no_app`. `app(name, {sessions = {...}, fail = code})` opens a fake app (test mode only): a second
+Rex connection in the hub process whose hello says kind `app`, as the real app's does. It declares
+`session.select` and `pane.insert_path`, shows the named sessions (`session.attach`), and answers
+each call with `{}`, or with the error code `fail`. The hub finds it like a real app.
+
+| Call | Effect |
+| --- | --- |
+| `a:calls()` | Every call that the app got: `{action, args}`. |
+| `a:show(session)` | Shows one more session. |
+| `a:fail(code)` | Answers later calls with this error code (`''`: `{}` again). |
+| `a:close()` | Closes the app. Apps last for the file; a hub restart closes them. |
+
+`hub.app.select_session` reads the target session, so the hub must be attached to it: use a
+session that the hub made (`hub.session.ensure`), as a template start does. Observed in the lab: a
+session that only the runner made gives `session.view: conflict: stream is not attached`.
+
 ### Hub restart
 
 `hub:restart()` stops the hub (SIGTERM to its process group) and starts it again with the same

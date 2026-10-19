@@ -571,6 +571,39 @@ end
 
 -- --- Setup ---
 
+-- --- Fake Rex apps (hub.test.app, test mode only) ---
+
+local App = {}
+App.__index = App
+
+-- app(name, opts) opens a fake Rex app in the hub process: a client whose hello says kind "app".
+-- opts.sessions: the sessions it shows; opts.fail: an error code it answers instead of {}. It
+-- returns when client.list shows the app connected with those sessions.
+function H.app(name, opts)
+  opts = opts or {}
+  hub('hub.test.app', {name = name, sessions = opts.sessions or {}, fail = opts.fail or ''})
+  local a = setmetatable({name = name}, App)
+  for _, s in ipairs(opts.sessions or {}) do a:wait_shows(s) end
+  return a
+end
+
+function App:wait_shows(session)
+  wait('the fake app ' .. self.name .. ' to show ' .. session, function()
+    for _, c in ipairs(rex.call('client.list', {}).clients or {}) do
+      if c.info and c.info.label == self.name and c.connection_state == 'connected' then
+        for _, s in ipairs(c.session_ids or {}) do if s == session then return true end end
+      end
+    end
+  end)
+end
+
+-- show attaches one more session; fail(code) changes the answer ('' answers {}).
+function App:show(session) hub('hub.test.app', {name = self.name, sessions = {session}}); self:wait_shows(session) end
+function App:fail(code) hub('hub.test.app', {name = self.name, fail = code or ''}) end
+-- calls lists every client.perform that the app got: {action, args}.
+function App:calls() return hub('hub.test.app.calls', {name = self.name}).calls end
+function App:close() return hub('hub.test.app.close', {name = self.name}) end
+
 -- restart_hub stops the hub and starts it again on the same lab server and state (hub:restart()
 -- in a test file). crash = true kills it (SIGKILL); else it stops (SIGTERM). `lazyrex-hub test` does
 -- the restart when it reads the request line; the runner waits until a new hub process is ready:
