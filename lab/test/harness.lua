@@ -410,12 +410,16 @@ function User:open(tab, plugin)
   return self:view(tab, plugin)
 end
 
--- view returns the open view of a tab key or a route (a form route, for example).
-function User:view(key, plugin)
+-- view returns the open view of a tab key or a route (a form route, for example). session: only
+-- a view in that session (a panel or a form can be open in several sessions).
+function User:view(key, plugin, session)
   plugin = plugin or A.plugin
   local info = wait('an open view of ' .. key, function()
     for _, w in ipairs(H.views(plugin)) do
-      if w.tab == key or w.route == key or w.route == '/' .. key then w.plugin = plugin; return w end
+      if (w.tab == key or w.route == key or w.route == '/' .. key) and (not session or w.session_id == session) then
+        w.plugin = plugin
+        return w
+      end
     end
     return nil
   end, 15)

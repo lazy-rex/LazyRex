@@ -203,18 +203,18 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		h.db.QueryRowContext(ctx, `SELECT v FROM meta WHERE k = 'rev'`).Scan(&cur)
 		return map[string]any{"rev": revString(cur)}, nil
 	case "hub.test.tabs":
-		rows, err := h.db.QueryContext(ctx, `SELECT tab, title, route, status, session_id FROM ui_tabs WHERE plugin = ? ORDER BY pos`, plugin)
+		rows, err := h.db.QueryContext(ctx, `SELECT tab, title, route, status, session_id, revision FROM ui_tabs WHERE plugin = ? ORDER BY pos`, plugin)
 		if err != nil {
 			return nil, err
 		}
 		defer rows.Close()
 		list := []any{}
 		for rows.Next() {
-			var key, title, route, status, sess string
-			if err := rows.Scan(&key, &title, &route, &status, &sess); err != nil {
+			var key, title, route, status, sess, rev string
+			if err := rows.Scan(&key, &title, &route, &status, &sess, &rev); err != nil {
 				return nil, err
 			}
-			e := map[string]any{"key": key, "title": title, "route": route, "session_id": sess}
+			e := map[string]any{"key": key, "title": title, "route": route, "session_id": sess, "revision": rev}
 			if status != "" {
 				e["status"] = json.RawMessage(status)
 			}

@@ -122,7 +122,7 @@ operations, effects and retries.
 | Call | Effect |
 | --- | --- |
 | `user:open(tab)` | `hub.ui.navigate` to a tab, then waits for its view. |
-| `user:view(tab or route)` | An open view (for example a form that an effect opened). |
+| `user:view(tab or route, plugin, session)` | An open view (for example a form that an effect opened). `session`: only a view in that session. |
 | `user:command(id, from)` | Runs a palette command, as the Rex palette does (`hub.palette.run`). `from` is a View: the palette opens in its pane, so the view is the source. |
 | `user:plugin_view(action, args)` | Calls the plugin's `view.*` from the runner, which is not the hub: for refusals. |
 | `v:render()` | Asks for a new render and returns the tree. Fails if that render failed, even when the hub kept an older tree. |
@@ -145,7 +145,7 @@ does not hide the result.
 | `store(key, plugin?)` | `{value, rev}`; an absent record is `{rev = '0'}`. |
 | `notice(agent)` | `{found, pending, intent_rev}` |
 | `batches()` | The number of `hub.store.batch` calls of the plugin. |
-| `tabs()`, `tab(key)`, `views()` | The declared tabs and the open views. |
+| `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |
 | `operation(key)` | A view operation's durable state. |
 | `advance_rev(n)` | Moves the store revision counter forward (never back). |
 | `session(label)` | Creates a real lab session and returns its ID. |
