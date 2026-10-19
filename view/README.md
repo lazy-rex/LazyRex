@@ -1,0 +1,423 @@
+# LazyRex view renderer
+
+This renderer implements the version 1 contract in the parent README.
+It runs only in a lab Rex pane. The hub owns its route and pane identity.
+
+## Build
+
+```sh
+cd spikes/03-ui-framework/view
+GOMODCACHE=/tmp/lazyrex-view-mod GOCACHE=/tmp/lazyrex-view-build go build -o /tmp/lazyrex-view-spike3 .
+```
+
+The hub starts the binary with these arguments:
+
+```text
+/tmp/lazyrex-view-spike3 -view-id <id> <plugin> <route>
+```
+
+The renderer reads `REX_SERVER`, `REX_SESSION`, and `REX_BLOCK` from its pane.
+It accepts only Unix sockets under `/tmp`, including the macOS `/private/tmp` alias.
+It refuses a symlink that resolves outside those directories.
+
+The Go module proxy reported these latest versions on 2026-10-16:
+
+- Bubble Tea `v2.1.0`.
+- Lip Gloss `v2.0.6`.
+- Bubbles `v2.2.1`.
+
+The renderer uses the existing project's WebSocket dependency version, `v1.8.15`.
+
+## Interaction
+
+- Press Tab or Shift+Tab to move focus.
+- Press Enter in a composer to send its current text.
+- Press Shift+Enter to insert a newline when the terminal reports distinct keys.
+- Press Ctrl+J to insert a newline without key negotiation.
+- Click Back, Send, a list item, or a form control to use it.
+- Use the mouse wheel or Page Up and Page Down to scroll.
+- Press Ctrl+T to turn off mouse capture for native text selection.
+- Press Ctrl+T again to restore mouse controls.
+- Press Ctrl+Q to exit the renderer.
+
+Enter fixes the submitted text before a pending draft save completes.
+Later edits remain local until the send has a known result.
+The renderer saves those edits against the revision returned by that send.
+
+The composer hides routine save notices. Errors and conflicts remain visible.
+A draft conflict preserves local text and offers Keep my text and Use saved text.
+Removed dirty controls keep their text in a recovery section.
+Native close can lose text that storage has not acknowledged.
+
+## Verification
+
+```sh
+GOMODCACHE=/tmp/lazyrex-view-mod GOCACHE=/tmp/lazyrex-view-build go test -race ./...
+```
+
+The protocol tests bind temporary Unix sockets under `/tmp`.
+They require permission to bind those sockets when the sandbox blocks it.
+
+The tests exercise the real renderer connection code against a controlled protocol fixture.
+They check startup retry, lost hub candidates, subscription, completion notices, and recovery after a committed operation loses its reply.
+The fixture is not a Rex server. These results do not establish real hub integration.
+
+State tests cover draft conflicts, local cursor and text preservation, removed controls,
+newer text during sends, stale snapshots after sends, and input actions.
+Schema tests reject unknown versions and oversized history pages.
+
+## Lab results
+
+Observed on Rex `0.0.1792158932-g88fd41`, 2026-10-16, in `/tmp/rexlab-s3ui`.
+The tests used the real renderer, hub, and messaging plugin.
+
+- Back and inbox Open produced successful navigation results in `view_ops`.
+- Two fresh views edited one draft concurrently. One saved; the other retained its text and showed a conflict.
+- Keep my text saved the second draft against the current revision.
+- The hub replaced renderer PID 2875 after a verified crash. The replacement restored the acknowledged draft and showed Saved.
+- An idle renderer reattached after a hub restart without terminal input. Its view, block, and renderer client IDs stayed the same.
+- Kitty Shift+Enter input inserted a newline and saved the multiline draft.
+- An SGR mouse press and release on Send created one message and cleared the matching draft.
+
+The first complete idle recovery took 6.8 seconds after hub start.
+After the renderer added recovery on hub discovery events, attachment took 173 ms.
+That faster run exposed a hub race: the plugin had not registered, and the screen stayed on an error view.
+The hub fix keeps a loading state for transient failures and refreshes views when the plugin registers.
+A subsequent restart passed without terminal input: the same renderer showed the thread, history, and saved composer.
+In that run, hub generation 6 started at `20:51:45.653074Z`; the renderer reattached at `20:51:45.781217Z` (about 128 ms).
+The attachment time does not measure the time to the completed screen render.
+
+Evidence: `/tmp/rexlab-s3ui/int.log`, `/tmp/rexlab-s3ui/int/events.jsonl`, and the read-only inspection of `int/hub.db`.
+The 18 renderer tests pass with the race detector. Raw output: `/tmp/lazyrex-view-tests.json`.
+The protocol fixture verifies recovery of a committed operation after its reply is lost.
+It does not replace the full lab test of a hub restart during a send.
+
+Physical mouse behavior, iOS touch, and two real apps with different sizes remain unverified here.
+
+### Renderer reload
+
+The renderer declares `view.reload`. It accepts requests only from the attached hub,
+with the current view ID and attachment. It replies before it starts reload work.
+The reply confirms admission. A new attachment confirms completion.
+
+The renderer saves local composer text before reload. It waits for all operation
+results. It keeps the current process when a draft conflict, unsaved form, or
+removed control contains local values. The status line explains the condition.
+After a successful form submission, the renderer records the submitted values as
+saved. New edits still prevent reload.
+
+When these checks pass, Bubble Tea restores the terminal. The renderer then calls
+`syscall.Exec` with the executable path captured at startup, the same arguments,
+and the same environment. This permits an atomic binary replacement at that path.
+A reload does not preserve cursor position, focus, or scroll position.
+
+Observed on Rex `0.0.1792158932-g88fd41`: `hub.ui.reload` admitted the request for
+`view-096218f1a922e7e5`. The renderer kept PID `46018` and the same pane. It attached
+with a new Rex client at `2026-10-16T20:57:38.516623Z`. The composer restored
+`reload preserved draft` and showed `Saved`. Two older renderers returned
+`not_supported`, as expected. They did not restart.
+
+Tests verify that reload waits for a save result, a generic action result, and
+connection recovery. Tests also verify that conflicts, removed controls, and dirty
+text or choice fields prevent reload. These tests pass with the Go race detector.
+A full lab reload during an uncertain operation remains untested.
+
+### Renderer retirement
+
+The renderer declares `view.retire` for migration between UI sessions. The request
+must name the current view and attachment and come from the attached hub. The
+renderer replies `{status: "accepted"}` before it starts retirement.
+
+Retirement uses the reload safety checks. It saves composer drafts and waits for
+operation results and a hub connection. Conflicts, unsaved forms, and recovery
+text prevent exit. The status line identifies the blocking condition.
+
+After these checks pass, the renderer restores the terminal, clears its program
+status, and exits. It does not execute the binary again. Retirement takes priority
+when reload is also pending. The hub must observe process exit before it creates
+the replacement view. An admission reply does not prove retirement is complete.
+
+Model tests cover blocked retirement, draft saves, pending actions, and reload
+priority. Protocol fixture tests cover admission and hub, view, and attachment
+checks. Full migration with the real hub remains untested by these tests.
+
+### Modern layout and read notices
+
+The renderer uses Lip Gloss for layout and colors, Bubbles for the textarea and
+viewport, and Glamour `v2.0.1` for message Markdown. The Go module proxy reported
+that Glamour release as current on 2026-10-16. The renderer uses the pane width. Each message uses at most 70 percent of that
+width, with a maximum of 100 terminal columns. It adapts colors to the reported terminal background.
+It respects `NO_COLOR`; the test shell sets that variable, so the lab launcher
+removes it for color checks.
+
+A single composer stays at the bottom in panes with at least 18 rows. Smaller
+panes and views with multiple composers keep the composers in the scrolling body.
+Send remains a mouse control. The hint beside Send does not activate it. The
+renderer follows `tree.back`; a plugin can omit Back. `Ctrl+N` moves focus to the
+first form field. The header sets the terminal title through Bubble Tea.
+
+History starts at the latest message. New messages keep the history at the bottom
+if the user was already there. Otherwise, the renderer preserves the row anchor.
+The renderer displays compact local times. It groups consecutive messages from
+the same author only within two minutes. Each message has its own border and gap. Optional message field `own: true` adds a `You` label and aligns the message right. The plugin
+supplies the author's display name.
+
+The renderer enables terminal focus reporting. It sends `hub.view.seen` on
+focus-in, and when a history node's last message ID changes while focused. Draft
+changes alone do not send a read notice. The serialized client loop sends these
+notices without operation keys. Blur prevents queued notices from sending if
+the client has not already started the call. The renderer starts with unknown
+focus, treated as not focused. Rex app forwarding of focus events, including
+initial focus after reload, remains unverified. Hub navigation handles its own
+visibility evidence.
+
+Observed on Rex `0.0.1792158932-g88fd41` in `/tmp/rexlab-codexui`: the renderer sent
+multiline Markdown through the messaging plugin and rendered the saved message.
+The renderer's New thread form created `Design lab` with Claude and Codex selected.
+The hub declared the new group tab and attached its renderer. These checks used
+an isolated copy of the hub and plugin. No app connected to this lab, so these
+checks do not prove app navigation or physical touch behavior.
+
+Tests pass with the Go race detector. They cover 38×24, 80×24, and 140×40 layouts
+in light and dark colors; fixed composer position; scroll anchors; Markdown;
+form focus; mouse bounds; small panes; multiple composers; and focus-based read
+notices. Existing draft, conflict, send, reconnect, and reload tests also pass.
+Visual fixtures come from the model's ANSI output. They are not Rex app screenshots.
+
+### Pointer controls and growing editors
+
+Lip Gloss compositor bounds use the same rows as the visible controls. Hover does
+not move keyboard focus. A button activates on release inside the pressed button.
+Send stays inside the composer. Its adjacent hint does not activate it.
+
+Bubbles grows each multiline textarea with its content. A separate viewport caps
+the visible editor at ten rows, or fewer in a short pane. Wheel input over an
+editor changes its viewport without moving its cursor or changing its text.
+Typing returns the viewport to the cursor. Wheel input over the body scrolls the
+body. Routine save and send notices do not change the layout.
+
+A scrollbar occupies the right margin when the body exceeds its viewport. Drag
+the thumb to scroll. Click the track to move the thumb to that position.
+Hover over the scrollbar to widen it. The thumb highlights under the pointer
+and during dragging. Hover uses the last frame's geometry. Motion within the
+same scrollbar part reuses the frame.
+Ctrl+T disables mouse capture for native text selection.
+
+Tests verify hover, canceled button presses, exact Send bounds, wheel routing,
+long draft preservation, scrollbar dragging, track clicks, and stable status
+height. The existing state and protocol tests pass with the race detector.
+Model fixtures cover light and dark layouts at 38×24, 80×24, and 140×40.
+These fixtures do not establish physical mouse behavior in a Rex app.
+
+### Performance regression and correction
+
+The first interaction pass repeatedly laid out all history messages during pointer
+motion. It also passed all history rows to a new viewport on each render. The
+small layout fixtures did not expose this cost. The live renderer was reverted.
+
+The corrected renderer caches complete message rows. The cache checks message
+content, author, ownership, time grouping, pane width, and theme. The viewport
+receives only the visible rows, which already have terminal-width wrapping.
+Pointer motion uses the last visible controls. If the hovered control does not
+change, the renderer reuses its last frame. Scrollbar dragging still updates the
+layout. Other model updates invalidate frame reuse.
+
+Measured on an Apple M2 Max with Go benchmarks at 200×60: the synthetic fixture
+contains 30 long Markdown messages. Before correction, View took 240.5 ms and a
+motion update plus View took 608.2 ms. After correction, View took 4.08 ms and an
+unchanged-hover motion update plus View took 12.2 microseconds.
+
+With the 32-message Team fixture, View took 1.77 ms. A key insertion and a
+backspace, each followed by a frame, took 7.95 ms together. A burst of 256 motion
+events followed by one key and frame took 6.2 ms in the regression test.
+These model measurements exclude Rex input transport and app presentation.
+The regression test allows 250 ms for the burst, including race instrumentation.
+
+Run the benchmarks with `go test -run '^$' -bench BenchmarkLargeConversation`.
+Set `LAZYREX_PERF_FIXTURE` to a JSON file of `{from, body}` messages to test another
+history. The default synthetic fixture does not depend on private message data.
+
+### Padded controls
+
+Buttons keep a three-row target. Half-block caps paint half a row above and
+below the label. Keyboard focus underlines the label without changing dimensions. Each padding row belongs to the same control. List targets contain four rows: top padding, name, detail, and bottom padding. Long list labels
+and details use an ellipsis. Adjacent targets share a boundary without overlap.
+Choices also use three rows, without an additional gap.
+
+Send uses a three-row, ten-column region inside the composer. Its hint remains
+outside that region. Narrow panes show the send and newline hints on separate
+rows. Send and form submission use the primary style. Other buttons use a muted
+style. Keyboard focus and pointer feedback remain visible.
+
+These changes apply the ui.sh button and form guidance in terminal cells. The
+renderer does not know the physical size of a cell, so these dimensions do not
+prove a 48×48 pixel touch target. The scrollbar remains two columns wide during
+hover. A physical touch check in the Rex phone app remains necessary.
+
+### Message wrapping
+
+Lip Gloss includes borders and padding in a style's width. The bubble width is
+its Markdown text width plus two border columns and two padding columns. The
+renderer preserves the Markdown renderer's line breaks inside that bubble.
+A regression test compares every paragraph line across adjacent pane widths.
+It prevents a second wrap from placing the last words on extra short lines.
+
+### Control gallery
+
+Set `LAZYREX_GALLERY` to an existing directory, then run
+`go test -run 'TestControlGallery|TestMessagesGallery'` to export ANSI fixtures.
+The gallery uses the production controls at 38 and 100 columns in both themes.
+It shows supported normal, hover, keyboard focus, pressed, checked, and
+unavailable-action states. The schema does not define disabled form fields or
+selected list items. The gallery does not invent those states.
+
+Lists and forms use at most 72 columns. List hover shades the text and equal
+padding rows above and below it. An accent bar marks keyboard focus. Checkboxes
+use a two-column outline inside a three-row target. The center is empty when
+unchecked and filled with the accent color when checked. The indicator has no
+checkmark. Button hover changes the label fill and both half-block caps together.
+Primary buttons keep the accent color on hover and press.
+Checkbox hover and press shade all three rows, including the label and padding.
+Disabled buttons show diagonal stripes beside the label. The caps keep their
+half-row shape. Disabled buttons do not respond to hover or press.
+
+PNG fixtures use approximate font metrics. They do not prove glyph joins or
+physical touch dimensions in a Rex app. The live composer screenshot shows
+joined rounded borders. The live checkbox screenshot shows a continuous outline.
+
+Widget text wraps at word boundaries, with hard wrapping only for words longer
+than the available width. A model test verifies that Ctrl+N moves from the
+composer to the first form field and routes subsequent typing to that field.
+The lab must also check the terminal's key encoding.
+
+Half-block button caps use `▄` and `▀`. The small checkbox outline uses `▁`, `▔`,
+`▏`, and `▕`. These glyphs paint partial cells; they do not change row height.
+Their continuity depends on the terminal's glyph rendering. Preview PNGs draw
+block elements at exact cell fractions but still use approximate text metrics.
+
+## Menus and form fields
+
+A closed select shows its current value and `▾`. Left and Right cycle its options.
+Enter, Space, or a click opens a floating list. The list shows up to eight options.
+Lip Gloss composes the bordered list over the form. Opening it does not move form rows.
+The border contains two cells of horizontal padding and blank rows above and below the options.
+The highlight covers the padded inner width. It does not cover the border.
+The list width uses the wider of the field control and the widest option with its check-mark column.
+Padding and borders add six cells. The pane edge caps the result.
+Typing replaces the top blank row with `Filter: <text>`. Clearing the filter restores the blank row.
+The list uses its unfiltered options for geometry, so filtering keeps its origin and width.
+The list opens below the field when it fits. Otherwise, it opens above the field.
+If neither side fits, the list uses the side with more room and reduces its option window to at least three rows.
+A pane too short for that minimum can make the list overlap its field. The canvas clips the list to the pane.
+The count line shows only options outside the window. The line disappears when all options fit. Narrow lists use arrows and counts.
+The check mark identifies the current value. The highlight identifies the candidate value.
+Up, Down, Home, End, and the mouse wheel move the highlight.
+Pointer motion over an option also moves the highlight. Leaving the list keeps that highlight. Typing filters labels
+by a case-insensitive substring. Backspace edits the filter. Enter or a click picks
+an option and closes the list. Escape clears a nonempty filter first. Otherwise,
+Escape closes the list without a change. Moving focus away also closes without a change.
+Clicks and wheel events reach the list before covered controls. A click outside closes
+the list without a change and does not activate the control underneath. Scrolling the
+form closes the list. Resizing keeps the focused field visible and recalculates the list position.
+Empty selects do not open. Option labels truncate instead of wrapping.
+
+Model tests cover filtering, picks, cancellation, tree updates, scrolling, and narrow labels.
+They also check unchanged form rows, upward placement, reduced windows, and clicks over other controls.
+`select-lab.mjs` exercises the Profiles Start form with twelve fixture profiles.
+Observed on Rex `0.0.1792158932-g88fd41`: keyboard and mouse picks submit the selected
+profile through the existing action. The highlight stays visible at 32 columns and 20 rows.
+The lab also checks unchanged rows outside the layer and Placement above its field.
+It captures the list at 90 columns and 65 rows, 32 columns and 20 rows, and 32 columns and 16 rows.
+The lab moves the pointer to a new option, leaves the list, and uses Enter to pick that option.
+The lab helpers use the current-value check mark to detect an open list.
+Use `tests/profiles-lab-setup.sh` for the isolated server and hub configuration.
+Replace its agent profiles with `Agent 01` through `Agent 12` before starting the hub.
+Each command must print `selected-agent-N`, then sleep. Set `PROFILES_LAB` to the lab path.
+
+Pointer motion keeps the existing all-motion mode. Messages retain their cached-frame path.
+An open list also reuses its frame when the candidate does not change.
+Observed on an Apple M2 Max, 2026-10-18: the 84-message synthetic fixture matches a live thread's message count and text lengths.
+`BenchmarkLargeConversationMotionFrame` took a median 10.950 µs before this change and 11.060 µs after it.
+Both runs used 1577 bytes and 18 allocations per event. Unchanged select motion took about 18 ns with zero allocations.
+These benchmarks measure model updates and frames. They do not measure terminal input latency.
+
+Full history in the transcript pane: a view tree from a Lua plugin must fit in one 64 KiB Rex
+control message (rex-protocol.md, "Rex Lua runtime"). The messaging plugin sends the newest
+messages within that budget and sets `has_more` when older ones exist. The transcript pane then
+calls `hub.view.history {before}` with the ID of its oldest message, page by page, until
+`has_more` is false. It prints the whole thread once, into native scrollback. Later snapshots
+append to the merged thread. When a snapshot's oldest message is unknown (a burst of messages),
+the pane fetches the pages again. A failed fetch leaves the newest messages and the older marker.
+`hub.view.history` answers `{status: "pending"}` until the page is ready: a hub handler never
+waits for a plugin. The pane asks again every 100 ms, for at most 20 s. Lab (2026-10-18): a
+287-message thread loaded in two pages (105 and 78 messages) within one second.
+
+A `menu` node has a label and an action. The renderer shows no button.
+Ctrl+O or right-click invokes the first menu's action. The footer shows `Ctrl+O menu`.
+The plugin returns a form route. The hub opens that menu in a side pane.
+Menu choices use a list node and the normal view action protocol.
+A form tree with `menu: true` belongs to a menu. In that form, Ctrl+O closes the form, like the
+Cancel button, and the footer shows `Ctrl+O close`. In other forms, Ctrl+O does nothing.
+
+A list whose items all have no `detail` is a compact list. Each item uses one row: an optional
+one-cell `icon`, the label, and an optional `status` at the right edge. An enabled item ends in
+`›` and gets the hover and focus highlight. A compact list shows its label as a dimmed uppercase
+heading. A list with details keeps the four-row targets.
+
+Form layout:
+- Each field has one blank row after it. A run of checkboxes stays together, with one blank row
+  after the last checkbox.
+- Browse… sits to the right of its text box, on the same three rows. The text box is narrower by
+  the button width plus one cell. When the text box would be narrower than 20 cells, Browse…
+  goes under the text box.
+- The submit button and the plain button nodes after the form (a `widget` with no text and an
+  action, such as Cancel) share one row, two cells apart. They stack when the row does not fit.
+- A row can hold more than one control (`row.Extra`). Each control has its own `Left` and
+  `HitWidth`. Tab order goes from left to right.
+- The footer names PgUp/PgDn history only when the view has a history node.
+
+Ctrl+Q in a tab waits for saved drafts and unresolved operations. It calls
+`hub.view.close` before it quits. A failed close leaves the view open and shows
+a retry message. Forms retain their cancel behavior.
+
+A form field can set `visible_when: {field, value}`. `field` names a boolean field
+in the same form. `value` is the required boolean value. The renderer evaluates
+this condition locally. Hidden fields retain their values and remain in the
+submitted values. A condition cannot refer to the same field.
+
+A text field can set `browse: "native"`. The renderer shows Browse beside its label.
+Browse focuses the editor and calls `hub.view.app_action` with `pane.insert_path`.
+The renderer keeps the value until a paste arrives. The paste replaces the value
+and ends the wait. A key press with text ends the wait and edits the value normally.
+This also applies to a manual paste while the picker waits.
+Escape, another Browse activation, or a change of editor focus ends the wait.
+These actions preserve the value. App blur does not end the wait.
+A refusal shows an error and preserves the value. The renderer does not retry
+the app action automatically. The plugin can keep its folder list as a fallback.
+
+When a new tree changes a field value, a clean editor takes that value.
+An editor with unsaved changes keeps its local value. An unchanged tree value
+does not reset a submitted value. A field that waits for native input also keeps
+its value. Model and protocol tests verify these rules. The combined picker path
+still requires a test with the Rex app and the plugin.
+
+A field can set an integer `rev` for an explicit replacement choice. A present
+revision that differs from the previous tree replaces the editor value, including
+unsaved edits. It also ends that field's native picker wait. Revision `0` differs
+from an omitted revision. An unchanged or omitted revision uses the clean-field
+rule. Plugins change `rev` for explicit choices, not for ordinary renders.
+
+A route that starts with `/forms/` identifies a form in a side pane. Escape and an action
+named `$cancel` exit that renderer. The renderer waits if a mutation is unresolved.
+Cancel discards only local form values. The hub keeps the source view separate.
+
+A saved action can have a pending UI step, such as navigation or opening a form.
+The renderer keeps the operation unresolved while `effects` is `pending`. If that
+step fails, the renderer shows the error and a Retry button. Retry calls
+`hub.view.effect.retry` with the original operation key. It does not submit the
+plugin mutation again. Submitted form values remain saved after a UI step fails.
+
+Forms (`/forms/`) use the terminal's normal background. A form waits for the first
+scheme or background reply before drawing its controls. After 300 milliseconds,
+it draws with the fallback palette if no reply has arrived. Later replies still
+update the palette. Ordinary thread views do not wait.

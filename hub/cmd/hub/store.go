@@ -1,0 +1,471 @@
+package main
+
+// Hub-owned storage (README section 3). One SQLite database. The hub is its only user.
+// Namespaces come from the caller's registration, never from the request.
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+
+	_ "modernc.org/sqlite"
+)
+
+const schema = `
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS records (ns TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY (ns, key));
+CREATE TABLE IF NOT EXISTS ops (ns TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY (ns, key));
+CREATE TABLE IF NOT EXISTS notices (ns TEXT NOT NULL, agent TEXT NOT NULL, pending INTEGER NOT NULL, intent_rev INTEGER NOT NULL, PRIMARY KEY (ns, agent));
+CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
+-- status: prepared (request not sent), sending (outcome unknown until resolved), created, abandoned
+CREATE TABLE IF NOT EXISTS spawn_intents (instance_id TEXT PRIMARY KEY, plugin TEXT NOT NULL, status TEXT NOT NULL, block_id TEXT NOT NULL DEFAULT '');
+INSERT OR IGNORE INTO meta VALUES ('rev', 0), ('generation', 0);
+`
+
+type DB struct{ *sql.DB }
+
+func openDB(path string) (*DB, error) {
+	// WAL with synchronous=FULL: a committed batch survives a process crash (not tested for power loss).
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // one writer; transactions are short and never span an RPC
+	if _, err := db.Exec(schema); err != nil {
+		return nil, err
+	}
+	// Columns added after the first release. "duplicate column" means the store has them already.
+	for _, m := range []string{
+		`ALTER TABLE plugins ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE spawn_intents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE bindings ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return nil, err
+		}
+	}
+	return &DB{db}, nil
+}
+
+// nextRev returns a fresh revision from the database-wide counter. Revisions never reset.
+func nextRev(tx *sql.Tx) (int64, error) {
+	var rev int64
+	err := tx.QueryRow(`UPDATE meta SET v = v + 1 WHERE k = 'rev' RETURNING v`).Scan(&rev)
+	return rev, err
+}
+
+func (db *DB) newGeneration() (int64, error) {
+	var g int64
+	err := db.QueryRow(`UPDATE meta SET v = v + 1 WHERE k = 'generation' RETURNING v`).Scan(&g)
+	return g, err
+}
+
+// storeError is a malformed request or unauthorized caller: it becomes a client.reply error.
+type storeError struct{ msg, code string }
+
+func (e *storeError) Error() string { return e.msg }
+
+func bad(format string, args ...any) error { return &storeError{msg: fmt.Sprintf(format, args...)} }
+
+// refuse is bad with a typed error code in the reply (instead of "refused").
+func refuse(code, format string, args ...any) error {
+	return &storeError{msg: code + ": " + fmt.Sprintf(format, args...), code: code}
+}
+
+// checkValue accepts JSON objects, arrays, strings, finite numbers and booleans. No null.
+func checkValue(v any) error {
+	switch t := v.(type) {
+	case nil:
+		return bad("null is not supported")
+	case string, bool:
+		return nil
+	case float64:
+		if math.IsInf(t, 0) || math.IsNaN(t) {
+			return bad("numbers must be finite")
+		}
+		return nil
+	case []any:
+		for _, e := range t {
+			if err := checkValue(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	case map[string]any:
+		for _, e := range t {
+			if err := checkValue(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return bad("unsupported value type %T", v)
+}
+
+// asList accepts a JSON array, or {} from Rex Lua for an empty list.
+func asList(v any) ([]any, bool) {
+	switch t := v.(type) {
+	case []any:
+		return t, true
+	case map[string]any:
+		return nil, len(t) == 0
+	case nil:
+		return nil, true
+	}
+	return nil, false
+}
+
+func parseRev(v any) (int64, error) {
+	s, ok := v.(string)
+	if !ok {
+		return 0, bad("revisions are decimal strings")
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 || strconv.FormatInt(n, 10) != s {
+		return 0, bad("bad revision %q", s)
+	}
+	return n, nil
+}
+
+func revString(n int64) string { return strconv.FormatInt(n, 10) }
+
+// storeScan handles hub.store.scan {prefix?, after?, limit?}: the caller's records in key order,
+// one snapshot per page. Only the caller's namespace. next is the last key when more records exist.
+func (db *DB) storeScan(ctx context.Context, ns string, args map[string]any) (any, error) {
+	prefix, _ := args["prefix"].(string)
+	after, _ := args["after"].(string)
+	limit := 500
+	if v, ok := args["limit"].(float64); ok {
+		if v < 1 || v > 500 || v != float64(int(v)) {
+			return nil, bad("limit is an integer from 1 to 500")
+		}
+		limit = int(v)
+	}
+	// Keys are compared as SQLite text (byte order). The prefix range ends before prefix+0xFF.
+	rows, err := db.QueryContext(ctx, `SELECT key, value, rev FROM records WHERE ns = ? AND key > ? AND substr(key, 1, ?) = ?
+		ORDER BY key LIMIT ?`, ns, after, len(prefix), prefix, limit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := map[string]any{}
+	var keys []string
+	for rows.Next() {
+		var key, value string
+		var rev int64
+		if err := rows.Scan(&key, &value, &rev); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+		if len(keys) <= limit {
+			records[key] = map[string]any{"value": json.RawMessage(value), "rev": revString(rev)}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := map[string]any{"records": records}
+	if len(keys) > limit {
+		out["next"] = keys[limit-1]
+	}
+	return out, nil
+}
+
+func (db *DB) storeGet(ctx context.Context, ns string, args map[string]any) (any, error) {
+	keys, ok := asList(args["keys"])
+	if !ok {
+		return nil, bad("keys must be a list")
+	}
+	tx, err := db.BeginTx(ctx, nil) // one snapshot for every key
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	records := map[string]any{}
+	for _, k := range keys {
+		key, ok := k.(string)
+		if !ok || key == "" {
+			return nil, bad("keys are nonempty strings")
+		}
+		var value string
+		var rev int64
+		err := tx.QueryRowContext(ctx, `SELECT value, rev FROM records WHERE ns = ? AND key = ?`, ns, key).Scan(&value, &rev)
+		if errors.Is(err, sql.ErrNoRows) {
+			records[key] = map[string]any{"rev": "0"}
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		records[key] = map[string]any{"value": json.RawMessage(value), "rev": revString(rev)}
+	}
+	return map[string]any{"records": records}, nil
+}
+
+func (db *DB) storeOp(ctx context.Context, ns string, args map[string]any) (any, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, bad("key is a nonempty string")
+	}
+	var fp, result string
+	err := db.QueryRowContext(ctx, `SELECT fingerprint, result FROM ops WHERE ns = ? AND key = ?`, ns, key).Scan(&fp, &result)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]any{"found": false}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"found": true, "fingerprint": fp, "result": json.RawMessage(result)}, nil
+}
+
+type recordOp struct {
+	key    string
+	value  string // JSON; "" for delete
+	delete bool
+	ifRev  *int64
+}
+
+type noticeOp struct {
+	agent   string
+	pending bool
+}
+
+type batchOutcome struct {
+	result    any
+	committed bool
+	opKey     string
+	revs      map[string]string
+	notices   []noticeOp
+	intentRev map[string]int64 // agent -> new intent revision, for pending notices
+}
+
+// storeBatch validates the whole batch, then applies it in one transaction (README section 3).
+func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, roster map[string]bool) (*batchOutcome, error) {
+	rawOps, ok := asList(args["ops"])
+	if !ok {
+		return nil, bad("ops must be a list")
+	}
+	var recs []recordOp
+	var notes []noticeOp
+	seenKey, seenAgent := map[string]bool{}, map[string]bool{}
+	for _, r := range rawOps {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return nil, bad("each op is an object")
+		}
+		if n, isNotice := m["notify"]; isNotice {
+			nm, ok := n.(map[string]any)
+			if !ok || len(m) != 1 {
+				return nil, bad("a notify op is {notify: {agent, pending}}")
+			}
+			agent, _ := nm["agent"].(string)
+			pending, okP := nm["pending"].(bool)
+			if !roster[agent] || !okP {
+				return nil, bad("notify needs a roster agent and a boolean pending")
+			}
+			if seenAgent[agent] {
+				return nil, bad("agent %q appears twice", agent)
+			}
+			seenAgent[agent] = true
+			notes = append(notes, noticeOp{agent, pending})
+			continue
+		}
+		key, _ := m["key"].(string)
+		if key == "" {
+			return nil, bad("a record op needs a nonempty key")
+		}
+		if seenKey[key] {
+			return nil, bad("key %q appears twice", key)
+		}
+		seenKey[key] = true
+		op := recordOp{key: key}
+		del, hasDel := m["delete"]
+		val, hasVal := m["value"]
+		switch {
+		case hasDel && hasVal, !hasDel && !hasVal:
+			return nil, bad("op %q needs exactly one of value and delete", key)
+		case hasDel:
+			if del != true {
+				return nil, bad("delete must be true")
+			}
+			op.delete = true
+		default:
+			if err := checkValue(val); err != nil {
+				return nil, err
+			}
+			b, _ := json.Marshal(val)
+			op.value = string(b)
+		}
+		if iv, ok := m["if_rev"]; ok {
+			n, err := parseRev(iv)
+			if err != nil {
+				return nil, err
+			}
+			op.ifRev = &n
+		}
+		for k := range m {
+			if k != "key" && k != "value" && k != "delete" && k != "if_rev" {
+				return nil, bad("unknown field %q in op", k)
+			}
+		}
+		recs = append(recs, op)
+	}
+	var opKey, opFP, opResult string
+	// op.result_revs {field: record key}: the committed revision of each record goes into
+	// the saved result under field, in the same transaction. A replay then returns the
+	// revisions that the first execution produced.
+	var resultRevs map[string]string
+	if o, ok := args["op"]; ok {
+		om, ok := o.(map[string]any)
+		if !ok {
+			return nil, bad("op is {key, fingerprint, result}")
+		}
+		opKey, _ = om["key"].(string)
+		opFP, _ = om["fingerprint"].(string)
+		if opKey == "" || opFP == "" {
+			return nil, bad("op key and fingerprint are nonempty strings")
+		}
+		if err := checkValue(om["result"]); err != nil {
+			return nil, err
+		}
+		b, _ := json.Marshal(om["result"])
+		opResult = string(b)
+		if rr, ok := om["result_revs"].(map[string]any); ok && len(rr) > 0 {
+			if _, isMap := om["result"].(map[string]any); !isMap {
+				return nil, bad("op result_revs needs an object result")
+			}
+			resultRevs = map[string]string{}
+			for field, k := range rr {
+				key, _ := k.(string)
+				found := false
+				for _, r := range recs {
+					found = found || r.key == key
+				}
+				if !found {
+					return nil, bad("op result_revs %q names a key that this batch does not write", field)
+				}
+				resultRevs[field] = key
+			}
+		}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	out := &batchOutcome{opKey: opKey}
+	// A saved op is checked before any revision condition, so a retry succeeds with stale revisions.
+	if opKey != "" {
+		var fp, result string
+		err := tx.QueryRowContext(ctx, `SELECT fingerprint, result FROM ops WHERE ns = ? AND key = ?`, ns, opKey).Scan(&fp, &result)
+		switch {
+		case err == nil && fp == opFP:
+			out.result = map[string]any{"op_exists": map[string]any{"fingerprint": fp, "result": json.RawMessage(result)}}
+			return out, nil
+		case err == nil:
+			out.result = map[string]any{"conflict": map[string]any{"kind": "operation", "key": opKey}}
+			return out, nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return nil, err
+		}
+	}
+	for _, r := range recs {
+		if r.ifRev == nil {
+			continue
+		}
+		var cur int64
+		err := tx.QueryRowContext(ctx, `SELECT rev FROM records WHERE ns = ? AND key = ?`, ns, r.key).Scan(&cur)
+		if errors.Is(err, sql.ErrNoRows) {
+			cur = 0
+		} else if err != nil {
+			return nil, err
+		}
+		if cur != *r.ifRev {
+			out.result = map[string]any{"conflict": map[string]any{"kind": "revision", "key": r.key, "rev": revString(cur)}}
+			return out, nil
+		}
+	}
+	revs := map[string]string{}
+	for _, r := range recs {
+		if r.delete {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM records WHERE ns = ? AND key = ?`, ns, r.key); err != nil {
+				return nil, err
+			}
+			revs[r.key] = "0"
+			continue
+		}
+		rev, err := nextRev(tx)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO records VALUES (?, ?, ?, ?) ON CONFLICT (ns, key) DO UPDATE SET value = excluded.value, rev = excluded.rev`, ns, r.key, r.value, rev); err != nil {
+			return nil, err
+		}
+		revs[r.key] = revString(rev)
+	}
+	out.intentRev = map[string]int64{}
+	for _, n := range notes {
+		if n.pending {
+			// Each new pending:true advances the intent revision, so a new send can cause a new notice.
+			rev, err := nextRev(tx)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO notices VALUES (?, ?, 1, ?) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev`, ns, n.agent, rev); err != nil {
+				return nil, err
+			}
+			out.intentRev[n.agent] = rev
+		} else if _, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, ns, n.agent); err != nil {
+			return nil, err
+		}
+	}
+	if opKey != "" {
+		if len(resultRevs) > 0 {
+			var m map[string]any
+			json.Unmarshal([]byte(opResult), &m)
+			for field, key := range resultRevs {
+				m[field] = revs[key]
+			}
+			b, _ := json.Marshal(m)
+			opResult = string(b)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ops VALUES (?, ?, ?, ?)`, ns, opKey, opFP, opResult); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	out.committed, out.revs, out.notices = true, revs, notes
+	out.result = map[string]any{"revs": revs}
+	return out, nil
+}
+
+type pendingNotice struct {
+	ns, agent string
+	intentRev int64
+}
+
+func (db *DB) pendingNotices(ctx context.Context) ([]pendingNotice, error) {
+	rows, err := db.QueryContext(ctx, `SELECT ns, agent, intent_rev FROM notices WHERE pending = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pendingNotice
+	for rows.Next() {
+		var p pendingNotice
+		if err := rows.Scan(&p.ns, &p.agent, &p.intentRev); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

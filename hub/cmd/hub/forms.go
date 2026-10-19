@@ -1,0 +1,802 @@
+package main
+
+// Palette commands and forms (the maintainer, 2026-10-17: plugins declare command-palette entries that
+// open forms).
+//
+// A plugin declares commands at hub.register: commands = [{id, title, description?, keywords?,
+// route}]. The hub writes one rex.action per command to a Lua file beside the Rex config
+// (config "palette_lua"); init.lua loads it with pcall(require, "lazyrex_palette"). The hub runs
+// `rex config reload` only when the file content changes. Only config actions appear in the Rex
+// palette; client actions do not (rex-protocol.md, "Command palette entries and forms").
+//
+// A palette run calls client.perform hub.palette.run {command, ctx} on the connected lazyrex-hub
+// client. The hub takes the plugin and route from its own command table, never from ctx. It
+// checks ctx.session_id and ctx.block_id against Rex, opens the route as a form (a renderer in a
+// focused split in that window), and returns {select} for the Lua action to queue
+// session.select on the app that ran it.
+//
+// A form is a view row with tab formTab and a stored context {session_id, window_id,
+// source_view_id, source_route}. The plugin gets that context as args.context on every render and
+// action. Nothing is recovered from focus later. Forms are not tabs: the tab reconcile, tab rename
+// and crash counts skip them. A view action result can open a form ({form: route}), close the form
+// that ran it ({close_form: true}), or navigate, which also closes the form that ran it.
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
+)
+
+const formTab = "@form" // the tab key of every form view
+
+const formSchema = `
+-- The palette commands each plugin declared at its last registration (JSON list). Kept across
+-- restarts, so the generated palette file does not change while plugins start again.
+CREATE TABLE IF NOT EXISTS ui_commands (plugin TEXT PRIMARY KEY, commands TEXT NOT NULL);
+`
+
+var commandID = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+type paletteCommand struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Keywords    []string `json:"keywords,omitempty"`
+	Route       string   `json:"route"`
+	Surface     string   `json:"surface,omitempty"` // "form" (default) or "panel" (panels.go)
+	Landing     bool     `json:"landing,omitempty"` // the panel a Home click opens; one per plugin
+}
+
+type formContext struct {
+	SessionID    string      `json:"session_id"`
+	WindowID     string      `json:"window_id"`
+	SourceViewID string      `json:"source_view_id"`
+	SourceRoute  string      `json:"source_route"`
+	SourceBlock  string      `json:"source_block_id,omitempty"` // the pane the command ran from (for terminal.pwd, placement)
+	Panel        bool        `json:"panel,omitempty"`           // a side panel, not a form (panels.go)
+	Return       *slotReturn `json:"return,omitempty"`          // the panel this form replaced
+}
+
+func formsStart(ctx context.Context, db *DB) error {
+	if _, err := db.ExecContext(ctx, formSchema); err != nil {
+		return err
+	}
+	for _, m := range []string{
+		`ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseCommands checks the commands of a hub.register call. A missing field means no commands.
+func parseCommands(plugin string, v any) ([]paletteCommand, error) {
+	if v == nil {
+		return nil, nil
+	}
+	raw, _ := json.Marshal(v)
+	if string(raw) == "{}" { // Rex Lua encodes an empty table as {}
+		return nil, nil
+	}
+	var cmds []paletteCommand
+	if err := json.Unmarshal(raw, &cmds); err != nil {
+		return nil, bad("commands must be a list of {id, title, route}")
+	}
+	if len(cmds) > 0 && !commandID.MatchString(plugin) {
+		return nil, bad("plugin name %q cannot name a palette action (a-z, 0-9, _)", plugin)
+	}
+	seen := map[string]bool{}
+	landing := false
+	for i, c := range cmds {
+		switch {
+		case !commandID.MatchString(c.ID):
+			return nil, bad("command id %q: use a-z, 0-9 and _", c.ID)
+		case seen[c.ID]:
+			return nil, bad("command id %q is declared twice", c.ID)
+		case strings.TrimSpace(c.Title) == "":
+			return nil, bad("command %q has no title", c.ID)
+		}
+		seen[c.ID] = true
+		switch c.Surface {
+		case "", "form":
+			cmds[i].Surface = "" // the default is stored as empty
+			if c.Landing {
+				return nil, bad("command %q: only a panel can be the landing", c.ID)
+			}
+			if !strings.HasPrefix(c.Route, "/forms/") {
+				return nil, bad("command %q: route must start with /forms/", c.ID)
+			}
+		case "panel":
+			if !strings.HasPrefix(c.Route, "/panels/") {
+				return nil, bad("command %q: a panel route must start with /panels/", c.ID)
+			}
+			if c.Landing && landing {
+				return nil, bad("command %q: only one panel may be the landing", c.ID)
+			}
+			landing = landing || c.Landing
+		default:
+			return nil, bad("command %q: surface must be form or panel", c.ID)
+		}
+	}
+	return cmds, nil
+}
+
+// saveCommands records a plugin's commands and rewrites the palette file when they changed.
+func (h *Hub) saveCommands(ctx context.Context, plugin string, cmds []paletteCommand) {
+	b, _ := json.Marshal(cmds)
+	if cmds == nil {
+		b = []byte("[]")
+	}
+	var old string
+	h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, plugin).Scan(&old)
+	if old == string(b) {
+		return
+	}
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO ui_commands (plugin, commands) VALUES (?, ?)
+		ON CONFLICT (plugin) DO UPDATE SET commands = excluded.commands`, plugin, string(b)); err != nil {
+		log.Printf("palette: save %s: %v", plugin, err)
+		return
+	}
+	h.kickPalette()
+}
+
+func (h *Hub) kickPalette() {
+	if h.paletteKick == nil {
+		return
+	}
+	select {
+	case h.paletteKick <- struct{}{}:
+	default:
+	}
+}
+
+// paletteLoop writes the palette file when its content changes, then reloads the Rex config.
+// A failed write or reload retries after a few seconds.
+func (h *Hub) paletteLoop(ctx context.Context) {
+	var retry <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.paletteKick:
+		case <-retry:
+		}
+		retry = nil
+		if err := h.writePalette(ctx); err != nil {
+			log.Printf("palette: %v", err)
+			retry = time.After(5 * time.Second)
+		}
+	}
+}
+
+func (h *Hub) writePalette(ctx context.Context) error {
+	path := h.cfg.PaletteLua
+	if path == "" {
+		return nil
+	}
+	cmds := map[string][]paletteCommand{}
+	for _, p := range h.cfg.Plugins {
+		var raw string
+		if err := h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, p.Name).Scan(&raw); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return err
+		}
+		var list []paletteCommand
+		if json.Unmarshal([]byte(raw), &list) == nil && len(list) > 0 {
+			cmds[p.Name] = list
+		}
+	}
+	content := paletteLua(cmds)
+	if h.paletteLoaded == "" {
+		// The content of the last successful reload, recorded after it: equal bytes on disk alone
+		// do not prove a reload (a crash between the rename and the reload).
+		h.db.QueryRowContext(ctx, `SELECT value FROM ui_state WHERE key = 'palette_loaded'`).Scan(&h.paletteLoaded)
+	}
+	if content == h.paletteLoaded {
+		return nil
+	}
+	if old, err := os.ReadFile(path); err != nil || string(old) != content {
+		tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
+		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			return err
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "config", "reload")
+	cmd.Env = append(os.Environ(), "REX_SERVER="+h.cfg.Server)
+	out, err := cmd.CombinedOutput()
+	h.ev.emit("palette_written", map[string]any{"path": path, "commands": len(cmds), "reload_ok": err == nil, "reload": strings.TrimSpace(string(out))})
+	if err != nil {
+		return fmt.Errorf("rex config reload: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	h.paletteLoaded = content
+	_, err = h.db.ExecContext(ctx, `INSERT INTO ui_state (key, value) VALUES ('palette_loaded', ?)
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, content)
+	return err
+}
+
+// luaString quotes s as a Lua 5.1 string literal.
+func luaString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"' || c == '\\':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case c < 0x20 || c == 0x7f:
+			fmt.Fprintf(&b, "\\%03d", c)
+		default:
+			b.WriteByte(c) // UTF-8 bytes pass through
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// paletteLua is the generated Lua file. Its content depends only on the commands, sorted, so an
+// unchanged command set gives the same bytes.
+func paletteLua(cmds map[string][]paletteCommand) string {
+	var b strings.Builder
+	b.WriteString(`-- Generated by the LazyRex hub. Do not edit: the hub replaces this file.
+-- Load it from init.lua with: pcall(require, "lazyrex_palette")
+local function lazyrex_run(command)
+  return function(ctx, args)
+    local list, err = rex.call("client.list", {})
+    if err ~= nil then error(err, 0) end
+    local hub
+    for _, c in ipairs(list.clients or {}) do
+      if c.info and c.info.label == "lazyrex-hub" and c.connection_state == "connected" then
+        if hub then error("more than one LazyRex hub is connected", 0) end
+        hub = c.client_id
+      end
+    end
+    if not hub then error("the LazyRex hub is not running", 0) end
+    local r, perr = rex.call("client.perform", { client_id = hub, action = "hub.palette.run",
+      args = { command = command, ctx = ctx }, timeout_ms = 10000 })
+    if perr ~= nil then error(perr, 0) end
+    local res = (r and r.result) or {}
+    if res.select then pcall(rex.client.queue, "session.select", res.select) end
+    return res
+  end
+end
+`)
+	plugins := make([]string, 0, len(cmds))
+	for p := range cmds {
+		plugins = append(plugins, p)
+	}
+	sort.Strings(plugins)
+	for _, p := range plugins {
+		list := append([]paletteCommand(nil), cmds[p]...)
+		sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+		for _, c := range list {
+			fmt.Fprintf(&b, "\nrex.action {\n  name = %s,\n  title = %s,\n  category = \"LazyRex\",\n",
+				luaString("lazyrex_"+p+"_"+c.ID), luaString("LazyRex: "+c.Title))
+			if c.Description != "" {
+				fmt.Fprintf(&b, "  description = %s,\n", luaString(c.Description))
+			}
+			if len(c.Keywords) > 0 {
+				// Rex 1203 takes keywords as one string (a table fails the config load).
+				fmt.Fprintf(&b, "  keywords = %s,\n", luaString(strings.Join(c.Keywords, " ")))
+			}
+			fmt.Fprintf(&b, "  run = lazyrex_run(%s),\n}\n", luaString(p+"."+c.ID))
+		}
+	}
+	return b.String()
+}
+
+// paletteRun handles hub.palette.run {command: "<plugin>.<id>", ctx}: it opens the command's form
+// in the window of ctx.block_id.
+func (h *Hub) paletteRun(ctx context.Context, p perform, args map[string]any) (any, error) {
+	command, _ := args["command"].(string)
+	plugin, id, ok := strings.Cut(command, ".")
+	if !ok {
+		return nil, bad("unknown command %q", command)
+	}
+	var raw string
+	if err := h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, plugin).Scan(&raw); err != nil {
+		return nil, bad("unknown command %q", command)
+	}
+	var list []paletteCommand
+	json.Unmarshal([]byte(raw), &list)
+	var route, title string
+	panel := false
+	for _, c := range list {
+		if c.ID == id {
+			route, title, panel = c.Route, c.Title, c.Surface == "panel"
+		}
+	}
+	if route == "" {
+		return nil, bad("unknown command %q", command)
+	}
+	if h.pluginClient(plugin) == "" {
+		return nil, bad("plugin %s is not running", plugin)
+	}
+	rc, _ := args["ctx"].(map[string]any)
+	// A config action's client.perform comes from the client that ran it (observed on Rex 1203),
+	// and Rex sets ctx.client_id to that client. A ctx from anyone else is not this run's.
+	if cid, _ := rc["client_id"].(string); cid == "" || cid != p.Requester.ClientID {
+		return nil, bad("ctx.client_id is not the calling client")
+	}
+	sess, _ := rc["session_id"].(string)
+	block, _ := rc["block_id"].(string)
+	if sess == "" {
+		return nil, bad("run this command from the Rex palette or a key binding: it needs a session")
+	}
+	window, err := h.formWindow(ctx, sess, block)
+	if err != nil {
+		return nil, err
+	}
+	fc := formContext{SessionID: sess, WindowID: window, Panel: panel, SourceBlock: block}
+	if src, err := h.viewByBlock(ctx, block); err == nil && src != nil && src.Tab != formTab {
+		fc.SourceViewID, fc.SourceRoute = src.ID, src.Route
+	} else if err == nil && src != nil {
+		// Run from a side panel or form: the source is that view's own source, not the side pane
+		// (its cwd is the renderer's, and the replacement closes it) (Worktrees Codex's review).
+		if prev, ok := h.formOf(ctx, src.ID); ok {
+			fc.SourceViewID, fc.SourceRoute, fc.SourceBlock = prev.SourceViewID, prev.SourceRoute, prev.SourceBlock
+		}
+	}
+	// The form or panel takes the window's side slot; a view there is replaced (panels.go).
+	out, err := h.openSlot(ctx, slotRequest{Plugin: plugin, Route: route, Ctx: fc, Focus: true, NextTitle: title})
+	if err != nil {
+		return nil, err
+	}
+	if out["status"] == "opened" {
+		go h.refocusForm(sess, window, h.viewBlock(out["view_id"].(string)), block)
+	}
+	out["select"] = map[string]any{"session_id": sess, "window_id": window}
+	return out, nil
+}
+
+// formWindow checks that sess exists and returns the window of block, or the active window when
+// block is empty. A block that is not in sess is an error.
+func (h *Hub) formWindow(ctx context.Context, sess, block string) (string, error) {
+	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
+		return "", bad("session %s: %v", sess, err)
+	}
+	var sv struct {
+		ActiveWindowID string `json:"active_window_id"`
+		Windows        []struct {
+			WindowID string `json:"window_id"`
+			Layers   []struct {
+				Blocks []struct {
+					BlockID string `json:"block_id"`
+				} `json:"blocks"`
+			} `json:"layers"`
+		} `json:"windows"`
+	}
+	if err := h.rex.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv); err != nil {
+		return "", err
+	}
+	if block == "" {
+		if sv.ActiveWindowID == "" {
+			return "", bad("session %s has no window", sess)
+		}
+		return sv.ActiveWindowID, nil
+	}
+	for _, w := range sv.Windows {
+		for _, l := range w.Layers {
+			for _, b := range l.Blocks {
+				if b.BlockID == block {
+					return w.WindowID, nil
+				}
+			}
+		}
+	}
+	return "", bad("block %s is not shown in session %s", block, sess)
+}
+
+// errUnknown marks an outcome that Rex did not report (a timeout or a lost connection). The step
+// runs again later; it must be safe to repeat.
+var errUnknown = errors.New("outcome unknown")
+
+// transient reports whether err may succeed on a later try.
+func transient(err error) bool {
+	if errors.Is(err, errUnknown) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var re *rex.RexError
+	if errors.As(err, &re) {
+		_, definite := definiteFailure(err)
+		return !definite
+	}
+	return false
+}
+
+// openForm opens route as form id: a renderer in a focused split on the right of the focused pane
+// of fc's window. Not a floating layer: the app draws floating layers translucent (the maintainer,
+// 2026-10-17); a split is an ordinary, opaque pane. It is safe to repeat with the same id. An open form is returned as it is. A form whose pane request
+// had an unknown outcome is looked up by its unique label, and only a complete inventory without
+// it lets the hub ask again. errUnknown means the form may or may not exist yet.
+func (h *Hub) openForm(ctx context.Context, id, plugin, route string, fc formContext) (*view, error) {
+	if h.cfg.View == "" {
+		return nil, errors.New("no renderer: set \"view\" in the hub config")
+	}
+	b, _ := json.Marshal(fc)
+	v := &view{ID: id, Plugin: plugin, Tab: formTab, Route: route}
+	var status, closedBy, sess string
+	err := h.db.QueryRowContext(ctx, `SELECT status, closed_by, session_id FROM views WHERE view_id = ?`, id).Scan(&status, &closedBy, &sess)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id) VALUES (?, ?, ?, ?, 'sending', ?, ?)`,
+			id, plugin, formTab, route, string(b), fc.SessionID); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	case status == "open" || (status == "closed" && closedBy != "abandoned"):
+		return v, nil // opened before; the user may have closed it since
+	case status == "closed": // abandoned: Rex made nothing; ask again
+		h.db.ExecContext(ctx, `UPDATE views SET status = 'sending', closed_by = '' WHERE view_id = ?`, id)
+	case status == "sending":
+		block, found, err := h.findFormBlock(ctx, fc.SessionID, id)
+		if err != nil {
+			return nil, fmt.Errorf("open form %s: inventory: %v: %w", route, err, errUnknown)
+		}
+		if found {
+			return v, h.adoptForm(ctx, v, fc, block)
+		}
+	}
+	// Attach first: list_blocks needs it, and the form's close events come from this session.
+	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": fc.SessionID, "event_scope": "session"}, nil); err != nil {
+		if transient(err) {
+			return nil, fmt.Errorf("open form %s: %v: %w", route, err, errUnknown)
+		}
+		h.closeViewRow(ctx, id, "abandoned")
+		return nil, err
+	}
+	var out struct {
+		AnchorBlockID string   `json:"anchor_block_id"`
+		BlockIDs      []string `json:"block_ids"`
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	err = h.rex.Call(cctx, "session.new_split", map[string]any{
+		"session_id": fc.SessionID, "window_id": fc.WindowID, "direction": "horizontal", "side": "after", "ratio": 0.55, "focus": true,
+		"layout": map[string]any{"block": map[string]any{
+			"flavor": "com.superlogical.terminal.shell",
+			"label":  "lazyrex-form:" + id,
+			"options": map[string]any{
+				"command": h.viewCommand(id, plugin, route),
+				"login":   false,
+				// The form ends with its renderer: an exit closes the pane.
+				"exit": map[string]any{"on_completion": true},
+			},
+		}},
+	}, &out)
+	if err != nil && transient(err) {
+		// Rex may have made the pane. Its label is unique: look once now. Without a complete
+		// inventory the row stays 'sending', and a later try (or the start sweep) looks again.
+		block, found, ierr := h.findFormBlock(ctx, fc.SessionID, id)
+		switch {
+		case ierr != nil:
+			return nil, fmt.Errorf("open form %s: %v: %w", route, err, errUnknown)
+		case found:
+			return v, h.adoptForm(ctx, v, fc, block)
+		}
+		h.closeViewRow(ctx, id, "abandoned") // a complete inventory proves Rex made nothing
+		return nil, fmt.Errorf("open form %s: %w", route, err)
+	}
+	if err != nil || len(out.BlockIDs) != 1 {
+		h.closeViewRow(ctx, id, "abandoned")
+		if err == nil {
+			err = fmt.Errorf("new_split gave %d blocks", len(out.BlockIDs))
+		}
+		return nil, fmt.Errorf("open form %s: %w", route, err)
+	}
+	if err := h.adoptForm(ctx, v, fc, out.BlockIDs[0]); err != nil {
+		return v, err
+	}
+	go h.refocusForm(fc.SessionID, fc.WindowID, out.BlockIDs[0], out.AnchorBlockID)
+	return v, nil
+}
+
+// refocusForm gives the new form focus again after a palette run. A workaround: Rex focuses the
+// form, but in the app the form did not have focus (the maintainer, 2026-10-17). Inferred: the app gives
+// focus back to the pane where the palette ran when the palette closes. The hub moves focus only
+// from that pane (anchor) in the active window, so a user who moved to another pane or tab keeps it.
+func (h *Hub) refocusForm(sess, window, block, anchor string) {
+	for _, wait := range []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second} {
+		time.Sleep(wait)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var sv struct {
+			ActiveWindowID string `json:"active_window_id"`
+			Windows        []struct {
+				WindowID       string `json:"window_id"`
+				FocusedBlockID string `json:"focused_block_id"`
+			} `json:"windows"`
+		}
+		err := h.rex.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv)
+		focused := ""
+		for _, w := range sv.Windows {
+			if w.WindowID == window {
+				focused = w.FocusedBlockID
+			}
+		}
+		if sv.ActiveWindowID != window {
+			focused = "" // the user is on another tab: focus_block would pull them back
+		}
+		if err == nil && anchor != "" && focused == anchor {
+			if err = h.rex.Call(ctx, "session.focus_block", map[string]any{"session_id": sess, "block_id": block}, nil); err == nil {
+				h.ev.emit("form_refocused", map[string]any{"block_id": block, "after_ms": wait.Milliseconds()})
+			}
+		}
+		cancel()
+		if err != nil || focused != block && focused != anchor {
+			return // gone, or the user is elsewhere
+		}
+	}
+}
+
+func (h *Hub) adoptForm(ctx context.Context, v *view, fc formContext, block string) error {
+	if err := h.adoptView(ctx, v, fc.SessionID, rexBlock{BlockID: block, WindowID: fc.WindowID}); err != nil {
+		return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
+	}
+	h.ev.emit("form_opened", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "route": v.Route, "session_id": fc.SessionID, "window_id": fc.WindowID, "source_view_id": fc.SourceViewID})
+	return nil
+}
+
+// findFormBlock finds the pane of form id in sess by its unique label. An error means the
+// inventory is incomplete: found=false then proves nothing.
+func (h *Hub) findFormBlock(ctx context.Context, sess, id string) (string, bool, error) {
+	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
+		if sessionGone(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	blocks, err := h.blocksIn(ctx, sess)
+	if err != nil {
+		if sessionGone(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	for _, b := range blocks {
+		if b.Label == "lazyrex-form:"+id {
+			return b.BlockID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// closeForm closes a form's pane. The hub marks its own close, so the event is not the user's.
+// A failed close keeps the row: the pane may still run. Closing a closed form does nothing.
+func (h *Hub) closeForm(ctx context.Context, id, why string) error {
+	var sess, block string
+	if err := h.db.QueryRowContext(ctx, `SELECT session_id, block_id FROM views WHERE view_id = ? AND tab = ? AND status != 'closed'`, id, formTab).
+		Scan(&sess, &block); err != nil {
+		return nil
+	}
+	if block != "" {
+		h.mu.Lock()
+		h.selfClosed[block] = true
+		h.mu.Unlock()
+		if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": sess, "block_id": block}, nil); err != nil {
+			var re *rex.RexError
+			if !sessionGone(err) && !(errors.As(err, &re) && re.Code == "not_found") {
+				h.mu.Lock()
+				delete(h.selfClosed, block)
+				h.mu.Unlock()
+				return fmt.Errorf("close form %s: %v: %w", id, err, errUnknown)
+			}
+		}
+	}
+	h.closeViewRow(ctx, id, "hub")
+	h.ev.emit("form_closed", map[string]any{"view_id": id, "by": "hub", "why": why})
+	return nil
+}
+
+// formOf returns the stored context of view id, and whether the view is a form.
+func (h *Hub) formOf(ctx context.Context, id string) (formContext, bool) {
+	var tabKey, raw string
+	var fc formContext
+	if h.db.QueryRowContext(ctx, `SELECT tab, context FROM views WHERE view_id = ?`, id).Scan(&tabKey, &raw) != nil || tabKey != formTab {
+		return fc, false
+	}
+	json.Unmarshal([]byte(raw), &fc)
+	return fc, true
+}
+
+// viewEffects are the UI parts of a view action result. They run after the operation commits.
+type viewEffects struct {
+	Navigate   string         `json:"navigate"`
+	Form       string         `json:"form"`
+	CloseForm  bool           `json:"close_form"`
+	Panel      map[string]any `json:"panel"`       // {command} | {route} | {plugin, command} (panels.go)
+	ClosePanel bool           `json:"close_panel"` // closes the panel that ran the action
+}
+
+func (e viewEffects) any() bool {
+	return e.Navigate != "" || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel
+}
+
+// applyEffects runs the effects of one succeeded view action, in order: navigate, open a form,
+// then close the form that ran the action. Progress is kept in view_ops (effect_state 'pending',
+// effect_nav), so a retry or a hub restart goes on from the last finished step and repeats no
+// step that is unsafe to repeat. The new form's view ID comes from the operation key, so opening
+// it again finds it. A failure that a retry cannot fix ends as effect_state 'failed' with the
+// error, which the renderer gets from hub.view.operation; the form that ran the action stays
+// open. It returns true when a step must run again later.
+func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, result json.RawMessage) bool {
+	var e viewEffects
+	json.Unmarshal(result, &e)
+	var navDone int
+	if err := h.db.QueryRowContext(ctx, `SELECT effect_nav FROM view_ops WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key).Scan(&navDone); err != nil {
+		log.Printf("views %s: effects of %s: %v (retry)", plugin, key, err)
+		return true
+	}
+	set := func(query string, a ...any) bool { // reports whether the progress write failed
+		_, err := h.db.ExecContext(ctx, query, a...)
+		if err != nil {
+			log.Printf("views %s: effects of %s: record: %v (retry)", plugin, key, err)
+		}
+		return err != nil
+	}
+	fail := func(err error) bool {
+		if transient(err) {
+			log.Printf("views %s: effects of %s: %v (retry)", plugin, key, err)
+			return true
+		}
+		if set(`UPDATE view_ops SET effect_state = 'failed', effect_error = ? WHERE plugin = ? AND user = ? AND op_key = ?`,
+			err.Error(), plugin, viewUser, key) {
+			return true
+		}
+		h.ev.emit("view_effect_failed", map[string]any{"plugin": plugin, "op_key": key, "view_id": viewID, "error": err.Error()})
+		h.notifyView(plugin, viewID)
+		return false
+	}
+	if e.Navigate != "" && navDone == 0 {
+		if _, err := h.uiNavigate(ctx, map[string]any{"plugin": plugin, "tab": e.Navigate}); err != nil {
+			return fail(fmt.Errorf("navigate %s: %w", e.Navigate, err))
+		}
+		if set(`UPDATE view_ops SET effect_nav = 1 WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key) {
+			return true // navigation repeats safely
+		}
+	}
+	fc, isForm := h.formOf(ctx, viewID)
+	opened := false // a form or panel took the slot; it replaced the source view when it was there
+	if e.Form != "" || e.Panel != nil {
+		target, route, title, panel := plugin, e.Form, "", false
+		if e.Panel != nil {
+			t, r, err := h.panelTarget(ctx, plugin, e.Panel)
+			if err != nil {
+				return fail(fmt.Errorf("panel: %w", err))
+			}
+			target, route, panel = t, r, true
+			title = h.commandTitle(ctx, t, r)
+		} else if !strings.HasPrefix(e.Form, "/forms/") {
+			return fail(fmt.Errorf("form %q: the route must start with /forms/", e.Form))
+		}
+		if !isForm {
+			// The window comes from Rex, not from the views row: the hub moves tabs between
+			// windows (detach and restore), and the row can lag behind.
+			var src view
+			if err := h.db.QueryRowContext(ctx, `SELECT session_id, block_id, route FROM views WHERE view_id = ? AND status = 'open'`, viewID).
+				Scan(&src.Session, &src.Block, &src.Route); err != nil {
+				return fail(fmt.Errorf("form %s: the source view is closed", e.Form))
+			}
+			window, err := h.formWindow(ctx, src.Session, src.Block)
+			if err != nil {
+				return fail(fmt.Errorf("form %s: the source view is not shown: %w", e.Form, err))
+			}
+			fc = formContext{SessionID: src.Session, WindowID: window, SourceViewID: viewID, SourceRoute: src.Route, SourceBlock: src.Block}
+		}
+		sc := fc
+		sc.Panel, sc.Return = panel, nil
+		// The new view takes the source form's place. The source is still asked to release, so
+		// input typed after the submit is not lost (Codex's review).
+		req := slotRequest{ReplID: formEffectID(plugin, key), Plugin: target, Route: route, Ctx: sc, Focus: true, NextTitle: title}
+		if isForm && !fc.Panel {
+			req.ExpectOld = viewID
+		}
+		if _, err := h.openSlot(ctx, req); err != nil {
+			return fail(err)
+		}
+		opened = true
+	}
+	switch {
+	case opened:
+	case isForm && fc.Panel && (e.ClosePanel || e.CloseForm):
+		if err := h.closeForm(ctx, viewID, "action"); err != nil {
+			return fail(err)
+		}
+	case isForm && !fc.Panel && e.any():
+		// The form ended: the panel it replaced takes its place again (panels.go).
+		// The form ended. The panel it replaced takes its place again (panels.go); the replacement
+		// closes the form after the release, so a dirty form is not closed while the user decides.
+		if took, err := h.formEnded(ctx, viewID, fc, true, key); err != nil {
+			return fail(fmt.Errorf("return panel: %w", err)) // the form stays open
+		} else if !took {
+			if err := h.closeForm(ctx, viewID, "action"); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	if set(`UPDATE view_ops SET effect_state = 'done' WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key) {
+		return true // every step repeats safely
+	}
+	h.notifyView(plugin, viewID)
+	return false
+}
+
+// formEffectID is the view ID of the form that operation key opens.
+func formEffectID(plugin, key string) string {
+	sum := sha256.Sum256([]byte(plugin + "\x00" + key))
+	return "view-form-" + hex.EncodeToString(sum[:8])
+}
+
+func (h *Hub) notifyView(plugin, viewID string) {
+	h.vs.mu.Lock()
+	h.vs.notify[viewID] = true
+	h.vs.dirty[plugin] = true
+	h.vs.mu.Unlock()
+	h.kickViews(plugin, false)
+}
+
+// formsSweep runs at start. A form whose pane request had an unknown outcome is looked up by
+// its label: found, it is adopted; proved absent, it is abandoned. A form whose pane closed while
+// the hub was down is closed. Effects that a crash cut off run again from view_ops (runOps).
+func (h *Hub) formsSweep(ctx context.Context) {
+	rows, err := h.db.QueryContext(ctx, `SELECT view_id, plugin, route, status, session_id, block_id, context FROM views WHERE tab = ? AND status != 'closed'`, formTab)
+	if err != nil {
+		return
+	}
+	type form struct{ id, plugin, route, status, sess, block, context string }
+	var forms []form
+	for rows.Next() {
+		var f form
+		rows.Scan(&f.id, &f.plugin, &f.route, &f.status, &f.sess, &f.block, &f.context)
+		forms = append(forms, f)
+	}
+	rows.Close()
+	for _, f := range forms {
+		if f.status == "sending" && h.isSlotView(ctx, f.id) {
+			continue // a side-slot pane: slotSweep looks for it and never abandons it on an inventory
+		}
+		var fc formContext
+		json.Unmarshal([]byte(f.context), &fc)
+		if f.sess == "" {
+			f.sess = fc.SessionID
+		}
+		block, found, err := h.findFormBlock(ctx, f.sess, f.id)
+		if err != nil {
+			continue // incomplete inventory: keep the row as it is
+		}
+		switch {
+		case found && f.status == "sending":
+			if err := h.adoptForm(ctx, &view{ID: f.id, Plugin: f.plugin, Tab: formTab, Route: f.route}, fc, block); err != nil {
+				log.Printf("form sweep %s: %v", f.id, err)
+			}
+		case found:
+		case f.status == "sending":
+			h.closeViewRow(ctx, f.id, "abandoned")
+		default:
+			h.closeViewRow(ctx, f.id, "gone")
+		}
+	}
+}

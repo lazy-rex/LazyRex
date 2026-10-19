@@ -1,0 +1,30 @@
+{
+ "profiles": [
+  {
+   "id": "claude",
+   "name": "Claude",
+   "kind": "agent",
+   "command": [
+    "claude",
+    "${task}"
+   ],
+   "cwd": "/path/to/project",
+   "args": [
+    {
+     "name": "task",
+     "label": "Task"
+    }
+   ]
+  },
+  {
+   "id": "shell",
+   "name": "Shell",
+   "kind": "accessory",
+   "command": [
+    "/bin/zsh",
+    "-l"
+   ],
+   "cwd": "/path/to/project"
+  }
+ ]
+}

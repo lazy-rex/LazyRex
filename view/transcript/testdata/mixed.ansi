@@ -1,0 +1,96 @@
+[1m[38;2;125;211;252mUser[0m [38;2;148;163;184m· 12:01[0m
+[48;2;40;48;64;1m# [m[48;2;40;48;64;1mReview[m[48;2;40;48;64m[m
+[48;2;40;48;64m[m
+[48;2;40;48;64mOne logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m.[m[48;2;40;48;64m END[m
+
+[48;2;40;48;64m• [m[48;2;40;48;64mFirst[m
+[48;2;40;48;64m• [m[48;2;40;48;64mSecond[m
+
+[48;2;40;48;64m> [m[48;2;40;48;64mQuote[m
+
+[38;2;148;163;184;48;2;40;48;64m  fmt.Println("long code that remains a single logical line and wraps only in the terminal")[m
+[38;2;148;163;184;48;2;40;48;64m[m[38;2;148;163;184;48;2;40;48;64m[m
+[48;2;40;48;64mMode: [m[48;2;40;48;64mNone[m[48;2;40;48;64m · [m[48;2;40;48;64mWheel: [m[48;2;40;48;64mnative[m
+
+[48;2;40;48;64mMode: [m[48;2;40;48;64mCell[m[48;2;40;48;64m · [m[48;2;40;48;64mWheel: [m[48;2;40;48;64mcaptured[0m
+
+[1m[38;2;251;191;36mCodex[0m [38;2;148;163;184m· 12:02[0m
+[1m# [m[1mReview[m
+
+One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. END
+
+• First
+• Second
+
+> Quote
+
+[38;2;148;163;184m  fmt.Println("long code that remains a single logical line and wraps only in the terminal")[m
+[38;2;148;163;184m[m[38;2;148;163;184m[m
+Mode: None · Wheel: native
+
+Mode: Cell · Wheel: captured[0m
+
+[1m[38;2;125;211;252mUser[0m [38;2;148;163;184m· 12:01[0m
+[38;2;125;211;252m▌[0m[48;2;40;48;64;1m# [m[48;2;40;48;64;1mReview[m[48;2;40;48;64m[m
+[48;2;40;48;64m[m
+[48;2;40;48;64mOne logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m. One logical paragraph with [m[48;2;40;48;64;1memphasis[m[48;2;40;48;64m and [m[38;2;148;163;184;48;2;40;48;64mcode[m[48;2;40;48;64m.[m[48;2;40;48;64m END[m
+
+[48;2;40;48;64m• [m[48;2;40;48;64mFirst[m
+[48;2;40;48;64m• [m[48;2;40;48;64mSecond[m
+
+[48;2;40;48;64m> [m[48;2;40;48;64mQuote[m
+
+[38;2;148;163;184;48;2;40;48;64m  fmt.Println("long code that remains a single logical line and wraps only in the terminal")[m
+[38;2;148;163;184;48;2;40;48;64m[m[38;2;148;163;184;48;2;40;48;64m[m
+[48;2;40;48;64mMode: [m[48;2;40;48;64mNone[m[48;2;40;48;64m · [m[48;2;40;48;64mWheel: [m[48;2;40;48;64mnative[m
+
+[48;2;40;48;64mMode: [m[48;2;40;48;64mCell[m[48;2;40;48;64m · [m[48;2;40;48;64mWheel: [m[48;2;40;48;64mcaptured[0m
+
+[1m[38;2;251;191;36mCodex[0m [38;2;148;163;184m· 12:02[0m
+[1m# [m[1mReview[m
+
+One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. END
+
+• First
+• Second
+
+> Quote
+
+[38;2;148;163;184m  fmt.Println("long code that remains a single logical line and wraps only in the terminal")[m
+[38;2;148;163;184m[m[38;2;148;163;184m[m
+Mode: None · Wheel: native
+
+Mode: Cell · Wheel: captured[0m
+
+[1m[38;2;125;211;252mUser[0m [38;2;148;163;184m· 12:01[0m
+[38;2;125;211;252;1m# [m[38;2;125;211;252;1mReview[m[38;2;125;211;252m[m
+[38;2;125;211;252m[m
+[38;2;125;211;252mOne logical paragraph with [m[38;2;125;211;252;1memphasis[m[38;2;125;211;252m and [m[38;2;148;163;184mcode[m[38;2;125;211;252m. One logical paragraph with [m[38;2;125;211;252;1memphasis[m[38;2;125;211;252m and [m[38;2;148;163;184mcode[m[38;2;125;211;252m. One logical paragraph with [m[38;2;125;211;252;1memphasis[m[38;2;125;211;252m and [m[38;2;148;163;184mcode[m[38;2;125;211;252m. One logical paragraph with [m[38;2;125;211;252;1memphasis[m[38;2;125;211;252m and [m[38;2;148;163;184mcode[m[38;2;125;211;252m. One logical paragraph with [m[38;2;125;211;252;1memphasis[m[38;2;125;211;252m and [m[38;2;148;163;184mcode[m[38;2;125;211;252m. One logical paragraph with [m[38;2;125;211;252;1memphasis[m[38;2;125;211;252m and [m[38;2;148;163;184mcode[m[38;2;125;211;252m.[m[38;2;125;211;252m END[m
+
+[38;2;125;211;252m• [m[38;2;125;211;252mFirst[m
+[38;2;125;211;252m• [m[38;2;125;211;252mSecond[m
+
+[38;2;125;211;252m> [m[38;2;125;211;252mQuote[m
+
+[38;2;148;163;184m  fmt.Println("long code that remains a single logical line and wraps only in the terminal")[m
+[38;2;148;163;184m[m[38;2;148;163;184m[m
+[38;2;125;211;252mMode: [m[38;2;125;211;252mNone[m[38;2;125;211;252m · [m[38;2;125;211;252mWheel: [m[38;2;125;211;252mnative[m
+
+[38;2;125;211;252mMode: [m[38;2;125;211;252mCell[m[38;2;125;211;252m · [m[38;2;125;211;252mWheel: [m[38;2;125;211;252mcaptured[0m
+
+[1m[38;2;251;191;36mCodex[0m [38;2;148;163;184m· 12:02[0m
+[1m# [m[1mReview[m
+
+One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. One logical paragraph with [1memphasis[m and [38;2;148;163;184mcode[m. END
+
+• First
+• Second
+
+> Quote
+
+[38;2;148;163;184m  fmt.Println("long code that remains a single logical line and wraps only in the terminal")[m
+[38;2;148;163;184m[m[38;2;148;163;184m[m
+Mode: None · Wheel: native
+
+Mode: Cell · Wheel: captured[0m
+
