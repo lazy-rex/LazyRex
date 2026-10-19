@@ -55,7 +55,7 @@ func TestReviewerParserRejectsReaderFailureAfterDone(t *testing.T) {
 
 func TestReviewerLoadActionRequiresParityOutsideHistory(t *testing.T) {
 	d := actionDesc{Node: "form", Name: "load"}
-	if parityProblem(d, nil, nil) == "" {
+	if parityProblem(d, nil, nil, nil) == "" {
 		t.Fatal("arbitrary domain action named load bypasses parity")
 	}
 }

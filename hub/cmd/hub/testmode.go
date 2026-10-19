@@ -796,6 +796,10 @@ func (h *Hub) testParity(ctx context.Context) (map[string]any, error) {
 	}
 	h.mu.Unlock()
 	sort.Strings(names)
+	hubFace, err := h.agentHubFace(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var violations []any
 	required := map[string]map[string]bool{} // plugin -> route -> rendered
 	for _, name := range names {
@@ -810,7 +814,7 @@ func (h *Hub) testParity(ctx context.Context) (map[string]any, error) {
 		for _, c := range cmds {
 			required[name][c.Route] = false
 			if msg := parityProblem(actionDesc{Name: "command:" + c.ID, Tool: c.Action, UserOnly: c.UserOnly, toolSet: c.Action != "", userSet: c.UserOnly != ""},
-				exports[name], face[name]); msg != "" {
+				exports[name], face[name], hubFace); msg != "" {
 				violations = append(violations, map[string]any{"plugin": name, "command": c.ID, "problem": msg})
 			}
 		}
@@ -838,7 +842,7 @@ func (h *Hub) testParity(ctx context.Context) (map[string]any, error) {
 		}
 		bad := 0
 		for _, d := range t.descs {
-			if msg := parityProblem(d, exports[t.plugin], face[t.plugin]); msg != "" {
+			if msg := parityProblem(d, exports[t.plugin], face[t.plugin], hubFace); msg != "" {
 				bad++
 				violations = append(violations, map[string]any{"plugin": t.plugin, "route": t.route, "node": d.Node, "action": d.Name, "problem": msg})
 			}
@@ -882,10 +886,38 @@ func parityExempt(d actionDesc) bool {
 	return ok && (field == "" || field == d.Field)
 }
 
+// agentHubFace returns the hub actions (agentHubActions) that the agent face lists now, read back
+// from Rex with client.inspect.
+func (h *Hub) agentHubFace(ctx context.Context) (map[string]bool, error) {
+	var w struct {
+		Client struct {
+			ID string `json:"id"`
+		} `json:"client"`
+	}
+	if h.agentRex == nil || json.Unmarshal(h.agentRex.Welcome, &w) != nil || w.Client.ID == "" {
+		return nil, fmt.Errorf("the agent face is not connected")
+	}
+	var out struct {
+		Actions []map[string]any `json:"actions"`
+	}
+	if err := h.rex.Call(ctx, "client.inspect", map[string]any{"client_id": w.Client.ID}, &out); err != nil {
+		return nil, err
+	}
+	face := map[string]bool{}
+	for _, a := range out.Actions {
+		if name, _ := a["name"].(string); agentHubActions[name] {
+			face[name] = true
+		}
+	}
+	return face, nil
+}
+
 // parityProblem returns "" when the action names an exported agent action that the agent face
-// lists, or gives a user_only reason. This proves export and discovery, not that the view action
-// and the agent action run the same handler: behavior tests on both paths check that.
-func parityProblem(d actionDesc, exports, face map[string]bool) string {
+// lists, or gives a user_only reason. The tool can also be a hub action (agentHubActions, for
+// example hub.spawn) that the agent face lists (hubFace). This proves export and discovery, not
+// that the view action and the agent action run the same handler: behavior tests on both paths
+// check that.
+func parityProblem(d actionDesc, exports, face, hubFace map[string]bool) string {
 	switch {
 	case parityExempt(d):
 		return ""
@@ -897,6 +929,10 @@ func parityProblem(d actionDesc, exports, face map[string]bool) string {
 		return ""
 	case !d.toolSet:
 		return "names no tool (an exported agent action) and no user_only reason"
+	case agentHubActions[d.Tool] && !hubFace[d.Tool]:
+		return fmt.Sprintf("hub tool %q is not on the agent face", d.Tool)
+	case agentHubActions[d.Tool]:
+		return ""
 	case !exports[d.Tool]:
 		return fmt.Sprintf("tool %q is not an export of the plugin", d.Tool)
 	case !face[d.Tool]:

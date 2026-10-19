@@ -13,6 +13,7 @@ import (
 func TestParityProblem(t *testing.T) {
 	exports := map[string]bool{"m.send": true, "m.hidden": true}
 	face := map[string]bool{"m.send": true}
+	hubFace := map[string]bool{"hub.spawn": true}
 	cases := []struct {
 		name string
 		d    actionDesc
@@ -29,9 +30,13 @@ func TestParityProblem(t *testing.T) {
 		{"both fields", actionDesc{Name: "x", Tool: "m.send", toolSet: true, UserOnly: "r", userSet: true}, "both"},
 		{"missing export", actionDesc{Name: "x", Tool: "m.nope", toolSet: true}, "not an export"},
 		{"export without agent face", actionDesc{Name: "x", Tool: "m.hidden", toolSet: true}, "not on the agent face"},
+		{"hub tool on the face", actionDesc{Name: "x", Tool: "hub.spawn", toolSet: true}, ""},
+		{"hub tool not on the face", actionDesc{Name: "x", Tool: "hub.stop", toolSet: true}, "hub tool \"hub.stop\" is not on the agent face"},
+		{"unknown hub name", actionDesc{Name: "x", Tool: "hub.nope", toolSet: true}, "not an export"},
+		{"hub action that agents cannot call", actionDesc{Name: "x", Tool: "hub.test.write", toolSet: true}, "not an export"},
 	}
 	for _, c := range cases {
-		got := parityProblem(c.d, exports, face)
+		got := parityProblem(c.d, exports, face, hubFace)
 		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
@@ -55,13 +60,13 @@ func TestTreeActionsFindsNestedDescriptors(t *testing.T) {
 		}
 	}
 	exports, face := map[string]bool{"m.send": true}, map[string]bool{"m.send": true}
-	if p := parityProblem(got["group/inner poke"], exports, face); !strings.Contains(p, "not an export") {
+	if p := parityProblem(got["group/inner poke"], exports, face, nil); !strings.Contains(p, "not an export") {
 		t.Errorf("a tool that is not a string: %q", p)
 	}
-	if p := parityProblem(got["composer save"], exports, face); !strings.Contains(p, "empty") {
+	if p := parityProblem(got["composer save"], exports, face, nil); !strings.Contains(p, "empty") {
 		t.Errorf("an empty reason: %q", p)
 	}
-	if p := parityProblem(got["form submit"], exports, face); p != "" {
+	if p := parityProblem(got["form submit"], exports, face, nil); p != "" {
 		t.Errorf("a valid tool: %q", p)
 	}
 }
