@@ -612,19 +612,19 @@ function H.restart_hub(opts)
   local old = hub('hub.test.status', {}).pid
   io.write('LRT restart ', opts and opts.crash and 'kill' or 'term', '\n')
   io.flush()
-  local status
-  hub_id = wait('the restarted hub', function()
+  -- The wait returns the hub's ID and status together (no upvalue: a restart test once got nil).
+  local ready = wait('the restarted hub', function()
     local id = resolve('lazyrex-hub')
     if not id then return nil end
     local st = perform(id, 'hub.test.status', {})
-    if st.pid == old then return nil end
+    if type(st) ~= 'table' or type(st.pid) ~= 'number' or st.pid == old then return nil end
     for _, p in pairs(st.plugins or {}) do
       if not p.registered or #(p.face or {}) < #(p.exports or {}) then return nil end
     end
-    status = st
-    return id
+    return {id = id, status = st}
   end, 60)
-  return status
+  hub_id = ready.id
+  return ready.status
 end
 
 function H.setup(args)

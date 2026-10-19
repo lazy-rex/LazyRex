@@ -107,6 +107,7 @@ type testOpts struct {
 	keep, verbose                         bool
 	timeout                               time.Duration
 	m                                     *manifest
+	restartFn                             func(ctx context.Context, l *lab, mode string) error // tests only; default restartHub
 }
 
 // fileResult is the outcome of one test file.
@@ -341,14 +342,22 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 }
 
 // waitRunner reads the runner's result lines until the runner exits, or until fctx ends. Every
-// wait after fctx ends has a limit.
+// wait after fctx ends has a limit. A hub restart (hub:restart()) runs in the parser with fctx:
+// a timeout or an interrupt stops its start of the new hub. waitRunner returns only after the
+// parser ends, so the lab cleanup never runs while a restart uses the lab or res.
 func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, stdout io.ReadCloser, res *fileResult, logf io.Writer) {
 	l.track(cmd.Process.Pid)
 	l.runner = cmd
 	w := watch(cmd)
+	restart := o.restartHub
+	if o.restartFn != nil {
+		restart = o.restartFn
+	}
+	parsed := make(chan struct{})
 	exit := make(chan error, 1)
 	go func() {
-		o.parse(stdout, res, logf, func(mode string) error { return o.restartHub(ctx, l, mode) })
+		o.parse(stdout, res, logf, func(mode string) error { return restart(fctx, l, mode) })
+		close(parsed)
 		stdout.Close()
 		exit <- <-w.done
 	}()
@@ -364,6 +373,10 @@ func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, 
 		// child after the runner exited; that group gets no signal). The file fails anyway, so
 		// lines after the timeout do not count.
 		stdout.Close()
+		// The parser ends at the closed output, or after a restart that it runs now. A restart
+		// has limits after fctx ends: the stop of the old hub (10 s, then SIGKILL) and the
+		// start of the new hub (it stops at fctx).
+		<-parsed
 		select {
 		case <-exit:
 		case <-time.After(10 * time.Second):
@@ -840,6 +853,9 @@ func tail(path string, res *fileResult, all bool) {
 // group gets a signal, through its waiter: a reaped hub gets none. The old hub's log is kept as
 // hub.<n>.log. Processes that the old hub left stay tracked, so the lab cleanup still checks them.
 func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if l.hubW == nil || l.hubExit == nil {
 		return fmt.Errorf("the hub is not running")
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -136,5 +137,52 @@ func TestRunnerTimeoutEndsWhenAChildHoldsTheOutput(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(res.problems, "\n"), "timeout: the file did not finish") {
 		t.Fatalf("problems: %v", res.problems)
+	}
+}
+
+// A timeout or an interrupt during a hub restart: the restart gets a context that ends, and
+// waitRunner returns only after the restart returns (the lab cleanup runs after it).
+func TestRunnerEndDuringRestartWaitsForTheRestart(t *testing.T) {
+	for _, interrupt := range []bool{false, true} {
+		cmd := exec.Command("/bin/sh", "-c", "echo 'LRT plan 1'; echo 'LRT restart term'; exec sleep 30")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		var done atomic.Bool
+		started := make(chan struct{})
+		o := &testOpts{timeout: 500 * time.Millisecond}
+		l := &lab{tracked: map[int]string{}}
+		o.restartFn = func(ctx context.Context, l *lab, mode string) error {
+			close(started)
+			<-ctx.Done()
+			l.restarts++ // the restart still uses the lab after the end of the file
+			time.Sleep(500 * time.Millisecond)
+			done.Store(true)
+			return ctx.Err()
+		}
+		res := &fileResult{}
+		ctx, stop := context.WithCancel(context.Background())
+		fctx, cancel := context.WithTimeout(ctx, o.timeout)
+		if interrupt {
+			go func() { <-started; stop() }()
+		}
+		o.waitRunner(ctx, fctx, l, cmd, stdout, res, io.Discard)
+		cancel()
+		stop()
+		if !done.Load() {
+			t.Fatalf("interrupt=%v: waitRunner returned while the restart ran", interrupt)
+		}
+		want := "timeout: the file did not finish"
+		if interrupt {
+			want = "interrupted"
+		}
+		if !strings.Contains(strings.Join(res.problems, "\n"), want) {
+			t.Fatalf("interrupt=%v: problems: %v", interrupt, res.problems)
+		}
 	}
 }
