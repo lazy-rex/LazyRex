@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -122,5 +123,76 @@ func TestCtrlOClosesAMenuForm(t *testing.T) {
 		if (cmd != nil) != menu {
 			t.Fatalf("menu=%v: Ctrl+O command %v", menu, cmd != nil)
 		}
+	}
+}
+
+// Tab visits every control in screen order (rows top to bottom, then left to right inside a row),
+// and wraps at both ends. Shift+Tab visits them in reverse. This replaces the key-press checks of
+// the plugin Node lab tests (Tab to a button, Enter on the focused item).
+func TestTabVisitsControlsInScreenOrder(t *testing.T) {
+	list := Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/x", Revision: "1", Tree: Tree{Nodes: []Node{
+		{ID: "items", Type: "list", Items: []Item{
+			{ID: "a", Label: "First", Action: &Action{Name: "open", Enabled: true}},
+			{ID: "b", Label: "Second", Action: &Action{Name: "open", Enabled: true}},
+		}},
+		{ID: "stop", Type: "widget", Text: "Forward 3000", Action: &Action{Name: "stop", Label: "Stop", Enabled: true}},
+	}}}
+	for name, snap := range map[string]Snapshot{"form": flowSnapshot(), "list": list} {
+		m := testModel()
+		m.apply(snap)
+		var screen []string
+		seen := map[string]bool{}
+		for _, r := range m.bodyRows() {
+			for _, c := range r.rowControls() {
+				if !seen[c.ID] { // a box spans several rows
+					seen[c.ID] = true
+					screen = append(screen, c.ID)
+				}
+			}
+		}
+		var order []string
+		for _, c := range m.controls() {
+			order = append(order, c.ID)
+		}
+		if strings.Join(order, ",") != strings.Join(screen, ",") || len(order) < 3 {
+			t.Fatalf("%s: Tab order %v is not the screen order %v", name, order, screen)
+		}
+		m.setFocus(order[0])
+		for i := 1; i <= len(order); i++ {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			if want := order[i%len(order)]; m.focus != want {
+				t.Fatalf("%s: Tab %d focused %q, want %q", name, i, m.focus, want)
+			}
+		}
+		for i := len(order) - 1; i >= 0; i-- {
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+			if m.focus != order[i] {
+				t.Fatalf("%s: Shift+Tab focused %q, want %q", name, m.focus, order[i])
+			}
+		}
+	}
+}
+
+// Enter activates the focused control: the second list item, and a widget button reached by Tab.
+func TestEnterActivatesTheFocusedControl(t *testing.T) {
+	m := testModel()
+	m.apply(Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/x", Revision: "1", Tree: Tree{Nodes: []Node{
+		{ID: "items", Type: "list", Items: []Item{
+			{ID: "a", Label: "First", Action: &Action{Name: "open", Enabled: true}},
+			{ID: "b", Label: "Second", Action: &Action{Name: "open", Enabled: true}},
+		}},
+		{ID: "stop", Type: "widget", Text: "Forward 3000", Action: &Action{Name: "stop", Label: "Stop", Enabled: true}},
+	}}})
+	cs := m.controls()
+	m.setFocus(cs[0].ID)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if req := request(t, m, cmd); req.Node != "items" || req.Args["action"] != "open" || !strings.Contains(fmt.Sprint(req.Args["input"]), "b") {
+		t.Fatalf("Enter on the second item sent %+v", req)
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if req := request(t, m, cmd); req.Node != "stop" || req.Args["action"] != "stop" {
+		t.Fatalf("Enter on Stop sent %+v", req)
 	}
 }
