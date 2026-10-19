@@ -274,7 +274,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
 		for _, f := range h.test.faults {
-			if f.ID == int(id) {
+			if float64(f.ID) == id { // exact: 1.5 is not fault 1
 				return map[string]any{"fired": f.Fired}, nil
 			}
 		}
@@ -284,7 +284,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
 		for _, in := range h.test.injections {
-			if in.ID == int(id) {
+			if float64(in.ID) == id { // exact: 1.5 is not injection 1
 				return map[string]any{"consumed": in.Consumed, "remaining": in.remaining()}, nil
 			}
 		}

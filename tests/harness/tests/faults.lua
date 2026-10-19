@@ -46,6 +46,9 @@ test('arming refuses invalid faults and an unknown fault id', function()
   }
   for _, c in ipairs(cases) do expect_error(function() fault(c[1]) end, c[2]) end
   expect_error(function() fault_fired(999) end, 'no fault')
+  local id = fault({point = 'spawn-create', mode = 'drop', op = 'f-fraction'})
+  expect_error(function() fault_fired(id + 0.5) end, 'no fault')
+  expect(spawn('f-fraction').result.status).to_be('pending')
 end)
 
 test('spawn-create drop: no pane; the spawn stays pending', function()
@@ -177,4 +180,7 @@ test('fail_code on an injection: a batch fails with the chosen code; the default
   expect(store('fc/x').rev, 'a failed batch commits nothing').to_be('0')
   expect(hubcall('hub.store.batch', batch).result, 'the retry commits').to_be_truthy()
   expect(store('fc/x').value).to_be(1)
+  local iid = inject({match = {writes = 'fc/z'}, fail = 'fraction'})
+  expect_error(function() injection(iid + 0.5) end, 'no injection')
+  expect(hubcall('hub.store.batch', {ops = {{key = 'fc/z', value = 1}}}).error.code).to_be('injected_failure')
 end)
