@@ -349,6 +349,14 @@ A **profile** is a named command, for example "Rails Server" or "Codex". A **wor
 
 A plugin that handles a forwarded agent call (`hub.forward`) can act for that agent: it passes `on_behalf` = the forward's `requester_pid` to `hub.spawn`, `hub.spawn_window` or `hub.stop`. The hub accepts it only from a registered plugin, and only while a `hub.forward` to that plugin client with that requester pid is in flight. The hub then finds the agent from that pid with the same rule as an agent's own call, so the worker's parent is the agent and the agent can stop it. `on_behalf` with `for` is refused. This covers synchronous work only: a call after the forward returns is refused (the coordinator, 2026-10-19). Tests: `hub/cmd/hub/onbehalf_test.go` (refusals) and `tests/harness/tests/onbehalf.lua` (the real path).
 
+Deferred work (for example a template start that opens its tabs after the agent's call returned, or after a restart) uses a durable grant (`hub/cmd/hub/grants.go`; the coordinator and Codex, 2026-10-19):
+
+- `hub.grant.create {on_behalf, key, entries: [{action, key, request}]}`: only while the agent's forward is in flight (the `on_behalf` rule). The hub stores the plugin name, the agent ID (never the pid), and the exact requests. The only action is `hub.spawn_window`. A request has only `session` (an ID, or `{ensure_key}`: the session that `hub.session.ensure` made for this plugin and key), `title` and `layout`; keys are unique. A repeat with the same agent (any ID of it) and entries returns the same grant, also a revoked one; anything else is `conflict`.
+- `hub.grant.get {key}` and `hub.grant.revoke {grant_id}`: the owning plugin only (by name, so they survive a restart). Revoke is idempotent and does not cancel a Rex call already sent.
+- `hub.spawn_window {grant_id, key, session?, title?, layout}`: the plugin that owns the active grant, outside any forward. The call must match one entry exactly (action, key and every request field). A session reference matches only a done ensure row of that plugin; the hub never creates or chooses a session for it. `grant_id` with `for`, `on_behalf` or `placement` is refused. The spawns belong to the grant's agent.
+
+Tests: `grants_test.go` (validation, matching, ownership, revoke) and `tests/harness/tests/grants.lua` (real path: create during a forward, deferred spawn, refusals, revoke, session reference, migration).
+
 **Placement.** Omit `placement` to open a new tab in the work session. Set `placement.session` to another session ID to use that session. The hub attaches the session before admission. Managed LazyRex app sessions are refused by their recorded ownership, even if their labels change.
 
 - New tab: `placement: {session: "session:..."}`.

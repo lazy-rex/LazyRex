@@ -178,7 +178,7 @@ func validProfile(p Profile) error {
 }
 
 func (h *Hub) workersSchemaStart(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema); err != nil {
+	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema+grantsSchema); err != nil {
 		return err
 	}
 	for _, m := range []string{

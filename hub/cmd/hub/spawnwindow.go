@@ -25,7 +25,9 @@ package main
 // the hub focuses the first leaf (depth-first), only while the source tab is still active in the
 // target session. A retry or a late adoption never focuses. It is part of the retry identity.
 // Callers: the same policy as hub.spawn (spawnCaller): a registered plugin acting for "user" or
-// on_behalf of the agent of a forwarded call in flight, or an identified agent pane. The action is not in hubToolActions, so MCP does not offer it.
+// on_behalf of the agent of a forwarded call in flight, a plugin with a durable grant of this exact
+// request (grant_id, grants.go), or an identified agent pane. The action is not in
+// hubToolActions, so MCP does not offer it.
 // Window status: pending if a leaf is sending, else failed if a leaf failed, else closed if a leaf
 // closed, else open.
 
@@ -176,13 +178,19 @@ func (n *windowNode) rexLayout(blocks []map[string]any, next *int) map[string]an
 }
 
 func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (any, error) {
-	caller, err := h.spawnCaller(ctx, p, args)
+	var caller string
+	var err error
+	if _, ok := args["grant_id"]; ok {
+		caller, err = h.grantCaller(ctx, p, "hub.spawn_window", args) // grants.go
+	} else {
+		caller, err = h.spawnCaller(ctx, p, args)
+	}
 	if err != nil {
 		return nil, err
 	}
 	for k := range args {
 		switch k {
-		case "key", "session", "title", "layout", "for", "on_behalf", "placement":
+		case "key", "session", "title", "layout", "for", "on_behalf", "placement", "grant_id":
 		default:
 			return nil, bad("unknown field %q", k)
 		}
