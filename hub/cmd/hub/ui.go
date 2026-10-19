@@ -1449,7 +1449,7 @@ func (h *Hub) uiNavigate(ctx context.Context, args map[string]any) (any, error) 
 		defer h.ui.navMu.Unlock()
 		f := h.ui.navOpens[id]
 		if f == nil {
-			return nil, bad("not_found: navigation %q is unknown or expired", id)
+			return nil, refuse("not_found", "navigation %q is unknown or expired", id)
 		}
 		if !f.done {
 			return map[string]any{"status": "pending", "navigation_id": id}, nil
@@ -1474,7 +1474,8 @@ func (h *Hub) uiNavigate(ctx context.Context, args map[string]any) (any, error) 
 	if declared {
 		return h.navigateCommit(ctx, plugin, key, seq)
 	}
-	id := "nav-" + strconv.FormatInt(seq, 10)
+	// The generation keeps an ID from an earlier hub process from naming a new navigation.
+	id := "nav-" + revString(h.generation) + "-" + strconv.FormatInt(seq, 10)
 	f := &navOpen{seq: seq, started: time.Now()}
 	h.ui.navMu.Lock()
 	if h.ui.navOpens == nil {
@@ -1520,43 +1521,54 @@ func (h *Hub) tabDeclared(ctx context.Context, plugin, key string) (bool, error)
 
 // navigateCommit records the navigation target. A request that a newer navigation followed does
 // not commit: an old completion must not replace a newer navigation. navMu covers the check and
-// the commit, so two commits cannot pass each other.
+// the database commit, so two commits cannot pass each other. The event and the kicks run after it.
 func (h *Hub) navigateCommit(ctx context.Context, plugin, key string, seq int64) (map[string]any, error) {
-	h.ui.navMu.Lock()
-	defer h.ui.navMu.Unlock()
-	if seq != h.ui.navSeq {
-		return map[string]any{"status": "superseded", "plugin": plugin, "tab": key}, nil
-	}
-	// The app-mode entry and the target commit together, before any layout change: a crash then
-	// resumes the capture and the focus.
-	tx, err := h.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	cur, err := currentCycle(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	if cur != nil && cur.Phase == "restoring" {
-		return nil, bad("conflict: Exit LazyRex is restoring your sessions; open the app when it finishes")
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND tab = ?`, plugin, key); err != nil {
-		return nil, err
-	}
-	if err := resetTranscripts(ctx, tx, plugin, key); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ui_state VALUES ('nav', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, plugin+"/"+key); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
+	committed, err := h.navigateCommitLocked(ctx, plugin, key, seq)
+	if err != nil || !committed {
+		if err == nil {
+			return map[string]any{"status": "superseded", "plugin": plugin, "tab": key}, nil
+		}
 		return nil, err
 	}
 	h.ev.emit("navigation_committed", map[string]any{"plugin": plugin, "tab": key, "seq": seq})
 	h.kickUI(plugin)
 	h.kickViews(plugin, true) // a transcript that comes back changes the effective layout
 	return map[string]any{"status": "accepted"}, nil
+}
+
+func (h *Hub) navigateCommitLocked(ctx context.Context, plugin, key string, seq int64) (bool, error) {
+	h.ui.navMu.Lock()
+	defer h.ui.navMu.Unlock()
+	if seq != h.ui.navSeq {
+		return false, nil
+	}
+	// The app-mode entry and the target commit together, before any layout change: a crash then
+	// resumes the capture and the focus.
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	cur, err := currentCycle(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	if cur != nil && cur.Phase == "restoring" {
+		return false, bad("conflict: Exit LazyRex is restoring your sessions; open the app when it finishes")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND tab = ?`, plugin, key); err != nil {
+		return false, err
+	}
+	if err := resetTranscripts(ctx, tx, plugin, key); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ui_state VALUES ('nav', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, plugin+"/"+key); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // uiReload asks every attached renderer of the plugin to run its binary again (view.reload).
