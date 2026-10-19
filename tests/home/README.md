@@ -13,8 +13,9 @@ OSC 7501 status record.
 
 ## Coverage map: tests/home.mjs
 
-`tests/home.mjs` ran the plugin against a mock hub. Each row names its lines and where the Lua
-tests cover the behavior on the real hub.
+`tests/home.mjs` ran the plugin against a mock hub. The Lua tests replace it, and the file is
+removed (git history has it). Each row names its lines and where the Lua tests cover the behavior
+on the real hub.
 
 | home.mjs | Behavior | Lua test |
 | --- | --- | --- |
