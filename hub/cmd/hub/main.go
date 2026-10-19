@@ -112,12 +112,13 @@ type Hub struct {
 	mu           sync.Mutex
 	identMu      sync.Mutex // serializes identity reports (identity.go)
 	agents       map[string]*Agent
-	agentOrder   []string          // config agents first, then spawned agents in creation order
-	agentRex     *rex.Rex          // the agent face (agentface.go)
-	agentKick    chan struct{}     // wakes agentKeymapLoop
-	agentForward map[string]string // plugin action -> plugin client, as last declared on the agent face
-	idents       map[string]*Agent // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
-	aliases      map[string]string // legacy agent ID -> the identity that took it over
+	agentOrder   []string               // config agents first, then spawned agents in creation order
+	agentRex     *rex.Rex               // the agent face (agentface.go)
+	agentKick    chan struct{}          // wakes agentKeymapLoop
+	agentForward map[string]string      // plugin action -> plugin client, as last declared on the agent face
+	forwards     map[string]map[int]int // plugin client -> requester pid -> hub.forward calls in flight (agentface.go)
+	idents       map[string]*Agent      // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
+	aliases      map[string]string      // legacy agent ID -> the identity that took it over
 	plugins      map[string]*Plugin
 	selfClosed   map[string]bool // blocks the hub closed itself; their removal is not a user stop
 	titleRenames map[string]bool // sessions with a pending identityRenamesSoon

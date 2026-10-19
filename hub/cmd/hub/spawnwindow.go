@@ -24,8 +24,8 @@ package main
 // placement {focus: {source_window_id}} (user spawns only, spawnfocus.go): on the first success
 // the hub focuses the first leaf (depth-first), only while the source tab is still active in the
 // target session. A retry or a late adoption never focuses. It is part of the retry identity.
-// Callers: the same policy as hub.spawn (spawnCaller): a registered plugin acting for "user", or
-// an identified agent pane. The action is not in hubToolActions, so MCP does not offer it.
+// Callers: the same policy as hub.spawn (spawnCaller): a registered plugin acting for "user" or
+// on_behalf of the agent of a forwarded call in flight, or an identified agent pane. The action is not in hubToolActions, so MCP does not offer it.
 // Window status: pending if a leaf is sending, else failed if a leaf failed, else closed if a leaf
 // closed, else open.
 
@@ -182,7 +182,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	}
 	for k := range args {
 		switch k {
-		case "key", "session", "title", "layout", "for", "placement":
+		case "key", "session", "title", "layout", "for", "on_behalf", "placement":
 		default:
 			return nil, bad("unknown field %q", k)
 		}

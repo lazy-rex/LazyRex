@@ -347,6 +347,8 @@ A **profile** is a named command, for example "Rails Server" or "Codex". A **wor
 
 **Hub tools** (also MCP tools for agents): `hub.profiles`, `hub.spawn {profile, key, title?, args?, placement?}`, `hub.workers`, `hub.stop {spawn_id, key?}`. The home plugin acts for the user with `for: "user"`; only a registered plugin may do that.
 
+A plugin that handles a forwarded agent call (`hub.forward`) can act for that agent: it passes `on_behalf` = the forward's `requester_pid` to `hub.spawn`, `hub.spawn_window` or `hub.stop`. The hub accepts it only from a registered plugin, and only while a `hub.forward` to that plugin client with that requester pid is in flight. The hub then finds the agent from that pid with the same rule as an agent's own call, so the worker's parent is the agent and the agent can stop it. `on_behalf` with `for` is refused. This covers synchronous work only: a call after the forward returns is refused (the coordinator, 2026-10-19). Tests: `hub/cmd/hub/onbehalf_test.go` (refusals) and `tests/harness/tests/onbehalf.lua` (the real path).
+
 **Placement.** Omit `placement` to open a new tab in the work session. Set `placement.session` to another session ID to use that session. The hub attaches the session before admission. Managed LazyRex app sessions are refused by their recorded ownership, even if their labels change.
 
 - New tab: `placement: {session: "session:..."}`.

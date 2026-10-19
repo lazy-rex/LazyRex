@@ -227,15 +227,37 @@ func (h *Hub) workersRun(ctx context.Context) {
 	h.checkProfiles() // the baseline
 }
 
-// spawnCaller is who asks: an agent (from its pane) or the user (a plugin view action).
+// spawnCaller is who asks: an agent (from its pane), the user (a plugin view action), or the agent
+// of a forwarded call that a plugin handles now (on_behalf, agentface.go).
 func (h *Hub) spawnCaller(ctx context.Context, p perform, args map[string]any) (string, error) {
+	if raw, ok := args["on_behalf"]; ok {
+		if _, ok := args["for"]; ok {
+			return "", bad("on_behalf cannot be combined with for")
+		}
+		pid, ok := raw.(float64)
+		if !ok || pid <= 0 || pid != math.Trunc(pid) || pid > math.MaxInt32 {
+			return "", bad("on_behalf must be the requester_pid of a forwarded call")
+		}
+		if h.pluginByClient(p.Requester.ClientID) == nil {
+			return "", bad("only a registered plugin may act on behalf of an agent")
+		}
+		if !h.forwarding(p.Requester.ClientID, int(pid)) {
+			return "", bad("on_behalf names no agent call that the hub is forwarding to this plugin now")
+		}
+		return h.agentOfPID(ctx, int(pid))
+	}
 	if who, _ := args["for"].(string); who != "" {
 		if who != "user" || h.pluginByClient(p.Requester.ClientID) == nil {
 			return "", bad(`only a registered plugin may act for "user"`)
 		}
 		return "user", nil
 	}
-	_, block, _, err := h.paneOf(ctx, p.Requester.Principal.PID)
+	return h.agentOfPID(ctx, p.Requester.Principal.PID)
+}
+
+// agentOfPID is the joined agent or current conversation identity of the pane that runs pid.
+func (h *Hub) agentOfPID(ctx context.Context, pid int) (string, error) {
+	_, block, _, err := h.paneOf(ctx, pid)
 	if err != nil {
 		return "", err
 	}
@@ -1345,7 +1367,7 @@ var hubToolActions = []map[string]any{
 			}},
 			"args": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string", "maxLength": 16000},
 				"description": "Named values for the profile, for example {\"task\": \"Fix the login test\"}. hub.profiles lists each profile's args."},
-			"for": map[string]any{"type": "string"}},
+			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
 			"required": []string{"profile", "key"}, "additionalProperties": false}},
 	{"name": "hub.workers", "kind": "client", "title": "List workers",
 		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status.",
@@ -1354,7 +1376,7 @@ var hubToolActions = []map[string]any{
 		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. An agent can stop only workers it started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
 			"spawn_id": map[string]any{"type": "string", "minLength": 1}, "key": map[string]any{"type": "string", "maxLength": 128},
-			"for": map[string]any{"type": "string"}},
+			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
 			"required": []string{"spawn_id"}, "additionalProperties": false}},
 }
 
