@@ -68,7 +68,8 @@ type renderOutcome struct {
 
 type renderedTree struct {
 	plugin, route string
-	descs         []actionDesc
+	descs         []actionDesc    // every distinct descriptor that a render of the route had
+	seen          map[string]bool // descriptor identity -> in descs
 }
 
 func newTestState() *testState {
@@ -644,7 +645,9 @@ func (h *Hub) testRenderDone(view string, gen int64, ok bool, errText string, re
 	}
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
-	if cur := h.test.renderOut[view]; cur != nil && cur.gen > gen {
+	// The first render that finishes for a generation decides it: a later render of the same
+	// generation (a store commit renders again) must not hide a failure.
+	if cur := h.test.renderOut[view]; cur != nil && cur.gen >= gen {
 		return
 	}
 	h.test.renderOut[view] = &renderOutcome{gen: gen, ok: ok, err: errText, rev: rev, tree: tree}
@@ -678,7 +681,8 @@ func (h *Hub) testRenderResult(args map[string]any) (any, error) {
 	return res, nil
 }
 
-// testRecordTree keeps the action descriptors of a rendered tree for the parity check.
+// testRecordTree adds the action descriptors of a rendered tree for the parity check. Descriptors
+// accumulate per route: a later render without an action does not hide its earlier violation.
 func (h *Hub) testRecordTree(plugin, route string, tree map[string]any) {
 	if h.test == nil {
 		return
@@ -686,7 +690,19 @@ func (h *Hub) testRecordTree(plugin, route string, tree map[string]any) {
 	descs := treeActions(tree)
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
-	h.test.trees[plugin+"\x00"+route] = &renderedTree{plugin: plugin, route: route, descs: descs}
+	k := plugin + "\x00" + route
+	t := h.test.trees[k]
+	if t == nil {
+		t = &renderedTree{plugin: plugin, route: route, seen: map[string]bool{}}
+		h.test.trees[k] = t
+	}
+	for _, d := range descs {
+		id := fmt.Sprintf("%s\x00%s\x00%v%s\x00%v%s", d.Node, d.Name, d.toolSet, d.Tool, d.userSet, d.UserOnly)
+		if !t.seen[id] {
+			t.seen[id] = true
+			t.descs = append(t.descs, d)
+		}
+	}
 }
 
 // testParity checks every command and every rendered tree against the plugins' current exports
