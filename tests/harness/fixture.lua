@@ -74,6 +74,12 @@ local function home_tree()
       action = {name = 'open', label = 'Open', enabled = true, user_only = 'navigation'}},
     {id = 'bad_nav', type = 'widget', text = 'Navigate to a missing tab',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+    {id = 'cross_nav', type = 'widget', text = 'Navigate to the LazyRex home',
+      action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+    {id = 'cross_missing', type = 'widget', text = 'Navigate to a plugin that is not there',
+      action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+    {id = 'gated_nav', type = 'widget', text = 'Navigate to a tab that view.open declares only when gate is set',
+      action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
   }
   if mode == 'noparity' then
     nodes[#nodes + 1] = {id = 'bare', type = 'widget', text = 'no parity', action = {name = 'poke', label = 'Poke', enabled = true}}
@@ -88,6 +94,7 @@ local function form_tree()
   return {title = 'Fixture form', nodes = {
     {id = 'form', type = 'form', fields = {{id = 'value', label = 'Value', kind = 'text', value = ''}},
       submit_action = {name = 'submit', label = 'Save', enabled = true, tool = 'fix.put'}},
+    {id = 'go_home', type = 'widget', text = 'LazyRex home', action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
     {id = 'cancel', type = 'widget', text = 'Cancel', action = {name = '$cancel', label = 'Cancel', enabled = true}},
   }}
 end
@@ -101,6 +108,12 @@ local tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}
 local function view_open(args)
   local opens = get('opens') or 0
   put('opens', opens + 1)
+  local gated = args.route:match('^/gated/(.+)$')
+  if gated and get('gate') then
+    tabs[#tabs + 1] = {key = 'gated/' .. gated, title = 'Gated ' .. gated, route = args.route}
+    hub('hub.ui.tabs', {tabs = tabs})
+    return {}
+  end
   local name = args.route:match('^/lazy/(.+)$')
   if not name then return {} end
   if name == 'slow' then rex.sleep(2) end
@@ -120,6 +133,10 @@ local function view(action, args)
     if args.route == '/home' and args.node_id == 'open_form' then return {form = '/forms/fix'} end
     if args.route == '/home' and args.node_id == 'bad_nav' then return {navigate = 'missing'} end
     if args.route == '/home' and args.node_id == 'status' then return {} end
+    if args.route == '/home' and args.node_id == 'cross_nav' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
+    if args.route == '/home' and args.node_id == 'cross_missing' then return {navigate = {plugin = 'nope', tab = 'x'}} end
+    if args.route == '/home' and args.node_id == 'gated_nav' then return {navigate = {plugin = 'harnessfix', tab = 'gated/a'}} end
+    if args.route == '/forms/fix' and args.node_id == 'go_home' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
     if args.route == '/forms/fix' and args.node_id == 'form' then
       put('form', {value = args.input and args.input.values and args.input.values.value or ''})
       return {close_form = true}

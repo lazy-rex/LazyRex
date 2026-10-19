@@ -90,12 +90,14 @@ local function perform(args)
     local plugin = find(hub('hub.plugins').plugins, 'id', input.item_id)
     if plugin.id == 'lazyrex' or not (plugin.panel or plugin.tab) then fail('invalid_input', 'This plugin has no landing view') end
     if plugin.panel then return {panel = {plugin = plugin.id, command = plugin.panel}} end
-    return hub('hub.ui.navigate', {plugin = plugin.id, tab = plugin.tab})
+    -- A navigate effect: the hub's view worker navigates and records success or failure on this
+    -- operation. hub.ui.navigate from here would answer "pending" for a lazy tab and lose the outcome.
+    return {navigate = {plugin = plugin.id, tab = plugin.tab}}
   end
   if args.node_id == 'agents' and args.action == 'message' then
     local agent = find(hub('hub.agents').agents, 'id', input.item_id)
     if agent.id == 'user' then fail('invalid_input', 'Select an agent') end
-    return hub('hub.ui.navigate', {plugin = 'messaging', tab = 'thread/' .. agent.id})
+    return {navigate = {plugin = 'messaging', tab = 'thread/' .. agent.id}}
   end
   if args.node_id == 'workers' and args.action == 'open' then
     local worker = find(hub('hub.workers').workers, 'spawn_id', input.item_id)

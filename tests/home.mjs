@@ -104,10 +104,10 @@ try {
   assert.equal(calls.at(-1).action,'hub.ui.exit');
   failMode=false;
   await assert.rejects(run('app_mode','exit',{},''),/operation key/);
-  await run('plugins','open',{item_id:'messaging'});
-  assert.deepEqual(calls.at(-1),{action:'hub.ui.navigate',args:{plugin:'messaging',tab:'home'}});
-  await run('agents','message',{item_id:'codex'});
-  assert.deepEqual(calls.at(-1),{action:'hub.ui.navigate',args:{plugin:'messaging',tab:'thread/codex'}});
+  // Navigation is a navigate effect: the hub's view worker navigates and records the outcome.
+  assert.deepEqual(await run('plugins','open',{item_id:'messaging'}),{navigate:{plugin:'messaging',tab:'home'}});
+  assert(!calls.some(c=>c.action==='hub.ui.navigate'),'the home plugin does not call hub.ui.navigate');
+  assert.deepEqual(await run('agents','message',{item_id:'codex'}),{navigate:{plugin:'messaging',tab:'thread/codex'}});
   await run('workers','open',{item_id:'w1'});
   assert.deepEqual(calls.at(-1),{action:'hub.navigate.worker',args:{spawn_id:'w1'}});
   await run('launch/shell','launch',{values:{profile:'shell',title:'Test'}});

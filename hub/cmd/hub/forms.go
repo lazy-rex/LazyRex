@@ -628,7 +628,7 @@ func (h *Hub) formOf(ctx context.Context, id string) (formContext, bool) {
 
 // viewEffects are the UI parts of a view action result. They run after the operation commits.
 type viewEffects struct {
-	Navigate   string         `json:"navigate"`
+	Navigate   navTarget      `json:"navigate"`
 	Form       string         `json:"form"`
 	CloseForm  bool           `json:"close_form"`
 	Panel      map[string]any `json:"panel"`       // {command} | {route} | {plugin, command} (panels.go)
@@ -636,7 +636,32 @@ type viewEffects struct {
 }
 
 func (e viewEffects) any() bool {
-	return e.Navigate != "" || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel
+	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel
+}
+
+// navTarget is a navigate effect: a tab key of the plugin that ran the action ("thread/a"), or
+// {plugin, tab} for a tab of another plugin (the home plugin opens other plugins' tabs). The
+// navigation then runs in the view worker and its outcome is the effect's outcome.
+type navTarget struct {
+	Plugin, Tab string
+	set         bool
+}
+
+func (n *navTarget) UnmarshalJSON(b []byte) error {
+	var key string
+	if json.Unmarshal(b, &key) == nil {
+		n.Tab, n.set = key, key != ""
+		return nil
+	}
+	var t struct {
+		Plugin string `json:"plugin"`
+		Tab    string `json:"tab"`
+	}
+	if err := json.Unmarshal(b, &t); err != nil {
+		return nil // not a navigation: checked in applyEffects
+	}
+	n.Plugin, n.Tab, n.set = t.Plugin, t.Tab, true
+	return nil
 }
 
 // applyEffects runs the effects of one succeeded view action, in order: navigate, open a form,
@@ -674,9 +699,16 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 		h.notifyView(plugin, viewID)
 		return false
 	}
-	if e.Navigate != "" && navDone == 0 {
-		if err := h.navigateNow(ctx, plugin, e.Navigate); err != nil {
-			return fail(fmt.Errorf("navigate %s: %w", e.Navigate, err))
+	if e.Navigate.set && navDone == 0 {
+		target := e.Navigate.Plugin
+		if target == "" {
+			target = plugin
+		}
+		if e.Navigate.Tab == "" {
+			return fail(fmt.Errorf("navigate: the effect names no tab"))
+		}
+		if err := h.navigateNow(ctx, target, e.Navigate.Tab); err != nil {
+			return fail(fmt.Errorf("navigate %s/%s: %w", target, e.Navigate.Tab, err))
 		}
 		if set(`UPDATE view_ops SET effect_nav = 1 WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key) {
 			return true // navigation repeats safely
