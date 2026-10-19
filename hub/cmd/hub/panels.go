@@ -253,8 +253,11 @@ func (h *Hub) setSlotState(ctx context.Context, r *slotRow, to string) error {
 	h.ev.emit("slot_state", map[string]any{"replacement_id": r.ID, "state": to})
 	if (to == "cancelled" || to == "superseded") && r.Old != "" {
 		// The replacement ended without the slot: a view it claimed can attach as new again. A view
-		// that attached meanwhile stays attached and gets view.resume.
-		h.db.ExecContext(ctx, `UPDATE views SET attach_state = 'never' WHERE view_id = ? AND attach_state = 'claimed'`, r.Old)
+		// that attached meanwhile stays attached and gets view.resume. The claim stays while another
+		// replacement of the view is active: that one can hold it (a loser's cancel must not undo the
+		// winner's claim). The rule is the same as in slotStart.
+		h.db.ExecContext(ctx, `UPDATE views SET attach_state = 'never' WHERE view_id = ? AND attach_state = 'claimed' AND view_id NOT IN
+			(SELECT old_view FROM ui_replacements WHERE state IN ('releasing', 'confirming', 'opening', 'closing'))`, r.Old)
 	}
 	return nil
 }

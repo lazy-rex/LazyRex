@@ -262,12 +262,14 @@ func TestSlotStartUndoesEndedClaimsLab(t *testing.T) {
 }
 
 // T7: two replacements claim one never-attached view: exactly one wins; the other is a conflict.
+// The loser's cancel keeps the winner's claim, so a third claim cannot win; the winner's own end
+// undoes it.
 func TestSlotTwoClaimsOneWinsLab(t *testing.T) {
 	h, _, sess, win := panelsLabHub(t)
 	old := openFirstPanel(t, h, sess, win)
 	ctx := context.Background()
 	rows := []*slotRow{}
-	for _, id := range []string{"repl-a", "repl-b"} {
+	for _, id := range []string{"repl-a", "repl-b", "repl-c"} {
 		h.db.Exec(`INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, state, created)
 			VALUES (?, ?, ?, ?, ?, 'p', '/panels/b', '{}', 'releasing', '')`, id, sess, win, old, slotViewID(id))
 		r, _ := h.slotRow(ctx, h.db, id)
@@ -285,5 +287,23 @@ func TestSlotTwoClaimsOneWinsLab(t *testing.T) {
 	}
 	if replState(t, h, "repl-a") != "opening" || replState(t, h, "repl-b") != "cancelled" {
 		t.Fatalf("states %s %s", replState(t, h, "repl-a"), replState(t, h, "repl-b"))
+	}
+	if got := attachState(t, h, old); got != "claimed" {
+		t.Fatalf("the loser's cancel undid the winner's claim: attach_state=%s", got)
+	}
+	if won, err := h.claimUnattached(ctx, rows[2]); err != nil || won {
+		t.Fatalf("third claim: %v %v", won, err)
+	}
+	if err := h.setSlotState(ctx, rows[2], "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if got := attachState(t, h, old); got != "claimed" {
+		t.Fatalf("the third row's cancel undid the winner's claim: attach_state=%s", got)
+	}
+	if err := h.setSlotState(ctx, rows[0], "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if got := attachState(t, h, old); got != "never" {
+		t.Fatalf("the winner's end kept its claim: attach_state=%s", got)
 	}
 }
