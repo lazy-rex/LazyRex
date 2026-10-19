@@ -3,13 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 // Grant checks that need no Rex: entry validation, ownership, state and exact matching. The real
-// path (create during a forward, spawn after it, restart, migration) runs in the harness
-// (tests/harness/tests/grants.lua).
+// path (create during a forward, spawn after it, revoke, migration) runs in the harness
+// (tests/harness/tests/grants.lua). Restart persistence is not tested here: it needs
+// hub:restart() (branch templates).
 func TestGrantEntriesValidation(t *testing.T) {
 	layout := map[string]any{"leaf": map[string]any{"profile": "shell"}}
 	entry := func(m map[string]any) []any { return []any{m} }
@@ -65,7 +67,7 @@ func TestGrantCallerMatching(t *testing.T) {
 		raw, _ := json.Marshal(args)
 		var m map[string]any
 		json.Unmarshal(raw, &m)
-		return h.grantCaller(context.Background(), from(client), "hub.spawn_window", m)
+		return h.grantCaller(context.Background(), h.db, from(client), "hub.spawn_window", m)
 	}
 	args := func(key string, session any, title string, l any) map[string]any {
 		m := map[string]any{"grant_id": "grant-a", "key": key, "layout": l}
@@ -113,7 +115,7 @@ func TestGrantCallerMatching(t *testing.T) {
 	refused("with placement", "client:t", withPlacement, "cannot be combined")
 	refused("another plugin", "client:o", args("t/1", "session:new", "Dev", layout), "no grant")
 	refused("not a plugin", "client:x", args("t/1", "session:new", "Dev", layout), "only a registered plugin")
-	if _, err := h.grantCaller(context.Background(), from("client:t"), "hub.spawn", args("t/1", "session:new", "Dev", layout)); err == nil {
+	if _, err := h.grantCaller(context.Background(), h.db, from("client:t"), "hub.spawn", args("t/1", "session:new", "Dev", layout)); err == nil {
 		t.Fatal("another action was accepted")
 	}
 	// Revoke: idempotent, then every call is refused.
@@ -157,5 +159,49 @@ func TestGrantCreateRefusals(t *testing.T) {
 		if _, err := h.grantCreate(context.Background(), p, "templates", c.args); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want %q", name, err, c.want)
 		}
+	}
+}
+
+// Codex's revocation boundary: a revoke that commits after spawnWindow's first grant check and
+// before its admission transaction refuses the call, because spawnWindow checks the grant again
+// with the transaction. This test runs that sequence on the check itself (spawnWindow needs Rex).
+func TestGrantRevokeBeforeAdmission(t *testing.T) {
+	h, _ := workerTestHub(t)
+	if _, err := h.db.Exec(grantsSchema); err != nil {
+		t.Fatal(err)
+	}
+	h.plugins = map[string]*Plugin{"templates": {Name: "templates", ClientID: "client:t"}}
+	layout := map[string]any{"leaf": map[string]any{"profile": "shell"}}
+	entries, _ := grantEntries([]any{map[string]any{"action": "hub.spawn_window", "key": "k", "request": map[string]any{"layout": layout}}})
+	stored, _ := json.Marshal(entries)
+	h.db.Exec(`INSERT INTO grants (plugin, key, grant_id, agent, entries, state, created) VALUES ('templates', 'run', 'grant-r', 'alice', ?, 'active', 'x')`, string(stored))
+	var p perform
+	p.Requester.ClientID = "client:t"
+	args := map[string]any{"grant_id": "grant-r", "key": "k", "layout": layout}
+	ctx := context.Background()
+	if _, err := h.grantCaller(ctx, h.db, p, "hub.spawn_window", args); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.grantRevoke(ctx, "templates", map[string]any{"grant_id": "grant-r"}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := h.grantCaller(ctx, tx, p, "hub.spawn_window", args); err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("the check in the admission transaction: %v", err)
+	}
+}
+
+// No count limit: 100 entries are accepted (the 64 KiB control message is the bound).
+func TestGrantEntriesNoCountLimit(t *testing.T) {
+	var list []any
+	for i := 0; i < 100; i++ {
+		list = append(list, map[string]any{"action": "hub.spawn_window", "key": fmt.Sprintf("k%d", i), "request": map[string]any{"layout": map[string]any{"leaf": map[string]any{"profile": "shell"}}}})
+	}
+	if _, err := grantEntries(list); err != nil {
+		t.Fatal(err)
 	}
 }

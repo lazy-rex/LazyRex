@@ -45,8 +45,6 @@ CREATE TABLE IF NOT EXISTS grants (plugin TEXT NOT NULL, key TEXT NOT NULL, gran
 // grantActions are the actions a grant can name. A new action needs a hub change.
 var grantActions = map[string]bool{"hub.spawn_window": true}
 
-const maxGrantEntries = 32
-
 type grantEntry struct {
 	Action  string          `json:"action"`
 	Key     string          `json:"key"`
@@ -62,8 +60,10 @@ func canonical(v any) (string, error) {
 // grantEntries checks the entries of a create and returns them in canonical form.
 func grantEntries(raw any) ([]grantEntry, error) {
 	list, ok := raw.([]any)
-	if !ok || len(list) == 0 || len(list) > maxGrantEntries {
-		return nil, bad("entries must be a list of 1 to %d requests", maxGrantEntries)
+	// No count limit: an agent start supports every template the UI supports. The bound is the
+	// 64 KiB control message that carries the create (the coordinator, 2026-10-19).
+	if !ok || len(list) == 0 {
+		return nil, bad("entries must be a nonempty list of requests")
 	}
 	seen := map[string]bool{}
 	out := make([]grantEntry, 0, len(list))
@@ -229,7 +229,11 @@ func (h *Hub) grantRevoke(ctx context.Context, plugin string, args map[string]an
 // active grant, and the call must match one entry exactly: action, key, and every request field.
 // A session reference {ensure_key} matches only the session that hub.session.ensure made for this
 // plugin and key (state done); it never creates or chooses a session.
-func (h *Hub) grantCaller(ctx context.Context, p perform, action string, args map[string]any) (string, error) {
+//
+// spawnWindow calls it twice: before its work, and again with its admission transaction (q = tx),
+// so a revoke that commits before the admission refuses it. An admission that commits first may
+// finish; a revoke does not cancel it or a Rex call already sent.
+func (h *Hub) grantCaller(ctx context.Context, q dbQuerier, p perform, action string, args map[string]any) (string, error) {
 	for _, k := range []string{"for", "on_behalf", "placement"} {
 		if _, ok := args[k]; ok {
 			return "", bad("grant_id cannot be combined with %s", k)
@@ -241,7 +245,7 @@ func (h *Hub) grantCaller(ctx context.Context, p perform, action string, args ma
 	}
 	id, _ := args["grant_id"].(string)
 	var agent, entries, state string
-	switch err := h.db.QueryRowContext(ctx, `SELECT agent, entries, state FROM grants WHERE plugin = ? AND grant_id = ?`, pl.Name, id).Scan(&agent, &entries, &state); {
+	switch err := q.QueryRowContext(ctx, `SELECT agent, entries, state FROM grants WHERE plugin = ? AND grant_id = ?`, pl.Name, id).Scan(&agent, &entries, &state); {
 	case errors.Is(err, sql.ErrNoRows):
 		return "", refuse("refused", "no grant %q of this plugin", id)
 	case err != nil:
@@ -276,7 +280,7 @@ func (h *Hub) grantCaller(ctx context.Context, p perform, action string, args ma
 		if ref, ok := want["session"].(map[string]any); ok {
 			ek, _ := ref["ensure_key"].(string)
 			var sess, st string
-			err := h.db.QueryRowContext(ctx, `SELECT state, session_id FROM ui_ensured WHERE plugin = ? AND key = ?`, pl.Name, ek).Scan(&st, &sess)
+			err := q.QueryRowContext(ctx, `SELECT state, session_id FROM ui_ensured WHERE plugin = ? AND key = ?`, pl.Name, ek).Scan(&st, &sess)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && (st != "done" || sess == "")) {
 				return "", refuse("refused", "the granted session (ensure key %q) is not made yet", ek)
 			} else if err != nil {

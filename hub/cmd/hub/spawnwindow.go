@@ -181,7 +181,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	var caller string
 	var err error
 	if _, ok := args["grant_id"]; ok {
-		caller, err = h.grantCaller(ctx, p, "hub.spawn_window", args) // grants.go
+		caller, err = h.grantCaller(ctx, h.db, p, "hub.spawn_window", args) // grants.go
 	} else {
 		caller, err = h.spawnCaller(ctx, p, args)
 	}
@@ -320,6 +320,13 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	}
 	if err := keyTakenIn(ctx, tx, "spawn_windows", caller, key); err != nil {
 		return nil, err
+	}
+	if _, ok := args["grant_id"]; ok {
+		// The grant again, inside the admission: a revoke that committed since the first check
+		// refuses this call (grants.go).
+		if _, err := h.grantCaller(ctx, tx, p, "hub.spawn_window", args); err != nil {
+			return nil, err
+		}
 	}
 	idsJSON, _ := json.Marshal(ids)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO spawn_windows VALUES (?, ?, ?, ?, ?, ?)`, caller, key, string(fp), sess, string(idsJSON), now); err != nil {
