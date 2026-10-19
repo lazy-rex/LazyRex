@@ -627,6 +627,9 @@ func effectiveCwd(prof Profile, cwdArg string) (string, error) {
 // admitSpawn inserts one spawn row in tx and, for an agent profile, its new agent. It returns the
 // agent's name. The caller commits, then calls spawnAdmitted.
 func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Profile, title, request string, effective map[string]string) (string, error) {
+	if err := keyTakenIn(ctx, tx, "spawns", s.Caller, s.Key); err != nil {
+		return "", err
+	}
 	now := s.Created
 	name := ""
 	if prof.Kind == "agent" {

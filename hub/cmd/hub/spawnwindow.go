@@ -310,6 +310,9 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 		}
 		rows[i], ids[i] = s, s.ID
 	}
+	if err := keyTakenIn(ctx, tx, "spawn_windows", caller, key); err != nil {
+		return nil, err
+	}
 	idsJSON, _ := json.Marshal(ids)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO spawn_windows VALUES (?, ?, ?, ?, ?, ?)`, caller, key, string(fp), sess, string(idsJSON), now); err != nil {
 		return nil, err
