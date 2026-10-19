@@ -9,7 +9,8 @@ package main
 //     gate (before only) is a barrier for a caller that retries: from the call that fires it
 //     until hub.test.fault_release, every matching call gets 'unavailable' and runs no handler.
 //     A hub request cannot wait: Rex delivers the hub's calls one at a time.
-// nth = n fires on the n-th call that matches (default 1).
+// nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
+// counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
 
 import (
@@ -115,6 +116,11 @@ func (h *Hub) takeFault(match func(*testFault) bool) *testFault {
 	}
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
+	return h.takeFaultLocked(match)
+}
+
+// takeFaultLocked is takeFault; the caller holds h.test.mu.
+func (h *Hub) takeFaultLocked(match func(*testFault) bool) *testFault {
 	var fired *testFault
 	for _, f := range h.test.faults {
 		if f.Fired || !match(f) {
@@ -132,21 +138,18 @@ func (h *Hub) takeFault(match func(*testFault) bool) *testFault {
 	return fired
 }
 
-// gateClosed reports a fired gate that match accepts and that is not released, and counts the
-// refused call.
-func (h *Hub) gateClosed(match func(*testFault) bool) bool {
-	if h.test == nil {
-		return false
-	}
+// takeBefore applies the before faults to one call, in one step: a closed gate refuses the call
+// (gated true), and then no fault counts it. Otherwise takeFault selects the fault that fires.
+func (h *Hub) takeBefore(match func(*testFault) bool) (gated bool, fired *testFault) {
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
 	for _, f := range h.test.faults {
 		if f.Mode == "gate" && f.Fired && !f.Released && match(f) {
 			f.Gated++
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, h.takeFaultLocked(match)
 }
 
 // peekFault reports an armed fault that match accepts, without firing it.
@@ -222,13 +225,11 @@ func (h *Hub) dispatchFaulted(ctx context.Context, p perform) (any, error) {
 			return f.Point == "action" && f.When == when && f.Plugin == pl.Name && f.Action == p.Action && (f.Key == "" || f.Key == key)
 		}
 	}
-	if h.gateClosed(match("before")) {
+	gated, f := h.takeBefore(match("before"))
+	if gated || f != nil && f.Mode == "gate" {
 		return nil, refuse("unavailable", "injected fault: a gate is closed") // no handler runs
 	}
-	if f := h.takeFault(match("before")); f != nil {
-		if f.Mode == "gate" {
-			return nil, refuse("unavailable", "injected fault: a gate is closed")
-		}
+	if f != nil {
 		return nil, faultReply(f) // no handler runs
 	}
 	return h.dispatchAfter(ctx, p, match("after"))
@@ -247,8 +248,8 @@ func (h *Hub) dispatchAfter(ctx context.Context, p perform, matchAfter func(*tes
 	return result, nil
 }
 
-// testFaultRelease opens a gate. Releasing a gate twice, or a fault that is not a gate, is an
-// error. A gate that has not fired yet can be released: it then never fires.
+// testFaultRelease opens a gate that has fired. Releasing a gate that has not fired, a gate twice,
+// or a fault that is not a gate, is an error.
 func (h *Hub) testFaultRelease(id float64) (any, error) {
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
@@ -258,6 +259,9 @@ func (h *Hub) testFaultRelease(id float64) (any, error) {
 		}
 		if f.Mode != "gate" || f.Released {
 			return nil, bad("invalid: fault %d is not a closed gate", f.ID)
+		}
+		if !f.Fired {
+			return nil, bad("invalid: gate %d has not fired", f.ID)
 		}
 		f.Released = true
 		return map[string]any{"released": true, "fired": f.Fired, "gated": f.Gated}, nil

@@ -218,3 +218,25 @@ test('gate: matching calls get unavailable until the release; a retrying caller 
   expect(form:settle(key).status, 'the retry after the release succeeds').to_be('succeeded')
   expect(store('form').value).to_equal({value = 'gated'})
 end)
+
+test('gate: a gate that has not fired cannot be released', function()
+  local id = fault({point = 'action', action = 'hub.cwd.lock', when = 'before', mode = 'gate', key = 'gate-early'})
+  expect_error(function() fault_release(id) end, 'has not fired')
+  expect(hubcall('hub.cwd.lock', {path = lockdir, key = 'gate-early'}).error.code, 'the gate still fires').to_be('unavailable')
+  expect(fault_release(id).released).to_be(true)
+end)
+
+test('gate: a call that a closed gate refuses counts for no other fault', function()
+  local function state(id) return H.hub('hub.test.fault_state', {id = id}) end
+  local gate = fault({point = 'action', action = 'hub.cwd.lock', when = 'before', mode = 'gate', key = 'gate-count'})
+  local later = fault({point = 'action', action = 'hub.cwd.lock', when = 'before', mode = 'fail', key = 'gate-count', nth = 2})
+  local call = function() return hubcall('hub.cwd.lock', {path = lockdir, key = 'gate-count'}) end
+  expect(call().error.code, 'the gate fires').to_be('unavailable')
+  expect(state(later).seen, 'the call that fired the gate counts').to_be(1)
+  expect(call().error.code, 'the gate is closed').to_be('unavailable')
+  expect(state(later).seen, 'a refused call does not count').to_be(1)
+  expect(state(gate).gated).to_be(2)
+  fault_release(gate)
+  expect(call().error.code, 'the second counted call fires the fail fault').to_be('failed')
+  expect(fault_fired(later)).to_be(true)
+end)
