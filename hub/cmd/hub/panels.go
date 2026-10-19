@@ -12,6 +12,10 @@ package main
 //   - The hub asks the old renderer view.release {replacement_id}. "released": the renderer froze
 //     its input. "confirm": unsaved input; the renderer asks the user (Keep editing / Discard and
 //     replace) and answers with hub.view.release_confirm.
+//   - A view that no renderer has attached to (attach_state never) holds no input: the hub claims
+//     it without view.release (claimUnattached). A renderer that attaches later follows the
+//     replacement from hub.view.attach and reads its state once (hub.view.replacement). A view
+//     that attached before and is not attached now, or a row from an older hub, is a conflict.
 //   - The new pane opens with new_split anchored at the old pane, then the hub closes the old pane.
 //     The new pane gets the old pane's area (lab: spikes/lab/slot-replace-probe.mjs).
 //   - Each replacement is a durable row (ui_replacements). The new pane is asked for once per
@@ -247,20 +251,77 @@ func (h *Hub) setSlotState(ctx context.Context, r *slotRow, to string) error {
 	}
 	r.State = to
 	h.ev.emit("slot_state", map[string]any{"replacement_id": r.ID, "state": to})
+	if (to == "cancelled" || to == "superseded") && r.Old != "" {
+		// The replacement ended without the slot: a view it claimed can attach as new again. A view
+		// that attached meanwhile stays attached and gets view.resume. The claim stays while another
+		// replacement of the view is active: that one can hold it (a loser's cancel must not undo the
+		// winner's claim). The rule is the same as in slotStart.
+		h.db.ExecContext(ctx, `UPDATE views SET attach_state = 'never' WHERE view_id = ? AND attach_state = 'claimed' AND view_id NOT IN
+			(SELECT old_view FROM ui_replacements WHERE state IN ('releasing', 'confirming', 'opening', 'closing'))`, r.Old)
+	}
 	return nil
 }
 
-// askRelease asks the old renderer to give up the slot. It moves the row to opening (released),
-// confirming (the user decides), or cancelled (no answer, or a refusal).
+// claimUnattached gives a never-attached old view to r without asking a renderer: no renderer has
+// shown the view, so it holds no user input. The claim and the move to opening are one
+// transaction. It reports false (and changes nothing) when the view attached, closed or was
+// claimed first. A renderer that attaches after the claim gets the replacement from
+// hub.view.attach and freezes (view/panels.go), as one that answered released.
+func (h *Hub) claimUnattached(ctx context.Context, r *slotRow) (bool, error) {
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE views SET attach_state = 'claimed' WHERE view_id = ? AND status = 'open' AND attachment = '' AND attach_state = 'never'`, r.Old)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE ui_replacements SET state = 'opening' WHERE repl_id = ? AND state = 'releasing'`, r.ID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	r.State = "opening"
+	h.ev.emit("slot_release_unattached", map[string]any{"replacement_id": r.ID, "view_id": r.Old})
+	h.ev.emit("slot_state", map[string]any{"replacement_id": r.ID, "state": "opening"})
+	return true, nil
+}
+
+// askRelease asks the old renderer to give up the slot. It moves the row to opening (released, or
+// a never-attached view claimed), confirming (the user decides), or cancelled (no answer, a
+// refusal, or a renderer that attached before and is not attached now: it can hold input).
 func (h *Hub) askRelease(ctx context.Context, r *slotRow) error {
-	var client, attachment string
-	h.db.QueryRowContext(ctx, `SELECT client_id, attachment FROM views WHERE view_id = ? AND status = 'open'`, r.Old).Scan(&client, &attachment)
+	var client, attachment, attachState string
+	read := func() {
+		client, attachment, attachState = "", "", ""
+		h.db.QueryRowContext(ctx, `SELECT client_id, attachment, attach_state FROM views WHERE view_id = ? AND status = 'open'`, r.Old).Scan(&client, &attachment, &attachState)
+	}
+	read()
+	if attachment == "" && attachState == "never" {
+		claimed, err := h.claimUnattached(ctx, r)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			return nil
+		}
+		read() // once: the attach usually won; anything else is the conflict below
+	}
 	var out struct {
 		Status string `json:"status"`
 	}
 	var err error
 	if attachment == "" {
-		err = errors.New("the side panel's renderer is not attached")
+		err = errors.New("the side panel's renderer is reconnecting; try again in a moment")
 	} else {
 		cctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 		var res struct {
@@ -385,7 +446,7 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 // spawnSlot asks Rex for the new pane, once per row. A definite refusal cancels the row and
 // resumes the old view; an unknown outcome leaves the view row 'sending' and the row 'opening'.
 func (h *Hub) spawnSlot(ctx context.Context, r *slotRow) error {
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id) VALUES (?, ?, ?, ?, 'sending', ?, ?)`,
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never')`,
 		r.New, r.Plugin, formTab, r.Route, r.Context, r.Session); err != nil {
 		return err
 	}
@@ -596,10 +657,41 @@ func (h *Hub) slotAttachState(ctx context.Context, viewID, repl string) map[stri
 	return map[string]any{"replacement_id": id, "state": state, "next_title": title}
 }
 
+// viewReplacement handles hub.view.replacement {view_id, attachment, replacement_id}: the durable
+// state of that replacement of that view, for a renderer that froze from an attach reply
+// (view/panels.go). It reads only. {replacement: null}: the hub has no replacement with that ID for
+// that view, so nothing holds the renderer.
+func (h *Hub) viewReplacement(ctx context.Context, p perform, args map[string]any) (any, error) {
+	v, err := h.boundCaller(ctx, p, args)
+	if err != nil {
+		return nil, err
+	}
+	repl, _ := args["replacement_id"].(string)
+	if repl == "" {
+		return nil, bad("replacement_id is required")
+	}
+	var state, title string
+	err = h.db.QueryRowContext(ctx, `SELECT state, next_title FROM ui_replacements WHERE repl_id = ? AND old_view = ?`, repl, v.ID).Scan(&state, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]any{"replacement": nil}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"replacement": map[string]any{"replacement_id": repl, "state": state, "next_title": title}}, nil
+}
+
 // slotStart runs at hub start: a row still releasing sent no split, so it is cancelled. Rows
 // that are confirming stay (the renderer shows its prompt again on reattach).
 func (h *Hub) slotStart(ctx context.Context) error {
 	_, err := h.db.ExecContext(ctx, `UPDATE ui_replacements SET state = 'cancelled' WHERE state = 'releasing'`)
+	if err != nil {
+		return err
+	}
+	// A claim whose replacement ended (also by the cancel above, or before a crash) is undone. The
+	// query is the same at every start, so a repeat changes nothing.
+	_, err = h.db.ExecContext(ctx, `UPDATE views SET attach_state = 'never' WHERE attach_state = 'claimed' AND view_id NOT IN
+		(SELECT old_view FROM ui_replacements WHERE state IN ('releasing', 'confirming', 'opening', 'closing'))`)
 	return err
 }
 

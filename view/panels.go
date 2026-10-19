@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -31,6 +32,17 @@ type replacementRecovered struct {
 	State   replacementState
 	Err     error
 	Initial bool
+	// FromAttach: the state came in an attach reply. A view.resume can reach the renderer before
+	// that reply is applied (and is then lost), so a freeze from it reads the durable state once.
+	FromAttach bool
+}
+
+// replacementRead is the durable state of one replacement (hub.view.replacement), read with
+// the attachment Attachment. State nil: the hub has no such replacement for this view.
+type replacementRead struct {
+	ID, Attachment string
+	State          *replacementState
+	Err            error
 }
 
 func (m *model) isPanel() bool {
@@ -104,6 +116,31 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		m.replacement.replacementState = msg.State
 		m.replacement.Error = ""
+		if msg.FromAttach && frozenState(msg.State.State) {
+			return true, m.readReplacement(msg.ID)
+		}
+		return true, nil
+	case replacementRead:
+		// Only the replacement that froze this renderer, read through the current attachment: a
+		// late answer after a resume or a new attachment changes nothing.
+		if m.replacement == nil || m.replacement.ID != msg.ID || m.currentAttachment() != msg.Attachment {
+			return true, nil
+		}
+		switch {
+		case msg.Err != nil:
+			// Recover as after a lost release_confirm answer: attach again, and the attach reply
+			// reads the state again (it is FromAttach).
+			m.replacement.Error = "The hub has not confirmed the replacement. Reconnecting."
+			m.client.mu.Lock()
+			m.client.lost = true
+			m.client.mu.Unlock()
+			m.client.pulse()
+		case msg.State == nil || msg.State.State == "cancelled" || msg.State.State == "superseded":
+			m.resumeReplacement()
+		default:
+			m.replacement.replacementState = *msg.State
+			m.replacement.Error = ""
+		}
 		return true, nil
 	}
 	if m.replacement == nil {
@@ -177,6 +214,33 @@ func (m *model) replacementUnsafe() bool {
 	}
 	return false
 }
+
+// frozenState reports a replacement state in which the renderer waits for the hub.
+func frozenState(state string) bool {
+	return state == "releasing" || state == "opening" || state == "closing"
+}
+
+func (m *model) currentAttachment() string {
+	m.client.mu.Lock()
+	defer m.client.mu.Unlock()
+	return m.client.attachment
+}
+
+// readReplacement reads the durable state of replacement id once (hub.view.replacement).
+func (m *model) readReplacement(id string) tea.Cmd {
+	attachment := m.currentAttachment()
+	return func() tea.Msg {
+		var out struct {
+			Replacement *replacementState `json:"replacement"`
+		}
+		err := m.client.call(context.Background(), "hub.view.replacement", map[string]any{"replacement_id": id}, &out)
+		if err == nil && out.Replacement != nil && out.Replacement.ID != id {
+			err = errors.New("the hub answered for another replacement")
+		}
+		return replacementRead{ID: id, Attachment: attachment, State: out.Replacement, Err: err}
+	}
+}
+
 func (m *model) resumeReplacement() {
 	m.focus = m.replacement.PreviousFocus
 	m.replacement = nil

@@ -447,7 +447,7 @@ func (h *Hub) openForm(ctx context.Context, id, plugin, route string, fc formCon
 	err := h.db.QueryRowContext(ctx, `SELECT status, closed_by, session_id FROM views WHERE view_id = ?`, id).Scan(&status, &closedBy, &sess)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id) VALUES (?, ?, ?, ?, 'sending', ?, ?)`,
+		if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never')`,
 			id, plugin, formTab, route, string(b), fc.SessionID); err != nil {
 			return nil, err
 		}

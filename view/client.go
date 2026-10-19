@@ -318,7 +318,7 @@ func (v *viewClient) connect(ctx context.Context) error {
 		if id == "" {
 			id = replacementID
 		}
-		v.emit(replacementRecovered{ID: id, State: *attached.Replacement, Initial: replacementID == ""})
+		v.emit(replacementRecovered{ID: id, State: *attached.Replacement, Initial: replacementID == "", FromAttach: true})
 	}
 	var snapshot Snapshot
 	if err = v.call(ctx, "hub.view.subscribe", nil, &snapshot); err != nil {

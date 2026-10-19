@@ -170,6 +170,9 @@ func (h *Hub) uiStart(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, panelSchema); err != nil {
 		return err
 	}
+	if err := h.viewsAttachState(ctx); err != nil { // before slotStart, which reads it
+		return err
+	}
 	if err := h.slotStart(ctx); err != nil {
 		return err
 	}
@@ -885,7 +888,7 @@ func (h *Hub) spawnView(ctx context.Context, plugin, sess string, t tab) (*view,
 		return nil, errors.New("no renderer: set \"view\" in the hub config")
 	}
 	v := &view{ID: randomID("view-"), Plugin: plugin, Tab: t.Key, Route: t.Route, Status: "prepared", Layout: h.pairLayout(t)}
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, layout) VALUES (?, ?, ?, ?, 'prepared', ?, ?)`,
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, layout, attach_state) VALUES (?, ?, ?, ?, 'prepared', ?, ?, 'never')`,
 		v.ID, plugin, t.Key, t.Route, sess, v.Layout); err != nil {
 		return nil, err
 	}
@@ -1608,6 +1611,17 @@ func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
 	return map[string]any{"status": "accepted", "views": n}, nil
 }
 
+// viewsAttachState adds views.attach_state (panels.go): never (a new view, no renderer yet),
+// attached, claimed (a replacement took the never-attached view), or unknown. A row from an older
+// hub gets unknown, which counts as attached before: its renderer can hold input.
+func (h *Hub) viewsAttachState(ctx context.Context) error {
+	_, err := h.db.ExecContext(ctx, `ALTER TABLE views ADD COLUMN attach_state TEXT NOT NULL DEFAULT 'unknown'`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
+}
+
 // viewAttach binds a renderer to its view. The caller must run in the view's pane.
 func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (any, error) {
 	id, _ := args["view_id"].(string)
@@ -1635,8 +1649,14 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 		return nil, bad("caller is not in the pane of view %q", id)
 	}
 	attachment := randomID("att-")
-	if _, err := h.db.ExecContext(ctx, `UPDATE views SET client_id = ?, attachment = ? WHERE view_id = ?`, p.Requester.ClientID, attachment, id); err != nil {
+	// One conditional write: a concurrent close wins, and a replacement's claim of a never-attached
+	// view (panels.go askRelease) is ordered against it by SQLite.
+	res, err := h.db.ExecContext(ctx, `UPDATE views SET client_id = ?, attachment = ?, attach_state = 'attached' WHERE view_id = ? AND status = 'open'`, p.Requester.ClientID, attachment, id)
+	if err != nil {
 		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return nil, bad("unknown or closed view %q", id)
 	}
 	h.ev.emit("view_attached", map[string]any{"view_id": id, "client_id": p.Requester.ClientID})
 	h.composerAttached(ctx, v.Plugin, id, p.Requester.ClientID, attachment) // the user closed the pair meanwhile

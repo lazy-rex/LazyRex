@@ -198,7 +198,7 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.rebind",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.ui.exit", "hub.ui.mode", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-	"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"}
+	"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"}
 
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
@@ -647,6 +647,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.paletteRun(ctx, p, args)
 	case "hub.view.release_confirm":
 		return h.releaseConfirm(ctx, p, args)
+	case "hub.view.replacement":
+		return h.viewReplacement(ctx, p, args)
 	case "hub.view.app_action":
 		return h.viewAppAction(ctx, p, args)
 	case "hub.app.select_session":

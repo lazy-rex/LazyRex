@@ -31,6 +31,13 @@ type protocolFixture struct {
 	dropReply                                    bool
 	firstNotReady                                bool
 	admitted                                     chan struct{}
+	// Replacement recovery (panels.go): the replacement in each attach reply, a view.resume that
+	// the fixture sends before the first attach reply, and the answers to hub.view.replacement in
+	// order (a *wireError is an error answer). reads counts the reads.
+	attachReplacement  map[string]any
+	resumeBeforeAttach string
+	readAnswers        []any
+	reads              int
 }
 
 func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -95,15 +102,39 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 				if f.firstNotReady && f.attaches == 1 {
 					problem = &wireError{Code: "refused", Message: "not_ready: the pane is opening"}
 				} else {
+					if f.resumeBeforeAttach != "" {
+						// The hub's cancel sends view.resume before the renderer has the attach reply.
+						write(map[string]any{"type": "event", "payload": map[string]any{"type": "client_perform_requested", "payload": map[string]any{"call_id": "early-resume", "action": "view.resume", "requester": map[string]string{"client_id": "hub"}, "args": map[string]string{"view_id": "v1", "attachment": "attachment", "replacement_id": f.resumeBeforeAttach}}}})
+						f.resumeBeforeAttach = ""
+					}
 					f.attachment = "attachment"
 					f.conn = c
-					result = map[string]any{"view_id": "v1", "plugin": "messaging", "route": "/thread/42", "attachment": f.attachment, "hub_generation": "1"}
+					attached := map[string]any{"view_id": "v1", "plugin": "messaging", "route": "/thread/42", "attachment": f.attachment, "hub_generation": "1"}
+					if f.attachReplacement != nil {
+						attached["replacement"] = f.attachReplacement
+					}
+					result = attached
 				}
 			case "hub.view.close":
 				if args["view_id"] != "v1" || args["attachment"] != f.attachment {
 					problem = &wireError{Code: "stale_attachment", Message: "Wrong close attachment"}
 				} else {
 					result = map[string]any{"status": "closed"}
+				}
+			case "hub.view.replacement":
+				f.reads++
+				if args["attachment"] != f.attachment {
+					problem = &wireError{Code: "refused", Message: "stale_attachment: attach again"}
+				} else if len(f.readAnswers) > 0 {
+					answer := f.readAnswers[0]
+					f.readAnswers = f.readAnswers[1:]
+					if e, ok := answer.(*wireError); ok {
+						problem = e
+					} else {
+						result = map[string]any{"replacement": answer}
+					}
+				} else {
+					result = map[string]any{"replacement": nil}
 				}
 			case "hub.view.seen":
 				f.seen++
