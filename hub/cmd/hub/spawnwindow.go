@@ -243,6 +243,9 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	}
 	fp, _ := json.Marshal(request)
 
+	if err := h.spawnKeyConflict(ctx, "window", caller, key); err != nil {
+		return nil, err
+	}
 	var prevReq, prevIDs string
 	switch err := h.db.QueryRowContext(ctx, `SELECT request, spawn_ids FROM spawn_windows WHERE caller = ? AND key = ?`, caller, key).Scan(&prevReq, &prevIDs); {
 	case err == nil:

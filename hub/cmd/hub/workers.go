@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS spawns (spawn_id TEXT PRIMARY KEY, caller TEXT NOT NU
   error TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', created TEXT NOT NULL,
   effective_args TEXT NOT NULL DEFAULT '',
   UNIQUE (caller, key));
+-- A key that a legacy agent and the identity that took it over both used (identity.go,
+-- migrateSpawns). kind: spawn (spawns) or window (spawn_windows). Such a key is refused.
+CREATE TABLE IF NOT EXISTS spawn_key_conflicts (kind TEXT NOT NULL, caller TEXT NOT NULL, key TEXT NOT NULL,
+  legacy TEXT NOT NULL, created TEXT NOT NULL, PRIMARY KEY (kind, caller, key, legacy));
 -- Agents that a spawn created. IDs are never reused: the mailbox history belongs to one instance.
 CREATE TABLE IF NOT EXISTS dyn_agents (agent TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL,
   spawn_id TEXT NOT NULL, created TEXT NOT NULL);
@@ -491,6 +495,9 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	}
 	if strings.HasPrefix(key, windowKeyPrefix) {
 		return nil, bad("key must not start with %q (hub.spawn_window uses it)", windowKeyPrefix)
+	}
+	if err := h.spawnKeyConflict(ctx, "spawn", caller, key); err != nil {
+		return nil, err
 	}
 	placement := workerPlacement{Direction: "right", Ratio: 0.5}
 	fingerprint := map[string]any{"profile": profileName, "title": title, "args": values}
@@ -1683,4 +1690,18 @@ func (h *Hub) cwdUnlock(ctx context.Context, owner string, admin bool, args map[
 		}
 	}
 	return map[string]any{"locked": false, "path": path}, nil
+}
+
+// spawnKeyConflict refuses a key that two IDs used before they became one identity: a replay
+// cannot tell which of the two requests it repeats.
+func (h *Hub) spawnKeyConflict(ctx context.Context, kind, caller, key string) error {
+	var legacy string
+	switch err := h.db.QueryRowContext(ctx, `SELECT legacy FROM spawn_key_conflicts WHERE kind = ? AND caller = ? AND key = ? LIMIT 1`, kind, caller, key).Scan(&legacy); {
+	case err == nil:
+		return bad("key %q was used by %s and by %s before they became one identity; use a new key", key, legacy, caller)
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	default:
+		return err
+	}
 }

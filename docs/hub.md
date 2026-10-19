@@ -641,6 +641,8 @@ A conversation identity replaces a legacy name when its hook first reports from 
 Messaging migrates mutable records in one batch before it handles the next request.
 Historical messages and saved operation results stay unchanged. Readers show canonical sender and recipient IDs.
 A permanent legacy alias follows its first conversation, including after the pane starts another conversation.
+
+Spawns follow the alias (the coordinator, 2026-10-19). In the transaction that records the alias, the hub moves the legacy agent's `spawns` and `spawn_windows` rows to the identity (`caller`, so the identity replays the old keys) and every worker's `parent` (so the identity stops the old workers). When both IDs already used one key, both rows stay and the key goes into `spawn_key_conflicts`: a later `hub.spawn` or `hub.spawn_window` with that key is refused, because a replay cannot tell which request it repeats. Observed before the fix (lab, `tests/harness/tests/spawn_migration.lua`): the same key from the new identity created a second worker.
 A conflicting pair of nonempty drafts stops migration with an error and preserves both drafts.
 
 See `tests/README.md` for verification and `../../skills/lazyrex/SKILL.md` for agent instructions.

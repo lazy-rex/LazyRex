@@ -266,6 +266,9 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 			if err := h.identityLog(ctx, tx, id, block, "aliased", map[string]any{"legacy": agentID}); err != nil {
 				return nil, err
 			}
+			if err := h.migrateSpawns(ctx, tx, agentID, id, block); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -741,4 +744,49 @@ func (h *Hub) resolveAgent(args map[string]any) (any, error) {
 		return pick(found, "name")
 	}
 	return nil, bad("unknown: no agent matches %q", to)
+}
+
+// migrateSpawns moves the spawns of a legacy agent to the identity that took it over, in the
+// alias transaction (the coordinator, 2026-10-19). The identity replays the legacy spawn keys
+// ((caller, key) rows of spawns and spawn_windows) and stops the legacy workers (parent). When
+// both IDs already used one key, both rows stay (the legacy row keeps its legacy caller) and the
+// key is recorded in spawn_key_conflicts: a later call with it is refused, because a replay
+// cannot tell which request it repeats. Parents always move, so the identity stops both workers.
+func (h *Hub) migrateSpawns(ctx context.Context, tx *sql.Tx, legacy, id, block string) error {
+	for _, table := range []string{"spawns", "spawn_windows"} {
+		rows, err := tx.QueryContext(ctx, `SELECT key FROM `+table+` WHERE caller = ? AND key IN (SELECT key FROM `+table+` WHERE caller = ?)`, legacy, id)
+		if err != nil {
+			return err
+		}
+		var kept []string
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err != nil {
+				rows.Close()
+				return err
+			}
+			kept = append(kept, k)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		kind := map[string]string{"spawns": "spawn", "spawn_windows": "window"}[table]
+		for _, k := range kept {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO spawn_key_conflicts VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+				kind, id, k, legacy, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+		}
+		if len(kept) > 0 {
+			if err := h.identityLog(ctx, tx, id, block, "spawn_keys_conflict", map[string]any{"legacy": legacy, "table": table, "keys": kept}); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET caller = ? WHERE caller = ? AND key NOT IN (SELECT key FROM `+table+` WHERE caller = ?)`, id, legacy, id); err != nil {
+			return err
+		}
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE spawns SET parent = ? WHERE parent = ?`, id, legacy)
+	return err
 }
