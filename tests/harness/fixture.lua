@@ -9,7 +9,12 @@ local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 
 local function hub(action, args)
   local res, err = rex.call('client.perform', {client_id = hub_id, action = action, args = args or {}, timeout_ms = 10000})
-  if err or not res then error({code = 'hub_failed', message = tostring(err)}) end
+  if err or not res then
+    -- Keep a transient code transient, so the hub retries a view operation (the gate fault test).
+    local text = type(err) == 'table' and (err.message or '') or tostring(err)
+    local code = type(err) == 'table' and err.code or text:match('code=([%w_%-%.]+)%)%s*$')
+    error({code = code == 'unavailable' and 'unavailable' or 'hub_failed', message = text})
+  end
   return res.result
 end
 

@@ -35,7 +35,7 @@ const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put", "hub.test.fault", "hub.test.fault_state"}
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release"}
 
 type testState struct {
 	mu         sync.Mutex
@@ -269,13 +269,16 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return h.testFaultArm(args, plugin)
+	case "hub.test.fault_release":
+		id, _ := args["id"].(float64)
+		return h.testFaultRelease(id)
 	case "hub.test.fault_state":
 		id, _ := args["id"].(float64)
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
 		for _, f := range h.test.faults {
 			if float64(f.ID) == id { // exact: 1.5 is not fault 1
-				return map[string]any{"fired": f.Fired}, nil
+				return map[string]any{"fired": f.Fired, "seen": f.seen, "gated": f.Gated}, nil
 			}
 		}
 		return nil, bad("invalid: no fault %v", args["id"])
@@ -340,8 +343,9 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		}
 		var unfired []any
 		for _, f := range h.test.faults {
-			if !f.Fired {
-				unfired = append(unfired, map[string]any{"id": f.ID, "point": f.Point, "mode": f.Mode, "action": f.Action, "when": f.When})
+			if !f.Fired || (f.Mode == "gate" && !f.Released) {
+				unfired = append(unfired, map[string]any{"id": f.ID, "point": f.Point, "mode": f.Mode, "action": f.Action, "when": f.When,
+					"fired": f.Fired})
 			}
 		}
 		h.test.mu.Unlock()

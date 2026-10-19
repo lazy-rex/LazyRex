@@ -5,7 +5,11 @@ package main
 //   - spawn-create: the Rex request that creates a hub.spawn worker's pane (lose-answer, drop,
 //     refuse; op = the spawn key).
 //   - action: a hub action that a registered plugin calls (when = before | after,
-//     mode = fail | lose-reply; key = the call's args.key; plugin = the calling plugin).
+//     mode = fail | lose-reply | gate; key = the call's args.key; plugin = the calling plugin).
+//     gate (before only) is a barrier for a caller that retries: from the call that fires it
+//     until hub.test.fault_release, every matching call gets 'unavailable' and runs no handler.
+//     A hub request cannot wait: Rex delivers the hub's calls one at a time.
+// nth = n fires on the n-th call that matches (default 1).
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
 
 import (
@@ -22,14 +26,16 @@ type testFault struct {
 	Plugin, Action, When string // action
 	Key                  string // action: the call's args.key ("" = any)
 	FailCode             string // action, mode fail: the reply's error code (default failed)
-	Fired                bool
+	Nth, seen            int    // fire on the Nth matching call; seen counts the matching calls
+	Fired, Released      bool   // Released: a gate is open again
+	Gated                int    // gate: the calls that it refused
 }
 
-var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply"}}
+var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
-	"action": {"point", "mode", "action", "when", "key", "plugin", "fail_code"}}
+	"action": {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -45,12 +51,20 @@ func faultableAction(name string) bool {
 }
 
 func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
+	f := &testFault{Nth: 1}
 	for k, v := range args {
+		if k == "nth" {
+			n, ok := v.(float64)
+			if !ok || n < 1 || n != float64(int(n)) {
+				return nil, bad("invalid: nth must be a positive integer")
+			}
+			f.Nth = int(n)
+			continue
+		}
 		if _, ok := v.(string); !ok {
 			return nil, bad("invalid: fault field %s must be a string", k)
 		}
 	}
-	f := &testFault{}
 	f.Point, _ = args["point"].(string)
 	f.Mode, _ = args["mode"].(string)
 	for k := range args {
@@ -59,7 +73,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse) or action (fail, lose-reply)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse) or action (fail, lose-reply, gate)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -78,6 +92,9 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		if f.When != "before" && f.When != "after" {
 			return nil, bad("invalid: when must be before or after")
 		}
+		if f.Mode == "gate" && f.When != "before" {
+			return nil, bad("invalid: gate needs when before")
+		}
 		if !faultableAction(f.Action) {
 			return nil, bad("invalid: %q is not a hub action that a plugin can call", f.Action)
 		}
@@ -89,22 +106,47 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 	return map[string]any{"id": f.ID}, nil
 }
 
-// takeFault returns the first armed fault that match accepts, and marks it fired. It is nil
-// outside test mode.
+// takeFault fires the first armed fault that match accepts and whose nth matching call this is.
+// Every armed fault that matches counts the call, also when another fault fires. It is nil outside
+// test mode.
 func (h *Hub) takeFault(match func(*testFault) bool) *testFault {
 	if h.test == nil {
 		return nil
 	}
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()
+	var fired *testFault
 	for _, f := range h.test.faults {
-		if !f.Fired && match(f) {
-			f.Fired = true
+		if f.Fired || !match(f) {
+			continue
+		}
+		f.seen++
+		if fired == nil && f.seen >= f.Nth {
+			f.Fired, fired = true, f
+			if f.Mode == "gate" {
+				f.Gated++
+			}
 			h.ev.emit("fault", map[string]any{"point": f.Point, "mode": f.Mode, "id": f.ID, "action": f.Action, "when": f.When})
-			return f
 		}
 	}
-	return nil
+	return fired
+}
+
+// gateClosed reports a fired gate that match accepts and that is not released, and counts the
+// refused call.
+func (h *Hub) gateClosed(match func(*testFault) bool) bool {
+	if h.test == nil {
+		return false
+	}
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	for _, f := range h.test.faults {
+		if f.Mode == "gate" && f.Fired && !f.Released && match(f) {
+			f.Gated++
+			return true
+		}
+	}
+	return false
 }
 
 // peekFault reports an armed fault that match accepts, without firing it.
@@ -180,16 +222,45 @@ func (h *Hub) dispatchFaulted(ctx context.Context, p perform) (any, error) {
 			return f.Point == "action" && f.When == when && f.Plugin == pl.Name && f.Action == p.Action && (f.Key == "" || f.Key == key)
 		}
 	}
+	if h.gateClosed(match("before")) {
+		return nil, refuse("unavailable", "injected fault: a gate is closed") // no handler runs
+	}
 	if f := h.takeFault(match("before")); f != nil {
+		if f.Mode == "gate" {
+			return nil, refuse("unavailable", "injected fault: a gate is closed")
+		}
 		return nil, faultReply(f) // no handler runs
 	}
-	armed := h.peekFault(match("after"))
+	return h.dispatchAfter(ctx, p, match("after"))
+}
+
+// dispatchAfter runs dispatch with the armed after faults (matchAfter) of the calling plugin.
+func (h *Hub) dispatchAfter(ctx context.Context, p perform, matchAfter func(*testFault) bool) (any, error) {
+	armed := h.peekFault(matchAfter)
 	result, err := h.dispatch(ctx, p)
 	if err != nil || !armed {
 		return result, err // a genuine error is the reply; the fault stays armed
 	}
-	if f := h.takeFault(match("after")); f != nil {
+	if f := h.takeFault(matchAfter); f != nil {
 		return nil, faultReply(f)
 	}
 	return result, nil
+}
+
+// testFaultRelease opens a gate. Releasing a gate twice, or a fault that is not a gate, is an
+// error. A gate that has not fired yet can be released: it then never fires.
+func (h *Hub) testFaultRelease(id float64) (any, error) {
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	for _, f := range h.test.faults {
+		if float64(f.ID) != id {
+			continue
+		}
+		if f.Mode != "gate" || f.Released {
+			return nil, bad("invalid: fault %d is not a closed gate", f.ID)
+		}
+		f.Released = true
+		return map[string]any{"released": true, "fired": f.Fired, "gated": f.Gated}, nil
+	}
+	return nil, bad("invalid: no fault %v", id)
 }

@@ -307,6 +307,9 @@ function H.fault(spec)
   return hub('hub.test.fault', a).id
 end
 function H.fault_fired(id) return hub('hub.test.fault_state', {id = id}).fired end
+-- fault_release opens a gate fault: later matching calls run. A gate that is still closed at the
+-- end of the file fails the file.
+function H.fault_release(id) return hub('hub.test.fault_release', {id = id}) end
 
 -- with_injection runs fn with an injection and checks that exactly n batches consumed it.
 function H.with_injection(spec, n, fn)
