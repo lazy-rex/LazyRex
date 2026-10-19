@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +103,20 @@ type uiState struct {
 	renaming     map[string]pendingRename  // window -> a user rename waiting for its plugin
 	labelQ       []labelEvent              // window_label_changed events waiting for the label worker, in order
 	labelKick    chan struct{}             // wakes the label worker
+	navMu        sync.Mutex                // serializes the navigation order check and its commit (uiNavigate)
+	navSeq       int64                     // the newest navigation request
+	navOpens     map[string]*navOpen       // navigation_id -> a view.open that runs outside the request queue
+}
+
+// navOpen is one hub.ui.navigate to an undeclared tab. view.open runs in the background, because
+// the plugin's own calls to the hub (hub.ui.tabs) wait in the hub's request queue
+// (rex-protocol.md, "The hub has one request queue").
+type navOpen struct {
+	seq     int64
+	started time.Time
+	done    bool
+	out     map[string]any
+	err     error
 }
 
 // sessionRecorded returns a channel that is closed when the hub records its next session.
@@ -1420,11 +1435,97 @@ func (h *Hub) navigationTab(ctx context.Context, plugin, key string, open func(c
 	return bad("plugin %q has no tab %q", plugin, key)
 }
 
+// uiNavigate handles hub.ui.navigate {plugin, tab}. A declared tab is committed at once:
+// {status: "accepted"}. An undeclared tab needs the plugin's view.open, and a hub handler must
+// never wait for a plugin: the call starts view.open in the background and answers
+// {status: "pending", navigation_id}. A caller that wants the outcome asks again with
+// {navigation_id} (plugin and tab are then ignored): pending until the open finishes, then the
+// result: accepted, superseded (a newer navigation came first), or the error (for example "has no
+// tab"). A call without navigation_id is always a new navigation. A caller that does not ask again
+// still gets the navigation.
 func (h *Hub) uiNavigate(ctx context.Context, args map[string]any) (any, error) {
+	if id, ok := args["navigation_id"].(string); ok {
+		h.ui.navMu.Lock()
+		defer h.ui.navMu.Unlock()
+		f := h.ui.navOpens[id]
+		if f == nil {
+			return nil, bad("not_found: navigation %q is unknown or expired", id)
+		}
+		if !f.done {
+			return map[string]any{"status": "pending", "navigation_id": id}, nil
+		}
+		return f.out, f.err
+	}
 	plugin, _ := args["plugin"].(string)
 	key, _ := args["tab"].(string)
+	h.ui.navMu.Lock()
+	h.ui.navSeq++
+	seq := h.ui.navSeq
+	for id, f := range h.ui.navOpens {
+		if f.done && time.Since(f.started) > time.Minute {
+			delete(h.ui.navOpens, id) // its caller stopped asking
+		}
+	}
+	h.ui.navMu.Unlock()
+	declared, err := h.tabDeclared(ctx, plugin, key)
+	if err != nil {
+		return nil, err
+	}
+	if declared {
+		return h.navigateCommit(ctx, plugin, key, seq)
+	}
+	id := "nav-" + strconv.FormatInt(seq, 10)
+	f := &navOpen{seq: seq, started: time.Now()}
+	h.ui.navMu.Lock()
+	if h.ui.navOpens == nil {
+		h.ui.navOpens = map[string]*navOpen{}
+	}
+	h.ui.navOpens[id] = f
+	h.ui.navMu.Unlock()
+	go func() {
+		out, err := h.navigateWith(context.Background(), plugin, key, seq)
+		h.ui.navMu.Lock()
+		f.done, f.out, f.err = true, out, err
+		h.ui.navMu.Unlock()
+	}()
+	return map[string]any{"status": "pending", "navigation_id": id, "plugin": plugin, "tab": key}, nil
+}
+
+// navigateNow navigates and waits for the result. Only a caller outside the hub's request
+// handlers may use it: the view worker for a navigate effect (applyEffects). A navigation that a
+// newer one superseded is done, not failed.
+func (h *Hub) navigateNow(ctx context.Context, plugin, key string) error {
+	h.ui.navMu.Lock()
+	h.ui.navSeq++
+	seq := h.ui.navSeq
+	h.ui.navMu.Unlock()
+	_, err := h.navigateWith(ctx, plugin, key, seq)
+	return err
+}
+
+// navigateWith lets the plugin declare a lazy tab (navigationTab, which may call view.open), then
+// commits the navigation.
+func (h *Hub) navigateWith(ctx context.Context, plugin, key string, seq int64) (map[string]any, error) {
 	if err := h.navigationTab(ctx, plugin, key, h.callPlugin); err != nil {
 		return nil, err
+	}
+	return h.navigateCommit(ctx, plugin, key, seq)
+}
+
+func (h *Hub) tabDeclared(ctx context.Context, plugin, key string) (bool, error) {
+	var n int
+	err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_tabs WHERE plugin = ? AND tab = ?`, plugin, key).Scan(&n)
+	return n > 0, err
+}
+
+// navigateCommit records the navigation target. A request that a newer navigation followed does
+// not commit: an old completion must not replace a newer navigation. navMu covers the check and
+// the commit, so two commits cannot pass each other.
+func (h *Hub) navigateCommit(ctx context.Context, plugin, key string, seq int64) (map[string]any, error) {
+	h.ui.navMu.Lock()
+	defer h.ui.navMu.Unlock()
+	if seq != h.ui.navSeq {
+		return map[string]any{"status": "superseded", "plugin": plugin, "tab": key}, nil
 	}
 	// The app-mode entry and the target commit together, before any layout change: a crash then
 	// resumes the capture and the focus.
@@ -1452,6 +1553,7 @@ func (h *Hub) uiNavigate(ctx context.Context, args map[string]any) (any, error) 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	h.ev.emit("navigation_committed", map[string]any{"plugin": plugin, "tab": key, "seq": seq})
 	h.kickUI(plugin)
 	h.kickViews(plugin, true) // a transcript that comes back changes the effective layout
 	return map[string]any{"status": "accepted"}, nil

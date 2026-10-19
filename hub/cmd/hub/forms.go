@@ -675,7 +675,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 		return false
 	}
 	if e.Navigate != "" && navDone == 0 {
-		if _, err := h.uiNavigate(ctx, map[string]any{"plugin": plugin, "tab": e.Navigate}); err != nil {
+		if err := h.navigateNow(ctx, plugin, e.Navigate); err != nil {
 			return fail(fmt.Errorf("navigate %s: %w", e.Navigate, err))
 		}
 		if set(`UPDATE view_ops SET effect_nav = 1 WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key) {
