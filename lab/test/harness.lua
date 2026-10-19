@@ -298,6 +298,16 @@ function H.inject(spec)
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
 
+-- fault arms a one-shot hub fault (docs/testing.md, "Faults"): {point = 'spawn-create', mode, op}
+-- or {point = 'action', action, when, mode, key, plugin}. It returns the fault id. A fault that
+-- has not fired at the end of the file fails the file.
+function H.fault(spec)
+  local a = {plugin = spec.plugin or A.plugin}
+  for k, v in pairs(spec) do if k ~= 'plugin' then a[k] = v end end
+  return hub('hub.test.fault', a).id
+end
+function H.fault_fired(id) return hub('hub.test.fault_state', {id = id}).fired end
+
 -- with_injection runs fn with an injection and checks that exactly n batches consumed it.
 function H.with_injection(spec, n, fn)
   local id = H.inject(spec)

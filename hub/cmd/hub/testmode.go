@@ -35,7 +35,7 @@ const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put"}
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put", "hub.test.fault", "hub.test.fault_state"}
 
 type testState struct {
 	mu         sync.Mutex
@@ -45,6 +45,7 @@ type testState struct {
 	renderReq  map[string]int64                    // view_id -> the latest requested render generation
 	renderOut  map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
 	trees      map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
+	faults     []*testFault                        // armed and fired faults (testfaults.go)
 }
 
 type injection struct {
@@ -262,6 +263,21 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return h.testInject(args)
+	case "hub.test.fault":
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		return h.testFaultArm(args, plugin)
+	case "hub.test.fault_state":
+		id, _ := args["id"].(float64)
+		h.test.mu.Lock()
+		defer h.test.mu.Unlock()
+		for _, f := range h.test.faults {
+			if f.ID == int(id) {
+				return map[string]any{"fired": f.Fired}, nil
+			}
+		}
+		return nil, bad("invalid: no fault %v", args["id"])
 	case "hub.test.injection":
 		id, _ := args["id"].(float64)
 		h.test.mu.Lock()
@@ -321,8 +337,14 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 				open = append(open, map[string]any{"id": in.ID, "plugin": in.Plugin, "consumed": in.Consumed, "times": in.Times})
 			}
 		}
+		var unfired []any
+		for _, f := range h.test.faults {
+			if !f.Fired {
+				unfired = append(unfired, map[string]any{"id": f.ID, "point": f.Point, "mode": f.Mode, "action": f.Action, "when": f.When})
+			}
+		}
 		h.test.mu.Unlock()
-		return boundReply(map[string]any{"unconsumed": orEmpty(open), "parity": par})
+		return boundReply(map[string]any{"unconsumed": orEmpty(open), "unfired": orEmpty(unfired), "parity": par})
 	}
 	return nil, bad("unknown action %s", p.Action)
 }

@@ -24,7 +24,7 @@ local function put(key, value)
 end
 
 local obj = {type = 'object'}
-local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant'}
+local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -49,6 +49,8 @@ local actions = {
   {name = 'fix.ensure', kind = 'client', title = 'hub.session.ensure', args = obj},
   {name = 'fix.spawn', kind = 'client', title = 'Start a shell on behalf of the caller (on_behalf = as_pid or the caller pid)',
     args = {type = 'object', properties = {key = {type = 'string'}, as_pid = {type = 'integer'}}, required = {'key'}}},
+  {name = 'fix.hub', kind = 'client', title = 'Call a hub action as the plugin', description = 'Returns {result} or {error = {code, message}}.',
+    args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}}, required = {'action'}}},
 }
 rex.call('client.keymap', {actions = actions})
 
@@ -88,6 +90,15 @@ local function domain(action, args, pid)
     return hub('hub.session.ensure', args)
   elseif action == 'fix.spawn' then
     return {spawn = hub('hub.spawn', {profile = 'shell', key = args.key, on_behalf = args.as_pid or pid}), pid = pid}
+  elseif action == 'fix.hub' then
+    -- The hub's answer as data, so a test can check the exact error code.
+    local res, err = rex.call('client.perform', {client_id = hub_id, action = args.action, args = args.args or {}, timeout_ms = 10000})
+    if err then
+      local text = type(err) == 'table' and (err.message or '') or tostring(err)
+      local code = type(err) == 'table' and err.code or tostring(err):match('code=([%w_%-%.]+)%)%s*$')
+      return {error = {code = code, message = text}}
+    end
+    return {result = res and res.result}
   end
   error({code = 'not_supported', message = 'unknown action ' .. tostring(action)})
 end

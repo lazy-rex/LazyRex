@@ -588,7 +588,7 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := spawnCreate(cctx, h, method, req, &out); err != nil {
+	if err := h.spawnCreateFaulted(cctx, s.Key, method, req, &out); err != nil {
 		var re *rex.RexError
 		if errors.As(err, &re) && re.Code != "disconnected" {
 			h.failSpawn(ctx, s, err.Error()) // Rex answered: nothing was created
