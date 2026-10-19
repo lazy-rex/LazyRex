@@ -25,6 +25,7 @@ type Rex struct {
 	pending map[string]chan frame
 	Events  chan json.RawMessage
 	Welcome json.RawMessage
+	max     int // limits.max_message_bytes from the welcome; 0 when it is not stated
 }
 
 type frame struct {
@@ -98,6 +99,14 @@ func DialHello(ctx context.Context, socket string, hello map[string]any) (*Rex, 
 		return nil, fmt.Errorf("expected welcome, got %s", data)
 	}
 	r.Welcome = data
+	var limits struct {
+		Limits struct {
+			MaxMessageBytes int `json:"max_message_bytes"`
+		} `json:"limits"`
+	}
+	if json.Unmarshal(data, &limits) == nil {
+		r.max = limits.Limits.MaxMessageBytes
+	}
 	go r.readLoop()
 	return r, nil
 }
@@ -142,6 +151,18 @@ func (r *Rex) readLoop() {
 			r.Events <- data
 		}
 	}
+}
+
+// MaxMessage is the largest frame that the server accepts from this client: the welcome's
+// limits.max_message_bytes (1 MiB on the Unix socket, rex-protocol.md "Control channel"). It is 0
+// when the welcome does not state it. A larger frame makes the server close the connection.
+func (r *Rex) MaxMessage() int { return r.max }
+
+// RequestFrameBytes is the encoded size of the frame that Call writes for method and payload. It
+// counts the longest request ID. It is exact only for a payload from json.Marshal (compact, with
+// '<', '>' and '&' already escaped): Call encodes the payload again, and the encoder escapes them.
+func RequestFrameBytes(method string, payload []byte) int {
+	return len(`{"type":"request","id":"h","method":"","payload":}`) + 19 + len(method) + len(payload)
 }
 
 // Close ends the connection.
