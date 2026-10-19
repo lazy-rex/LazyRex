@@ -549,7 +549,7 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 	} else {
 		reply["result"] = result
 	}
-	if err := h.rex.Call(ctx, "client.reply", reply, nil); err != nil {
+	if err := sendReply(ctx, h.rex, p.Action, reply); err != nil { // replyguard.go
 		log.Printf("reply %s %s: %v", p.Action, p.CallID, err)
 	}
 	log.Printf("%s from %s pid %d -> %v", p.Action, p.Requester.ClientID, p.Requester.Principal.PID, err)

@@ -29,7 +29,8 @@ local function put(key, value, if_rev)
 end
 
 local obj = {type = 'object'}
-local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub'}
+local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub',
+  'fix.measure'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -58,6 +59,8 @@ local actions = {
     args = {type = 'object', properties = {key = {type = 'string'}, as_pid = {type = 'integer'}}, required = {'key'}}},
   {name = 'fix.hub', kind = 'client', title = 'Call a hub action as the plugin', description = 'Returns {result} or {error = {code, message}}.',
     args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}}, required = {'action'}}},
+  {name = 'fix.measure', kind = 'client', title = 'Call a hub action as the plugin; return sizes, not the reply',
+    args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}, timeout_ms = {type = 'integer'}}, required = {'action'}}},
 }
 rex.call('client.keymap', {actions = actions})
 
@@ -115,6 +118,17 @@ local function domain(action, args, pid)
       return {error = {code = code, message = text}}
     end
     return {result = res and res.result}
+  elseif action == 'fix.measure' then
+    -- The reply crosses the real transport (hub -> Rex -> this plugin). The test gets only its
+    -- shape and sizes: lua_bytes is rex.json.encode of what arrived (Rex's encoding, not Go's).
+    local res, err = rex.call('client.perform', {client_id = hub_id, action = args.action, args = args.args or {}, timeout_ms = args.timeout_ms or 10000})
+    if err then
+      local text = type(err) == 'table' and (err.message or '') or tostring(err)
+      local code = type(err) == 'table' and err.code or text:match('code=([%w_%-%.]+)%)%s*$')
+      return {arrived = false, code = code, message_bytes = #text, message = text:sub(1, 300)}
+    end
+    local r = res and res.result or {}
+    return {arrived = true, lua_bytes = #rex.json.encode(r), envelope_bytes = #rex.json.encode(res)}
   end
   error({code = 'not_supported', message = 'unknown action ' .. tostring(action)})
 end
