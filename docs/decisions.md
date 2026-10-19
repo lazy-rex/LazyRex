@@ -366,3 +366,15 @@ Goal (the maintainer): "Start Session…" starts a saved template; "Save as Temp
 - Tunnels is its own plugin. "Forward Port…" lists the listening TCP ports of processes in the panes (block method `com.superlogical.terminal.process` gives the child; `ps` gives its descendants; `lsof` gives their listening ports; checked on macOS without root, 2026-10-17), with the current session first and an "Other port…" field. A process outside a pane's process tree (for example a Docker container) is not found (inferred).
 - Each forward runs in a detached block in the session of the forwarded process. "Show Logs" moves the block beside the source pane (`session.move_block` works only inside one session); "Hide Logs" detaches it; "Stop" closes it. Closing the session ends the tunnel. Rex does not show a detached block's status on a tab, so the Tunnels panel and the live feed show it.
 
+
+## Decided: Agents may act on anything (the maintainer, 2026-10-19)
+
+- An agent may create, change, stop and delete anything that a user can, including what another agent or the user created. There is no "agent-created only" rule.
+- This covers `hub.stop`, Templates delete and dismiss, `worktree.remove`, `tunnels.stop` and `tunnels.forward`.
+- A plugin keeps its other checks: validation, operation key replay and conflicts.
+- Reason (the maintainer): agents are trusted to act with care; the restriction costs more than it protects.
+
+## Decided: Agents use the Tunnels plugin fully (the maintainer, 2026-10-19)
+
+- `tunnels.forward` is an exported agent action. Forward Port… names it; its temporary `user_only` reason is removed.
+- A forward makes a local port public. The tool description says so: anyone with the URL can reach the port, and the tunnel does not ask visitors to sign in.
