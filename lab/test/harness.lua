@@ -422,8 +422,25 @@ function Agent:direct(action, args, plugin)
 end
 function Agent:hub(action, args) return perform(self.client, 'agent.hub', {action = action, args = args or {}}) end
 -- report sends hub.identity.report from a new process in this agent's pane, like an agent hook.
+-- r.block: an optional block hint (the hub ignores a wrong one: the ancestry decides).
+local function report_args(r)
+  return {kind = r.kind, conversation_id = r.conversation_id, source = r.source or 'startup', block = r.block}
+end
 function Agent:report(r)
-  return perform(self.client, 'agent.report', {args = {kind = r.kind, conversation_id = r.conversation_id, source = r.source or 'startup'}}, 20000)
+  return perform(self.client, 'agent.report', {args = report_args(r)}, 20000)
+end
+-- report_async starts a report process that waits delay_ms before it reports, and returns at once.
+-- Its start time is older than a report started after it. report_result waits for the outcome:
+-- {result = ...} or {error = {code, message}}.
+function Agent:report_async(key, r, delay_ms)
+  return perform(self.client, 'agent.report', {args = report_args(r), async = key, delay_ms = delay_ms or 0})
+end
+function Agent:report_result(key)
+  return wait('report ' .. key, function()
+    local s = perform(self.client, 'agent.report_result', {async = key})
+    if s.done then return s end
+    return nil
+  end, 30)
 end
 
 -- --- The UI user (testview renderer panes) ---

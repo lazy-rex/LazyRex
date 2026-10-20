@@ -28,6 +28,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -457,7 +458,7 @@ func testAgentMain(argv []string) int {
 	log.SetPrefix("testagent " + *id + " ")
 	ctx := context.Background()
 	var actions []map[string]any
-	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.title"} {
+	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testagent:"+*id, actions)
@@ -467,6 +468,7 @@ func testAgentMain(argv []string) int {
 	}
 	var mu sync.Mutex
 	joined, joinErr := *join == "", ""
+	reports := map[string]*asyncReport{} // async key -> outcome (nil: running)
 	if *join != "" {
 		go func() {
 			for i := 0; i < 100; i++ {
@@ -533,28 +535,44 @@ func testAgentMain(argv []string) int {
 			_, err := fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", title)
 			c.reply(p.CallID, map[string]any{}, err)
 		case "agent.report":
-			// A new process for each report, as an agent hook runs: the hub orders hook reports by
-			// the start time of the reporting process (identity.go).
-			b, _ := json.Marshal(inner)
-			self, _ := os.Executable()
-			cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			out, err := exec.CommandContext(cctx, self, "testagent", "report", string(b)).Output()
-			if err != nil {
-				msg := err.Error()
-				var ee *exec.ExitError
-				if errors.As(err, &ee) {
-					msg = strings.TrimSpace(string(ee.Stderr))
-				}
-				var re rex.RexError
-				if json.Unmarshal([]byte(msg), &re) == nil && re.Code != "" {
-					c.reply(p.CallID, nil, &re)
-				} else {
-					c.reply(p.CallID, nil, errors.New(msg))
-				}
+			// delay_ms: the report process waits before it reports, so a report started later can
+			// finish first. async: answer at once; agent.report_result gives the outcome.
+			delay, _ := args["delay_ms"].(float64)
+			key, _ := args["async"].(string)
+			if key == "" {
+				out, err := runTestReport(ctx, inner, int(delay))
+				c.reply(p.CallID, out, err)
 				return
 			}
-			c.reply(p.CallID, json.RawMessage(out), nil)
+			mu.Lock()
+			reports[key] = nil
+			mu.Unlock()
+			go func() {
+				out, err := runTestReport(ctx, inner, int(delay))
+				mu.Lock()
+				reports[key] = &asyncReport{out, err}
+				mu.Unlock()
+			}()
+			c.reply(p.CallID, map[string]any{"started": true}, nil)
+		case "agent.report_result":
+			key, _ := args["async"].(string)
+			mu.Lock()
+			r, known := reports[key]
+			mu.Unlock()
+			switch {
+			case !known:
+				c.reply(p.CallID, nil, &rex.RexError{Code: "not_found", Message: "no report " + key})
+			case r == nil:
+				c.reply(p.CallID, map[string]any{"done": false}, nil)
+			case r.err != nil:
+				var re *rex.RexError
+				if !errors.As(r.err, &re) {
+					re = &rex.RexError{Code: "failed", Message: r.err.Error()}
+				}
+				c.reply(p.CallID, map[string]any{"done": true, "error": map[string]any{"code": re.Code, "message": re.Message}}, nil)
+			default:
+				c.reply(p.CallID, map[string]any{"done": true, "result": r.out}, nil)
+			}
 		default:
 			c.reply(p.CallID, nil, &rex.RexError{Code: "not_found", Message: "no action " + p.Action})
 		}
@@ -563,11 +581,45 @@ func testAgentMain(argv []string) int {
 	return 1
 }
 
+type asyncReport struct {
+	out json.RawMessage
+	err error
+}
+
+// runTestReport runs one report in a new process, as an agent hook runs: the hub orders hook
+// reports by the start time of the reporting process (identity.go). The process waits delay ms
+// before it reports.
+func runTestReport(ctx context.Context, args any, delay int) (json.RawMessage, error) {
+	b, _ := json.Marshal(args)
+	self, _ := os.Executable()
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second+time.Duration(delay)*time.Millisecond)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, self, "testagent", "report", "-delay", strconv.Itoa(delay), string(b)).Output()
+	if err != nil {
+		msg := err.Error()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			msg = strings.TrimSpace(string(ee.Stderr))
+		}
+		var re rex.RexError
+		if json.Unmarshal([]byte(msg), &re) == nil && re.Code != "" {
+			return nil, &re
+		}
+		return nil, errors.New(msg)
+	}
+	return json.RawMessage(out), nil
+}
+
 // testAgentReport sends one hub.identity.report from this process and prints the result. On a
 // failure it prints the Rex error as JSON on stderr.
 func testAgentReport(argv []string) int {
+	if len(argv) == 3 && argv[0] == "-delay" {
+		ms, _ := strconv.Atoi(argv[1])
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		argv = argv[2:]
+	}
 	if len(argv) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: lazyrex-hub testagent report '<args json>'")
+		fmt.Fprintln(os.Stderr, "usage: lazyrex-hub testagent report [-delay ms] '<args json>'")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)

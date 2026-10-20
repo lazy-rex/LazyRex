@@ -106,9 +106,6 @@ The hub must reject the older report as stale.
 The test also calls `messaging_read` through the adapter and checks the resulting conversation identity.
 Observed on Rex 0.0.1792158932-g88fd41: both checks pass with the stage-1 candidate hub.
 
-`identity-lab.mjs` also accepts `IDENTITY_LAB` to select a separate fixture directory.
-The directory must contain its lab server, candidate hub, and `fakeclaude` profile.
-
 ## Conversation identity migration and native actions
 
 The messaging suite now checks identity migration through the real Lua plugin.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -45,4 +46,10 @@ func TestSpawnArgvEnv(t *testing.T) {
 	}
 	check("a shell", run(&spawnRow{ID: "s1"}), "")
 	check("an agent", run(&spawnRow{ID: "s2", Agent: "agent-fresh"}), "agent-fresh")
+	// The command is the profile's own, with no argument added (for example no --session-id: the
+	// agent's hook reports its conversation).
+	argv := spawnArgv(&spawnRow{ID: "s3", Agent: "agent-fresh"}, prof, nil)
+	if tail := argv[len(argv)-len(prof.Command):]; !reflect.DeepEqual(tail, prof.Command) || strings.Contains(strings.Join(argv, " "), "--session-id") {
+		t.Errorf("argv %q: want the profile command %q at the end and no added argument", argv, prof.Command)
+	}
 }

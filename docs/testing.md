@@ -168,7 +168,8 @@ Methods:
 | `a:hub(action, args)` | To the hub. |
 | `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
 | `a:title(text)` | Sets the terminal title of the agent's pane (OSC 2), as an agent CLI does. |
-| `a:report{kind, conversation_id, source}` | `hub.identity.report` from a new process in the pane, like an agent hook. |
+| `a:report{kind, conversation_id, source, block}` | `hub.identity.report` from a new process in the pane, like an agent hook. `block` is an optional hint (the hub ignores a wrong one). |
+| `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return at once; then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |
 
 A call from the runner itself (`H.perform(client, action, args)`) comes from outside every pane.
 Use it to test the plugin's refusal of an unknown caller.
