@@ -8,9 +8,12 @@ Built on main:
 
 - Step 1: the manifest rules and the dependency graph (`hub/cmd/hub/sources.go`). These functions
   read and check. They start nothing.
-- Step 2a: both manifest parsers accept `notice`: the harness parser, and the step 1 parser (not
-  used at hub start yet). The behavior does not change: the hub still uses the default notice
-  text of the config.
+- Step 2a: both manifest parsers accept `notice`: the harness parser, and the step 1 parser. The
+  step 1 parser is not used at hub start yet.
+  - The harness forwards a nonempty manifest notice into the existing config field
+    `plugins[].notice` of the generated lab config (`testcmd.go` hubConfig). So a harness lab uses
+    the manifest notice today.
+  - Production start reads only the config: the entry's `notice`, or the default text.
 
 Not built: steps 2 and 3 (config source entries, the lock, the cache, the commands).
 
@@ -325,8 +328,9 @@ still list the home plugin as an entry. The config field `home` stays. `tests/ha
 
 ## 10. Notice migration
 
-1. Step 2a (built): the manifest parser accepts `notice`. The behavior does not change: the hub
-   uses the config default text.
+1. Step 2a (built): the manifest parsers accept `notice`. The harness forwards it into the config
+   field `plugins[].notice` of its lab config. Production start still uses the config's `notice`
+   or the default text.
 2. Messaging adds `"notice": "New message. Call messaging_read."` to its manifest.
 3. The source-config change switches to the manifest notice and adds `no_notice` in one step, with
    no temporary fallback. `storeBatch` checks every op before its transaction. A `notify` op from
@@ -340,7 +344,8 @@ The live config changes format only at a release that the user approves. Local s
 
 This repository, one branch per step:
 
-1. Built: the manifest loader shared by the hub and the harness, with unit tests.
+1. Built: the source manifest loader and the graph checks (`sources.go`), with unit tests. The
+   harness still has its own manifest parser (`testcmd.go`). Step 2 makes both use one loader.
 2. Config source entries, removed fields refused, local resolution, the start graph, the states,
    `run` and `candidate`, the `hub.plugins` fields, the manifest notice and `no_notice`. The home
    plugin and self-test moves. `testcmd.go` hubConfig, `hub.example.json`, and the Go tests that
