@@ -1141,7 +1141,8 @@ func (h *Hub) spawnByID(ctx context.Context, id string) (*spawnRow, error) {
 }
 
 // stop closes a worker's pane. The user and every agent may stop any worker, also one that another
-// identity started (decisions.md, 2026-10-19: agents may act on anything a user can).
+// identity started (decision "Agents may act on anything", 2026-10-19: agents may act on
+// anything a user can).
 // Stop is idempotent by spawn_id: a retry of a finished stop returns status closed. The optional
 // key is accepted so that the renderer can send its operation key, but stop does not need it.
 // Stop refuses a pending spawn: its pane is not identified, and its process can still start.

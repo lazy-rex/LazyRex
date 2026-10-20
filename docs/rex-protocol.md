@@ -137,7 +137,7 @@ A real browser gives the same result (Codex, Chrome, same build). The lab server
 
 The same page on `http://localhost:18794` was rejected. The origin pattern matches the host literally, so `localhost` does not match `127.0.0.1`. The pattern works with a scheme (`http://127.0.0.1:47812`) and without one (`127.0.0.1:18794`).
 
-So a browser page on an allowed origin can be a full Rex client with no relay. On a real host the browser needs a reachable, authenticated transport, such as the tailnet (`--tailscale`), or a paired gateway (proposed in `decisions.md`). Anonymous TCP is for a lab only. Not tested: tailnet admission of a browser, TLS, rendering, input, resize, reconnect.
+So a browser page on an allowed origin can be a full Rex client with no relay. On a real host the browser needs a reachable, authenticated transport, such as the tailnet (`--tailscale`), or a paired gateway (the proposed decision "a paired gateway for remote browsers"). Anonymous TCP is for a lab only. Not tested: tailnet admission of a browser, TLS, rendering, input, resize, reconnect.
 
 The macOS app names `https://rex.superlogical.com` as "the hosted Rex client", which is "always allowed" to open WebSockets. `session.open_on_web` is listed beside it, so the action apparently targets that client (inference from app strings). The site redirects to Vercel SSO (private beta), so its exact behavior and transport are not observed.
 
@@ -734,7 +734,7 @@ Features that we found in Rex (binary, docs or API) that did not function or had
 ## App update vs server (observed 2026-10-16, real machine, read-only checks)
 
 - The Rex app updated from build 1173 to 1203 (Rex 0.0.1792088193-g7a93ec to 0.0.1792158932-g88fd41). The app relaunched (new PID). The server kept running: same PID 3514, old build, from a path the update deleted. The app then shows "Rex Server Restart Required". The app's text says: "Restarting the server may fix it, but you will lose your active sessions."
-- So the client updates separately from the server, and terminals live in the server. Every pane is a direct child of the server process (server -> `login` -> shell). There is no separate PTY host. "Terminals die with the server" (`decisions.md`) still holds.
+- So the client updates separately from the server, and terminals live in the server. Every pane is a direct child of the server process (server -> `login` -> shell). There is no separate PTY host. The decision "The Rex server is the core, and terminals die with it" still holds.
 - Build 1203 moved the server bundle from `Helpers/Rex Server.app` to `Helpers/Rex Server.rex`. Panes started before the update keep a PATH entry for the deleted folder, so `rex` is not found in them until they get a new environment. The new CLI works against the old server.
 - Build 1203 Lua (lab): `rex.json.encode/decode`, `rex.exec`, `rex.exec.start`, `rex.after`, `rex.every` exist. `io.popen` raises "io.popen is not available in Rex: use rex.exec". An empty table still encodes as `{}`.
 

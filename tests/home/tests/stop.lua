@@ -31,7 +31,7 @@ test('agent path: an agent stops its own worker; a replay under the same key is 
 end)
 
 test('an agent can stop a worker that the user started', function()
-  -- Any agent may stop any worker (decisions.md, 2026-10-19).
+  -- Any agent may stop any worker (decision "Agents may act on anything", 2026-10-19).
   local op = home():action('launch/shell', 'launch', {values = {title = 'User worker'}}, 'stop-user-launch')
   local id = op.result.spawn_id
   expect(codex:call('hub.stop', {spawn_id = id, key = 'stop-not-mine'}).status).to_be('closed')

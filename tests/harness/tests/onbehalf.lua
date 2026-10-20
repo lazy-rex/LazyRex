@@ -12,7 +12,7 @@ test('a plugin starts a worker on behalf of the forwarded agent; the agent is it
   expect(found.parent).to_be('alice')
   -- A replay of the key in a new forward returns the same spawn (keys are per caller).
   expect(alice:call('fix.spawn', {key = 'ob-1'}).spawn.spawn_id).to_be(id)
-  -- Any agent may stop any worker (decisions.md, 2026-10-19); a repeat is closed again.
+  -- Any agent may stop any worker (decision "Agents may act on anything", 2026-10-19); a repeat is closed again.
   expect(bob:hub('hub.stop', {spawn_id = id}).status).to_be('closed')
   expect(alice:hub('hub.stop', {spawn_id = id}).status).to_be('closed')
 end)

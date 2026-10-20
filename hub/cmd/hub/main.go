@@ -76,8 +76,9 @@ type Agent struct {
 func (a *Agent) live() bool { return a.BlockID != "" && alive(a.ChildPID, a.ChildStart) }
 
 // ready reports whether the hub may write a notice. A notice written while the agent is working
-// steers the running turn (decisions.md). blocked means a prompt waits for the user: Enter could
-// answer it. error and an absent record are unknown states.
+// steers the running turn (decision "Agent status comes from Rex program status"). blocked means
+// a prompt waits for the user: Enter could answer it. error and an absent record are unknown
+// states.
 func (a *Agent) ready() bool {
 	return a.live() && (a.State == "idle" || a.State == "done" || a.State == "working")
 }

@@ -27,7 +27,7 @@ on the real hub.
 | 61 | Failed detail `failed · <error>` | render.lua "workers" (a spawn-create refuse fault) |
 | 62-65 | Launch form fields, defaults, multiline task | render.lua "the tree lists" |
 | 66-71 | A profile error keeps navigation and worker controls | render.lua "a profile error" |
-| 73-106 | App mode and Exit LazyRex | Obsolete: decisions.md "One LazyRex session; app mode retired". The plugin has no app mode node. |
+| 73-106 | App mode and Exit LazyRex | Obsolete: decision "One LazyRex session; app mode retired". The plugin has no app mode node. |
 | 107-109 | Plugin open is a navigate effect; no `hub.ui.navigate` call | navigation.lua "a plugin with a tab" (the result is the effect) |
 | — | Plugin open with a landing panel | navigation.lua "a landing panel" (new) |
 | 110 | Message an agent | navigation.lua "message an agent" |
@@ -39,7 +39,7 @@ on the real hub.
 | 125-126 | A launch retry reaches the hub after profile removal | launch.lua (same tests as 120-122) |
 | 127-129 | Dismiss a failed worker | stop.lua "a failed launch is dismissed" (both paths) |
 | 130-131 | Stop form | stop.lua "user path", "agent path" |
-| — | An agent can stop a worker that the user started | stop.lua "an agent can stop" (new; decisions.md, 2026-10-19) |
+| — | An agent can stop a worker that the user started | stop.lua "an agent can stop" (new; decision "Agents may act on anything", 2026-10-19) |
 | 132 | An operation key is required | Not reachable through the hub: the hub always sends a key. The check stays in the plugin. |
 | 133 | Only the hub may call | stop.lua "only the hub may call" |
 | 134-135 | Unknown route or user | Not reachable through the hub: the hub sends route `/` and user `user` for the home tab. The check stays in the plugin. |

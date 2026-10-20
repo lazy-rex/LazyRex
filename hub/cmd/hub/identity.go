@@ -1,6 +1,6 @@
 package main
 
-// Agent identity, stage 1 (decisions.md, "agent identity is the conversation"). The hub records
+// Agent identity, stage 1 (proposed decision "agent identity is the conversation"). The hub records
 // which conversation runs in which pane, and an append-only lifecycle log. Messaging still routes
 // by agent ID; stage 2 moves addressing to identities.
 //

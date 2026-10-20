@@ -60,8 +60,8 @@ Ordered by value to LazyRex.
 
 ## Planned (agreed with the maintainer, 2026-10-17; not built)
 
-- **One LazyRex tab.** Built (see decisions.md, "One LazyRex session; app mode retired"). Still to do: plugins add widgets to the LazyRex tab, and Worktrees becomes palette commands ("New Worktree…", "Remove Worktree…", "Worktrees…") plus a widget.
-- **Side panels, then Tunnels.** See decisions.md, "Side panels and the Tunnels plugin".
+- **One LazyRex tab.** Built (see the decision "One LazyRex session; app mode retired"). Still to do: plugins add widgets to the LazyRex tab, and Worktrees becomes palette commands ("New Worktree…", "Remove Worktree…", "Worktrees…") plus a widget.
+- **Side panels, then Tunnels.** See the decision "Side panels and the Tunnels plugin".
 - **Live feed.** The LazyRex tab shows recent and running plugin operations (from `view_ops` and the hub's records) with their state and a Retry for failures. Running work may also report through Rex's Program Status Protocol, so the app shows it in tab headers and the Activity sidebar (to check in the app).
 - **Start commands.** "Start Agent…" and "Start Accessory…": a side-pane form with the profile, the directory (default: the source pane's `terminal.pwd`; Browse… with `terminal.list_dir`; a worktree choice for a git repo; maybe "New worktree…"), and the placement (new tab or split). "Start Session…": a saved template (a named group of tabs, each with a profile, a directory relative to a root, and its place in the layout); the form asks for the root, so a template runs in any repo or worktree. "Save as Template…" stores a session's tabs relative to its common root (the git repo root when there is one). A template is a Durable Session that never ran.
 - **Events first (the maintainer).** The hub reacts to Rex events wherever Rex has one (for example `session_label_changed`, `terminal.title_changed`), and polls only where Rex has no event.

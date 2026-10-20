@@ -19,7 +19,7 @@ Rex runs every process and draws every terminal. LazyRex is a Rex client that ad
 | Layout: sessions, tabs, panes, native macOS app | **Rex** | |
 | Agent busy/idle detection | **Rex**, plus LazyRex hooks | `program_status_changed` / `_removed` events. Rex's Codex detector misses turn end on 24-hour clocks, so LazyRex agent hooks should report status with OSC 7501. See `agent-wake.md` |
 | Process supervision for agents and plugins | **LazyRex** | Spawns them as Rex panes, watches `child_exited` block events |
-| Plugin runtime (Lua), plugin database, entities, events | **LazyRex** | Where it runs is open. A `rex do` Lua script can serve RPC through `client.perform` (lab), but has no sockets, JSON or SQLite built in (see `decisions.md`) |
+| Plugin runtime (Lua), plugin database, entities, events | **LazyRex** | Where it runs is open. A `rex do` Lua script can serve RPC through `client.perform` (lab), but has no sockets, JSON or SQLite built in (see the option under study "the hub in Rex's own Lua") |
 | MCP server and agent-to-agent messaging | **LazyRex** | Caller identity from peer-pid ancestry |
 | Terminal bytes and input to the browser | **Rex** (proposed) | The browser speaks the Rex protocol itself, either on its own admitted connection or through a paired gateway. See "Web client" |
 | Web client UI for agents, plugins, messages | **LazyRex** | Served from the hub's own API |
@@ -73,14 +73,14 @@ Proposed by Claude and Codex, 2026-10-15. Not tested.
 - Do not retry a mutation (session creation, coordination publish) blindly. First read the authoritative state, then decide.
 - Plugin identity (instance ID) stays the same across hub restarts. The hub epoch and the connection generation change. The hub rejects replies and registrations from an old epoch or generation.
 - The hub must service plugin callbacks while it waits for a handler result. If it does not, synchronous Lua callbacks deadlock.
-- The plugin host owns its database (see `decisions.md`). So the host never waits on an RPC for a database call. This does **not** make a handler invocation exactly-once: a plugin can commit locally, then crash or disconnect before it returns the result. The caller (hub or MCP client) then gets "outcome unknown" and must reconcile durable state before it retries.
+- The plugin host owns its database (see the proposed decision "a plugin host process that owns its plugin's storage"). So the host never waits on an RPC for a database call. This does **not** make a handler invocation exactly-once: a plugin can commit locally, then crash or disconnect before it returns the result. The caller (hub or MCP client) then gets "outcome unknown" and must reconcile durable state before it retries.
 
 ## Workspaces
 
 - A workspace is a Rex session. Its tabs and panes are Rex windows and blocks.
 - **Hide a workspace:** detach every block. Processes keep running. The sidebar still shows an empty session header (cosmetic; a Rex hide flag would fix it).
 - **Unhide:** create a window with a placeholder, move the blocks back, close the placeholder. Simpler when a pane is visible anywhere in the session: `move_block` beside it, then the app's `pane.move_to_new_tab` (verified 2026-10-16).
-- **What the user sees:** the hub can switch the app's view with app actions (`session.select`). See `rex-protocol.md`, "Driving the Rex app" (and the Rex agent guide, `rex __internal skill`), and the proposed UI direction in `decisions.md`.
+- **What the user sees:** the hub can switch the app's view with app actions (`session.select`). See `rex-protocol.md`, "Driving the Rex app" (and the Rex agent guide, `rex __internal skill`), and the proposed decision "the LazyRex UI is TUIs in Rex, and the hub drives the app's view".
 - LazyRex keeps its own map from workspace and agent IDs to Rex session and block IDs.
 
 ## Agent identity and messaging
@@ -113,7 +113,7 @@ In both options:
 
 ## UI framework (proposed, 2026-10-16)
 
-The maintainer's direction, with design review by Claude and Codex. Not built. See `decisions.md` (top entry) and `rex-protocol.md`, "Driving the Rex app". Check the Rex agent guide (`rex __internal skill`) for documented layout and app features.
+The maintainer's direction, with design review by Claude and Codex. Not built. See the proposed decision "the LazyRex UI is TUIs in Rex, and the hub drives the app's view" and `rex-protocol.md`, "Driving the Rex app". Check the Rex agent guide (`rex __internal skill`) for documented layout and app features.
 
 ### Model: Rex is the navigation, TUIs are the interaction
 
