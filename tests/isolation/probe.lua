@@ -1,6 +1,7 @@
 -- An isolation probe plugin (docs/testing.md, "Isolation"). The manifest loads it twice: as the
--- plugin under test (isofix) and as a dependency (isodep). Its plugin args name it. At load it
--- writes what it sees to $HOME/<name>-env.json, and it writes <name>-cwd with a relative path.
+-- plugin under test (isofix) and as a dependency (isodep, through isodep/probe.lua). Its plugin
+-- args name it. At load it writes what it sees to $HOME/<name>-env.json, and it writes <name>-cwd
+-- with a relative path.
 -- Its home view has a form whose tool is a hub action (hub.spawn), for the parity sweep.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')

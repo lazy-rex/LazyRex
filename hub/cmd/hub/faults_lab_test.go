@@ -25,7 +25,11 @@ func TestHubWithoutTestModeHasNoFaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := &testOpts{dir: dir, lazyrex: root, self: bin, rexBin: rexBin, m: m}
+	home, err := homePlugin(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &testOpts{dir: dir, lazyrex: root, home: home, self: bin, rexBin: rexBin, m: m}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	l, err := o.startLab(ctx)

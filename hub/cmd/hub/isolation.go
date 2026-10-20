@@ -203,12 +203,12 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 		}
 	}
 	names := map[string]bool{m.Name: true, "lazyrex": true}
-	for _, r := range m.Requires {
-		names[r.Name] = true
+	for _, d := range m.deps {
+		names[d.m.Name] = true
 	}
 	for name, args := range m.Test.Args {
 		if !names[name] {
-			return fmt.Errorf("test.args: %q is not the plugin or a requires entry", name)
+			return fmt.Errorf("test.args: %q is not the plugin, lazyrex or a test.plugins entry", name)
 		}
 		for k, v := range args {
 			if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
@@ -221,7 +221,7 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 	}
 	for name, roots := range m.Test.WatchRoots {
 		if !names[name] {
-			return fmt.Errorf("test.watch_roots: %q is not the plugin or a requires entry", name)
+			return fmt.Errorf("test.watch_roots: %q is not the plugin, lazyrex or a test.plugins entry", name)
 		}
 		for _, v := range roots {
 			if !strings.HasPrefix(v, "${LAB}/") {

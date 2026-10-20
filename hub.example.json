@@ -12,7 +12,7 @@
  "plugins": [
   {
    "name": "lazyrex",
-   "path": "/path/to/LazyRex/plugins/lazyrex.lua"
+   "path": "/path/to/LazyRex/plugins/lazyrex/lazyrex.lua"
   },
   {
    "name": "messaging",

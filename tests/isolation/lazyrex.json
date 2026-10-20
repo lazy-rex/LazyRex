@@ -1,8 +1,8 @@
 {
  "name": "isofix",
  "main": "probe.lua",
- "requires": [{"name": "isodep", "path": "probe.lua"}],
  "test": {
+  "plugins": [{"source": "isodep"}],
   "agents": [{"id": "alice", "name": "Alice"}],
   "env": {"LRT_PLAIN": "plain value", "LRT_DATA": "${LAB}/data", "CODEX_THREAD_ID": "stale-thread", "CLAUDECODE": "1"},
   "args": {

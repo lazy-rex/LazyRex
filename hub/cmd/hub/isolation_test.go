@@ -101,6 +101,9 @@ func TestPathLike(t *testing.T) {
 func manifestIn(t *testing.T, body string) (string, error) {
 	t.Helper()
 	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "dep"), 0o700)
+	os.WriteFile(filepath.Join(dir, "dep", "lazyrex.json"), []byte(`{"name":"dep","main":"dep.lua"}`), 0o600)
+	os.WriteFile(filepath.Join(dir, "dep", "dep.lua"), []byte(""), 0o600)
 	os.WriteFile(filepath.Join(dir, "p.lua"), []byte(""), 0o600)
 	os.WriteFile(filepath.Join(dir, "profiles.json"), []byte(`{"profiles":[]}`), 0o600)
 	os.WriteFile(filepath.Join(dir, "lazyrex.json"), []byte(body), 0o600)
@@ -109,7 +112,7 @@ func manifestIn(t *testing.T, body string) (string, error) {
 }
 
 func TestManifestIsolation(t *testing.T) {
-	ok := `{"name":"p","main":"p.lua","requires":[{"name":"dep","path":"p.lua"}],"test":{"env":{"A":"x","B":"${LAB}/b"},
+	ok := `{"name":"p","main":"p.lua","test":{"plugins":[{"source":"dep"}],"env":{"A":"x","B":"${LAB}/b"},
 		"args":{"p":{"root":"${PLUGIN}/r"},"dep":{"k":"v"}},"profiles":"profiles.json"}}`
 	if _, err := manifestIn(t, ok); err != nil {
 		t.Fatal(err)

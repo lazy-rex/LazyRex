@@ -1,13 +1,15 @@
 # Home plugin tests
 
-Lua tests of `plugins/lazyrex.lua` on the real hub (docs/testing.md). Run:
+Lua tests of the home plugin (`plugins/lazyrex/lazyrex.lua`) on the real hub (docs/testing.md).
+Run:
 
 ```sh
-lazyrex-hub test tests/home
+lazyrex-hub test plugins/lazyrex
 ```
 
-The manifest loads a messaging stub (`messaging_stub.lua`: a landing panel and lazy `thread/<id>`
-tabs) and the harness fixture (a plugin with a tab). Profiles come from `profiles.json`. The
+The manifest loads a messaging stub (`stubs/messaging/`: a landing panel and lazy `thread/<id>`
+tabs) and the harness fixture (`tests/harness`, a plugin with a tab). Profiles come from
+`profiles.json`. The
 `task` profile writes its two args to `LAB/home/task-args`. The `status` profile reports an
 OSC 7501 status record.
 

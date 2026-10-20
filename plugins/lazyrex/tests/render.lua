@@ -1,5 +1,5 @@
--- Ported from the Node test home.mjs (coverage map: tests/home/README.md): the home tab and its
--- tree on the real hub. Profiles come from tests/home/profiles.json; the plugins are the
+-- Ported from the Node test home.mjs (coverage map: tests/README.md): the home tab and its
+-- tree on the real hub. Profiles come from tests/profiles.json; the plugins are the
 -- messaging stub and the harness fixture.
 
 local codex = agent('codex')

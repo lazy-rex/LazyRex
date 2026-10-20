@@ -22,13 +22,12 @@ var pluginName = regexp.MustCompile(`^[a-z0-9_-]+$`)
 // pluginManifest is the runtime part of lazyrex.json. The test section belongs to the harness
 // (testcmd.go); the hub keeps it unread but still refuses unknown fields.
 type pluginManifest struct {
-	Name     string          `json:"name"`
-	Main     string          `json:"main"`
-	Events   string          `json:"events"`
-	Notice   string          `json:"notice"`
-	Depends  []string        `json:"depends"`
-	Requires json.RawMessage `json:"requires"` // harness only, until test.plugins replaces it
-	Test     json.RawMessage `json:"test"`
+	Name    string          `json:"name"`
+	Main    string          `json:"main"`
+	Events  string          `json:"events"`
+	Notice  string          `json:"notice"`
+	Depends []string        `json:"depends"`
+	Test    json.RawMessage `json:"test"`
 }
 
 // maxManifestBytes is the largest lazyrex.json that the hub and the harness accept (coordinator
@@ -74,13 +73,8 @@ func readPluginManifest(dir string) (*pluginManifest, string, error) {
 		return nil, "", err
 	}
 	var m pluginManifest
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
-		return nil, "", fmt.Errorf("%s/lazyrex.json: %w", dir, err)
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, "", fmt.Errorf("%s/lazyrex.json: data after the manifest object", dir)
+	if err := decodeManifest(filepath.Join(dir, "lazyrex.json"), b, &m); err != nil {
+		return nil, "", err
 	}
 	if err := m.check(); err != nil {
 		return nil, "", fmt.Errorf("%s/lazyrex.json: %w", dir, err)
@@ -90,6 +84,20 @@ func readPluginManifest(dir string) (*pluginManifest, string, error) {
 		return nil, "", fmt.Errorf("plugin %s: %w", m.Name, err)
 	}
 	return &m, main, nil
+}
+
+// decodeManifest decodes one manifest object into v. It refuses unknown fields and data after the
+// object. The hub (pluginManifest) and the harness (manifest) decode into their own types.
+func decodeManifest(path string, b []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("%s: data after the manifest object", path)
+	}
+	return nil
 }
 
 // check checks the fields that need no file system.

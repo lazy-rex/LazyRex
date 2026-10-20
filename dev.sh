@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hot reload for spike 3. Runs the hub, watches the sources, and reloads what changed:
-#   plugins/<name>.lua  -> hub.admin.stop + hub.admin.start <name> (open views render again)
+#   plugins/<name>/*.lua -> hub.admin.stop + hub.admin.start <name> (open views render again)
 #   view/*.go           -> build, install the renderer atomically, hub.ui.reload for each plugin
 #   hub/**/*.go         -> build, restart the hub (renderers and plugins reattach)
 # Usage: dev.sh <hub config>. The config names the server, state dir, view path and plugins.
@@ -62,6 +62,6 @@ while :; do
   case $changed in *"$DIR/hub/"*) start_hub ;; esac
   case $changed in *"$DIR/view/"*) install_view ;; esac
   for p in $PLUGINS; do
-    case $changed in *"$DIR/plugins/$p.lua"*) restart_plugin "$p" ;; esac
+    case $changed in *"$DIR/plugins/$p/"*) restart_plugin "$p" ;; esac
   done
 done

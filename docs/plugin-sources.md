@@ -14,8 +14,13 @@ Built on main:
     `plugins[].notice` of the generated lab config (`testcmd.go` hubConfig). So a harness lab uses
     the manifest notice today.
   - Production start reads only the config: the entry's `notice`, or the default text.
+- Step 2b: the bounded manifest read (`readManifestBytes`, 64 KiB), for both loaders.
+- Step 2c, part 1: the harness reads `test.plugins` (`requires` is refused), with the hub's manifest
+  and graph rules. The home plugin is `plugins/lazyrex/`. The generated lab config still has
+  `name` and `path` entries until part 2.
 
-Not built: steps 2 and 3 (config source entries, the lock, the cache, the commands).
+Not built: the rest of step 2 (config source entries, states, managed plugins) and step 3 (the
+lock, the cache, the commands).
 
 ## Terms
 
@@ -73,7 +78,7 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
   relative to the manifest directory, each with its own manifest. The harness reads it; the hub
   does not. A stub can satisfy a dependency by its manifest name.
 
-Until `test.plugins` lands, the hub accepts `requires` and leaves it to the harness.
+`test.plugins` is built (step 2c). `requires` is an unknown field, so it is refused.
 
 ## 3. Lock
 

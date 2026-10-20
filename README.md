@@ -12,7 +12,7 @@ Status: early. The design came from a series of spikes; `docs/` keeps their find
 | --- | --- |
 | `hub/` | The hub (Go): plugin host, store, view service, agent identity, MCP shim (`cmd/mcp`) |
 | `view/` | The renderer (Go, Bubble Tea): forms, lists, thread composer, transcript pane |
-| `plugins/lazyrex.lua` | The home plugin: plugins, agents and workers |
+| `plugins/lazyrex/` | The home plugin (plugins, agents and workers) and its tests |
 | `lib/rex-client.mjs` | A dependency-free Rex control and data client for Node tests |
 | `lab/` | `server.sh` starts an isolated Rex server for tests; `lab.mjs` checks the lab socket; `test/` is the Lua test runner and API |
 | `tests/` | Hub and renderer tests (most need a lab server) |

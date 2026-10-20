@@ -1,0 +1,9 @@
+{
+ "name": "lazyrex",
+ "main": "lazyrex.lua",
+ "test": {
+  "plugins": [{"source": "tests/stubs/messaging"}, {"source": "../../tests/harness"}],
+  "agents": [{"id": "codex", "name": "Codex"}],
+  "profiles": "tests/profiles.json"
+ }
+}

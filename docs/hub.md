@@ -970,7 +970,7 @@ Conversation tabs remain declared.
 
 Observed on Rex 0.0.1792158932-g88fd41 in an isolated lab:
 `tests/messaging.mjs` passes with the global panel and session-order checks.
-The home panel checks (panel effects, retained tab navigation) are now `tests/home/tests/navigation.lua` and `render.lua`.
+The home panel checks (panel effects, retained tab navigation) are now `plugins/lazyrex/tests/navigation.lua` and `render.lua`.
 Renderer tests pass with the Go race detector, including the release reply order,
 attachment checks, replacement recovery, and input typed after submission.
 These checks do not establish combined hub replacement or production deployment.

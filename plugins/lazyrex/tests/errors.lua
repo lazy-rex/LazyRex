@@ -1,4 +1,4 @@
--- The home plugin keeps a hub error's code (plugins/lazyrex.lua hub_error). A definite refusal
+-- The home plugin keeps a hub error's code (lazyrex.lua hub_error). A definite refusal
 -- ends a launch; a transient code is retried by the hub.
 
 local codex = agent('codex')

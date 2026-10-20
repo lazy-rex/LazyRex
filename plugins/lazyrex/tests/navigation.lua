@@ -1,4 +1,4 @@
--- Ported from the Node test home.mjs (coverage map: tests/home/README.md): navigation from the
+-- Ported from the Node test home.mjs (coverage map: tests/README.md): navigation from the
 -- home tab. Navigation is user_only ('navigation'): it changes only what the user sees, so it has
 -- no agent path. The effects are navigate and panel effects that the hub runs and records.
 

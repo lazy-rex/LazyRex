@@ -1,5 +1,5 @@
 {
  "name": "harnessfix",
- "main": "../harness/fixture.lua",
+ "main": "fixture.lua",
  "test": {"agents": [{"id": "alice", "name": "Alice"}]}
 }

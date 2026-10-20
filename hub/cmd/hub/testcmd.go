@@ -12,7 +12,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -36,16 +35,18 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// manifest is lazyrex.json in a plugin repository.
+// manifest is lazyrex.json in a plugin repository: the runtime fields (sources.go pluginManifest,
+// the same rules) and the test section, which only the harness reads.
 type manifest struct {
-	Name   string `json:"name"`
-	Main   string `json:"main"`
-	Events string `json:"events"`
-	// Notice is the text the hub writes into an agent pane when the plugin sets a pending notice
-	// (hub config plugins[].notice). Empty: the hub default.
-	Notice   string         `json:"notice"`
-	Requires []manifestPlug `json:"requires"`
-	Test     struct {
+	Name    string   `json:"name"`
+	Main    string   `json:"main"`
+	Events  string   `json:"events"`
+	Notice  string   `json:"notice"`
+	Depends []string `json:"depends"`
+	Test    struct {
+		// Plugins are the other plugins that the hub loads for the tests: local directories,
+		// relative to the manifest directory, each with its own lazyrex.json.
+		Plugins       []testPlugin    `json:"plugins"`
 		Agents        []manifestAgent `json:"agents"`
 		Transcript    bool            `json:"transcript"`
 		ParityFixture string          `json:"parity_fixture"` // a Lua file that renders the contextual routes
@@ -61,12 +62,18 @@ type manifest struct {
 		// LAB/profiles.json, the hub's profile file.
 		Profiles string `json:"profiles"`
 	} `json:"test"`
+	mainPath string     // the absolute main file (pluginMain)
+	deps     []*testDep // the test.plugins manifests, in manifest order
 }
 
-type manifestPlug struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Events string `json:"events"`
+type testPlugin struct {
+	Source string `json:"source"`
+}
+
+// testDep is a plugin of test.plugins, as its own manifest describes it.
+type testDep struct {
+	dir, main string // absolute
+	m         *pluginManifest
 }
 
 type manifestAgent struct {
@@ -85,6 +92,9 @@ func checkNotice(s string) error {
 	return nil
 }
 
+// loadManifest reads the manifest of the plugin under test (dir is absolute) and each test.plugins
+// manifest, with the hub's manifest rules. checkPluginGraph applies the graph rules later, when
+// the home plugin is known.
 func loadManifest(dir string) (*manifest, error) {
 	path := filepath.Join(dir, "lazyrex.json")
 	b, err := readManifestBytes(dir)
@@ -92,24 +102,33 @@ func loadManifest(dir string) (*manifest, error) {
 		return nil, err
 	}
 	var m manifest
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&m); err != nil {
+	if err := decodeManifest(path, b, &m); err != nil {
+		return nil, err
+	}
+	rt := pluginManifest{Name: m.Name, Main: m.Main, Events: m.Events, Notice: m.Notice, Depends: m.Depends}
+	if err := rt.check(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if !regexp.MustCompile(`^[a-z0-9_-]+$`).MatchString(m.Name) || m.Main == "" {
-		return nil, fmt.Errorf("%s: name (a-z, 0-9, _, -) and main are required", path)
+	if m.mainPath, err = pluginMain(dir, m.Main); err != nil {
+		return nil, fmt.Errorf("plugin %s: %w", m.Name, err)
 	}
-	if m.Events != "" && m.Events != "session" && m.Events != "all" {
-		return nil, fmt.Errorf("%s: events must be session or all", path)
-	}
-	if err := checkNotice(m.Notice); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	for _, r := range m.Requires {
-		if r.Name == "" || r.Path == "" {
-			return nil, fmt.Errorf("%s: each requires entry needs name and path", path)
+	names := map[string]bool{m.Name: true}
+	for i, p := range m.Test.Plugins {
+		if p.Source == "" || filepath.IsAbs(p.Source) || strings.HasPrefix(p.Source, "~") || strings.HasPrefix(p.Source, "github:") {
+			return nil, fmt.Errorf("%s: test.plugins %d: source %q must be a directory relative to the manifest", path, i+1, p.Source)
 		}
+		d := &testDep{dir: filepath.Join(dir, p.Source)}
+		if d.m, d.main, err = readPluginManifest(d.dir); err != nil {
+			return nil, fmt.Errorf("%s: test.plugins %d: %w", path, i+1, err)
+		}
+		if d.m.Name == "lazyrex" {
+			return nil, fmt.Errorf("%s: test.plugins %d: the harness adds the home plugin lazyrex itself", path, i+1)
+		}
+		if names[d.m.Name] {
+			return nil, fmt.Errorf("%s: test.plugins %d: the name %s is used twice", path, i+1, d.m.Name)
+		}
+		names[d.m.Name] = true
+		m.deps = append(m.deps, d)
 	}
 	for _, a := range m.Test.Agents {
 		if a.ID == "" || a.ID == "user" {
@@ -122,8 +141,46 @@ func loadManifest(dir string) (*manifest, error) {
 	return &m, nil
 }
 
+// homePlugin reads the home plugin's manifest in a LazyRex checkout.
+func homePlugin(lazyrex string) (*testDep, error) {
+	d := &testDep{dir: filepath.Join(lazyrex, "plugins", "lazyrex")}
+	var err error
+	if d.m, d.main, err = readPluginManifest(d.dir); err != nil {
+		return nil, fmt.Errorf("the home plugin: %w", err)
+	}
+	if d.m.Name != "lazyrex" {
+		return nil, fmt.Errorf("the home plugin in %s is named %s, not lazyrex", d.dir, d.m.Name)
+	}
+	return d, nil
+}
+
+// checkPluginGraph applies the hub's graph rules (sources.go checkGraph) to the plugins of a lab:
+// the home plugin (nil when it is the plugin under test), the test.plugins and the plugin under
+// test. A refused plugin is a harness error.
+func (m *manifest) checkPluginGraph(home *testDep) error {
+	var entries []*sourceEntry
+	add := func(dir, name string, depends []string) {
+		entries = append(entries, &sourceEntry{Index: len(entries) + 1, Source: dir, Name: name, Depends: depends})
+	}
+	if home != nil {
+		add(home.dir, home.m.Name, home.m.Depends)
+	}
+	for _, d := range m.deps {
+		add(d.dir, d.m.Name, d.m.Depends)
+	}
+	add("", m.Name, m.Depends)
+	checkGraph(entries)
+	for _, e := range entries {
+		if e.Err != nil {
+			return e.Err
+		}
+	}
+	return nil
+}
+
 type testOpts struct {
 	dir, lazyrex, self, rexBin, run, file string
+	home                                  *testDep // the home plugin; nil when it is the plugin under test
 	keep, verbose                         bool
 	timeout                               time.Duration
 	m                                     *manifest
@@ -182,6 +239,14 @@ func testMain(argv []string) int {
 		return fail(errors.New("no rex CLI on PATH"))
 	}
 	if o.lazyrex, err = findLazyRex(o.lazyrex, o.dir); err != nil {
+		return fail(err)
+	}
+	if o.m.Name != "lazyrex" {
+		if o.home, err = homePlugin(o.lazyrex); err != nil {
+			return fail(err)
+		}
+	}
+	if err := o.m.checkPluginGraph(o.home); err != nil {
 		return fail(err)
 	}
 	files, _ := filepath.Glob(filepath.Join(o.dir, "tests", "*.lua"))
@@ -595,12 +660,6 @@ func (l *lab) stop() []string {
 }
 
 func (o *testOpts) hubConfig(l *lab) (string, error) {
-	abs := func(p string) string {
-		if filepath.IsAbs(p) {
-			return p
-		}
-		return filepath.Join(o.dir, p)
-	}
 	type plug struct {
 		Name       string            `json:"name"`
 		Path       string            `json:"path"`
@@ -610,18 +669,13 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		WatchRoots []string          `json:"watch_roots,omitempty"`
 	}
 	plugins := []plug{}
-	seen := map[string]bool{}
-	if o.m.Name != "lazyrex" { // the home plugin: every real hub config loads it
-		plugins = append(plugins, plug{Name: "lazyrex", Path: filepath.Join(o.lazyrex, "plugins", "lazyrex.lua")})
-		seen["lazyrex"] = true
+	if o.home != nil { // the home plugin: every real hub config loads it
+		plugins = append(plugins, plug{Name: "lazyrex", Path: o.home.main, Events: o.home.m.Events, Notice: o.home.m.Notice})
 	}
-	for _, r := range o.m.Requires {
-		if !seen[r.Name] {
-			plugins = append(plugins, plug{Name: r.Name, Path: abs(r.Path), Events: r.Events})
-			seen[r.Name] = true
-		}
+	for _, d := range o.m.deps {
+		plugins = append(plugins, plug{Name: d.m.Name, Path: d.main, Events: d.m.Events, Notice: d.m.Notice})
 	}
-	plugins = append(plugins, plug{Name: o.m.Name, Path: abs(o.m.Main), Events: o.m.Events, Notice: o.m.Notice})
+	plugins = append(plugins, plug{Name: o.m.Name, Path: o.m.mainPath, Events: o.m.Events, Notice: o.m.Notice})
 	for i := range plugins {
 		plugins[i].Args = l.args[plugins[i].Name]
 		plugins[i].WatchRoots = l.watchRoots[plugins[i].Name]

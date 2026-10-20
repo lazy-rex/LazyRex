@@ -41,7 +41,7 @@ warning never fails the run.
    1. The command starts a new Rex server in a new directory `/tmp/lrt-*`. Every child gets the
       lab environment (see "Isolation"). The command writes the lab proof `lab.json`.
    2. It starts the hub (this binary, `-test`) with new state. The config loads the LazyRex home
-      plugin, the plugins in `requires`, and the plugin under test.
+      plugin, the plugins in `test.plugins`, and the plugin under test.
    3. It waits until each plugin is registered and the agent face lists the plugin's exports.
    4. It runs the file with `rex do lab/test/runner.lua`.
    5. It stops the hub and the server with signals to their own process groups, and checks that
@@ -59,8 +59,9 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
   "name": "messaging",
   "main": "messaging.lua",
   "events": "session",
-  "requires": [{"name": "profiles", "path": "../Profiles/profiles.lua"}],
+  "notice": "New message. Call messaging_read.",
   "test": {
+    "plugins": [{"source": "../Profiles"}],
     "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}],
     "transcript": false,
     "parity_fixture": "tests/parity_fixture.lua",
@@ -74,20 +75,21 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 
 | Field | Meaning |
 | --- | --- |
-| `name`, `main` | The plugin name and its main file. Required. |
+| `name`, `main` | The plugin name and its main file. Required. `main` is relative, has no `..`, is not a symlink, and resolves inside the manifest directory (docs/plugin-sources.md, section 2). |
+| `depends` | Plugin names that this plugin needs. The harness refuses a missing dependency and a cycle, as the hub does. |
 | `events` | `session` (default) or `all`, as in the hub config. |
 | `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin (hub config `plugins[].notice`). No control characters (the hub pastes it, then sends CR). Without it, the hub default. |
-| `requires` | Other plugins that the hub loads for the tests. Paths are relative to the plugin. |
+| `test.plugins` | Other plugins that the hub loads for the tests: `[{"source": "<dir>"}]`. Each source is a directory relative to the manifest directory, with its own `lazyrex.json`. The names come from those manifests. `lazyrex` is refused (the harness adds the home plugin), and so is a name used twice. |
 | `test.agents` | Roster agents in the test hub config. `user` is always there. |
 | `test.transcript` | The hub config `transcript` option. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
 | `test.env` | Variables added to the lab environment. See "Isolation". |
-| `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `requires` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id` and `plugin_session` are refused. |
-| `test.watch_roots` | Plugin watch roots (hub config `plugins[].watch_roots`, docs/hub.md "File watches"), keyed by plugin name: the plugin under test, a `requires` entry or `lazyrex`. Each path starts with `${LAB}/` and stays in the lab. The harness creates each directory before the hub starts. |
+| `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id` and `plugin_session` are refused. |
+| `test.watch_roots` | Plugin watch roots (hub config `plugins[].watch_roots`, docs/hub.md "File watches"), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Each path starts with `${LAB}/` and stays in the lab. The harness creates each directory before the hub starts. |
 | `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
 
-Unknown fields are refused. The harness owns the rest of the hub config (`server`, `state`,
+The file is one JSON object of at most 65536 bytes. Unknown fields are refused. The harness owns the rest of the hub config (`server`, `state`,
 `rex`, `view`, `home`, `agents`, `plugins`, `transcript`, `palette_lua`, `profiles`,
 `test_roots`). The manifest cannot set them.
 
@@ -444,12 +446,15 @@ and action). It does not change behavior.
 
 ## Harness self-tests
 
+- `plugins/lazyrex/`: the home plugin and its tests, with a messaging stub (`tests/stubs/messaging/`)
+  and the harness fixture in `test.plugins`. Run `lazyrex-hub test plugins/lazyrex`.
 - `tests/harness/`: a fixture plugin and tests of the harness itself (agents, views, effects,
   limits, injections, assertions). Run `lazyrex-hub test tests/harness`.
-- `tests/harness-fail/`: files that must fail, each for the reason in its first line.
-- `tests/isolation/`: a probe plugin, loaded as the plugin under test and as a dependency, and a
-  spawned worker. They report their environment, args and working directory. The tests also check
-  the test-mode profile refusals.
+- `tests/harness-fail/`: files that must fail, each for the reason in its first line. Its main
+  file loads `tests/harness/fixture.lua` with `dofile`.
+- `tests/isolation/`: a probe plugin, loaded as the plugin under test and as a dependency
+  (`isodep/`, which loads the same probe with `dofile`), and a spawned worker. They report their
+  environment, args and working directory. The tests also check the test-mode profile refusals.
 - `TestHarnessIsolation` runs `tests/isolation` with an outer `HOME` and `XDG_CONFIG_HOME` in a
   temporary dir (never the real home) that hold a sentinel, and an outer secret variable. No lab
   process finds the sentinel through `HOME` or `XDG_CONFIG_HOME` or gets the secret. The outer

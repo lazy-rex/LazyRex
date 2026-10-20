@@ -1,4 +1,4 @@
--- Ported from the Node test home.mjs (coverage map: tests/home/README.md): stopping and dismissing
+-- Ported from the Node test home.mjs (coverage map: tests/README.md): stopping and dismissing
 -- workers, and the caller checks. Both paths: the stop form and the dismiss action
 -- (tool = 'hub.stop'); an agent calls hub.stop. Hub rule (workers.go stop): an agent stops only
 -- workers that it started; the user may stop any worker.

@@ -1,4 +1,4 @@
--- Ported from the Node test home.mjs (coverage map: tests/home/README.md): launching workers.
+-- Ported from the Node test home.mjs (coverage map: tests/README.md): launching workers.
 -- Both paths: the user submits a launch form (tool = 'hub.spawn'); an agent calls hub.spawn.
 -- The task profile writes its two args to LAB/home/task-args.
 
