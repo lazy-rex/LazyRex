@@ -459,9 +459,17 @@ conditions:
 file never starts a plugin. `plugin status` reports it as `orphaned`. `plugin sync` removes it.
 For example, a cancelled add of the manager can leave one.
 
-**Size bounds.** The features pair proposed one shared bound: `lazyrex.json` at most 64 KiB, and
-a main file at most 1 MiB. The reviewer has not approved them: they are new compatibility limits.
-Measured on 2026-10-20 (the current main of each repository):
+**Size bounds.** Decided by the coordinator (2026-10-20): the hub refuses a `lazyrex.json` over
+64 KiB, with one shared constant and an error that names the file and the size. The hub has no
+main-file bound. Reasons:
+
+- Every current plugin is far below the bound (the table below).
+- An unbounded manifest read is a memory and reply-size risk. Compare the scan outage of
+  2026-10-19 (hotfix f125044).
+- The plugin manager needs the same bound.
+
+The features pair first proposed a 1 MiB main-file bound as well. It stays in the manager's
+preview only. Measured on 2026-10-20 (the current main of each repository):
 
 | Plugin | lazyrex.json | main file |
 | --- | --- | --- |
@@ -472,14 +480,14 @@ Measured on 2026-10-20 (the current main of each repository):
 | Worktrees | 588 B | 74677 B |
 | lazyrex (home) | none yet | 11241 B |
 
-Proposal:
+How step 2 applies the decision:
 
-- Manifest, 64 KiB: adopt it in step 2. The hub reads the whole manifest at each start attempt, so
-  a bound keeps that read small. The largest manifest today is 588 B, about 1/100 of the bound.
-  Error: `<dir>/lazyrex.json is <n> bytes, over the 65536-byte limit`.
-- Main file: no hub bound in step 2. The hub does not read the main file: it checks its type and
-  `rex do` reads it. (The digest reads every file, as a stream.) The manager can refuse a large
-  file in its own preview. Whether Rex limits the size of a `rex do` script: not tested.
+- Manifest, 64 KiB. The hub reads the whole manifest at each start attempt, so the bound keeps
+  that read small. The largest manifest today is 588 B, about 1/100 of the bound. Proposed error:
+  `<dir>/lazyrex.json is <n> bytes, over the 65536-byte limit`.
+- Main file: no hub bound. The hub does not read the main file: it checks its type, and `rex do`
+  reads it. (The digest reads every file, as a stream.) Whether Rex limits the size of a `rex do`
+  script: not tested.
 - The constant lives with the manifest loader, so the manager and the hub use one value.
 
 ## 14. Not in this design
