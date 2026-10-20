@@ -20,8 +20,8 @@ func TestPluginArgsConfig(t *testing.T) {
 		return loadConfig(p, false)
 	}
 	c, err := write(`{"worktrees_root":"/tmp/x"}`)
-	if err != nil || len(c.Plugins) != 1 || c.Plugins[0].Args["worktrees_root"] != "/tmp/x" {
-		t.Fatalf("valid args: %v %v", c.Plugins, err)
+	if err != nil || len(c.entries) != 1 || c.entries[0].Args["worktrees_root"] != "/tmp/x" {
+		t.Fatalf("valid args: %v %v", c.entries, err)
 	}
 	for _, bad := range []string{`{"instance_id":"x"}`, `{"hub_client_id":"x"}`, `{"plugin_session":"x"}`, `{"Bad-Key":"x"}`, `{"":"x"}`} {
 		if _, err := write(bad); err == nil || !strings.Contains(err.Error(), "not allowed") {

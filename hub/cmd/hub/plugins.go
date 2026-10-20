@@ -21,6 +21,12 @@ import (
 func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	name, _ := args["plugin"].(string)
 	instance, _ := args["instance_id"].(string)
+	h.mu.Lock()
+	_, err := h.registerTarget(name, instance, p.Requester.Principal.PID)
+	h.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	// The plugin declares each action, with its description and args schema, to Rex (client.keymap).
 	// Rex validates client.perform args against that schema. The hub only checks that exports exist.
 	declared, err := h.declaredActions(p.Requester.ClientID)
@@ -33,15 +39,9 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	pl := h.plugins[name]
-	if pl == nil {
-		return nil, bad("unknown plugin %q", name)
-	}
-	if instance == "" || instance != pl.InstanceID {
-		return nil, bad("instance %q is not the current instance of %s", instance, name)
-	}
-	if !descendsFrom(p.Requester.Principal.PID, pl.ChildPID) {
-		return nil, bad("caller pid %d is not in plugin %s's pane", p.Requester.Principal.PID, name)
+	pl, err := h.registerTarget(name, instance, p.Requester.Principal.PID) // again: the record may have changed meanwhile
+	if err != nil {
+		return nil, err
 	}
 	raw, _ := json.Marshal(args["exports"])
 	var exports []string
@@ -63,6 +63,25 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	}
 	go h.changed("plugins") // the home lists running plugins; go: register holds h.mu
 	return map[string]any{"namespace": name, "generation": revString(h.generation)}, nil
+}
+
+// registerTarget checks a hub.register caller against the record of its plugin: the current
+// instance, not retained, and a process in the instance's pane. h.mu must be held.
+func (h *Hub) registerTarget(name, instance string, pid int) (*Plugin, error) {
+	pl := h.plugins[name]
+	if pl == nil {
+		return nil, bad("unknown plugin %q", name)
+	}
+	if instance == "" || instance != pl.InstanceID {
+		return nil, bad("instance %q is not the current instance of %s", instance, name)
+	}
+	if pl.state == "retained" {
+		return nil, refuse("retained", "instance %s of %s is retained after a refused start", instance, name)
+	}
+	if !descendsFrom(pid, pl.ChildPID) {
+		return nil, bad("caller pid %d is not in plugin %s's pane", pid, name)
+	}
+	return pl, nil
 }
 
 // declaredActions returns the action names a client declared to Rex.
@@ -96,23 +115,66 @@ func (h *Hub) loadPluginRow(ctx context.Context, pl *Plugin) error {
 	if err != nil {
 		return err
 	}
-	return h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start FROM plugins WHERE name = ?`, pl.Name).
-		Scan(&pl.Desired, &pl.InstanceID, &pl.SessionID, &pl.BlockID, &pl.ChildPID, &pl.ChildStart)
-}
-
-func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
-	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ? WHERE name = ?`,
-		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, pl.Name)
+	var run string
+	err = h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run FROM plugins WHERE name = ?`, pl.Name).
+		Scan(&pl.Desired, &pl.InstanceID, &pl.SessionID, &pl.BlockID, &pl.ChildPID, &pl.ChildStart, &run)
+	pl.run = pluginRun{}
+	if err == nil && run != "" {
+		err = json.Unmarshal([]byte(run), &pl.run)
+	}
 	return err
 }
 
-// recoverPlugins recovers each resolved plugin in start order: dependencies first (sources.go
-// startOrder).
+func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
+	run := ""
+	if pl.run.Name != "" {
+		b, _ := json.Marshal(pl.run)
+		run = string(b)
+	}
+	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ? WHERE name = ?`,
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.Name)
+	return err
+}
+
+// resolveLocked resolves every entry (resolveEntries) and makes a record for each name that it
+// bound. It returns the named entries in recovery order. The caller holds h.entriesMu.
+func (h *Hub) resolveLocked() []*configEntry {
+	order := resolveEntries(h.cfg.path, h.entries)
+	h.mu.Lock()
+	for _, e := range h.entries {
+		if e.name != "" && h.plugins[e.name] == nil {
+			h.plugins[e.name] = &Plugin{Name: e.name, entry: e}
+		}
+	}
+	h.mu.Unlock()
+	return order
+}
+
+// pluginNames returns the bound plugin names in config order.
+func (h *Hub) pluginNames() []string {
+	h.entriesMu.Lock()
+	defer h.entriesMu.Unlock()
+	var names []string
+	for _, e := range h.entries {
+		if e.name != "" {
+			names = append(names, e.name)
+		}
+	}
+	return names
+}
+
+// recoverPlugins starts each named entry once: the entries that pass in start order (dependencies
+// first), then the refused entries, so that a refused entry with a live instance is retained.
 func (h *Hub) recoverPlugins(ctx context.Context) {
-	for _, name := range h.cfg.StartOrder {
-		pl := h.plugins[name]
+	h.entriesMu.Lock()
+	order := h.resolveLocked()
+	h.entriesMu.Unlock()
+	for _, e := range order {
+		h.mu.Lock()
+		pl := h.plugins[e.name]
+		h.mu.Unlock()
 		pl.lifecycle.Lock()
-		if err := h.recoverPlugin(ctx, pl); err != nil {
+		if err := h.startPlugin(ctx, pl); err != nil {
 			log.Printf("plugin %s: %v", pl.Name, err)
 		}
 		pl.lifecycle.Unlock()
@@ -150,7 +212,7 @@ func (h *Hub) findInstanceBlock(ctx context.Context, sess, instance string) (fou
 func (h *Hub) dropInstance(ctx context.Context, pl *Plugin, sess, reason string) {
 	h.mu.Lock()
 	old := pl.BlockID
-	pl.ClientID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart = "", "", "", 0, ""
+	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
 	h.ev.emit("plugin_session_gone", map[string]any{"plugin": pl.Name, "block_id": old, "session_id": sess, "reason": reason})
@@ -167,7 +229,7 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 		if ws := h.workSession(); ws != "" && ws != lost {
 			pl.lifecycle.Lock()
 			defer pl.lifecycle.Unlock()
-			if err := h.recoverPlugin(ctx, pl); err != nil {
+			if err := h.startPlugin(ctx, pl); err != nil {
 				log.Printf("plugin %s: restart after session loss: %v", pl.Name, err)
 			}
 			return
@@ -182,14 +244,80 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 	}
 }
 
-func (h *Hub) recoverPlugin(ctx context.Context, pl *Plugin) error {
+// startPlugin is the one start path (docs/plugin-sources.md, section 7, "Lifecycle"): hub start
+// recovery, hub.admin.start, a crash respawn and a restart after a session loss. The caller holds
+// pl.lifecycle. The order:
+//  1. Resolve the spawn intents. An unresolved one stops the start (code unresolved_intent).
+//  2. Resolve every entry and check the graph. A refused entry keeps its recorded instance.
+//  3. Only if step 2 passed: retire the recorded instance.
+//  4. Spawn.
+func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 	h.mu.Lock()
 	err := h.loadPluginRow(ctx, pl)
 	h.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	// 1. Spawn intents from earlier generations.
+	if err := h.resolveIntents(ctx, pl); err != nil {
+		return err
+	}
+	if pl.Desired != "running" {
+		return nil
+	}
+	cand, err := h.checkStart(pl)
+	if err != nil {
+		return err
+	}
+	if pl.BlockID != "" {
+		ok, err := h.retire(ctx, pl)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
+		}
+	}
+	return h.spawn(ctx, pl, cand)
+}
+
+// checkStart resolves every entry and returns the candidate of pl's entry. A refused entry gets
+// state refused, or retained when its recorded instance still lives: a refused start never
+// retires (section 7, "Retained instance").
+func (h *Hub) checkStart(pl *Plugin) (*pluginRun, error) {
+	h.entriesMu.Lock()
+	h.resolveLocked()
+	cand, err := pl.entry.cand, pl.entry.err
+	h.entriesMu.Unlock()
+	h.mu.Lock()
+	pl.state, pl.refusal = "", ""
+	if err != nil {
+		pl.state, pl.refusal = "refused", err.Error()
+		if pl.BlockID != "" && pl.ChildPID > 0 && alive(pl.ChildPID, pl.ChildStart) {
+			pl.state = "retained"
+		}
+	}
+	state := pl.state
+	h.mu.Unlock()
+	if err != nil {
+		h.ev.emit("plugin_refused", map[string]any{"plugin": pl.Name, "state": state, "error": err.Error()})
+		go h.changed("plugins")
+		return nil, refuse("refused", "%v", err)
+	}
+	return cand, nil
+}
+
+// unresolvedIntent is the error of a start that an unresolved spawn intent stops.
+func unresolvedIntent(plugin, instance, sess string) error {
+	return refuse("unresolved_intent", "plugin %s: spawn %s in session %s may still create a block, so the hub does not start a second instance. It resolves when that block appears or that session closes.",
+		plugin, instance, sess)
+}
+
+// resolveIntents resolves the open spawn intents of pl (from this or an earlier hub process): a
+// prepared intent was never sent; a sending intent in a gone session cannot create a block; a
+// sending intent whose block is found is adopted as the recorded instance. Any other sending
+// intent is unresolved: the request may still create a block, and absence is not permission to
+// create again. The first unresolved intent is the error.
+func (h *Hub) resolveIntents(ctx context.Context, pl *Plugin) error {
 	rows, err := h.db.QueryContext(ctx, `SELECT instance_id, status, session_id FROM spawn_intents WHERE plugin = ? AND status IN ('prepared', 'sending')`, pl.Name)
 	if err != nil {
 		return err
@@ -202,7 +330,7 @@ func (h *Hub) recoverPlugin(ctx context.Context, pl *Plugin) error {
 		open = append(open, i)
 	}
 	rows.Close()
-	unresolved := false
+	var unresolved error
 	for _, i := range open {
 		if i.status == "prepared" {
 			// The request was never sent: nothing can exist.
@@ -229,7 +357,9 @@ func (h *Hub) recoverPlugin(ctx context.Context, pl *Plugin) error {
 		}
 		if block == "" {
 			// The earlier request may still complete. A timeout or absence is not permission to create again.
-			unresolved = true
+			if unresolved == nil {
+				unresolved = unresolvedIntent(pl.Name, i.id, i.session)
+			}
 			h.ev.emit("plugin_conflict", map[string]any{"plugin": pl.Name, "block_id": "", "reason": "unresolved spawn " + i.id})
 			continue
 		}
@@ -239,17 +369,7 @@ func (h *Hub) recoverPlugin(ctx context.Context, pl *Plugin) error {
 		h.savePlugin(ctx, pl)
 		h.mu.Unlock()
 	}
-	if unresolved || pl.Desired != "running" {
-		return nil
-	}
-	// 2. The recorded instance, if any.
-	if pl.BlockID != "" {
-		ok, err := h.retire(ctx, pl)
-		if err != nil || !ok {
-			return err
-		}
-	}
-	return h.spawn(ctx, pl)
+	return unresolved
 }
 
 // retire stops the recorded instance after verifying it, and closes its block.
@@ -300,7 +420,7 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	h.mu.Lock()
 	h.selfClosed[pl.BlockID] = true
 	old := pl.BlockID
-	pl.ClientID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart = "", "", "", 0, ""
+	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
 	if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": sess, "block_id": old}, nil); err != nil {
@@ -309,7 +429,8 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	return true, nil
 }
 
-func (h *Hub) spawn(ctx context.Context, pl *Plugin) error {
+// spawn starts a new instance from the candidate cand, which becomes its run.
+func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 	sess := h.workSession()
 	if sess == "" {
 		return fmt.Errorf("spawn %s: the LazyRex session is gone; the next UI pass creates it", pl.Name)
@@ -319,7 +440,8 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin) error {
 		return err
 	}
 	h.mu.Lock()
-	pl.InstanceID, pl.SessionID, pl.ClientID = instance, sess, ""
+	pl.InstanceID, pl.SessionID, pl.ClientID, pl.run = instance, sess, "", *cand
+	run := pl.run
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
 	h.ev.emit("plugin_spawn_intent", map[string]any{"plugin": pl.Name, "instance_id": instance})
@@ -330,20 +452,20 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin) error {
 	if _, err := h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'sending' WHERE instance_id = ?`, instance); err != nil {
 		return err
 	}
-	command := []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", pl.Path, "-s", sess,
+	command := []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", run.Path, "-s", sess,
 		"hub_client_id=" + h.clientID, "instance_id=" + instance}
-	if pl.Events == "all" {
+	if run.Events == "all" {
 		// Rex refuses --all with -s (lab, Rex 1203). The plugin gets its session as an argument.
-		command = []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", pl.Path, "--all",
+		command = []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", run.Path, "--all",
 			"plugin_session=" + sess, "hub_client_id=" + h.clientID, "instance_id=" + instance}
 	}
-	keys := make([]string, 0, len(pl.Args))
-	for k := range pl.Args {
+	keys := make([]string, 0, len(run.Args))
+	for k := range run.Args {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		command = append(command, k+"="+pl.Args[k])
+		command = append(command, k+"="+run.Args[k])
 	}
 	// A detached block: callable and gets lifecycle events, but takes no tab or layout space.
 	// `rex move` or session.move_block can show it.
@@ -432,19 +554,16 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 	if pl.Desired != "running" {
 		return
 	}
-	if ok, err := h.retire(ctx, pl); err != nil || !ok {
-		log.Printf("plugin %s: retire: %v", pl.Name, err)
-		return
-	}
-	if err := h.spawn(ctx, pl); err != nil {
-		log.Printf("plugin %s: %v", pl.Name, err)
+	if err := h.startPlugin(ctx, pl); err != nil {
+		log.Printf("plugin %s: respawn: %v", pl.Name, err)
 	}
 }
 
 func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	h.mu.Lock()
 	block := pl.BlockID
-	pl.Desired, pl.ClientID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart = "stopped", "", "", "", 0, ""
+	pl.clearInstance()
+	pl.Desired, pl.state, pl.refusal = "stopped", "", ""
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
 	h.ev.emit("plugin_stopped", map[string]any{"plugin": pl.Name, "block_id": block, "reason": reason})
@@ -531,13 +650,53 @@ func (h *Hub) classifyClose(pl *Plugin, block, sess string) {
 	log.Printf("plugin %s: cannot tell whether its block closed alone or with session %s; not restarted. Use hub.admin.start or hub.admin.stop", pl.Name, sess)
 }
 
+// adminTarget finds the record that hub.admin.start or hub.admin.stop names with "plugin". A start
+// can name an entry by its exact "source" instead (section 7, "Repair entry point"): an entry that
+// has no name yet resolves again, and a name that it binds gets its record.
+func (h *Hub) adminTarget(action string, args map[string]any) (*Plugin, error) {
+	name, _ := args["plugin"].(string)
+	source, _ := args["source"].(string)
+	if source != "" {
+		if action != "hub.admin.start" || name != "" {
+			return nil, bad("give plugin, or (hub.admin.start only) source")
+		}
+		h.entriesMu.Lock()
+		var e *configEntry
+		for _, x := range h.entries {
+			if x.Source == source {
+				e = x
+			}
+		}
+		if e != nil && e.name == "" {
+			h.resolveLocked()
+		}
+		var err error
+		if e != nil {
+			name, err = e.name, e.err
+		}
+		h.entriesMu.Unlock()
+		if e == nil {
+			return nil, bad("no plugin entry has the source %q", source)
+		}
+		if name == "" {
+			return nil, refuse("refused", "%v", err)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl := h.plugins[name]
+	if pl == nil {
+		return nil, bad("unknown plugin %q", name)
+	}
+	return pl, nil
+}
+
 func (h *Hub) adminAction(ctx context.Context, action string, args map[string]any) (any, error) {
 	switch action {
 	case "hub.admin.start", "hub.admin.stop":
-		name, _ := args["plugin"].(string)
-		pl := h.plugins[name]
-		if pl == nil {
-			return nil, bad("unknown plugin %q", name)
+		pl, err := h.adminTarget(action, args)
+		if err != nil {
+			return nil, err
 		}
 		pl.lifecycle.Lock()
 		defer pl.lifecycle.Unlock()
@@ -550,20 +709,17 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			h.markStopped(ctx, pl, "admin stop")
 			return map[string]any{"desired": "stopped"}, nil
 		}
-		// Start resolves unresolved spawn intents explicitly: the operator decided.
-		h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'abandoned' WHERE plugin = ? AND status IN ('prepared', 'sending')`, name)
+		// A start of a running plugin changes nothing. Any other start takes the one start path: an
+		// unresolved spawn intent stops it (code unresolved_intent). There is no override.
 		h.mu.Lock()
-		pl.Desired = "running"
-		h.savePlugin(ctx, pl)
 		running := pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
+		if !running {
+			pl.Desired = "running"
+			h.savePlugin(ctx, pl)
+		}
 		h.mu.Unlock()
 		if !running {
-			if pl.BlockID != "" {
-				if ok, err := h.retire(ctx, pl); err != nil || !ok {
-					return nil, fmt.Errorf("cannot verify the existing instance: %v", err)
-				}
-			}
-			if err := h.spawn(ctx, pl); err != nil {
+			if err := h.startPlugin(ctx, pl); err != nil {
 				return nil, err
 			}
 		}
@@ -608,10 +764,10 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 	return nil, bad("unknown admin action")
 }
 
-// noticed reports whether a plugin has a notice in its manifest.
+// noticed reports whether a plugin has a notice in its manifest, as its run records it.
 func (h *Hub) noticed(name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pl := h.plugins[name]
-	return pl != nil && pl.Notice != ""
+	return pl != nil && pl.run.Notice != ""
 }

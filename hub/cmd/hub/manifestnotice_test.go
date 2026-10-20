@@ -54,8 +54,11 @@ func TestManifestNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	notices := map[string]string{}
-	for _, p := range cfg.Plugins {
-		notices[p.Name] = p.Notice
+	resolveEntries(cfg.path, cfg.entries)
+	for _, e := range cfg.entries {
+		if e.cand != nil {
+			notices[e.cand.Name] = e.cand.Notice
+		}
 	}
 	if len(notices) != 3 || notices["p"] != "New message. Call messaging_read." || notices["n"] != "Dep notice." || notices["lazyrex"] != "" {
 		t.Errorf("config notices: %v", notices)

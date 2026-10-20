@@ -90,6 +90,9 @@ Observed on Rex 0.0.1792158932-g88fd41 (lab `/tmp/rexlab-hub-claude`, 2026-10-20
 - The hub attaches the session before each status read (`readStatus`). Before that fix, an
   identity in another session read its status at hub start without an attach, and the hub kept
   the unknown state until the next status change (defect, live hub, 2026-10-20).
+- `session.destroy` also needs the attach: it failed with the same `conflict` error on a session that
+  the connection had created but not attached (observed on Rex 0.0.1792158932-g88fd41, Go lab test
+  `TestPluginStartUnresolvedIntentLab`, 2026-10-20).
 
 ### Block events (verified)
 
@@ -187,6 +190,9 @@ From the API reference, plus a lab test on Rex 0.0.1792088193-g7a93ec.
 - Requests to one client queue and are answered one at a time. `timeout_ms` defaults to 10 s, maximum 30 s. At most 16 requests can wait. A disconnect fails waiting requests with `client_unavailable`. A timeout does not cancel the action: "the client may still perform the action later".
 - Observed on Rex 1203 (lab, `spikes/lab/perform-queue.mjs`): Rex delivers the next `client_perform_requested` to a client only after that client replies to the current one. A call that the client holds for 3 s delays the next call by 3 s. So a hub action that waits (a long poll, a slow Rex call) stalls every other caller of the hub. Hub actions must answer fast.
 - Observed on Rex 1203 (lab, `spikes/lab/block-event.mjs`): `block.event` with a custom type fails ("event type … is not supported by this server"). A client cannot publish its own event types through Rex. Correction (Rex 1203, lab, a391cee): `block.event` with type `block_event` and any name and payload reaches a plugin block unchanged; a plugin can emit `block_event` frames that subscribers see as session events. See "Plugin event emission".
+- The `client.reply` error is `{code, message}` only: the input schema has `additionalProperties:
+  false` (`rex api describe client.reply`, Rex 0.0.1792158932-g88fd41, 2026-10-20). So a hub error
+  carries its details in the message text, not in extra fields.
 - `rex -C <label> do <action> k=v` calls `client.perform` from the CLI. `client.set_label` sets `info.label` in `rex client ls` (the top-level `label` stays null).
 - So Rex can carry hub RPC itself: an agent or a plugin calls the hub's actions, and Rex tells the hub who called. **Not yet tested from a control client that can reply** (a Node or Go client). See the next section for the Lua result.
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -62,38 +63,92 @@ func TestPluginEntriesResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	order := resolveEntries(c.path, c.entries)
 	var names []string
-	for _, p := range c.Plugins {
-		names = append(names, p.Name)
+	for _, e := range order {
+		names = append(names, e.name)
 	}
-	if strings.Join(names, ",") != "templates,messaging" {
-		t.Fatalf("resolved %v, refused %+v", names, c.Refused)
+	// The entries that pass in start order (dependencies first), then the named refused ones.
+	if strings.Join(names, ",") != "messaging,templates,worktrees" {
+		t.Fatalf("order %v", names)
 	}
-	tp, mp := c.Plugins[0], c.Plugins[1]
+	tp, mp := c.entries[0].cand, c.entries[4].cand
+	if tp == nil || mp == nil {
+		t.Fatalf("candidates %+v %+v", tp, mp)
+	}
 	if tp.Dir != filepath.Join(dir, "plugins", "t") || tp.Path != filepath.Join(dir, "plugins", "t", "t.lua") || tp.Args["k"] != "v" || tp.Notice != "" || tp.Source != "plugins/t" {
 		t.Errorf("a relative source resolves against the config directory: %+v", tp)
 	}
 	if mp.Dir != abs || mp.Notice != "New message. Call messaging_read." || mp.Events != "all" || mp.WatchRoots[0] != "/tmp/x" {
 		t.Errorf("the manifest owns notice and events: %+v", mp)
 	}
-	if strings.Join(c.StartOrder, ",") != "messaging,templates" {
-		t.Errorf("start order %v: dependencies first", c.StartOrder)
-	}
+	// Duplicate names bind neither entry: no record gets an invented owner.
 	want := map[int]struct{ name, err string }{
+		1: {"templates", ""},
 		2: {"", "plugin source plugins/empty: no lazyrex.json in " + filepath.Join(dir, "plugins", "empty")},
 		3: {"", "plugin github:lazy-rex/Profiles@main is not installed: run lazyrex-hub plugin sync -config " + filepath.Join(dir, "hub.json")},
 		4: {"worktrees", "plugin worktrees: dependency profiles is not configured"},
-		6: {"dup", "entries 6 and 7 have the same name dup"},
-		7: {"dup", "entries 6 and 7 have the same name dup"},
+		5: {"messaging", ""},
+		6: {"", "entries 6 and 7 have the same name dup"},
+		7: {"", "entries 6 and 7 have the same name dup"},
 	}
-	if len(c.Refused) != len(want) {
-		t.Fatalf("refused %+v", c.Refused)
-	}
-	for _, r := range c.Refused {
-		w := want[r.Entry]
-		if r.Name != w.name || r.Err == nil || r.Err.Error() != w.err {
-			t.Errorf("entry %d: name %q, error %v; want %q, %q", r.Entry, r.Name, r.Err, w.name, w.err)
+	for _, e := range c.entries {
+		w, got := want[e.index], ""
+		if e.err != nil {
+			got = e.err.Error()
 		}
+		if e.name != w.name || got != w.err || (e.err == nil) != (e.cand != nil) {
+			t.Errorf("entry %d: name %q, error %q; want %q, %q", e.index, e.name, got, w.name, w.err)
+		}
+	}
+}
+
+// Each start attempt resolves again (section 7, "The graph"). A bound name stays: a changed
+// manifest name is refused with the restart text, and its dependents are refused. An entry that
+// resolves later with a name in use is refused; the running owner keeps its name and passes.
+func TestPluginEntriesResolveAgain(t *testing.T) {
+	dir := t.TempDir()
+	plugDir(t, dir, "a", `{"name":"a","main":"a.lua"}`, "a.lua")
+	plugDir(t, dir, "b", `{"name":"b","main":"b.lua","depends":["a"]}`, "b.lua")
+	os.MkdirAll(filepath.Join(dir, "late"), 0o700)
+	c, err := writeConfig(t, dir, `[{"source":"a"},{"source":"b"},{"source":"late"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, late := c.entries[0], c.entries[1], c.entries[2]
+	resolveEntries(c.path, c.entries)
+	if a.name != "a" || b.name != "b" || late.name != "" || late.err == nil {
+		t.Fatalf("first: %q %q %q %v", a.name, b.name, late.name, late.err)
+	}
+	// The late entry gets a manifest with the name a: it is refused, a is not.
+	plugDir(t, dir, "late", `{"name":"a","main":"l.lua"}`, "l.lua")
+	resolveEntries(c.path, c.entries)
+	if late.name != "" || late.err == nil || late.err.Error() != "entries 1 and 3 have the same name a" {
+		t.Errorf("late: %q %v", late.name, late.err)
+	}
+	if a.err != nil || a.cand == nil || b.err != nil {
+		t.Errorf("the owner: %v %v", a.err, b.err)
+	}
+	// a's manifest changes its name.
+	plugDir(t, dir, "a", `{"name":"a2","main":"a.lua"}`, "a.lua")
+	order := resolveEntries(c.path, c.entries)
+	if a.name != "a" || a.cand != nil || a.err == nil || a.err.Error() != "plugin a: the manifest name changed from a to a2; restart the hub" {
+		t.Errorf("renamed: %q %v", a.name, a.err)
+	}
+	if b.err == nil || b.err.Error() != "plugin b: dependency a is refused: plugin a: the manifest name changed from a to a2; restart the hub" {
+		t.Errorf("the dependent: %v", b.err)
+	}
+	if late.name != "" || late.err == nil {
+		t.Errorf("late after the rename: %q %v", late.name, late.err)
+	}
+	if len(order) != 2 || order[0] != a || order[1] != b {
+		t.Errorf("order: the refused named entries in config order: %v", order)
+	}
+	// A repair: the old name again passes.
+	plugDir(t, dir, "a", `{"name":"a","main":"a.lua","notice":"Now with a notice."}`, "a.lua")
+	resolveEntries(c.path, c.entries)
+	if a.err != nil || a.cand == nil || a.cand.Notice != "Now with a notice." || b.err != nil {
+		t.Errorf("repaired: %v %v", a.err, b.err)
 	}
 }
 
@@ -122,8 +177,85 @@ func TestNoNotice(t *testing.T) {
 	if out, err := db.storeBatch(context.Background(), "p", ops, map[string]bool{"alice": true}, true); err != nil || !out.committed {
 		t.Errorf("with a notice: %v", err)
 	}
-	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p"}, "q": {Name: "q", Notice: "x"}}}
+	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p"}, "q": {Name: "q", run: pluginRun{Name: "q", Notice: "x"}}}}
 	if h.noticed("p") || !h.noticed("q") || h.noticed("none") {
 		t.Error("noticed")
+	}
+}
+
+// hub.register from a retained instance fails with code retained (section 7, "Retained instance").
+// The other checks keep their order: an unknown plugin, then a stale instance.
+func TestRegisterRetained(t *testing.T) {
+	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p", InstanceID: "p-1-x", ChildPID: os.Getpid(), state: "retained"}}}
+	if _, err := h.registerTarget("p", "p-1-x", os.Getpid()); codeOf(err) != "retained" || err.Error() != "retained: instance p-1-x of p is retained after a refused start" {
+		t.Errorf("retained: %v", err)
+	}
+	if _, err := h.registerTarget("p", "p-0-old", os.Getpid()); err == nil || codeOf(err) != "" || !strings.Contains(err.Error(), "is not the current instance") {
+		t.Errorf("stale: %v", err)
+	}
+	if _, err := h.registerTarget("q", "q-1", os.Getpid()); err == nil || !strings.Contains(err.Error(), `unknown plugin "q"`) {
+		t.Errorf("unknown: %v", err)
+	}
+	h.plugins["p"].state = ""
+	if pl, err := h.registerTarget("p", "p-1-x", os.Getpid()); err != nil || pl != h.plugins["p"] {
+		t.Errorf("current: %v", err)
+	}
+}
+
+// hub.plugins reports each entry with its state (section 7, "States"). The refused list keeps its
+// shape: entries in state refused, with the manifest name when one named the entry.
+func TestPluginsListStates(t *testing.T) {
+	h, _ := workerTestHub(t)
+	boom := errors.New("plugin x: boom")
+	es := []*configEntry{
+		{index: 1, Source: "s1", err: errors.New("plugin source s1: no lazyrex.json")},
+		{index: 2, Source: "s2", seen: "dup", err: errors.New("entries 2 and 3 have the same name dup")},
+		{index: 3, Source: "s3", name: "run", seen: "run", err: boom},
+		{index: 4, Source: "s4", name: "kept", seen: "kept", err: boom},
+		{index: 5, Source: "s5", name: "off", seen: "off"},
+	}
+	h.entries = es
+	h.plugins = map[string]*Plugin{
+		"run":  {Name: "run", entry: es[2], Desired: "running", run: pluginRun{Name: "run", Dir: "/d/run"}},
+		"kept": {Name: "kept", entry: es[3], Desired: "running", state: "retained", refusal: "plugin kept: old", run: pluginRun{Name: "kept", Dir: "/d/kept"}},
+		"off":  {Name: "off", entry: es[4], Desired: "stopped"},
+	}
+	out, err := h.pluginsList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	var got struct {
+		Plugins []any
+		Refused []map[string]any
+		Entries []map[string]any
+	}
+	json.Unmarshal(b, &got)
+	want := []string{
+		`{"entry":1,"error":"plugin source s1: no lazyrex.json","name":null,"source":"s1","state":"refused"}`,
+		`{"entry":2,"error":"entries 2 and 3 have the same name dup","name":"dup","source":"s2","state":"refused"}`,
+	}
+	if len(got.Refused) != len(want) {
+		t.Fatalf("refused %v", got.Refused)
+	}
+	for i, r := range got.Refused {
+		if b, _ := json.Marshal(r); string(b) != want[i] {
+			t.Errorf("refused %d: %s", i, b)
+		}
+	}
+	wantEntries := []string{
+		`{"candidate":{"error":"plugin source s1: no lazyrex.json"},"entry":1,"error":"plugin source s1: no lazyrex.json","name":null,"source":"s1","state":"refused"}`,
+		`{"candidate":{"error":"entries 2 and 3 have the same name dup"},"entry":2,"error":"entries 2 and 3 have the same name dup","name":"dup","source":"s2","state":"refused"}`,
+		`{"candidate":{"error":"plugin x: boom"},"dir":"/d/run","entry":3,"name":"run","source":"s3","state":"running"}`,
+		`{"candidate":{"error":"plugin x: boom"},"dir":"/d/kept","entry":4,"error":"plugin kept: old","name":"kept","source":"s4","state":"retained"}`,
+		`{"entry":5,"name":"off","source":"s5","state":"stopped"}`,
+	}
+	for i, e := range got.Entries {
+		if b, _ := json.Marshal(e); i >= len(wantEntries) || string(b) != wantEntries[i] {
+			t.Errorf("entry %d: %s", i+1, b)
+		}
+	}
+	if len(got.Plugins) != 0 || len(got.Entries) != len(wantEntries) {
+		t.Errorf("plugins %v, %d entries", got.Plugins, len(got.Entries))
 	}
 }

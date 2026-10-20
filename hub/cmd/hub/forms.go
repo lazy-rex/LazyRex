@@ -196,9 +196,9 @@ func (h *Hub) writePalette(ctx context.Context) error {
 		return nil
 	}
 	cmds := map[string][]paletteCommand{}
-	for _, p := range h.cfg.Plugins {
+	for _, name := range h.pluginNames() {
 		var raw string
-		if err := h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, p.Name).Scan(&raw); err != nil {
+		if err := h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, name).Scan(&raw); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
@@ -206,7 +206,7 @@ func (h *Hub) writePalette(ctx context.Context) error {
 		}
 		var list []paletteCommand
 		if json.Unmarshal([]byte(raw), &list) == nil && len(list) > 0 {
-			cmds[p.Name] = list
+			cmds[name] = list
 		}
 	}
 	content := paletteLua(cmds)

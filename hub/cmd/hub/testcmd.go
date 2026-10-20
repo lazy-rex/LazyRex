@@ -745,6 +745,8 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 		var st struct {
 			Plugins map[string]struct {
 				Registered bool     `json:"registered"`
+				State      string   `json:"state"`
+				Error      string   `json:"error"`
 				Exports    []string `json:"exports"`
 				Face       []string `json:"face"`
 			} `json:"plugins"`
@@ -752,6 +754,9 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 		json.Unmarshal(raw, &st)
 		ready := true
 		for name, p := range st.Plugins {
+			if p.State == "refused" || p.State == "retained" {
+				return fmt.Errorf("plugin %s is %s: %s (see %s)", name, p.State, p.Error, filepath.Join(l.dir, "hub.log"))
+			}
 			if !p.Registered {
 				ready, last = false, "plugin "+name+" is not registered"
 			}

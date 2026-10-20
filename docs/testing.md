@@ -309,6 +309,11 @@ config, lab server and state. `hub:restart({crash = true})` kills it (SIGKILL) i
 would. The call returns when a new hub process is ready: every plugin is registered and the agent
 face lists its exports. It returns the new `hub.test.status` (with `pid`).
 
+`hub.test.status` gives each plugin record `registered`, `client_id`, `exports`, `face`, `state`
+(running, stopped, refused or retained), `error` (the refused start), `instance_id`, `block_id` and
+`child_pid`. A hub start (also a restart) fails at once when a plugin is refused or retained: the
+error names the plugin and its error.
+
 - The runner asks for the restart with the result line `LRT restart term|kill`; `lazyrex-hub test`
   restarts the hub when it reads that line. Only the hub's own process group gets a signal, and
   only while its waiter has not reaped it.

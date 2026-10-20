@@ -18,9 +18,28 @@ Built on main:
   spawns in `startOrder`. `hub.plugins` reports `source` and `dir` for each running plugin, and a
   `refused` list. The harness lab config has local source entries only.
 
-Not built: the rest of step 2 (2d: a resolution at each start attempt, the `waiting` and
-`retained` states, `run` and `candidate`; 2e: managed plugins) and step 3 (the lock, the cache, the
-commands).
+On the branch `plugins/step2d` (in review), step 2d part 1:
+
+- One start path, `startPlugin` (`plugins.go`), for hub start recovery, `hub.admin.start`, a crash
+  respawn and a restart after a session loss. Its order is the one of section 7, "Lifecycle".
+- Each start attempt resolves every entry again (`resolveEntries`). A name binds at the first
+  resolution that gives it without a conflict. An entry that resolves later with a name in use is
+  refused; the owner keeps its name. Two entries with one name at hub start: neither binds.
+- The states `refused` and `retained`. A refused start retires nothing. A recorded instance that
+  still lives makes the record `retained`; `hub.register` from it fails with code `retained`.
+- `run`: the plugins row saves it at each spawn (column `run`). Notices use `run.notice`. Watch
+  roots come from `run` while an instance is recorded, else from the config entry.
+- `hub.admin.start {"source": "<exact source>"}`.
+- `hub.admin.start` no longer abandons open spawn intents. An unresolved intent fails the start with
+  code `unresolved_intent`. The text names the instance and the session: a `client.reply` error has
+  no other fields (rex-protocol.md, "Client RPC").
+- `hub.plugins` adds `entries`: one item for each config entry, with `entry`, `source`, `name`,
+  `state`, `dir` (of the run), `error` (state refused or retained) and `"candidate": {"error"}`
+  when the last resolution refused it. `plugins` and `refused` keep their shape.
+
+Not built: the rest of step 2 (2d part 2: the `waiting` state and the wake rule; 2e: managed
+plugins) and step 3 (the lock, the cache, the commands). Until part 2, hub start spawns a dependent
+without waiting for its dependencies to register, as before.
 
 ## Terms
 

@@ -197,12 +197,19 @@ func (s *watchSvc) pluginRegistered(plugin string) {
 	}
 }
 
-// watchRoots returns the plugin's configured watch_roots.
+// watchRoots returns the plugin's watch_roots: the ones of its run while it has an instance, else
+// the ones of its config entry. Stored watches also run while the plugin has no instance.
 func (h *Hub) watchRoots(plugin string) []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if pl := h.plugins[plugin]; pl != nil {
-		return pl.WatchRoots
+	pl := h.plugins[plugin]
+	switch {
+	case pl == nil:
+		return nil
+	case pl.run.Name != "":
+		return pl.run.WatchRoots
+	case pl.entry != nil:
+		return pl.entry.WatchRoots // set at config load; a resolution does not change it
 	}
 	return nil
 }

@@ -46,12 +46,11 @@ type Config struct {
 		Name         string `json:"name"`
 		StatusRecord string `json:"status_record"`
 	} `json:"agents"`
-	// Entries are the config field plugins (pluginconfig.go). loadConfig resolves them into Plugins
-	// (config order), StartOrder (plugin names, dependencies first) and Refused.
-	Entries    []json.RawMessage `json:"plugins"`
-	Plugins    []PluginConfig    `json:"-"`
-	StartOrder []string          `json:"-"`
-	Refused    []RefusedEntry    `json:"-"`
+	// Entries are the config field plugins (pluginconfig.go). loadConfig checks them into entries,
+	// in config order. The hub resolves the entries at each start attempt (resolveEntries).
+	Entries []json.RawMessage `json:"plugins"`
+	entries []*configEntry
+	path    string // the config file, as given
 }
 
 type Agent struct {
@@ -81,20 +80,41 @@ func (a *Agent) ready() bool {
 	return a.live() && (a.State == "idle" || a.State == "done" || a.State == "working")
 }
 
+// Plugin is the record of one plugin name (docs/plugin-sources.md, section 7). h.mu guards its
+// fields; lifecycle serializes its starts and stops.
 type Plugin struct {
-	Name, Path, Notice string
-	Events             string            // "all": launched with --all and plugin_session=<session>
-	Args               map[string]string // extra key=value arguments of `rex do` (config)
-	Desired            string            // running or stopped
-	InstanceID         string
-	SessionID          string // the session of the instance's block ("" in rows from before it was recorded)
-	BlockID            string
-	ChildPID           int
-	ChildStart         string
-	ClientID           string     // set by an accepted hub.register
-	Exports            []string   // action names agents may call through the MCP shim
-	WatchRoots         []string   // config watch_roots (watchsvc.go)
-	lifecycle          sync.Mutex // serializes replace, start and stop
+	Name       string
+	entry      *configEntry // the entry that bound this name
+	run        pluginRun    // the metadata of the recorded instance; zero when there is none (saved in the plugins row)
+	Desired    string       // running or stopped
+	InstanceID string
+	SessionID  string // the session of the instance's block ("" in rows from before it was recorded)
+	BlockID    string
+	ChildPID   int
+	ChildStart string
+	ClientID   string   // set by an accepted hub.register
+	Exports    []string // action names agents may call through the MCP shim
+	// state is "" (running or stopped, from Desired), refused (the last start check refused the
+	// entry) or retained (refused, and the recorded instance still lives; it may not register).
+	state     string
+	refusal   string     // the error of the refused start (state refused or retained)
+	lifecycle sync.Mutex // serializes replace, start and stop
+}
+
+// reportedState is the state that hub.plugins reports. h.mu must be held.
+func (pl *Plugin) reportedState() string {
+	switch {
+	case pl.state != "":
+		return pl.state
+	case pl.Desired == "stopped":
+		return "stopped"
+	}
+	return "running"
+}
+
+// clearInstance forgets the recorded instance and its run. h.mu must be held.
+func (pl *Plugin) clearInstance() {
+	pl.ClientID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, pl.run = "", "", "", 0, "", pluginRun{}
 }
 
 type Hub struct {
@@ -128,7 +148,11 @@ type Hub struct {
 	forwards     map[string]map[int]int // plugin client -> requester pid -> hub.forward calls in flight (agentface.go)
 	idents       map[string]*Agent      // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
 	aliases      map[string]string      // legacy agent ID -> the identity that took it over
-	plugins      map[string]*Plugin
+	plugins      map[string]*Plugin     // by name: one record for each bound entry name
+	// entries are the config entries (pluginconfig.go), in config order. entriesMu guards the
+	// fields that a resolution changes. Lock order: a plugin's lifecycle, then entriesMu, then mu.
+	entriesMu    sync.Mutex
+	entries      []*configEntry
 	selfClosed   map[string]bool // blocks the hub closed itself; their removal is not a user stop
 	titleRenames map[string]bool // sessions with a pending identityRenamesSoon
 	ui           *uiState
@@ -174,10 +198,7 @@ func loadConfig(path string, realServer bool) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
-	c.Plugins, c.StartOrder, c.Refused = resolvePlugins(path, entries)
-	for _, r := range c.Refused {
-		log.Printf("plugin entry %d (%s): refused: %v", r.Entry, r.Source, r.Err)
-	}
+	c.entries, c.path = entries, path
 	if c.View != "" {
 		if c.View, err = filepath.Abs(c.View); err != nil {
 			return c, err
@@ -321,9 +342,15 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
 		h.agentOrder = append(h.agentOrder, a.ID)
 	}
-	for _, p := range cfg.Plugins {
-		h.plugins[p.Name] = &Plugin{Name: p.Name, Path: p.Path, Notice: p.Notice, Events: p.Events, Args: p.Args, WatchRoots: p.WatchRoots}
+	h.entries = cfg.entries
+	h.entriesMu.Lock()
+	h.resolveLocked() // binds the names and makes their records
+	for _, e := range h.entries {
+		if e.err != nil {
+			log.Printf("plugin entry %d (%s): refused: %v", e.index, e.Source, e.err)
+		}
 	}
+	h.entriesMu.Unlock()
 	if cfg.Test {
 		h.test = newTestState()
 	}
@@ -813,6 +840,7 @@ func (h *Hub) callerInManagedPane(pid int) bool {
 }
 
 func (h *Hub) tools() any {
+	names := h.pluginNames()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var list []any
@@ -820,8 +848,8 @@ func (h *Hub) tools() any {
 		name := a["name"].(string)
 		list = append(list, map[string]any{"name": strings.ReplaceAll(name, ".", "_"), "action": name, "plugin": "hub", "client_id": h.clientID})
 	}
-	for _, c := range h.cfg.Plugins {
-		p := h.plugins[c.Name]
+	for _, name := range names {
+		p := h.plugins[name]
 		if p.ClientID == "" {
 			continue
 		}

@@ -2,8 +2,8 @@ package main
 
 // Plugin config entries (docs/plugin-sources.md, sections 1 and 7): an entry names a source; the
 // source's manifest names the plugin. parseEntries refuses a malformed config, so the hub does not
-// start. resolvePlugins reads each local manifest at hub start and refuses an entry for any other
-// problem: the other entries start.
+// start. resolveEntries reads each local manifest at each start attempt and refuses an entry for
+// any other problem: the other entries start.
 
 import (
 	"encoding/json"
@@ -13,32 +13,41 @@ import (
 	"strings"
 )
 
-// PluginConfig is a config entry that resolved at hub start: the manifest gives the name, the main
-// file (Path), events and notice. Notice is "" when the manifest has none (code no_notice).
-type PluginConfig struct {
-	Name, Path, Notice, Events string
-	Source, Dir                string            // the exact source string; the plugin directory
-	Args                       map[string]string // extra key=value arguments of `rex do`
+// pluginRun is what one resolution gives a plugin: the manifest's name, main file (Path), events,
+// notice and depends, and the entry's source, args and watch roots. A resolution gives a
+// candidate; a spawn copies it to Plugin.run, the metadata of the current instance (section 7,
+// "Run and candidate"). Notice is "" when the manifest has none (code no_notice).
+type pluginRun struct {
+	Name    string            `json:"name"`
+	Source  string            `json:"source"` // the exact source string
+	Dir     string            `json:"dir"`    // the plugin directory
+	Path    string            `json:"path"`
+	Events  string            `json:"events,omitempty"`
+	Notice  string            `json:"notice,omitempty"`
+	Depends []string          `json:"depends,omitempty"`
+	Args    map[string]string `json:"args,omitempty"` // extra key=value arguments of `rex do`
 	// WatchRoots are the directories whose subtrees the plugin may watch (hub.watch, docs/hub.md
 	// "File watches"). Absolute paths. Empty: every hub.watch.ensure is refused.
-	WatchRoots []string
+	WatchRoots []string `json:"watch_roots,omitempty"`
 }
 
-// RefusedEntry is a config entry that did not resolve. Name is "" when no manifest named it.
-type RefusedEntry struct {
-	Entry        int
-	Source, Name string
-	Err          error
-}
-
+// configEntry is one item of the config field plugins. Its identity is its index and its exact
+// source. The fields after github change at each resolution; Hub.entriesMu guards them.
 type configEntry struct {
 	Source string `json:"source"`
 	// Args are extra key=value arguments of `rex do` (rex.args in the plugin), for example
 	// worktrees_root. The hub's own keys (pluginArgReserved) are refused.
 	Args       map[string]string `json:"args"`
 	WatchRoots []string          `json:"watch_roots"`
+	index      int               // 1-based, as the error texts count
 	dir        string            // a local source: the absolute directory
 	github     bool
+	// name binds at the first resolution that gives it without a conflict, and stays for the life
+	// of the hub process. "" until then.
+	name string
+	seen string     // the manifest name of the last resolution that read one (reported; never a record key)
+	cand *pluginRun // the last resolution, when it passed
+	err  error      // the last resolution, when it refused the entry
 }
 
 var (
@@ -62,7 +71,7 @@ func parseEntries(cfgDir string, raws []json.RawMessage) ([]*configEntry, error)
 				return nil, fmt.Errorf("plugin entry %d: %q is removed: use \"source\" (a directory with lazyrex.json, or github:owner/repo@ref)", n, k)
 			}
 		}
-		e := &configEntry{}
+		e := &configEntry{index: n}
 		if err := decodeManifest(fmt.Sprintf("plugin entry %d", n), raw, e); err != nil {
 			return nil, err
 		}
@@ -113,42 +122,75 @@ func (e *configEntry) checkSource(cfgDir string) error {
 	return nil
 }
 
-// resolvePlugins reads the manifest of each local entry and applies the graph rules. It returns
-// the resolved plugins in config order, the start order (names, dependencies first) and the
-// refused entries. cfgPath names the config in the "not installed" text.
-func resolvePlugins(cfgPath string, entries []*configEntry) ([]PluginConfig, []string, []RefusedEntry) {
+// resolveEntries resolves every entry again: each start attempt rebuilds the whole graph (section
+// 7, "The graph"). It reads each local manifest and applies the name and graph rules. It records
+// each entry's candidate or error, and binds each name that resolved without a conflict. It
+// returns the named entries: the ones that passed in start order (dependencies first), then the
+// refused ones in config order. cfgPath names the config in the "not installed" text. The caller
+// holds Hub.entriesMu, or owns the entries.
+func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 	src := make([]*sourceEntry, len(entries))
-	mans := make([]*pluginManifest, len(entries))
-	mains := make([]string, len(entries))
+	runs := make([]*pluginRun, len(entries))
+	bound := map[string]*configEntry{}
+	for _, e := range entries {
+		if e.name != "" {
+			bound[e.name] = e
+		}
+	}
 	for i, e := range entries {
-		s := &sourceEntry{Index: i + 1, Source: e.Source}
+		s := &sourceEntry{Index: e.index, Source: e.Source, Name: e.name}
 		src[i] = s
 		if e.github {
 			s.Err = fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
 			continue
 		}
 		m, main, err := readPluginManifest(e.dir)
-		if err != nil {
-			s.Err = fmt.Errorf("plugin source %s: %w", e.Source, err)
-			continue
+		if err == nil {
+			e.seen = m.Name
 		}
-		s.Name, s.Depends, mans[i], mains[i] = m.Name, m.Depends, m, main
+		switch {
+		case err != nil:
+			s.Err = fmt.Errorf("plugin source %s: %w", e.Source, err)
+		case e.name != "" && m.Name != e.name:
+			s.Err = fmt.Errorf("plugin %s: the manifest name changed from %s to %s; restart the hub", e.name, e.name, m.Name)
+		case e.name == "" && bound[m.Name] != nil:
+			// The name is in use: only the entry that resolved later is refused.
+			s.Err = fmt.Errorf("entries %d and %d have the same name %s", bound[m.Name].index, e.index, m.Name)
+		default:
+			s.Name, s.Depends = m.Name, m.Depends
+			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: e.dir, Path: main, Events: m.Events, Notice: m.Notice,
+				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots}
+		}
 	}
 	checkGraph(src)
-	var plugins []PluginConfig
-	var refused []RefusedEntry
-	for i, s := range src {
-		if s.Err != nil {
-			refused = append(refused, RefusedEntry{Entry: s.Index, Source: s.Source, Name: s.Name, Err: s.Err})
-			continue
+	uses := map[string]int{}
+	for _, s := range src {
+		if s.Name != "" {
+			uses[s.Name]++
 		}
-		e, m := entries[i], mans[i]
-		plugins = append(plugins, PluginConfig{Name: m.Name, Path: mains[i], Notice: m.Notice, Events: m.Events,
-			Source: e.Source, Dir: e.dir, Args: e.Args, WatchRoots: e.WatchRoots})
 	}
-	var order []string
+	for i, e := range entries {
+		s := src[i]
+		if runs[i] != nil && uses[s.Name] == 1 {
+			e.name = s.Name
+		}
+		e.err, e.cand = s.Err, nil
+		if s.Err == nil {
+			e.cand = runs[i]
+		}
+	}
+	pos := map[*sourceEntry]int{}
+	for i, s := range src {
+		pos[s] = i
+	}
+	var out []*configEntry
 	for _, s := range startOrder(src) {
-		order = append(order, s.Name)
+		out = append(out, entries[pos[s]])
 	}
-	return plugins, order, refused
+	for i, e := range entries {
+		if e.name != "" && src[i].Err != nil {
+			out = append(out, e)
+		}
+	}
+	return out
 }

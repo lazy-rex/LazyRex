@@ -45,6 +45,7 @@ func openDB(path string) (*DB, error) {
 		`ALTER TABLE plugins ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE spawn_intents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE bindings ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`, // Plugin.run as JSON; '' = no run
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return nil, err

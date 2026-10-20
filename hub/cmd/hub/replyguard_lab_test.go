@@ -196,7 +196,7 @@ func TestAgentFaceReplyGuardLab(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	h, _ := workerTestHub(t)
-	h.cfg.Plugins = []PluginConfig{{Name: "lab"}}
+	h.entries = []*configEntry{{name: "lab"}}
 	r, err := rex.Dial(ctx, socket)
 	if err != nil {
 		t.Fatal(err)

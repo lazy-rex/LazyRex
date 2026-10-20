@@ -32,7 +32,7 @@ func newWatchRunTest(t *testing.T) (*watchRun, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &Hub{db: db, ev: ev, plugins: map[string]*Plugin{"p": {Name: "p", WatchRoots: []string{root}}}}
+	h := &Hub{db: db, ev: ev, plugins: map[string]*Plugin{"p": {Name: "p", entry: &configEntry{WatchRoots: []string{root}}}}}
 	h.watches = &watchSvc{h: h, live: map[string]*liveWatch{}, used: map[string]int{}, fdLimit: watchHubBudget}
 	w := watchRecord{Plugin: "p", Key: "inbox", ID: "w1", Path: dir, Resolved: dir, Glob: "*", SettleMs: 200}
 	if err := db.createWatch(t.Context(), w, nil); err != nil {

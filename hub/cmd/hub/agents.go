@@ -366,7 +366,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		for _, n := range pending {
 			h.mu.Lock()
 			a, pl := h.noticeTarget(n.agent), h.plugins[n.ns]
-			waiting := a != nil && pl != nil && pl.Notice != "" && n.intentRev > a.delivered[n.ns]
+			waiting := a != nil && pl != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns]
 			if a != nil && a.State != "" {
 				delete(tries, n.agent) // a known state ends the backoff
 			}
@@ -394,15 +394,15 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				waiting = a != nil && n.intentRev > a.delivered[n.ns]
 			}
 			due := waiting && a.ready()
-			sess, block, conn := "", "", ""
+			sess, block, conn, notice := "", "", "", ""
 			if due {
-				sess, block, conn = h.bindingSession(a), a.BlockID, a.ClientID
+				sess, block, conn, notice = h.bindingSession(a), a.BlockID, a.ClientID, pl.run.Notice // run changes at a spawn
 			}
 			h.mu.Unlock()
 			if !due {
 				continue
 			}
-			if err := h.writeNotice(ctx, sess, block, pl.Notice); err != nil {
+			if err := h.writeNotice(ctx, sess, block, notice); err != nil {
 				log.Printf("notice to %s: %v", n.agent, err) // not marked delivered
 				arm(time.Second)
 				continue

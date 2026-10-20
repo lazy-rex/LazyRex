@@ -439,7 +439,8 @@ func (h *Hub) testStatus() any {
 			}
 		}
 		sort.Strings(face)
-		plugins[name] = map[string]any{"registered": pl.ClientID != "", "client_id": pl.ClientID, "exports": orEmptyStrings(pl.Exports), "face": face}
+		plugins[name] = map[string]any{"registered": pl.ClientID != "", "client_id": pl.ClientID, "exports": orEmptyStrings(pl.Exports), "face": face,
+			"state": pl.reportedState(), "error": pl.refusal, "instance_id": pl.InstanceID, "block_id": pl.BlockID, "child_pid": pl.ChildPID}
 	}
 	return map[string]any{"client_id": h.clientID, "plugins": plugins, "generation": revString(h.generation), "pid": os.Getpid()}
 }

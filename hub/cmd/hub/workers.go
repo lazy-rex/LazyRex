@@ -1267,18 +1267,55 @@ func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, erro
 	return map[string]any{"agent": id, "status": "navigating"}, nil
 }
 
-// pluginsList reports each running plugin and its declared tabs, for navigation, and each refused
-// config entry with its error (docs/plugin-sources.md, section 7). A refused entry that no
-// manifest named has name null.
+// pluginsList reports (docs/plugin-sources.md, section 7):
+//   - plugins: each registered plugin and its declared tabs, for navigation;
+//   - refused: each config entry in state refused, with its error;
+//   - entries: each config entry with its state (running, stopped, refused or retained), the dir of
+//     its run, its error when refused or retained, and "candidate": {"error"} when its last
+//     resolution refused it.
+//
+// An entry that no manifest named has name null.
 func (h *Hub) pluginsList(ctx context.Context) (any, error) {
+	h.entriesMu.Lock()
 	h.mu.Lock()
-	var running []PluginConfig
-	for _, c := range h.cfg.Plugins {
-		if p := h.plugins[c.Name]; p != nil && p.ClientID != "" {
-			running = append(running, c)
+	var running []pluginRun
+	entries, refused := []any{}, []any{}
+	for _, e := range h.entries {
+		var name any
+		if e.seen != "" {
+			name = e.seen // a refused entry that a manifest named
 		}
+		state, errText := "refused", ""
+		if e.err != nil {
+			errText = e.err.Error()
+		}
+		item := map[string]any{"entry": e.index, "source": e.Source}
+		if pl := h.plugins[e.name]; e.name != "" && pl != nil {
+			name, state = e.name, pl.reportedState()
+			if pl.state != "" {
+				errText = pl.refusal
+			}
+			if pl.run.Name != "" {
+				item["dir"] = pl.run.Dir
+			}
+			if pl.ClientID != "" {
+				running = append(running, pl.run)
+			}
+		}
+		item["name"], item["state"] = name, state
+		if state == "refused" || state == "retained" {
+			item["error"] = errText
+		}
+		if e.err != nil {
+			item["candidate"] = map[string]any{"error": e.err.Error()}
+		}
+		if state == "refused" {
+			refused = append(refused, map[string]any{"entry": e.index, "source": e.Source, "name": name, "state": state, "error": errText})
+		}
+		entries = append(entries, item)
 	}
 	h.mu.Unlock()
+	h.entriesMu.Unlock()
 	out := []any{}
 	for _, c := range running {
 		name := c.Name
@@ -1300,15 +1337,7 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		out = append(out, entry)
 	}
-	refused := []any{}
-	for _, r := range h.cfg.Refused {
-		var name any
-		if r.Name != "" {
-			name = r.Name
-		}
-		refused = append(refused, map[string]any{"entry": r.Entry, "source": r.Source, "name": name, "state": "refused", "error": r.Err.Error()})
-	}
-	return map[string]any{"plugins": out, "refused": refused}, nil
+	return map[string]any{"plugins": out, "refused": refused, "entries": entries}, nil
 }
 
 var countSuffix = regexp.MustCompile(` \(\d+\)$`)

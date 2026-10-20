@@ -120,9 +120,10 @@ func (h *Hub) agentKeymap(ctx context.Context) error {
 		exports map[string]bool
 	}
 	var owners []owner
+	names := h.pluginNames()
 	h.mu.Lock()
-	for _, c := range h.cfg.Plugins {
-		p := h.plugins[c.Name]
+	for _, name := range names {
+		p := h.plugins[name]
 		if p == nil || p.ClientID == "" {
 			continue
 		}
