@@ -366,7 +366,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		for _, n := range pending {
 			h.mu.Lock()
 			a, pl := h.noticeTarget(n.agent), h.plugins[n.ns]
-			waiting := a != nil && pl != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns]
+			waiting := a != nil && pl != nil && pl.entry != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns] // a kept record gets no notices
 			if a != nil && a.State != "" {
 				delete(tries, n.agent) // a known state ends the backoff
 			}
@@ -393,7 +393,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				// run, and with it the notice. The notice then waits for the next run.
 				h.mu.Lock()
 				a, pl = h.noticeTarget(n.agent), h.plugins[n.ns]
-				waiting = a != nil && pl != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns]
+				waiting = a != nil && pl != nil && pl.entry != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns]
 			}
 			due := waiting && a.ready()
 			sess, block, conn, notice := "", "", "", ""

@@ -46,9 +46,6 @@ type configEntry struct {
 	// of the hub process. "" until then.
 	name string
 	seen string     // the manifest name of the last resolution that read one (reported; never a record key)
-	// prior is the name that the plugins row records for this source (Hub.priorNames). A source that
-	// gives no name at the first resolution binds it, so a live old instance keeps its record.
-	prior string
 	cand *pluginRun // the last resolution, when it passed
 	err  error      // the last resolution, when it refused the entry
 }
@@ -125,40 +122,63 @@ func (e *configEntry) checkSource(cfgDir string) error {
 	return nil
 }
 
-// resolveEntries resolves every entry again: each start attempt rebuilds the whole graph (section
-// 7, "The graph"). It reads each local manifest and applies the name and graph rules. It records
-// each entry's candidate or error, and binds each name that resolved without a conflict (a name that one entry gives).
-// A bound name stays bound. It
-// returns the named entries: the ones that passed in start order (dependencies first), then the
-// refused ones in config order. cfgPath names the config in the "not installed" text. The caller
-// holds Hub.entriesMu, or owns the entries.
-func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
-	src := make([]*sourceEntry, len(entries))
-	runs := make([]*pluginRun, len(entries))
-	prior := make([]bool, len(entries)) // the entry claims its prior name
-	noName := func(i int, e *configEntry, s *sourceEntry) {
-		if e.name == "" && e.prior != "" {
-			s.Name, prior[i] = e.prior, true
+// keptName is a record without an entry (a kept record, plugins.go): the name of a recorded
+// instance or spawn intent, and the source that it ran from ("" in rows from before the source was
+// recorded).
+type keptName struct{ Name, Source string }
+
+// guard refuses an entry whose source or name a kept record holds with another name or source:
+// that record's instance still has unresolved ownership, so the entry may not start another one.
+// The same name from the same source (or a kept record without a source) passes: the entry adopts
+// the record (Hub.resolveLocked).
+func guard(kept []keptName, e *configEntry, name string) error {
+	for _, k := range kept {
+		switch {
+		case k.Name == name && (k.Source == "" || k.Source == e.Source):
+			return nil
+		case k.Source == e.Source:
+			return fmt.Errorf("plugin %s: source %s still has an instance of plugin %s; stop %s first", name, e.Source, k.Name, k.Name)
+		case k.Name == name:
+			return fmt.Errorf("plugin %s: the name is held by an instance from source %s; stop %s first", name, k.Source, name)
 		}
 	}
+	return nil
+}
+
+// resolveEntries resolves every entry again: each start attempt rebuilds the whole graph (section
+// 7, "The graph"). It reads each local manifest and applies the name, ownership (guard) and graph
+// rules. It records each entry's candidate or error, and binds each name that one entry gives
+// without a conflict. A bound name stays bound. It returns the named entries: the ones that passed
+// in start order (dependencies first), then the refused ones in config order. cfgPath names the
+// config in the "not installed" text. kept are the records without an entry. The caller holds
+// Hub.entriesMu, or owns the entries.
+func resolveEntries(cfgPath string, entries []*configEntry, kept []keptName) []*configEntry {
+	src := make([]*sourceEntry, len(entries))
+	runs := make([]*pluginRun, len(entries))
 	for i, e := range entries {
 		s := &sourceEntry{Index: e.index, Source: e.Source, Name: e.name}
 		src[i] = s
 		if e.github {
 			s.Err = fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
-			noName(i, e, s)
 			continue
 		}
 		m, main, err := readPluginManifest(e.dir)
 		if err == nil {
 			e.seen = m.Name
 		}
+		var held error
+		if err == nil {
+			held = guard(kept, e, m.Name)
+		}
 		switch {
 		case err != nil:
 			s.Err = fmt.Errorf("plugin source %s: %w", e.Source, err)
-			noName(i, e, s)
 		case e.name != "" && m.Name != e.name:
 			s.Err = fmt.Errorf("plugin %s: the manifest name changed from %s to %s; restart the hub", e.name, e.name, m.Name)
+		case held != nil:
+			// Refused, and it binds nothing (no run). Its name still counts in the duplicate check: the
+			// guard adds a refusal and never makes another entry with that name pass.
+			s.Err, s.Name = held, m.Name
 		default:
 			// A name in use is a duplicate name: checkGraph refuses every entry with it. The owner
 			// keeps the binding (uses below), and its running instance continues.
@@ -176,7 +196,7 @@ func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 	}
 	for i, e := range entries {
 		s := src[i]
-		if (runs[i] != nil || prior[i]) && uses[s.Name] == 1 {
+		if runs[i] != nil && uses[s.Name] == 1 {
 			e.name = s.Name
 		}
 		e.err, e.cand = s.Err, nil

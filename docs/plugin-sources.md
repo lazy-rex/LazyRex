@@ -26,13 +26,19 @@ On the branch `plugins/step2d` (in review), step 2d part 1:
   resolution that gives it without a conflict. A duplicate name refuses every entry with it (step
   1), also when one entry resolved earlier: that owner keeps its name and a running instance; the
   other entry binds nothing. Two entries with one name at hub start: neither binds.
-- The plugins row records the source of the entry that bound its name (column `source`). At hub
-  start, an entry whose source gives no name (a missing or malformed manifest, a missing main
-  file, a GitHub source that is not installed) binds the name of that row. So a live old instance
-  keeps its record: it is retained, and `hub.admin.stop` ends it. A source that gives a name binds
-  that name. Limit (step 2e, "Records kept for an instance"): a manifest renamed across a restart
-  leaves the row of the old name without an entry, as on main. Rows from before this change have
-  no source.
+- Kept records (reviewer, ownership model approved 2026-10-20). The plugins row records the
+  source of the entry that bound its name (column `source`). At hub start, each row with a recorded
+  block or an open spawn intent gives a record, also when no entry gives its name now. An entry
+  adopts that record when it gives the same name from the same source; a row from before the
+  source was recorded matches by name only (migration rule). A record that no entry adopts is
+  kept: it never starts or respawns, it gets no notices, and `hub.register` from its instance
+  fails (code `retained`). Its state is retained (the child lives) or refused. `hub.admin.stop`
+  resolves its intents first (an unresolved one keeps the record: code `unresolved_intent`), then
+  retires its block and drops the record. `hub.admin.start` on it is refused.
+- The ownership guard: an entry whose source a kept record holds under another name, or whose
+  name a kept record holds from another source, is refused ("stop X first") and binds nothing.
+  Its name still counts in the duplicate check. After the stop of X, `hub.admin.start {source}`
+  starts the entry.
 - The states `refused` and `retained`. A refused start retires nothing. A recorded instance that
   still lives makes the record `retained`; `hub.register` from it fails with code `retained`.
 - `run`: the plugins row saves it at each spawn (column `run`). Notices use `run.notice`. Watch
@@ -43,7 +49,8 @@ On the branch `plugins/step2d` (in review), step 2d part 1:
   no other fields (rex-protocol.md, "Client RPC").
 - `hub.plugins` adds `entries`: one item for each config entry, with `entry`, `source`, `name`,
   `state`, `dir` (of the run), `error` (state refused or retained) and `"candidate": {"error"}`
-  when the last resolution refused it. `plugins` and `refused` keep their shape.
+  when the last resolution refused it. `plugins` and `refused` keep their shape. `kept` lists each
+  kept record: `name`, `source`, `state`, `error`, `dir`.
 
 Not built: the rest of step 2 (2d part 2: the `waiting` state and the wake rule; 2e: managed
 plugins) and step 3 (the lock, the cache, the commands). Until part 2, hub start spawns a dependent

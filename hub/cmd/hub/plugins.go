@@ -66,7 +66,7 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 }
 
 // registerTarget checks a hub.register caller against the record of its plugin: the current
-// instance, not retained, and a process in the instance's pane. h.mu must be held.
+// instance, not retained or kept, and a process in the instance's pane. h.mu must be held.
 func (h *Hub) registerTarget(name, instance string, pid int) (*Plugin, error) {
 	pl := h.plugins[name]
 	if pl == nil {
@@ -74,6 +74,9 @@ func (h *Hub) registerTarget(name, instance string, pid int) (*Plugin, error) {
 	}
 	if instance == "" || instance != pl.InstanceID {
 		return nil, bad("instance %q is not the current instance of %s", instance, name)
+	}
+	if pl.entry == nil {
+		return nil, refuse("retained", "instance %s of %s is retained: no config entry gives this name now", instance, name)
 	}
 	if pl.state == "retained" {
 		return nil, refuse("retained", "instance %s of %s is retained after a refused start", instance, name)
@@ -110,17 +113,11 @@ func newInstanceID(plugin string, gen int64) string {
 }
 
 // loadPluginRow returns the persisted desired state, instance and run, creating a "running" row if
-// absent. It records the source of the entry that bound the name: a later hub start binds the
-// same name to that entry when its source gives no name (priorNames).
+// absent.
 func (h *Hub) loadPluginRow(ctx context.Context, pl *Plugin) error {
 	_, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugins (name, desired) VALUES (?, 'running')`, pl.Name)
 	if err != nil {
 		return err
-	}
-	if pl.entry != nil {
-		if _, err := h.db.ExecContext(ctx, `UPDATE plugins SET source = ? WHERE name = ?`, pl.entry.Source, pl.Name); err != nil {
-			return err
-		}
 	}
 	var run string
 	err = h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run FROM plugins WHERE name = ?`, pl.Name).
@@ -138,64 +135,95 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 		b, _ := json.Marshal(pl.run)
 		run = string(b)
 	}
-	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ? WHERE name = ?`,
-		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.Name)
+	// source changes only with a run: a spawn from a candidate that passed its checks. A later hub
+	// start keeps a record of that source and name while the row has an instance or an intent
+	// (loadKept).
+	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ?,
+		source = CASE WHEN ? != '' THEN ? ELSE source END WHERE name = ?`,
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, pl.Name)
 	return err
 }
 
-// priorNames sets each entry's prior name: the name of the plugins row that records the entry's
-// exact source. Several rows with one source (a manifest renamed across a restart): the one row
-// with a recorded block, else none. Rows from before the source was recorded have none. It runs
-// at hub start, before the first resolution.
-func (h *Hub) priorNames(ctx context.Context) error {
-	rows, err := h.db.QueryContext(ctx, `SELECT name, source, block_id FROM plugins WHERE source != '' ORDER BY name`)
+// loadKept makes a kept record for each plugins row that has a recorded block or an open spawn
+// intent: the instance or the intent has an owner even when no entry gives its name now
+// (reviewer, hub-review-2d1-ownership-boundary). An entry adopts its kept record when it gives
+// the same name from the same source (resolveLocked). It runs at hub start, before the first
+// resolution. A row from before the source was recorded has source "": only an entry that gives
+// the same name adopts it (migration rule).
+func (h *Hub) loadKept(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT name, source FROM plugins WHERE block_id != ''
+		OR name IN (SELECT plugin FROM spawn_intents WHERE status IN ('prepared', 'sending')) ORDER BY name`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	type row struct{ name, block string }
-	bySource := map[string][]row{}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for rows.Next() {
-		var r row
-		var source string
-		if err := rows.Scan(&r.name, &source, &r.block); err != nil {
+		var name, source string
+		if err := rows.Scan(&name, &source); err != nil {
 			return err
 		}
-		bySource[source] = append(bySource[source], r)
+		h.plugins[name] = &Plugin{Name: name, source: source}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, e := range h.entries {
-		list := bySource[e.Source]
-		var live []row
-		for _, r := range list {
-			if r.block != "" {
-				live = append(live, r)
-			}
-		}
-		switch {
-		case len(live) == 1:
-			e.prior = live[0].name
-		case len(list) == 1:
-			e.prior = list[0].name
-		}
-	}
-	return nil
+	return rows.Err()
 }
 
-// resolveLocked resolves every entry (resolveEntries) and makes a record for each name that it
-// bound. It returns the named entries in recovery order. The caller holds h.entriesMu.
+// resolveLocked resolves every entry (resolveEntries) against the kept records. A name that an
+// entry bound adopts its kept record (the same record and lifecycle lock), or gets a new record.
+// It returns the named entries in recovery order. The caller holds h.entriesMu.
 func (h *Hub) resolveLocked() []*configEntry {
-	order := resolveEntries(h.cfg.path, h.entries)
+	h.mu.Lock()
+	var kept []keptName
+	for _, pl := range h.plugins {
+		if pl.entry == nil {
+			kept = append(kept, keptName{Name: pl.Name, Source: pl.source})
+		}
+	}
+	h.mu.Unlock()
+	sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
+	order := resolveEntries(h.cfg.path, h.entries, kept)
 	h.mu.Lock()
 	for _, e := range h.entries {
-		if e.name != "" && h.plugins[e.name] == nil {
-			h.plugins[e.name] = &Plugin{Name: e.name, entry: e}
+		if e.name == "" {
+			continue
+		}
+		if pl := h.plugins[e.name]; pl == nil {
+			h.plugins[e.name] = &Plugin{Name: e.name, entry: e, source: e.Source}
+		} else if pl.entry == nil {
+			pl.entry = e // the guard passed: the same name from the same source (or a legacy row)
 		}
 	}
 	h.mu.Unlock()
 	return order
+}
+
+// keptRecords returns the records without an entry, by name.
+func (h *Hub) keptRecords() []*Plugin {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []*Plugin
+	for _, pl := range h.plugins {
+		if pl.entry == nil {
+			out = append(out, pl)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// dropKept forgets a kept record that has no recorded block and no open intent: nothing of it
+// remains to own. Its row stays. h.mu must be held.
+func (h *Hub) dropKept(pl *Plugin) {
+	if pl.entry != nil || pl.BlockID != "" || h.plugins[pl.Name] != pl {
+		return
+	}
+	var open int
+	if err := h.db.QueryRow(`SELECT count(*) FROM spawn_intents WHERE plugin = ? AND status IN ('prepared', 'sending')`, pl.Name).Scan(&open); err != nil || open > 0 {
+		return // an open intent keeps ownership
+	}
+	delete(h.plugins, pl.Name)
+	h.ev.emit("plugin_kept_dropped", map[string]any{"plugin": pl.Name})
 }
 
 // pluginNames returns the bound plugin names in config order.
@@ -212,15 +240,19 @@ func (h *Hub) pluginNames() []string {
 }
 
 // recoverPlugins starts each named entry once: the entries that pass in start order (dependencies
-// first), then the refused entries, so that a refused entry with a live instance is retained.
+// first), then the refused entries, so that a refused entry with a live instance is retained. Then it
+// recovers each kept record (recoverKept), which starts nothing.
 func (h *Hub) recoverPlugins(ctx context.Context) {
 	h.entriesMu.Lock()
 	order := h.resolveLocked()
 	h.entriesMu.Unlock()
+	var records []*Plugin
+	h.mu.Lock()
 	for _, e := range order {
-		h.mu.Lock()
-		pl := h.plugins[e.name]
-		h.mu.Unlock()
+		records = append(records, h.plugins[e.name])
+	}
+	h.mu.Unlock()
+	for _, pl := range append(records, h.keptRecords()...) {
 		pl.lifecycle.Lock()
 		if err := h.startPlugin(ctx, pl); err != nil {
 			log.Printf("plugin %s: %v", pl.Name, err)
@@ -306,6 +338,12 @@ func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 	if err != nil {
 		return err
 	}
+	h.mu.Lock()
+	kept := pl.entry == nil
+	h.mu.Unlock()
+	if kept {
+		return h.recoverKept(ctx, pl)
+	}
 	if err := h.resolveIntents(ctx, pl); err != nil {
 		return err
 	}
@@ -326,6 +364,34 @@ func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 		}
 	}
 	return h.spawn(ctx, pl, cand)
+}
+
+// keptError is the error of a kept record: no config entry gives its name now.
+func keptError(pl *Plugin) string {
+	return fmt.Sprintf("plugin %s: no config entry gives this name now (it ran from source %s); stop it with hub.admin.stop", pl.Name, pl.source)
+}
+
+// recoverKept resolves the spawn intents of a kept record and starts nothing (a kept record never
+// starts or respawns). With a recorded block it is retained (the child lives) or refused. With an
+// unresolved intent it is refused, and the intent error is returned. With neither, it is dropped.
+// The caller holds pl.lifecycle.
+func (h *Hub) recoverKept(ctx context.Context, pl *Plugin) error {
+	ierr := h.resolveIntents(ctx, pl)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ierr == nil && pl.BlockID == "" {
+		h.dropKept(pl)
+		return nil
+	}
+	pl.state, pl.refusal = "refused", keptError(pl)
+	if pl.BlockID != "" && pl.ChildPID > 0 && alive(pl.ChildPID, pl.ChildStart) {
+		pl.state = "retained"
+	}
+	h.ev.emit("plugin_refused", map[string]any{"plugin": pl.Name, "state": pl.state, "error": pl.refusal})
+	if ierr != nil {
+		return ierr
+	}
+	return refuse("refused", "%s", pl.refusal)
 }
 
 // checkStart resolves every entry and returns the candidate of pl's entry. A refused entry gets
@@ -354,6 +420,13 @@ func (h *Hub) checkStart(pl *Plugin) (*pluginRun, error) {
 	return cand, nil
 }
 
+// unresolvedStop is the error of a stop of a kept record that an unresolved spawn intent keeps
+// (plan v2): the record stays.
+func unresolvedStop(plugin, instance, sess string) error {
+	return refuse("unresolved_intent", "plugin %s: the stop is not complete: spawn %s in session %s may still create a block. The record stays. Stop again after that block appears or that session closes.",
+		plugin, instance, sess)
+}
+
 // unresolvedIntent is the error of a start that an unresolved spawn intent stops.
 func unresolvedIntent(plugin, instance, sess string) error {
 	return refuse("unresolved_intent", "plugin %s: spawn %s in session %s may still create a block, so the hub does not start a second instance. It resolves when that block appears or that session closes.",
@@ -366,6 +439,11 @@ func unresolvedIntent(plugin, instance, sess string) error {
 // intent is unresolved: the request may still create a block, and absence is not permission to
 // create again. The first unresolved intent is the error.
 func (h *Hub) resolveIntents(ctx context.Context, pl *Plugin) error {
+	return h.resolveIntentsFor(ctx, pl, unresolvedIntent)
+}
+
+// resolveIntentsFor is resolveIntents; mk makes the error of the first unresolved intent.
+func (h *Hub) resolveIntentsFor(ctx context.Context, pl *Plugin, mk func(plugin, instance, sess string) error) error {
 	rows, err := h.db.QueryContext(ctx, `SELECT instance_id, status, session_id FROM spawn_intents WHERE plugin = ? AND status IN ('prepared', 'sending')`, pl.Name)
 	if err != nil {
 		return err
@@ -406,7 +484,7 @@ func (h *Hub) resolveIntents(ctx context.Context, pl *Plugin) error {
 		if block == "" {
 			// The earlier request may still complete. A timeout or absence is not permission to create again.
 			if unresolved == nil {
-				unresolved = unresolvedIntent(pl.Name, i.id, i.session)
+				unresolved = mk(pl.Name, i.id, i.session)
 			}
 			h.ev.emit("plugin_conflict", map[string]any{"plugin": pl.Name, "block_id": "", "reason": "unresolved spawn " + i.id})
 			continue
@@ -488,7 +566,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 		return err
 	}
 	h.mu.Lock()
-	pl.InstanceID, pl.SessionID, pl.ClientID, pl.run = instance, sess, "", *cand
+	pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source = instance, sess, "", *cand, cand.Source
 	run := pl.run
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
@@ -613,6 +691,7 @@ func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	pl.clearInstance()
 	pl.Desired, pl.state, pl.refusal = "stopped", "", ""
 	h.savePlugin(ctx, pl)
+	h.dropKept(pl) // a stopped kept record owns nothing more
 	h.mu.Unlock()
 	h.ev.emit("plugin_stopped", map[string]any{"plugin": pl.Name, "block_id": block, "reason": reason})
 	h.changed("plugins")
@@ -748,7 +827,17 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		}
 		pl.lifecycle.Lock()
 		defer pl.lifecycle.Unlock()
+		h.mu.Lock()
+		kept := pl.entry == nil
+		h.mu.Unlock()
 		if action == "hub.admin.stop" {
+			// A kept record resolves its intents first: a found block is adopted, then retired. An
+			// unresolved intent keeps the record.
+			if kept {
+				if err := h.resolveIntentsFor(ctx, pl, unresolvedStop); err != nil {
+					return nil, err
+				}
+			}
 			if pl.BlockID != "" {
 				if ok, err := h.retire(ctx, pl); err != nil || !ok {
 					return nil, fmt.Errorf("cannot verify the running instance: %v", err)
@@ -756,6 +845,9 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			}
 			h.markStopped(ctx, pl, "admin stop")
 			return map[string]any{"desired": "stopped"}, nil
+		}
+		if kept {
+			return nil, bad("plugin %s has no config entry: stop it with hub.admin.stop, or start its entry by source", pl.Name)
 		}
 		// A start of a running plugin changes nothing. Any other start takes the one start path: an
 		// unresolved spawn intent stops it (code unresolved_intent). There is no override.

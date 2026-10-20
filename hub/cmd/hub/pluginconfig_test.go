@@ -63,7 +63,7 @@ func TestPluginEntriesResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	order := resolveEntries(c.path, c.entries)
+	order := resolveEntries(c.path, c.entries, nil)
 	var names []string
 	for _, e := range order {
 		names = append(names, e.name)
@@ -117,13 +117,13 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b, late := c.entries[0], c.entries[1], c.entries[2]
-	resolveEntries(c.path, c.entries)
+	resolveEntries(c.path, c.entries, nil)
 	if a.name != "a" || b.name != "b" || late.name != "" || late.err == nil {
 		t.Fatalf("first: %q %q %q %v", a.name, b.name, late.name, late.err)
 	}
 	// The late entry gets a manifest with the name a: both entries are refused; a keeps its name.
 	plugDir(t, dir, "late", `{"name":"a","main":"l.lua"}`, "l.lua")
-	resolveEntries(c.path, c.entries)
+	resolveEntries(c.path, c.entries, nil)
 	if late.name != "" || late.err == nil || late.err.Error() != "entries 1 and 3 have the same name a" {
 		t.Errorf("late: %q %v", late.name, late.err)
 	}
@@ -135,7 +135,7 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	}
 	// a's manifest changes its name.
 	plugDir(t, dir, "a", `{"name":"a2","main":"a.lua"}`, "a.lua")
-	order := resolveEntries(c.path, c.entries)
+	order := resolveEntries(c.path, c.entries, nil)
 	if a.name != "a" || a.cand != nil || a.err == nil || a.err.Error() != "plugin a: the manifest name changed from a to a2; restart the hub" {
 		t.Errorf("renamed: %q %v", a.name, a.err)
 	}
@@ -151,7 +151,7 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	// A repair: the late entry loses its manifest, and a has the old name again: a passes.
 	os.Remove(filepath.Join(dir, "late", "lazyrex.json"))
 	plugDir(t, dir, "a", `{"name":"a","main":"a.lua","notice":"Now with a notice."}`, "a.lua")
-	resolveEntries(c.path, c.entries)
+	resolveEntries(c.path, c.entries, nil)
 	if a.err != nil || a.cand == nil || a.cand.Notice != "Now with a notice." || b.err != nil {
 		t.Errorf("repaired: %v %v", a.err, b.err)
 	}
@@ -191,7 +191,7 @@ func TestNoNotice(t *testing.T) {
 // hub.register from a retained instance fails with code retained (section 7, "Retained instance").
 // The other checks keep their order: an unknown plugin, then a stale instance.
 func TestRegisterRetained(t *testing.T) {
-	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p", InstanceID: "p-1-x", ChildPID: os.Getpid(), state: "retained"}}}
+	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p", entry: &configEntry{}, InstanceID: "p-1-x", ChildPID: os.Getpid(), state: "retained"}}}
 	if _, err := h.registerTarget("p", "p-1-x", os.Getpid()); codeOf(err) != "retained" || err.Error() != "retained: instance p-1-x of p is retained after a refused start" {
 		t.Errorf("retained: %v", err)
 	}
@@ -265,37 +265,52 @@ func TestPluginsListStates(t *testing.T) {
 	}
 }
 
-// An entry whose source gives no name binds its prior name (the plugins row's name for that
-// source), refused, so the record of a live old instance stays. A source that gives a name binds
-// that name: a manifest renamed across a restart takes the new name. A prior name in use by
-// another entry is a duplicate name.
-func TestPluginEntriesPriorName(t *testing.T) {
+// The ownership guard (reviewer, hub-review-2d1-ownership-boundary): a kept record (an instance or
+// an intent with no entry) holds its name and its source. An entry with that source and another
+// name, or that name from another source, is refused and binds nothing. The same name from the
+// same source passes, and a kept record without a source (a legacy row) matches only its name. A
+// duplicate name still refuses every entry with it.
+func TestPluginEntriesGuard(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "gone"), 0o700)
-	plugDir(t, dir, "renamed", `{"name":"new","main":"r.lua"}`, "r.lua")
-	plugDir(t, dir, "owner", `{"name":"taken","main":"o.lua"}`, "o.lua")
-	os.MkdirAll(filepath.Join(dir, "clash"), 0o700)
-	c, err := writeConfig(t, dir, `[{"source":"gone"},{"source":"renamed"},{"source":"owner"},{"source":"clash"}]`)
+	plugDir(t, dir, "renamed", `{"name":"y","main":"r.lua"}`, "r.lua")
+	plugDir(t, dir, "other", `{"name":"a","main":"o.lua"}`, "o.lua")
+	plugDir(t, dir, "same", `{"name":"s","main":"s.lua"}`, "s.lua")
+	plugDir(t, dir, "legacy", `{"name":"l","main":"l.lua"}`, "l.lua")
+	plugDir(t, dir, "legacy2", `{"name":"m","main":"m.lua"}`, "m.lua")
+	c, err := writeConfig(t, dir, `[{"source":"renamed"},{"source":"other"},{"source":"same"},{"source":"legacy"},{"source":"legacy2"}]`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, renamed, owner, clash := c.entries[0], c.entries[1], c.entries[2], c.entries[3]
-	gone.prior, renamed.prior, clash.prior = "old", "was", "taken"
-	order := resolveEntries(c.path, c.entries)
-	if gone.name != "old" || gone.cand != nil || gone.err == nil || !strings.HasPrefix(gone.err.Error(), "plugin source gone: no lazyrex.json") {
-		t.Errorf("gone: %q %v", gone.name, gone.err)
+	kept := []keptName{{Name: "a", Source: "gone"}, {Name: "x", Source: "renamed"}, {Name: "s", Source: "same"}, {Name: "l", Source: ""}}
+	resolveEntries(c.path, c.entries, kept)
+	want := []struct{ name, err string }{
+		{"", "plugin y: source renamed still has an instance of plugin x; stop x first"},
+		{"", "plugin a: the name is held by an instance from source gone; stop a first"},
+		{"s", ""},
+		{"l", ""},
+		{"m", ""}, // a legacy kept record is no wildcard for another name
 	}
-	if renamed.name != "new" || renamed.err != nil {
-		t.Errorf("renamed: %q %v", renamed.name, renamed.err)
+	for i, e := range c.entries {
+		got := ""
+		if e.err != nil {
+			got = e.err.Error()
+		}
+		if e.name != want[i].name || got != want[i].err {
+			t.Errorf("entry %d: %q %q; want %q %q", i+1, e.name, got, want[i].name, want[i].err)
+		}
 	}
-	if owner.name != "" || clash.name != "" || owner.err == nil || owner.err.Error() != "entries 3 and 4 have the same name taken" {
-		t.Errorf("a prior name in use: %q %q %v", owner.name, clash.name, owner.err)
+	// The guard adds a refusal; it does not make a duplicate pass.
+	plugDir(t, dir, "legacy2", `{"name":"s","main":"m.lua"}`, "m.lua")
+	c2, err := writeConfig(t, dir, `[{"source":"same"},{"source":"legacy2"}]`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var names []string
-	for _, e := range order {
-		names = append(names, e.name)
+	resolveEntries(c2.path, c2.entries, []keptName{{Name: "s", Source: "same"}})
+	same, dup := c2.entries[0], c2.entries[1]
+	if same.name != "" || same.err == nil || same.err.Error() != "entries 1 and 2 have the same name s" {
+		t.Errorf("the owner's source: %q %v", same.name, same.err)
 	}
-	if strings.Join(names, ",") != "new,old" {
-		t.Errorf("order %v", names)
+	if dup.name != "" || dup.err == nil || dup.err.Error() != "plugin s: the name is held by an instance from source same; stop s first" {
+		t.Errorf("the other source: %q %v", dup.name, dup.err)
 	}
 }

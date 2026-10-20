@@ -400,10 +400,57 @@ func TestPluginStartUnresolvedIntentLab(t *testing.T) {
 	}
 }
 
-// A hub restart with a source that gives no name (reviewer, hub-review-2d1-blockers): the plugins
-// row records the entry's source, so the record keeps its name. The old process lives and is
-// retained, hub.plugins reports the name and the dir of its run, and hub.admin.stop ends it.
-func TestPluginRetainedUnreadableSourceLab(t *testing.T) {
+// kept returns the hub.plugins kept record of name, or nil.
+func (s *startLab) kept(name string) map[string]any {
+	s.t.Helper()
+	b, _ := json.Marshal(s.must("hub.plugins", nil)["kept"])
+	var list []map[string]any
+	json.Unmarshal(b, &list)
+	for _, k := range list {
+		if k["name"] == name {
+			return k
+		}
+	}
+	return nil
+}
+
+// hasRecord reports whether hub.test.status lists a record of name.
+func (s *startLab) hasRecord(name string) bool {
+	s.t.Helper()
+	b, _ := json.Marshal(s.must("hub.test.status", nil)["plugins"])
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	_, ok := m[name]
+	return ok
+}
+
+// stopKept stops the kept record a, checks that its old process ends and that the record is
+// dropped.
+func (s *startLab) stopKept(name string, pid int, start string) {
+	s.t.Helper()
+	s.must("hub.admin.stop", map[string]any{"plugin": name})
+	s.wait("the kept process ends", func() bool { return !alive(pid, start) })
+	if s.hasRecord(name) || s.kept(name) != nil {
+		s.t.Errorf("the stopped kept record %s stays", name)
+	}
+}
+
+// startRun starts a and returns its status and the start time of its process.
+func (s *startLab) startRun(name string) (startStatus, string) {
+	s.t.Helper()
+	s.registered(name)
+	st := s.status(name)
+	start := startTime(st.ChildPID)
+	if st.ChildPID == 0 || start == "" {
+		s.t.Fatalf("no child: %+v", st)
+	}
+	return st, start
+}
+
+// A hub restart with a source that gives no name (reviewer, hub-review-2d1-blockers): the entry is
+// refused with no name, and the plugins row gives a kept record a. The old process lives with the
+// same pid and start time, hub.plugins lists a as kept, and hub.admin.stop ends it.
+func TestPluginKeptUnreadableSourceLab(t *testing.T) {
 	breaks := map[string]func(s *startLab){
 		"missing manifest":   func(s *startLab) { os.Remove(filepath.Join(s.src, "a", "lazyrex.json")) },
 		"malformed manifest": func(s *startLab) { s.writeSource("a", `{"name":`, "") },
@@ -414,24 +461,133 @@ func TestPluginRetainedUnreadableSourceLab(t *testing.T) {
 			s := newStartLab(t, "a")
 			s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
 			s.start()
-			s.registered("a")
-			old := s.status("a")
-			oldStart := startTime(old.ChildPID)
+			old, oldStart := s.startRun("a")
 			s.stop()
 			breakSource(s)
 			s.start()
 			s.wait("a is retained", func() bool { return s.status("a").State == "retained" })
-			if st := s.status("a"); st.ChildPID != old.ChildPID || st.BlockID != old.BlockID || !alive(old.ChildPID, oldStart) {
+			if st := s.status("a"); st.ChildPID != old.ChildPID || st.BlockID != old.BlockID || st.InstanceID != old.InstanceID || !alive(old.ChildPID, oldStart) {
 				t.Errorf("the old process lives in its block: %+v, old %+v", st, old)
 			}
-			if e := s.entry("a"); e["name"] != "a" || e["state"] != "retained" || e["dir"] != filepath.Join(s.src, "a") || !strings.HasPrefix(fmt.Sprint(e["error"]), "plugin source src/a: ") {
-				t.Errorf("hub.plugins: %v", e)
+			if e := s.entry("a"); e["name"] != nil || e["state"] != "refused" || !strings.HasPrefix(fmt.Sprint(e["error"]), "plugin source src/a: ") {
+				t.Errorf("the entry: %v", e)
 			}
-			s.must("hub.admin.stop", map[string]any{"plugin": "a"})
-			s.wait("the retained process ends", func() bool { return !alive(old.ChildPID, oldStart) })
-			if st := s.status("a"); st.State != "stopped" || st.BlockID != "" {
-				t.Errorf("after the stop: %+v", st)
+			if k := s.kept("a"); k == nil || k["source"] != "src/a" || k["state"] != "retained" || k["dir"] != filepath.Join(s.src, "a") ||
+				k["error"] != "plugin a: no config entry gives this name now (it ran from source src/a); stop it with hub.admin.stop" {
+				t.Errorf("kept: %v", k)
 			}
+			if _, err := s.call("hub.admin.start", map[string]any{"plugin": "a"}); err == nil || !strings.Contains(err.Error(), "has no config entry") {
+				t.Errorf("start of a kept record: %v", err)
+			}
+			s.stopKept("a", old.ChildPID, oldStart)
 		})
+	}
+}
+
+// A manifest renamed across a restart: the source still has the instance of a, so the new name y
+// is refused (the guard) and nothing spawns. After a stop of the kept a, a start by source starts y.
+func TestPluginKeptRenamedSourceLab(t *testing.T) {
+	s := newStartLab(t, "a")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	old, oldStart := s.startRun("a")
+	s.stop()
+	s.writeSource("a", `{"name":"y","main":"main.lua"}`, "y")
+	s.start()
+	s.wait("a is retained", func() bool { return s.status("a").State == "retained" })
+	if e := s.entry("a"); e["state"] != "refused" || e["error"] != "plugin y: source src/a still has an instance of plugin a; stop a first" {
+		t.Errorf("the entry: %v", e)
+	}
+	if n := len(s.events("plugin_spawn_intent", "y")); n != 0 || s.hasRecord("y") {
+		t.Errorf("y: %d spawn intents before the stop", n)
+	}
+	s.stopKept("a", old.ChildPID, oldStart)
+	if n := len(s.events("plugin_spawn_intent", "y")); n != 0 {
+		t.Errorf("a stop alone starts y: %d", n)
+	}
+	s.must("hub.admin.start", map[string]any{"source": "src/a"})
+	s.registered("y")
+}
+
+// A collision (reviewer): src/a lost its manifest and src/b names a. Both entries are refused; the
+// kept record a holds the old process and stops. Then a start by source binds a to src/b.
+func TestPluginKeptCollisionLab(t *testing.T) {
+	s := newStartLab(t, "a", "b")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.writeSource("b", "", "")
+	s.start()
+	old, oldStart := s.startRun("a")
+	s.stop()
+	os.Remove(filepath.Join(s.src, "a", "lazyrex.json"))
+	s.writeSource("b", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	s.wait("a is retained", func() bool { return s.status("a").State == "retained" })
+	if e := s.entry("a"); e["state"] != "refused" || e["name"] != nil {
+		t.Errorf("src/a: %v", e)
+	}
+	if e := s.entry("b"); e["state"] != "refused" || e["name"] != "a" || e["error"] != "plugin a: the name is held by an instance from source src/a; stop a first" {
+		t.Errorf("src/b: %v", e)
+	}
+	if st := s.status("a"); st.ChildPID != old.ChildPID || !alive(old.ChildPID, oldStart) {
+		t.Errorf("the old process: %+v", st)
+	}
+	s.stopKept("a", old.ChildPID, oldStart)
+	s.must("hub.admin.start", map[string]any{"source": "src/b"})
+	s.registered("a")
+	if e := s.entry("b"); e["state"] != "running" || e["name"] != "a" {
+		t.Errorf("src/b after the start: %v", e)
+	}
+}
+
+// A kept record with only an unresolved intent (no block): it is refused and keeps ownership. Its
+// stop gives unresolved_intent (the stop text) until the intent's session closes; then the stop
+// drops it.
+func TestPluginKeptIntentOnlyLab(t *testing.T) {
+	s := newStartLab(t, "a")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	s.registered("a")
+	s.must("hub.admin.stop", map[string]any{"plugin": "a"})
+	s.stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := s.l.r.Call(ctx, "session.create", map[string]any{"label": "intent-probe"}, &created); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDB(filepath.Join(s.l.dir, "hub", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO spawn_intents (instance_id, plugin, status, session_id) VALUES ('a-0-held', 'a', 'sending', ?)`, created.SessionID)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(s.src, "a", "lazyrex.json"))
+	s.start()
+	s.wait("a is refused", func() bool { return s.status("a").State == "refused" })
+	if k := s.kept("a"); k == nil || k["source"] != "src/a" {
+		t.Errorf("kept: %v", k)
+	}
+	_, err = s.call("hub.admin.stop", map[string]any{"plugin": "a"})
+	want := "unresolved_intent: plugin a: the stop is not complete: spawn a-0-held in session " + created.SessionID + " may still create a block. The record stays. Stop again after that block appears or that session closes."
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("stop with an open intent: %v", err)
+	}
+	if !s.hasRecord("a") {
+		t.Error("the record is dropped while its intent is open")
+	}
+	if err := s.l.r.Call(ctx, "session.attach", map[string]any{"session_id": created.SessionID, "event_scope": "session"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.l.r.Call(ctx, "session.destroy", map[string]any{"session_id": created.SessionID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.must("hub.admin.stop", map[string]any{"plugin": "a"})
+	if s.hasRecord("a") || s.kept("a") != nil {
+		t.Error("the record stays after a complete stop")
 	}
 }

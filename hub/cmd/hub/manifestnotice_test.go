@@ -54,7 +54,7 @@ func TestManifestNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	notices := map[string]string{}
-	resolveEntries(cfg.path, cfg.entries)
+	resolveEntries(cfg.path, cfg.entries, nil)
 	for _, e := range cfg.entries {
 		if e.cand != nil {
 			notices[e.cand.Name] = e.cand.Notice

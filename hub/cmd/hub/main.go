@@ -84,7 +84,8 @@ func (a *Agent) ready() bool {
 // fields; lifecycle serializes its starts and stops.
 type Plugin struct {
 	Name       string
-	entry      *configEntry // the entry that bound this name
+	entry      *configEntry // the entry that bound this name; nil for a kept record (loadKept)
+	source     string       // the source that the instance ran from (the plugins row)
 	run        pluginRun    // the metadata of the recorded instance; zero when there is none (saved in the plugins row)
 	Desired    string       // running or stopped
 	InstanceID string
@@ -343,7 +344,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.agentOrder = append(h.agentOrder, a.ID)
 	}
 	h.entries = cfg.entries
-	if err := h.priorNames(ctx); err != nil {
+	if err := h.loadKept(ctx); err != nil {
 		return nil, err
 	}
 	h.entriesMu.Lock()

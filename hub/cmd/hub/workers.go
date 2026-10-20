@@ -1273,6 +1273,8 @@ func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, erro
 //   - entries: each config entry with its state (running, stopped, refused or retained), the dir of
 //     its run, its error when refused or retained, and "candidate": {"error"} when its last
 //     resolution refused it.
+//   - kept: each record without an entry (plugins.go loadKept), with its name, source, state, error
+//     and the dir of its run.
 //
 // An entry that no manifest named has name null.
 func (h *Hub) pluginsList(ctx context.Context) (any, error) {
@@ -1314,6 +1316,13 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		entries = append(entries, item)
 	}
+	kept := []any{}
+	for _, pl := range h.plugins {
+		if pl.entry == nil {
+			kept = append(kept, map[string]any{"name": pl.Name, "source": pl.source, "state": pl.reportedState(), "error": pl.refusal, "dir": pl.run.Dir})
+		}
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].(map[string]any)["name"].(string) < kept[j].(map[string]any)["name"].(string) })
 	h.mu.Unlock()
 	h.entriesMu.Unlock()
 	out := []any{}
@@ -1337,7 +1346,7 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		out = append(out, entry)
 	}
-	return map[string]any{"plugins": out, "refused": refused, "entries": entries}, nil
+	return map[string]any{"plugins": out, "refused": refused, "entries": entries, "kept": kept}, nil
 }
 
 var countSuffix = regexp.MustCompile(` \(\d+\)$`)

@@ -83,7 +83,7 @@ func (h *Hub) watchStart(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, r := range all {
-		if h.plugins[r.plugin] == nil {
+		if pl := h.plugins[r.plugin]; pl == nil || pl.entry == nil { // not configured, or a kept record
 			if err := h.db.setWatchState(ctx, r.id, "inactive", ""); err != nil {
 				return err
 			}
