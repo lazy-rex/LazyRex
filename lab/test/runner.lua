@@ -91,18 +91,20 @@ end
 out('plan ' .. (#selected + 1))
 local passed, failed = 0, 0
 for i, t in ipairs(selected) do
-  local loc
+  -- The handler returns the location with the message. A write to a captured local here can be
+  -- lost after earlier catches (docs/rex-protocol.md, "Rex Lua runtime").
   local okt, e = xpcall(t.fn, function(e)
-    loc = where(A.file)
-    if H.is_error(e) then return tostring(e) .. (e.raw and e.raw ~= tostring(e) and (' [' .. e.raw .. ']') or '') end
-    return tostring(e)
+    local text = tostring(e)
+    if H.is_error(e) and e.raw and e.raw ~= text then text = text .. ' [' .. e.raw .. ']' end
+    local loc = where(A.file)
+    return text .. (loc and (' (at ' .. loc .. ')') or '')
   end)
   if okt then
     passed = passed + 1
     out('ok ' .. i .. ' ' .. t.name)
   else
     failed = failed + 1
-    out('fail ' .. i .. ' ' .. t.name .. ' # ' .. tostring(e) .. (loc and (' (at ' .. loc .. ')') or ''))
+    out('fail ' .. i .. ' ' .. t.name .. ' # ' .. tostring(e))
   end
 end
 

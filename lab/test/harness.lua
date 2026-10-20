@@ -523,10 +523,12 @@ function View:rename_tab(label)
 end
 function View:status() return perform(self.client, 'testview.status', {}) end
 
-local op_seq = 0
+-- A table field, not a local: a closure write to a captured local can be lost after a catch
+-- (docs/rex-protocol.md, "Rex Lua runtime").
+local op_seq = {n = 0}
 local function new_key(prefix)
-  op_seq = op_seq + 1
-  return (prefix or 'op') .. '-' .. os.time() .. '-' .. op_seq
+  op_seq.n = op_seq.n + 1
+  return (prefix or 'op') .. '-' .. os.time() .. '-' .. op_seq.n
 end
 
 -- admit sends a view operation and returns the admission ({status = 'accepted'} or the state of an
