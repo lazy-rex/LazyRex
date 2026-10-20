@@ -36,18 +36,20 @@ const testReplyLimit = 48 << 10
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
-	"hub.test.app", "hub.test.app.calls", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release"}
+	"hub.test.app", "hub.test.app.calls", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
 
 type testState struct {
-	mu         sync.Mutex
-	injections []*injection
-	batches    map[string]int                      // plugin -> hub.store.batch calls, including refused and conflicting ones
-	invalidate map[string]int                      // plugin -> hub.ui.invalidate calls
-	renderReq  map[string]int64                    // view_id -> the latest requested render generation
-	renderOut  map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
-	trees      map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
-	apps       map[string]*testFakeApp             // fake Rex apps by name (testapp.go)
-	faults     []*testFault                        // armed and fired faults (testfaults.go)
+	mu          sync.Mutex
+	recover     chan struct{} // closed by hub.test.recover (test_hold_recovery)
+	recoverOnce sync.Once
+	injections  []*injection
+	batches     map[string]int                      // plugin -> hub.store.batch calls, including refused and conflicting ones
+	invalidate  map[string]int                      // plugin -> hub.ui.invalidate calls
+	renderReq   map[string]int64                    // view_id -> the latest requested render generation
+	renderOut   map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
+	trees       map[string]*renderedTree            // plugin + "\x00" + route -> the descriptors of its last rendered tree
+	apps        map[string]*testFakeApp             // fake Rex apps by name (testapp.go)
+	faults      []*testFault                        // armed and fired faults (testfaults.go)
 }
 
 type injection struct {
@@ -97,7 +99,7 @@ type renderedTree struct {
 
 func newTestState() *testState {
 	return &testState{batches: map[string]int{}, invalidate: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
-		trees: map[string]*renderedTree{}, apps: map[string]*testFakeApp{}}
+		trees: map[string]*renderedTree{}, apps: map[string]*testFakeApp{}, recover: make(chan struct{})}
 }
 
 // checkLabProof is the positive proof that -test points at a lab server that a harness (or
@@ -310,6 +312,10 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return h.testFaultArm(args, plugin)
+	case "hub.test.recover":
+		// Releases plugin recovery that the config holds (test_hold_recovery).
+		h.test.recoverOnce.Do(func() { close(h.test.recover) })
+		return map[string]any{"released": true}, nil
 	case "hub.test.fault_release":
 		id, _ := args["id"].(float64)
 		return h.testFaultRelease(id)

@@ -35,6 +35,9 @@ On the branch `plugins/step2d` (in review), step 2d part 1:
   fails (code `retained`). Its state is retained (the child lives) or refused. `hub.admin.stop`
   resolves its intents first (an unresolved one keeps the record: code `unresolved_intent`), then
   retires its block and drops the record. `hub.admin.start` on it is refused.
+- Each record loads its plugins row when the hub makes it, before an action can see it. The admin
+  actions load the row again under the record's lifecycle lock. Recovery skips a record that
+  `hub.admin.start` already started in this hub process.
 - The ownership guard: an entry whose source a kept record holds under another name, or whose
   name a kept record holds from another source, is refused ("stop X first") and binds nothing.
   Its name still counts in the duplicate check. After the stop of X, `hub.admin.start {source}`

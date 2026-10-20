@@ -314,6 +314,10 @@ face lists its exports. It returns the new `hub.test.status` (with `pid`).
 `child_pid`. A hub start (also a restart) fails at once when a plugin is refused or retained: the
 error names the plugin and its error.
 
+The test-only config key `test_hold_recovery: true` holds plugin recovery at hub start until
+`hub.test.recover`, at most 60 s. A Go lab test uses it to call an action before recovery reaches
+a record (`plugstart_lab_test.go`). A hub without `-test` refuses the key.
+
 - The runner asks for the restart with the result line `LRT restart term|kill`; `lazyrex-hub test`
   restarts the hub when it reads that line. Only the hub's own process group gets a signal, and
   only while its waiter has not reaped it.

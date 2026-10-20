@@ -38,6 +38,9 @@ type Config struct {
 	// TestRoots are the directories that test-mode profiles and spawn cwds must stay in (the lab,
 	// the plugin and the manifest directories; isolation.go). Only -test accepts it.
 	TestRoots []string `json:"test_roots"`
+	// TestHoldRecovery holds plugin recovery at hub start until hub.test.recover, so a lab test can
+	// call actions before recovery reaches a record. Only -test accepts it.
+	TestHoldRecovery bool `json:"test_hold_recovery"`
 	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
 	// pane (pair.go). Off: those tabs open as one view, as before.
 	Transcript bool `json:"transcript"`
@@ -99,6 +102,7 @@ type Plugin struct {
 	// entry) or retained (refused, and the recorded instance still lives; it may not register).
 	state     string
 	refusal   string     // the error of the refused start (state refused or retained)
+	attempted bool       // a start attempt (startPlugin) ran in this hub process: recovery skips the record
 	lifecycle sync.Mutex // serializes replace, start and stop
 }
 
@@ -272,6 +276,9 @@ func main() {
 	cfg.Test = *testMode
 	if !cfg.Test && len(cfg.TestRoots) > 0 {
 		log.Fatal("test_roots needs -test")
+	}
+	if !cfg.Test && cfg.TestHoldRecovery {
+		log.Fatal("test_hold_recovery needs -test")
 	}
 	if cfg.Test && len(cfg.TestRoots) == 0 {
 		log.Fatal("-test needs test_roots in the config (lazyrex-hub test writes it)")

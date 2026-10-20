@@ -156,17 +156,28 @@ func (h *Hub) loadKept(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	var kept []*Plugin
 	for rows.Next() {
-		var name, source string
-		if err := rows.Scan(&name, &source); err != nil {
+		pl := &Plugin{}
+		if err := rows.Scan(&pl.Name, &pl.source); err != nil {
+			rows.Close()
 			return err
 		}
-		h.plugins[name] = &Plugin{Name: name, source: source}
+		kept = append(kept, pl)
 	}
-	return rows.Err()
+	rows.Close() // the store has one connection: close the rows before the next query
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, pl := range kept {
+		if err := h.loadPluginRow(ctx, pl); err != nil { // its persisted instance, before any action sees it
+			return err
+		}
+		h.plugins[pl.Name] = pl
+	}
+	return nil
 }
 
 // resolveLocked resolves every entry (resolveEntries) against the kept records. A name that an
@@ -189,7 +200,13 @@ func (h *Hub) resolveLocked() []*configEntry {
 			continue
 		}
 		if pl := h.plugins[e.name]; pl == nil {
-			h.plugins[e.name] = &Plugin{Name: e.name, entry: e, source: e.Source}
+			// The record loads its row before any action sees it: an action before recovery must not
+			// take an empty record as proof that no instance exists.
+			pl = &Plugin{Name: e.name, entry: e, source: e.Source}
+			if err := h.loadPluginRow(context.Background(), pl); err != nil {
+				log.Printf("plugin %s: load its row: %v", e.name, err) // startPlugin and the admin actions load it again
+			}
+			h.plugins[e.name] = pl
 		} else if pl.entry == nil {
 			pl.entry = e // the guard passed: the same name from the same source (or a legacy row)
 		}
@@ -243,6 +260,12 @@ func (h *Hub) pluginNames() []string {
 // first), then the refused entries, so that a refused entry with a live instance is retained. Then it
 // recovers each kept record (recoverKept), which starts nothing.
 func (h *Hub) recoverPlugins(ctx context.Context) {
+	if h.test != nil && h.cfg.TestHoldRecovery {
+		select {
+		case <-h.test.recover:
+		case <-time.After(60 * time.Second):
+		}
+	}
 	h.entriesMu.Lock()
 	order := h.resolveLocked()
 	h.entriesMu.Unlock()
@@ -254,6 +277,10 @@ func (h *Hub) recoverPlugins(ctx context.Context) {
 	h.mu.Unlock()
 	for _, pl := range append(records, h.keptRecords()...) {
 		pl.lifecycle.Lock()
+		if pl.attempted { // hub.admin.start started it before recovery came here
+			pl.lifecycle.Unlock()
+			continue
+		}
 		if err := h.startPlugin(ctx, pl); err != nil {
 			log.Printf("plugin %s: %v", pl.Name, err)
 		}
@@ -332,6 +359,7 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 //  3. Only if step 2 passed: retire the recorded instance.
 //  4. Spawn.
 func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
+	pl.attempted = true
 	h.mu.Lock()
 	err := h.loadPluginRow(ctx, pl)
 	h.mu.Unlock()
@@ -827,9 +855,15 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		}
 		pl.lifecycle.Lock()
 		defer pl.lifecycle.Unlock()
+		// Read the persisted instance under the lifecycle lock before any decision: an action may come
+		// before recovery reaches this record.
 		h.mu.Lock()
+		err = h.loadPluginRow(ctx, pl)
 		kept := pl.entry == nil
 		h.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		if action == "hub.admin.stop" {
 			// A kept record resolves its intents first: a found block is adopted, then retired. An
 			// unresolved intent keeps the record.

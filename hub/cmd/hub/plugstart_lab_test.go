@@ -591,3 +591,68 @@ func TestPluginKeptIntentOnlyLab(t *testing.T) {
 		t.Error("the record stays after a complete stop")
 	}
 }
+
+// setConfig sets one field of the hub config, for the next hub start.
+func (s *startLab) setConfig(key string, value any) {
+	s.t.Helper()
+	var c map[string]any
+	b, _ := os.ReadFile(s.cfg)
+	json.Unmarshal(b, &c)
+	c[key] = value
+	b, _ = json.MarshalIndent(c, "", " ")
+	if err := os.WriteFile(s.cfg, b, 0o600); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+// A stop before recovery reaches a kept record (reviewer, hub-review-2d1-kept-startup-blocker):
+// the record has its persisted instance from its creation, so the stop retires the old block and
+// ends its process. It does not save empty fields over the instance.
+func TestPluginKeptStopBeforeRecoveryLab(t *testing.T) {
+	s := newStartLab(t, "a")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	old, oldStart := s.startRun("a")
+	s.stop()
+	os.Remove(filepath.Join(s.src, "a", "lazyrex.json"))
+	s.setConfig("test_hold_recovery", true)
+	s.start()
+	if st := s.status("a"); st.BlockID != old.BlockID || st.InstanceID != old.InstanceID {
+		t.Errorf("the kept record before recovery: %+v, old %+v", st, old)
+	}
+	s.must("hub.admin.stop", map[string]any{"plugin": "a"})
+	s.wait("the old process ends", func() bool { return !alive(old.ChildPID, oldStart) })
+	if s.hasRecord("a") {
+		t.Error("the kept record stays after the stop")
+	}
+	s.must("hub.test.recover", nil)
+	time.Sleep(time.Second)
+	if s.hasRecord("a") {
+		t.Error("recovery made the record again")
+	}
+}
+
+// A start before recovery reaches an adopted record: the record has its persisted instance, so the
+// start retires the old instance and spawns one new instance. Recovery then skips the record: it
+// does not replace the new instance.
+func TestPluginStartBeforeRecoveryLab(t *testing.T) {
+	s := newStartLab(t, "a")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	old, oldStart := s.startRun("a")
+	s.stop()
+	s.setConfig("test_hold_recovery", true)
+	s.start()
+	intents := len(s.events("plugin_spawn_intent", "a"))
+	s.must("hub.admin.start", map[string]any{"plugin": "a"})
+	s.wait("the old process ends", func() bool { return !alive(old.ChildPID, oldStart) })
+	cur, _ := s.startRun("a")
+	s.must("hub.test.recover", nil)
+	time.Sleep(1500 * time.Millisecond)
+	if n := len(s.events("plugin_spawn_intent", "a")) - intents; n != 1 {
+		t.Errorf("%d spawns after the early start; want 1", n)
+	}
+	if st := s.status("a"); st.InstanceID != cur.InstanceID || !st.Registered {
+		t.Errorf("recovery replaced the instance: %+v, after the start %+v", st, cur)
+	}
+}
