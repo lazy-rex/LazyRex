@@ -192,11 +192,6 @@ creates the fixture `repo` (Git, `main`) with the worktree `repo-wt` (`feature`)
 
 Both passed in a fresh lab made by the script on Rex `0.0.1792158932-g88fd41`.
 
-`tests/spawn-env-lab.mjs` needs a lab server started with stale variables
-(`LAZYREX_AGENT=stale-agent CODEX_THREAD_ID=stale-thread`) and a hub on `env.json` with the plugin
-`tests/spawnprobe.lua` and the agent profile `envdump`. It checks that the built-in shell has
-neither variable and that an agent has its fresh agent ID. It stops its workers.
-
 ## Tunnels lab
 
 `tests/tunnels-lab.mjs` runs the Tunnels plugin end to end. It needs a lab server and a lab hub.

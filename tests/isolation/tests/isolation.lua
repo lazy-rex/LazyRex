@@ -73,6 +73,13 @@ test('a spawned worker has the lab environment and the lab HOME as its cwd', fun
     XDG_STATE_HOME = vars.XDG_STATE_HOME, XDG_CACHE_HOME = vars.XDG_CACHE_HOME, TMPDIR = vars.TMPDIR,
     REX_SERVER = vars.REX_SERVER, secret = vars.LRT_OUTER_SECRET, plain = vars.LRT_PLAIN, data = vars.LRT_DATA})
   under_lab('the worker cwd', (read(home .. '/worker-pwd'):gsub('%s+$', '')))
+  -- The lab server has stale agent variables (test.env); the worker pane drops them
+  -- (workers.go spawnArgv). TestSpawnArgvEnv covers a stale LAZYREX_AGENT, which test.env cannot set.
+  expect(os.getenv('CODEX_THREAD_ID'), 'the lab has a stale CODEX_THREAD_ID').to_be('stale-thread')
+  expect(os.getenv('CLAUDECODE'), 'the lab has a stale CLAUDECODE').to_be('1')
+  expect(vars.CODEX_THREAD_ID, 'the worker has no CODEX_THREAD_ID').to_be(nil)
+  expect(vars.CLAUDECODE, 'the worker has no CLAUDECODE').to_be(nil)
+  expect(vars.LAZYREX_AGENT, 'an accessory has no LAZYREX_AGENT').to_be(nil)
   alice:call('hub.stop', {spawn_id = s.spawn_id, key = 'iso-worker-stop'})
 end)
 

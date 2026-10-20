@@ -341,7 +341,7 @@ A **profile** is a named command, for example "Rails Server" or "Codex". A **wor
 
 **Built-in shell.** The profile `shell` (kind `accessory`) runs the login shell (`$SHELL -l`, or `/bin/zsh` when `$SHELL` is not absolute). It is first in `hub.profiles`. A profile file can replace it with its own `shell` profile. `hub.profiles` entries also carry `cwd` (empty: the home directory).
 
-**Environment.** Every pane, also an accessory, starts through `/usr/bin/env -u LAZYREX_AGENT -u <agent variables>` (`agentEnvUnset`): the user can start an agent in a shell, and it must not inherit another agent's identity. Only an agent spawn sets `LAZYREX_AGENT` again. Lab: `tests/spawn-env-lab.mjs` (Rex 1203).
+**Environment.** Every pane, also an accessory, starts through `/usr/bin/env -u LAZYREX_AGENT -u <agent variables>` (`agentEnvUnset`): the user can start an agent in a shell, and it must not inherit another agent's identity. Only an agent spawn sets `LAZYREX_AGENT` again. Tests: `TestSpawnArgvEnv` (the pane command with stale variables) and `tests/isolation` (a worker pane of a lab server that has stale variables, Rex `0.0.1792158932-g88fd41`).
 
 **Agent profiles.** An agent profile also creates a hub agent with a new ID `<profile>-<n>` and name `<Name> <n>`. IDs are never reused. The pane gets `LAZYREX_AGENT=<id>` through `/usr/bin/env`, because Rex has no env option on a spawn. The MCP shim uses `LAZYREX_AGENT` before its `-agent` flag, so a shared MCP config (`-agent claude`) still joins as the new ID. Messaging adds a thread tab for the new agent without a restart.
 

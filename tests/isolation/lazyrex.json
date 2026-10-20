@@ -4,7 +4,7 @@
  "requires": [{"name": "isodep", "path": "probe.lua"}],
  "test": {
   "agents": [{"id": "alice", "name": "Alice"}],
-  "env": {"LRT_PLAIN": "plain value", "LRT_DATA": "${LAB}/data"},
+  "env": {"LRT_PLAIN": "plain value", "LRT_DATA": "${LAB}/data", "CODEX_THREAD_ID": "stale-thread", "CLAUDECODE": "1"},
   "args": {
    "isofix": {"name": "isofix", "marker_dir": "${LAB}/marks"},
    "isodep": {"name": "isodep", "marker_dir": "${PLUGIN}/marks"}
