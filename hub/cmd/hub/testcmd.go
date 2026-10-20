@@ -87,7 +87,7 @@ func checkNotice(s string) error {
 
 func loadManifest(dir string) (*manifest, error) {
 	path := filepath.Join(dir, "lazyrex.json")
-	b, err := os.ReadFile(path)
+	b, err := readManifestBytes(dir)
 	if err != nil {
 		return nil, err
 	}
