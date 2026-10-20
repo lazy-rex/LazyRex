@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -154,7 +155,22 @@ func (h *Hub) bindingSession(a *Agent) string {
 	return h.workSession()
 }
 
-func (h *Hub) recordState(ctx context.Context, sess, blockID, record string) string {
+// errNoRecord: the pane has no program status record with the configured ID.
+var errNoRecord = errors.New("no program status record")
+
+// readStatus reads the state of a pane's program status record. Rex answers a session's method
+// only on a connection attached to that session (observed on Rex 0.0.1792158932-g88fd41, lab:
+// "conflict: stream is not attached to session"), so it attaches a session other than the work
+// session first. The attach also brings that session's program_status events.
+func (h *Hub) readStatus(ctx context.Context, sess, blockID, record string) (string, error) {
+	if sess != h.workSession() {
+		if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
+			return "", err
+		}
+	}
+	if f := h.statusReadFault(sess, "fail"); f != nil {
+		return "", errors.New("injected fault: the status read failed")
+	}
 	var status struct {
 		Records []struct {
 			ID    string `json:"id"`
@@ -162,14 +178,24 @@ func (h *Hub) recordState(ctx context.Context, sess, blockID, record string) str
 		} `json:"records"`
 	}
 	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.program_status", sess, blockID, nil, &status); err != nil {
-		return ""
+		return "", err
 	}
 	for _, r := range status.Records {
 		if r.ID == record {
-			return r.State
+			return r.State, nil
 		}
 	}
-	return ""
+	return "", errNoRecord
+}
+
+// recordState is readStatus for a join, a rebind or a restore: a failed read is logged and gives
+// the unknown state "". noticeLoop reads the state again when a notice waits (noticeStatus).
+func (h *Hub) recordState(ctx context.Context, sess, blockID, record string) string {
+	s, err := h.readStatus(ctx, sess, blockID, record)
+	if err != nil {
+		log.Printf("status of block %s (record %q): %v", blockID, record, err)
+	}
+	return s
 }
 
 func (h *Hub) saveBinding(ctx context.Context, agent, sess, block string, child int, start string) error {
@@ -203,7 +229,7 @@ func (h *Hub) loadBindings(ctx context.Context) error {
 			if s := h.bindingSession(a); s != h.workSession() {
 				h.sessionBlocksIn(ctx, s)
 			}
-			a.State = h.recordState(ctx, h.bindingSession(a), block, a.StatusRecord)
+			a.setState(h.recordState(ctx, h.bindingSession(a), block, a.StatusRecord))
 		}
 		log.Printf("agent %s: bound to %s pid %d live=%v state %q", id, block, pid, a.live(), a.State)
 	}
@@ -283,7 +309,7 @@ func (h *Hub) join(ctx context.Context, p perform, args map[string]any) (any, er
 		h.mu.Unlock()
 		state := h.recordState(ctx, sess, block, a.StatusRecord)
 		h.mu.Lock()
-		a.State = state
+		a.setState(state)
 		h.ev.emit("agent_joined", map[string]any{"agent": id, "block_id": block})
 		h.kickNotices()
 		h.kickSpawns()
@@ -309,6 +335,13 @@ func (h *Hub) kickNotices() {
 // It runs on kicks, not on a timer. A timer is armed only after a failed write, to retry it.
 func (h *Hub) noticeLoop(ctx context.Context) {
 	var retry <-chan time.Time
+	// tries: agents whose status read gave no state, with the time of the next read (backoff from
+	// 5 s to 1 min). A kick before that time does not read again.
+	type try struct {
+		next time.Time
+		wait time.Duration
+	}
+	tries := map[string]*try{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -317,6 +350,12 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		case <-retry:
 		}
 		retry = nil
+		var next time.Time // the earliest retry that this pass asks for
+		arm := func(d time.Duration) {
+			if t := time.Now().Add(d); next.IsZero() || t.Before(next) {
+				next = t
+			}
+		}
 		pending, err := h.db.pendingNotices(ctx)
 		if err != nil {
 			log.Printf("notices: %v", err)
@@ -326,7 +365,34 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		for _, n := range pending {
 			h.mu.Lock()
 			a, pl := h.noticeTarget(n.agent), h.plugins[n.ns]
-			due := a != nil && pl != nil && a.ready() && n.intentRev > a.delivered[n.ns]
+			waiting := a != nil && pl != nil && pl.Notice != "" && n.intentRev > a.delivered[n.ns]
+			if a != nil && a.State != "" {
+				delete(tries, n.agent) // a known state ends the backoff
+			}
+			if waiting && a.live() && a.State == "" {
+				// The state is unknown: a read at start may have failed, and no status event came
+				// since. Read it now. Unknown is never ready: a notice ends with CR, and a blocked
+				// prompt could take it as an answer.
+				snap := statusSnap{a: a, sess: h.bindingSession(a), block: a.BlockID, pid: a.ChildPID, record: a.StatusRecord, gen: a.stateGen}
+				h.mu.Unlock()
+				if t := tries[n.agent]; t != nil && time.Now().Before(t.next) {
+					arm(time.Until(t.next))
+				} else if h.noticeStatus(ctx, n.agent, snap) {
+					delete(tries, n.agent)
+				} else {
+					if t == nil {
+						t = &try{}
+						tries[n.agent] = t
+					}
+					t.wait = min(max(2*t.wait, 5*time.Second), time.Minute)
+					t.next = time.Now().Add(t.wait)
+					arm(t.wait)
+				}
+				h.mu.Lock()
+				a = h.noticeTarget(n.agent)
+				waiting = a != nil && n.intentRev > a.delivered[n.ns]
+			}
+			due := waiting && a.ready()
 			sess, block, conn := "", "", ""
 			if due {
 				sess, block, conn = h.bindingSession(a), a.BlockID, a.ClientID
@@ -337,7 +403,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			}
 			if err := h.writeNotice(ctx, sess, block, pl.Notice); err != nil {
 				log.Printf("notice to %s: %v", n.agent, err) // not marked delivered
-				retry = time.After(time.Second)
+				arm(time.Second)
 				continue
 			}
 			if f := h.faults.take("notice-written", "gate", ""); f != nil {
@@ -361,6 +427,9 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			h.mu.Unlock()
 			h.ev.emit("notice_written", map[string]any{"agent": n.agent, "plugin": n.ns, "intent_rev": revString(n.intentRev)})
 		}
+		if !next.IsZero() {
+			retry = time.After(time.Until(next))
+		}
 	}
 }
 
@@ -373,4 +442,45 @@ func (h *Hub) writeNotice(ctx context.Context, sess, blockID, text string) error
 		return err
 	}
 	return write("\r")
+}
+
+// statusSnap is what noticeLoop knew about an agent before a status read.
+type statusSnap struct {
+	a                   *Agent
+	sess, block, record string
+	pid, gen            int
+}
+
+// noticeStatus reads the program status of an agent whose state is unknown while a notice waits
+// for it. The read runs outside h.mu. Its result applies only if, after the read, the identity
+// still names the same Agent with the same pane, process, status record and state generation: a
+// status event or a rebind during the read wins over the older result. It reports whether the
+// agent now has a known state; false makes noticeLoop retry with backoff (a failed read, a missing
+// record, or a state that changed during the read and is still unknown).
+func (h *Hub) noticeStatus(ctx context.Context, id string, s statusSnap) bool {
+	state, err := h.readStatus(ctx, s.sess, s.block, s.record)
+	if f := h.statusReadFault(s.sess, "hold"); f != nil {
+		h.waitRelease(f)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cur := h.noticeTarget(id)
+	if cur != s.a || cur.BlockID != s.block || cur.ChildPID != s.pid || cur.StatusRecord != s.record || cur.stateGen != s.gen {
+		h.ev.emit("agent_status_read", map[string]any{"agent": id, "applied": false})
+		return cur != nil && cur.State != ""
+	}
+	if err != nil {
+		log.Printf("notice for %s: status of block %s (record %q): %v; retrying", id, s.block, s.record, err)
+		h.ev.emit("agent_status_read", map[string]any{"agent": id, "applied": false, "error": err.Error()})
+		return false
+	}
+	cur.setState(state)
+	h.ev.emit("agent_status_read", map[string]any{"agent": id, "applied": true, "state": state})
+	if state == "" {
+		return false
+	}
+	// The home shows agent readiness. Only a known state wakes noticeLoop again, so an unknown one
+	// cannot make it read in a loop. go: h.mu is held.
+	go h.changed("agents")
+	return true
 }

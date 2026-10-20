@@ -171,6 +171,7 @@ Methods:
 | `a:hub(action, args)` | To the hub. |
 | `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
 | `a:title(text)` | Sets the terminal title of the agent's pane (OSC 2), as an agent CLI does. |
+| `a:program_status(state)` | Reports the root program status record of the agent's pane (OSC 7501), for example `idle`, `working` or `blocked`, as an agent CLI does. The hub reads it for notice readiness (`tests/harness/tests/notice_ready.lua`). |
 | `a:exit()` | Ends the agent process, as the user quits an agent CLI. The agent cannot be used again. |
 | `a:report{kind, conversation_id, source, block}` | `hub.identity.report` from a new process in the pane, like an agent hook. `block` is an optional hint (the hub ignores a wrong one). |
 | `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return when the process has started; then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |
@@ -339,10 +340,12 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
 | `{point = 'action', action, when = 'after', mode, key, plugin}` | The handler runs once. If it succeeds, its reply is replaced (`failed` or `disconnected`). If it fails, its own error is the reply and the fault stays armed. |
 | `{point = 'watch-nudge', mode = 'drop', key, plugin}` | The hub does not send the next `hub.changed` nudge of that plugin's watch `key` (any watch if `key` is not given). The repeat schedule continues (docs/hub.md, "Nudges"). |
+| `{point = 'status-read', mode = 'fail', key = session}` | The next read of a pane's program status in that session (any session if `key` is not given) fails after the hub attaches the session. The hub then treats the state as unknown. |
+| `{point = 'status-read', mode = 'hold', key = session}` | The notice loop's next status read of an agent with an unknown state, in that session, waits after the read until `fault_release(id)` (at most 30 s). A test can change the status in between: the older result must not apply. A hold that is still closed at the end of the file fails the file. |
 
 | `{point = 'action', action, when = 'before', mode = 'gate', key, plugin}` | A barrier for a caller that retries. From the call that fires it until `fault_release(id)`, every matching call gets code `unavailable` and runs no handler. The hub retries a view operation with that outcome every 500 ms, so the operation passes after the release. A gate that is still closed at the end of the file fails the file. `fault_state` reports `gated`, the number of refused calls. `fault_release` of a gate that has not fired is an error. |
 
-- `nth = n` (action faults only) fires on the n-th matching call; the default is 1. Every armed
+- `nth = n` (action and status-read faults) fires on the n-th matching call; the default is 1. Every armed
   fault that matches counts the call, also when another fault fires. An after fault counts only
   calls whose handler succeeded. A call that a closed gate refuses counts for no fault: it does
   not reach the hub.

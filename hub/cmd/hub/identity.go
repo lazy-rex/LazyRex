@@ -597,7 +597,7 @@ func (h *Hub) identitySync(ctx context.Context) error {
 	}
 	h.mu.Unlock()
 	for _, a := range fresh {
-		a.State = h.recordState(ctx, a.Session, a.BlockID, a.StatusRecord)
+		a.setState(h.recordState(ctx, a.Session, a.BlockID, a.StatusRecord))
 	}
 	h.mu.Lock()
 	h.idents, h.aliases = next, aliases

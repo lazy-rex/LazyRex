@@ -70,11 +70,15 @@ type Agent struct {
 	ChildPID               int
 	ChildStart             string
 	State                  string           // latest state of the trusted record; "" when absent or removed
+	stateGen               int              // counts State writes (setState): a status read applies only if none happened during it
 	ClientID               string           // the shim connection that joined last
 	Profile                string           // set for an agent that a spawn created
 	Kind, IdState          string           // an identity (identity.go): its kind and state; "" for a legacy agent
 	delivered              map[string]int64 // namespace -> highest intent revision written for this connection
 }
+
+// setState records a new program status state. h.mu must be held for an agent that the hub lists.
+func (a *Agent) setState(s string) { a.State, a.stateGen = s, a.stateGen+1 }
 
 func (a *Agent) live() bool { return a.BlockID != "" && alive(a.ChildPID, a.ChildStart) }
 
@@ -536,9 +540,9 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			}
 			// Only the configured record counts. A removed record is not ready.
 			if name == "program_status_changed" && ev.ID == a.StatusRecord {
-				a.State = ev.Record.State
+				a.setState(ev.Record.State)
 			} else if name == "program_status_removed" && contains(ev.IDs, a.StatusRecord) {
-				a.State = ""
+				a.setState("")
 			} else {
 				continue
 			}

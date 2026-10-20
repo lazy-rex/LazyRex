@@ -413,6 +413,9 @@ end
 
 -- title sets the terminal title of the agent's pane (OSC 2), as an agent CLI does.
 function Agent:title(text) return perform(self.client, 'agent.title', {title = text}) end
+-- program_status reports the root program status record (OSC 7501, Rex Program Status Protocol)
+-- with this state, for example idle, working or blocked.
+function Agent:program_status(state) return perform(self.client, 'agent.program_status', {state = state}) end
 -- exit ends the agent process, as the user quits an agent CLI. The agent cannot be used again.
 function Agent:exit()
   perform(self.client, 'agent.exit', {})

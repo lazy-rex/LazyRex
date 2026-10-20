@@ -384,7 +384,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		}
 		var unfired []any
 		for _, f := range h.test.faults {
-			if !f.Fired || (f.Mode == "gate" && !f.Released) {
+			if !f.Fired || ((f.Mode == "gate" || f.Mode == "hold") && !f.Released) {
 				unfired = append(unfired, map[string]any{"id": f.ID, "point": f.Point, "mode": f.Mode, "action": f.Action, "when": f.When,
 					"fired": f.Fired})
 			}

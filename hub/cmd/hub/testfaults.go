@@ -1,7 +1,7 @@
 package main
 
 // Test-mode faults (docs/testing.md, "Faults"). A test arms a fault with hub.test.fault; it fires
-// once. Three points:
+// once. Four points:
 //   - spawn-create: the Rex request that creates a hub.spawn worker's pane (lose-answer, drop,
 //     refuse; op = the spawn key).
 //   - action: a hub action that a registered plugin calls (when = before | after,
@@ -11,6 +11,9 @@ package main
 //     A hub request cannot wait: Rex delivers the hub's calls one at a time.
 //   - watch-nudge: a hub.changed nudge of a watch to the plugin (watchsvc.go; mode drop; key =
 //     the watch key, "" = any). The nudge is not sent.
+//   - status-read: a read of a pane's program status (agents.go readStatus; key = the session ID,
+//     "" = any). fail: the read fails. hold: noticeLoop's read of an unknown state waits after the
+//     read until hub.test.fault_release, so a test can change the status in between.
 // nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
 // counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
@@ -18,6 +21,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
@@ -35,12 +39,13 @@ type testFault struct {
 }
 
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"},
-	"watch-nudge": {"drop"}}
+	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
 	"action":      {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"},
-	"watch-nudge": {"point", "mode", "key", "plugin"}}
+	"watch-nudge": {"point", "mode", "key", "plugin"},
+	"status-read": {"point", "mode", "key", "plugin", "nth"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -78,7 +83,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate) or watch-nudge (drop)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop) or status-read (fail, hold)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -86,6 +91,8 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 	case "watch-nudge":
 		f.Key, _ = args["key"].(string)
 		f.Plugin = plugin
+	case "status-read":
+		f.Key, _ = args["key"].(string)
 	case "action":
 		f.Action, _ = args["action"].(string)
 		f.When, _ = args["when"].(string)
@@ -264,8 +271,8 @@ func (h *Hub) testFaultRelease(id float64) (any, error) {
 		if float64(f.ID) != id {
 			continue
 		}
-		if f.Mode != "gate" || f.Released {
-			return nil, bad("invalid: fault %d is not a closed gate", f.ID)
+		if f.Mode != "gate" && f.Mode != "hold" || f.Released {
+			return nil, bad("invalid: fault %d is not a closed gate or hold", f.ID)
 		}
 		if !f.Fired {
 			return nil, bad("invalid: gate %d has not fired", f.ID)
@@ -274,4 +281,24 @@ func (h *Hub) testFaultRelease(id float64) (any, error) {
 		return map[string]any{"released": true, "fired": f.Fired, "gated": f.Gated}, nil
 	}
 	return nil, bad("invalid: no fault %v", id)
+}
+
+// statusReadFault fires an armed status-read fault of this mode for a status read of a pane in
+// session sess (key = the session ID, "" = any). It is nil outside test mode.
+func (h *Hub) statusReadFault(sess, mode string) *testFault {
+	return h.takeFault(func(f *testFault) bool {
+		return f.Point == "status-read" && f.Mode == mode && (f.Key == "" || f.Key == sess)
+	})
+}
+
+// waitRelease holds the caller until hub.test.fault_release opens f, at most 30 s.
+func (h *Hub) waitRelease(f *testFault) {
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		h.test.mu.Lock()
+		released := f.Released
+		h.test.mu.Unlock()
+		if released {
+			return
+		}
+	}
 }

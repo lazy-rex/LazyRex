@@ -75,6 +75,22 @@ Status events (observed by Codex in a lab, same build; full report in `agent-wak
 - A program can report status itself with OSC 7501: `ESC ] 7501 ; state=idle:id=<id>:app=<app> BEL` (or `ESC \`). Colon-separated `key=value`, not JSON. Text fields such as `msg` are base64. Each report replaces the record. `state=clear` removes it. A hook-style shell command that wrote it to `/dev/tty` passed. Installing it as a real agent lifecycle hook is untested. The named hook record in that run had no `owner` field.
 - An empty status list does not mean idle. A clear can occur between two queued Codex turns.
 
+### Program status needs an attached session
+
+Observed on Rex 0.0.1792158932-g88fd41 (lab `/tmp/rexlab-hub-claude`, 2026-10-20, Go lab test
+`TestStatusReadNeedsAttach`):
+
+- `com.superlogical.terminal.program_status` on a pane in a session that the connection has not
+  attached fails: `conflict: stream is not attached to session <id>`. After `session.attach` the
+  same call returns the records, for example `[{id: "", state: "idle"}]` (the root record).
+- After the attach (`event_scope: session`), the hub got the `program_status_changed` events of
+  that session: in `tests/harness/tests/notice_ready.lua`, a status change after the first read
+  reached the hub. A status that a pane reported before the attach gave the hub no event later
+  (the restart test). Whether an unattached connection gets any event of that session: not tested.
+- The hub attaches the session before each status read (`readStatus`). Before that fix, an
+  identity in another session read its status at hub start without an attach, and the hub kept
+  the unknown state until the next status change (defect, live hub, 2026-10-20).
+
 ### Block events (verified)
 
 `rex events -s <session> --json` (or a control connection attached with `event_scope: "session"`) delivers terminal events wrapped like this:
@@ -529,7 +545,7 @@ Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `f
 
 - No session hide or archive exists. `session.list` items carry only `session_id` and `label`.
 - Hide a session: detach every block. Rex removes each empty window. The session has 0 windows, processes keep running, and **the app sidebar still shows the session header with nothing under it**.
-- Attachment (observed on Rex 1203, lab): on a session the connection has not attached, `session.list_blocks`, `com.superlogical.terminal.process` and `block.close` fail with "stream is not attached to session …".
+- Attachment (observed on Rex 1203, lab): on a session the connection has not attached, `session.list_blocks`, `com.superlogical.terminal.process` and `block.close` fail with "stream is not attached to session …". `com.superlogical.terminal.program_status` fails the same way (Rex 0.0.1792158932-g88fd41; see "Program status needs an attached session").
 - OSC 11 (observed on Rex 1203, lab): a terminal answers a background color query only after a client has sent a theme (`com.superlogical.terminal.set_theme`). A block that no client has themed gives no answer, placed or detached. After `set_theme` the terminal answers with that background, also while detached. So a program that queries once at start, in a pane the app has not shown yet, cannot learn the app's theme.
 - Destroy order (observed on Rex 1203, lab, `destroy-order.mjs` probe): `session.destroy` emits `block_closed` for each block (placed and detached), then `session_destroyed`. When a client handles `block_closed`, `session.list_blocks` already answers `session … not found`. So a `block_closed` handler can tell a session loss from a single close.
 - Unhide: `new_window` with a placeholder block, `move_block` the detached blocks next to it, then close the placeholder. Verified: the block returns with its process running.

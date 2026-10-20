@@ -458,7 +458,7 @@ func testAgentMain(argv []string) int {
 	log.SetPrefix("testagent " + *id + " ")
 	ctx := context.Background()
 	var actions []map[string]any
-	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.exit"} {
+	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.program_status", "agent.exit"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testagent:"+*id, actions)
@@ -533,6 +533,10 @@ func testAgentMain(argv []string) int {
 		case "agent.title": // the terminal title (OSC 2), as an agent CLI sets it: stdout is the pane
 			title, _ := args["title"].(string)
 			_, err := fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", title)
+			c.reply(p.CallID, map[string]any{}, err)
+		case "agent.program_status": // the root program status record (OSC 7501), as an agent CLI reports it
+			state, _ := args["state"].(string)
+			_, err := fmt.Fprintf(os.Stdout, "\x1b]7501;state=%s\x1b\\", state)
 			c.reply(p.CallID, map[string]any{}, err)
 		case "agent.exit": // the agent process exits, as an agent CLI does when the user quits it
 			c.reply(p.CallID, map[string]any{}, nil)

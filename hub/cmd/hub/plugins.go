@@ -594,7 +594,8 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 				return nil, bad("block %s is bound to agent %s", block, other.ID)
 			}
 		}
-		a.Session, a.BlockID, a.ChildPID, a.ChildStart, a.ClientID, a.State = sess, block, child, startTime(child), "", state
+		a.Session, a.BlockID, a.ChildPID, a.ChildStart, a.ClientID = sess, block, child, startTime(child), ""
+		a.setState(state)
 		a.delivered = map[string]int64{}
 		if err := h.saveBinding(ctx, id, sess, block, child, a.ChildStart); err != nil {
 			return nil, err
