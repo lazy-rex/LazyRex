@@ -104,8 +104,9 @@ func TestPluginEntriesResolve(t *testing.T) {
 }
 
 // Each start attempt resolves again (section 7, "The graph"). A bound name stays: a changed
-// manifest name is refused with the restart text, and its dependents are refused. An entry that
-// resolves later with a name in use is refused; the running owner keeps its name and passes.
+// manifest name is refused with the restart text, and its dependents are refused. A duplicate name
+// refuses every entry with it, also when one entry resolved earlier: the owner keeps its name
+// (and a running instance), and the later entry binds nothing.
 func TestPluginEntriesResolveAgain(t *testing.T) {
 	dir := t.TempDir()
 	plugDir(t, dir, "a", `{"name":"a","main":"a.lua"}`, "a.lua")
@@ -120,14 +121,17 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	if a.name != "a" || b.name != "b" || late.name != "" || late.err == nil {
 		t.Fatalf("first: %q %q %q %v", a.name, b.name, late.name, late.err)
 	}
-	// The late entry gets a manifest with the name a: it is refused, a is not.
+	// The late entry gets a manifest with the name a: both entries are refused; a keeps its name.
 	plugDir(t, dir, "late", `{"name":"a","main":"l.lua"}`, "l.lua")
 	resolveEntries(c.path, c.entries)
 	if late.name != "" || late.err == nil || late.err.Error() != "entries 1 and 3 have the same name a" {
 		t.Errorf("late: %q %v", late.name, late.err)
 	}
-	if a.err != nil || a.cand == nil || b.err != nil {
-		t.Errorf("the owner: %v %v", a.err, b.err)
+	if a.name != "a" || a.cand != nil || a.err == nil || a.err.Error() != "entries 1 and 3 have the same name a" {
+		t.Errorf("the owner: %q %v", a.name, a.err)
+	}
+	if b.err == nil || b.err.Error() != "plugin b: dependency a is refused: entries 1 and 3 have the same name a" {
+		t.Errorf("the dependent: %v", b.err)
 	}
 	// a's manifest changes its name.
 	plugDir(t, dir, "a", `{"name":"a2","main":"a.lua"}`, "a.lua")
@@ -144,7 +148,8 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	if len(order) != 2 || order[0] != a || order[1] != b {
 		t.Errorf("order: the refused named entries in config order: %v", order)
 	}
-	// A repair: the old name again passes.
+	// A repair: the late entry loses its manifest, and a has the old name again: a passes.
+	os.Remove(filepath.Join(dir, "late", "lazyrex.json"))
 	plugDir(t, dir, "a", `{"name":"a","main":"a.lua","notice":"Now with a notice."}`, "a.lua")
 	resolveEntries(c.path, c.entries)
 	if a.err != nil || a.cand == nil || a.cand.Notice != "Now with a notice." || b.err != nil {

@@ -23,8 +23,9 @@ On the branch `plugins/step2d` (in review), step 2d part 1:
 - One start path, `startPlugin` (`plugins.go`), for hub start recovery, `hub.admin.start`, a crash
   respawn and a restart after a session loss. Its order is the one of section 7, "Lifecycle".
 - Each start attempt resolves every entry again (`resolveEntries`). A name binds at the first
-  resolution that gives it without a conflict. An entry that resolves later with a name in use is
-  refused; the owner keeps its name. Two entries with one name at hub start: neither binds.
+  resolution that gives it without a conflict. A duplicate name refuses every entry with it (step
+  1), also when one entry resolved earlier: that owner keeps its name and a running instance; the
+  other entry binds nothing. Two entries with one name at hub start: neither binds.
 - The states `refused` and `retained`. A refused start retires nothing. A recorded instance that
   still lives makes the record `retained`; `hub.register` from it fails with code `retained`.
 - `run`: the plugins row saves it at each spawn (column `run`). Notices use `run.notice`. Watch

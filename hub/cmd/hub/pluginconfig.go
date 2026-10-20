@@ -124,19 +124,14 @@ func (e *configEntry) checkSource(cfgDir string) error {
 
 // resolveEntries resolves every entry again: each start attempt rebuilds the whole graph (section
 // 7, "The graph"). It reads each local manifest and applies the name and graph rules. It records
-// each entry's candidate or error, and binds each name that resolved without a conflict. It
+// each entry's candidate or error, and binds each name that resolved without a conflict (a name that one entry gives).
+// A bound name stays bound. It
 // returns the named entries: the ones that passed in start order (dependencies first), then the
 // refused ones in config order. cfgPath names the config in the "not installed" text. The caller
 // holds Hub.entriesMu, or owns the entries.
 func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 	src := make([]*sourceEntry, len(entries))
 	runs := make([]*pluginRun, len(entries))
-	bound := map[string]*configEntry{}
-	for _, e := range entries {
-		if e.name != "" {
-			bound[e.name] = e
-		}
-	}
 	for i, e := range entries {
 		s := &sourceEntry{Index: e.index, Source: e.Source, Name: e.name}
 		src[i] = s
@@ -153,10 +148,9 @@ func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 			s.Err = fmt.Errorf("plugin source %s: %w", e.Source, err)
 		case e.name != "" && m.Name != e.name:
 			s.Err = fmt.Errorf("plugin %s: the manifest name changed from %s to %s; restart the hub", e.name, e.name, m.Name)
-		case e.name == "" && bound[m.Name] != nil:
-			// The name is in use: only the entry that resolved later is refused.
-			s.Err = fmt.Errorf("entries %d and %d have the same name %s", bound[m.Name].index, e.index, m.Name)
 		default:
+			// A name in use is a duplicate name: checkGraph refuses every entry with it. The owner
+			// keeps the binding (uses below), and its running instance continues.
 			s.Name, s.Depends = m.Name, m.Depends
 			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: e.dir, Path: main, Events: m.Events, Notice: m.Notice,
 				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots}
