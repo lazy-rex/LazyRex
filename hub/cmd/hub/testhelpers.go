@@ -457,7 +457,7 @@ func testAgentMain(argv []string) int {
 	log.SetPrefix("testagent " + *id + " ")
 	ctx := context.Background()
 	var actions []map[string]any
-	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report"} {
+	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.title"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testagent:"+*id, actions)
@@ -528,6 +528,10 @@ func testAgentMain(argv []string) int {
 			}
 			raw, err := c.perform(ctx, client, action, inner)
 			c.reply(p.CallID, raw, err)
+		case "agent.title": // the terminal title (OSC 2), as an agent CLI sets it: stdout is the pane
+			title, _ := args["title"].(string)
+			_, err := fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", title)
+			c.reply(p.CallID, map[string]any{}, err)
 		case "agent.report":
 			// A new process for each report, as an agent hook runs: the hub orders hook reports by
 			// the start time of the reporting process (identity.go).

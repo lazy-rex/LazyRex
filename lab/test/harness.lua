@@ -381,7 +381,10 @@ function H.agent(id, opts)
   local cmd = {A.hub_bin, 'testagent', '-id', id}
   if join then cmd[#cmd + 1] = '-join'; cmd[#cmd + 1] = join end
   local sess = opts.session or A.tests_session
-  local win, err = rex.call('session.new_window', {session_id = sess, window_label = opts.title or id,
+  -- opts.unnamed: the tab gets no label, so Rex shows its generated label.
+  local label = opts.title or id
+  if opts.unnamed then label = nil end
+  local win, err = rex.call('session.new_window', {session_id = sess, window_label = label,
     layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = cmd}}}})
   if err then error(err_of(err), 0) end
   local a = setmetatable({id = id, label = 'lazyrex-testagent:' .. id, session = sess, window = win.window_id}, Agent)
@@ -404,6 +407,8 @@ function Agent:set_label(label)
   if err then error(err_of(err), 0) end
 end
 
+-- title sets the terminal title of the agent's pane (OSC 2), as an agent CLI does.
+function Agent:title(text) return perform(self.client, 'agent.title', {title = text}) end
 -- call runs an exported plugin action through the agent face: the MCP path.
 function Agent:call(action, args) return perform(self.client, 'agent.call', {action = action, args = args or {}}) end
 -- call_raw is call with the arguments as JSON text. Rex Lua encodes an empty table as {}

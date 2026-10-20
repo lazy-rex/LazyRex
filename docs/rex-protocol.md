@@ -841,7 +841,7 @@ The cause of that difference is unverified. Use the documented `--all` option fo
 ### Terminal titles (Rex 1203, 2026-10-17)
 
 - Observed on the real server: block method `com.superlogical.terminal.title` returns `{title, owner: {pid, name}}`. Claude Code sets the title of its pane, with an animated status glyph in front (for example "✳ ").
-- Observed in the lab: a title change (OSC 2) reaches a session-attached control client as `block_event` with name `title_changed`. The hub renames an agent in a tab that has only Rex's generated label ("Window " + 8 characters of the window ID) after its terminal title, 1 s after the first change of a burst (`tests/pane-names-lab.mjs`).
+- Observed in the lab: a title change (OSC 2) reaches a session-attached control client as `block_event` with name `title_changed`. The hub renames an agent in a tab that has only Rex's generated label ("Window " + 8 characters of the window ID) after its terminal title, 1 s after the first change of a burst (`tests/harness/tests/pane_names.lua`).
 
 ### A pane's working directory (Rex 0.0.1792158932-g88fd41, 2026-10-17)
 

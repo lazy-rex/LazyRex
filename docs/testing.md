@@ -154,6 +154,7 @@ sees real pane ancestry for its calls. Options:
 
 - `join`: the roster agent to join as (default `id`). `false`: do not join.
 - `title`: the tab label (default `id`). The hub uses it as the identity name.
+- `unnamed`: `true` gives the tab no label, so Rex shows its generated label. The hub then names an identity after the terminal title (`a:title`).
 - `session`: the session of the pane (default: the tests session).
 
 Methods:
@@ -165,6 +166,7 @@ Methods:
 | `a:direct(action, args)` | To the plugin client itself. |
 | `a:hub(action, args)` | To the hub. |
 | `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
+| `a:title(text)` | Sets the terminal title of the agent's pane (OSC 2), as an agent CLI does. |
 | `a:report{kind, conversation_id, source}` | `hub.identity.report` from a new process in the pane, like an agent hook. |
 
 A call from the runner itself (`H.perform(client, action, args)`) comes from outside every pane.
