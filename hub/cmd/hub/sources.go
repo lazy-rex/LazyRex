@@ -35,8 +35,8 @@ type pluginManifest struct {
 // decision, 2026-10-20: the hub refuses plugin manifests over 64 KiB by bounding the read).
 const maxManifestBytes = 64 << 10
 
-// readManifestBytes reads dir/lazyrex.json. It reads at most maxManifestBytes+1 bytes, so a large
-// file costs no more memory than the bound. A missing file gives an error that matches
+// readManifestBytes reads dir/lazyrex.json. It reads at most maxManifestBytes+1 bytes of input,
+// so the read of a large file is bounded. A missing file gives an error that matches
 // os.ErrNotExist.
 func readManifestBytes(dir string) ([]byte, error) {
 	path := filepath.Join(dir, "lazyrex.json")
@@ -50,7 +50,8 @@ func readManifestBytes(dir string) ([]byte, error) {
 		return nil, err
 	}
 	if len(b) > maxManifestBytes {
-		// The size is for the text only. A file that grew after the read can show a smaller size.
+		// The size is for the text only. A Stat size within the bound means that the file shrank
+		// after the read.
 		if fi, err := f.Stat(); err == nil && fi.Size() > maxManifestBytes {
 			return nil, fmt.Errorf("%s is %d bytes, over the %d-byte limit", path, fi.Size(), maxManifestBytes)
 		}
