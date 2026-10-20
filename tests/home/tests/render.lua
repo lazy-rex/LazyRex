@@ -23,6 +23,9 @@ test('the tree lists the other plugins, the agents and a launch form per profile
   expect(find(plugins, 'lazyrex'), 'the home plugin does not list itself').to_be(nil)
   expect(find(plugins, 'messaging')).to_be_truthy()
   expect(find(plugins, 'harnessfix')).to_be_truthy()
+  local ids = {}
+  for _, p in ipairs(plugins) do ids[#ids + 1] = p.id end
+  expect(ids, 'the other plugins in config order (home-panel.mjs)').to_equal({'messaging', 'harnessfix'})
   local agents = H.node(tree, 'agents').items
   expect(find(agents, 'user'), 'the user is not an agent item').to_be(nil)
   expect(find(agents, 'codex').label).to_be('Codex')

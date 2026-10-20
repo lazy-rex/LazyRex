@@ -323,7 +323,7 @@ Empty selects do not open. Option labels truncate instead of wrapping.
 
 Model tests cover filtering, picks, cancellation, tree updates, scrolling, and narrow labels.
 They also check unchanged form rows, upward placement, reduced windows, and clicks over other controls.
-`select-lab.mjs` exercises the Profiles Start form with twelve fixture profiles.
+`select_test.go` covers the overlay; Profiles `tests/start.lua` covers the Start form end to end.
 Observed on Rex `0.0.1792158932-g88fd41`: keyboard and mouse picks submit the selected
 profile through the existing action. The highlight stays visible at 32 columns and 20 rows.
 The lab also checks unchanged rows outside the layer and Placement above its field.
