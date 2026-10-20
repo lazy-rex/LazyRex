@@ -386,7 +386,84 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A notify from a plugin without a notice | `no_notice`; no record written | U, H |
 | Harness: the home plugin under test; a `test.plugins` duplicate or `lazyrex` | one home plugin; a harness error | U |
 
-## 13. Not in this design
+## 13. Managed plugins (proposed for step 2, not approved)
+
+The plugin manager (the hub features pair) adds and removes plugins without editing the user's
+config. Step 2 must read its file from the start. If it does not, a user's `plugin sync` drops the
+lock entries of managed plugins. The coordinator's split: this section goes into step 2. The hub
+writing lock entries, `plugin fetch`, the pinned-target start and the `spawn_intents` kind stay
+with the features pair, on top of step 2.
+
+**File.** Config field `managed_plugins`: a path relative to the config directory. Default:
+`<state>/plugins.json`.
+
+```json
+{"plugins": [{"id": "<id>", "source": "<abs dir or github:...>", "args": {}, "watch_roots": []}]}
+```
+
+- `id`: `[a-z0-9_-]{1,64}`, required. It is the manager's handle for the entry. It is not the
+  plugin name: the manifest owns the name.
+- `source`: an absolute local directory or a `github:` source. A relative path is refused: the
+  file has no config directory to resolve against.
+- `args`: as in a config entry.
+- `watch_roots`: an array of absolute, clean paths. Step 2 checks only this shape and keeps the
+  value. Its meaning belongs to the plugin manager design.
+- Unknown fields are refused.
+
+**Missing and malformed file.**
+
+- A missing file is an empty list. The manager may never have written it.
+- A malformed file: bad JSON, an unknown field, a bad `id` or source, two entries with the same
+  `id`, or two entries with the same source.
+  - Hub start does not fail. The hub starts the config plugins and refuses every managed entry.
+    `hub.plugins` reports the file error once, as `{"managed_file": "<path>", "error": "..."}`.
+    Reason: a defect of the manager must not stop the plugins that the user configured.
+  - `plugin sync`, `update` and `status` fail, and the lock stays unchanged. Reason: a command
+    that ignored the file could drop the managed lock entries.
+
+**Identity and graph.**
+
+- A managed entry's identity is `managed:<id>` and its exact source string. Texts use it, for
+  example `entries 2 and managed:notes have the same name notes`.
+- A source in both the config and the managed file: the managed entry is refused, and the config
+  entry is checked as usual. Text: `managed:<id>: the source <source> is also in the config`.
+- The graph (section 7) contains the config entries and the managed entries. Names, dependencies
+  and cycles are checked across both.
+- Order: config entries first, then managed entries in file order, for the tie rule of
+  `startOrder`.
+- `hub.admin.start {"source": ...}` names a managed entry too.
+
+**Commands.** `sync`, `update` and `status` read the config entries and the managed entries.
+`update` accepts a managed `id` as well as a name or a source.
+
+**Orphaned lock entries.** A lock entry whose source is in neither the config nor the managed
+file never starts a plugin. `plugin status` reports it as `orphaned`. `plugin sync` removes it.
+For example, a cancelled add of the manager can leave one.
+
+**Size bounds.** The features pair proposed one shared bound: `lazyrex.json` at most 64 KiB, and
+a main file at most 1 MiB. The reviewer has not approved them: they are new compatibility limits.
+Measured on 2026-10-20 (the current main of each repository):
+
+| Plugin | lazyrex.json | main file |
+| --- | --- | --- |
+| Messaging | 459 B | 123461 B |
+| Profiles | 188 B | 25647 B |
+| Templates | 237 B | 61113 B |
+| Tunnels | 367 B | 66160 B |
+| Worktrees | 588 B | 74677 B |
+| lazyrex (home) | none yet | 11241 B |
+
+Proposal:
+
+- Manifest, 64 KiB: adopt it in step 2. The hub reads the whole manifest at each start attempt, so
+  a bound keeps that read small. The largest manifest today is 588 B, about 1/100 of the bound.
+  Error: `<dir>/lazyrex.json is <n> bytes, over the 65536-byte limit`.
+- Main file: no hub bound in step 2. The hub does not read the main file: it checks its type and
+  `rex do` reads it. (The digest reads every file, as a stream.) The manager can refuse a large
+  file in its own preview. Whether Rex limits the size of a `rex do` script: not tested.
+- The constant lives with the manifest loader, so the manager and the hub use one value.
+
+## 14. Not in this design
 
 - The lock can replace the release clones: a release is `plugin update <name>` and a plugin
   restart; a rollback is a lock entry with an older commit. This needs a user decision.
