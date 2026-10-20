@@ -852,7 +852,7 @@ This is a snapshot, not a guarantee against process exit or PID reuse.
 
 ### Tunnel blocks (observed 2026-10-17, Rex 0.0.1792158932-g88fd41, lab)
 
-- In `rex do`, `debug.getinfo(1, 'S').source` is the absolute script path **without** the `@` prefix of standard Lua (`/tmp/rexlab-tunnels-claude/probe.lua`). Match it with `^@?(/.*)/[^/]*$`.
+- In `rex do`, `debug.getinfo(1, 'S').source` is the absolute script path **without** the `@` prefix of standard Lua (`/tmp/rexlab-tunnels-claude/probe.lua`). Match it with `^@?(/.*)/[^/]*$`. The same is true for a chunk that the script loads with `loadfile` (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-20: the harness runner; its failure location compared with `@<path>` and never matched).
 - A plugin's `rex do` process inherits the lab server's environment. `os.getenv` reads variables that were set when `spikes/lab/server.sh` started. The hub config passes no plugin arguments, so the Tunnels lab uses this for its settings.
 - A `session.new_block` shell block with `exit.on_completion = false` stays detached and callable after its command exits. `com.superlogical.terminal.process` then has `last_exit` and no `child`.
 - `session.destroy` ended `opentunnel serve` in a detached block of that session: no opentunnel process remained, and the public URL failed with a TLS connect error within 3 seconds.

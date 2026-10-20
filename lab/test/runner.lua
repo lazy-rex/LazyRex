@@ -38,7 +38,8 @@ local function where(file)
   for level = 3, 40 do
     local info = debug.getinfo(level, 'Sl')
     if not info then break end
-    if info.source == '@' .. file and info.currentline and info.currentline > 0 then
+    -- Rex's Lua gives the source path without the leading @ of standard Lua (rex-protocol.md).
+    if (info.source == file or info.source == '@' .. file) and info.currentline and info.currentline > 0 then
       return file:match('[^/]*$') .. ':' .. info.currentline
     end
   end
