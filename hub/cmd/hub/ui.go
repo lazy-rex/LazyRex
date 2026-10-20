@@ -1741,8 +1741,8 @@ func (h *Hub) settleLegacySessions(ctx context.Context) {
 }
 
 // settleLegacySession cleans up a session of an older build after its last view row closed. It
-// waits while any view row in the session is not closed: a pending, sending or exited row keeps
-// its own recovery. Then:
+// waits until every view row in the session is closed. The reconcile loop retires the rows of loaded
+// plugins (closeLegacy); a row of a plugin that is not loaded keeps the cleanup pending. Then:
 //   - Rex has no such session: the hub forgets it.
 //   - The session has blocks (user panes): the hub deletes its legacy rows and stops managing it.
 //     The session and its panes stay with the user.

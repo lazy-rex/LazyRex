@@ -455,7 +455,7 @@ Effects on an old database:
 - A view in an old session (an app session, or a session of an older hub) is legacy. It retires, and its tab opens again in the LazyRex session.
 
 Legacy session cleanup (`settleLegacySession`, on every UI pass, for each session with a legacy `ui_sessions` row):
-- It waits while any view row in the session is not closed. A pending, sending or exited row keeps its own recovery.
+- It waits until every view row in the session is closed. The reconcile loop retires the rows of loaded plugins (an open view retires; a prepared, sending or exited row closes). A row of a plugin that is not loaded keeps the cleanup pending.
 - Rex has no such session: the hub forgets it.
 - The session has blocks (for example user panes): the hub deletes its legacy rows and stops managing it. The session and its panes stay with the user (event `legacy_session_released`).
 - The session has no blocks: the hub destroys it, then forgets it. A failed destroy keeps the rows, and the next pass tries again (event `legacy_cleanup_failed`).
@@ -468,7 +468,7 @@ Lab (observed on Rex 0.0.1792158932-g88fd41): `TestAppModeStateRemovedAtStartupL
 
 ## One LazyRex session (mount and detach)
 
-Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). Lab (Claude, Rex 1203, 2026-10-16); deployed and live until app sessions replace it.
+Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). Lab (Claude, Rex 1203, 2026-10-16).
 
 All plugin views live in one Rex session, labeled `lazyrex`. The home plugin (config `home`, default `lazyrex`) is always mounted, first. Its tab is the menu. One other plugin is **active**, and its tabs are mounted after the home tab. The views of every other plugin are **detached** with `session.detach_block`: their processes and unsaved input stay.
 
