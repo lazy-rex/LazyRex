@@ -156,6 +156,7 @@ sees real pane ancestry for its calls. Options:
 - `join`: the roster agent to join as (default `id`). `false`: do not join.
 - `title`: the tab label (default `id`). The hub uses it as the identity name.
 - `unnamed`: `true` gives the tab no label, so Rex shows its generated label. The hub then names an identity after the terminal title (`a:title`).
+- `keep_open`: `true` keeps the pane after the agent process exits (by default Rex closes the pane). Use it with `a:exit()`.
 - `session`: the session of the pane (default: the tests session).
 
 Methods:
@@ -168,8 +169,9 @@ Methods:
 | `a:hub(action, args)` | To the hub. |
 | `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
 | `a:title(text)` | Sets the terminal title of the agent's pane (OSC 2), as an agent CLI does. |
+| `a:exit()` | Ends the agent process, as the user quits an agent CLI. The agent cannot be used again. |
 | `a:report{kind, conversation_id, source, block}` | `hub.identity.report` from a new process in the pane, like an agent hook. `block` is an optional hint (the hub ignores a wrong one). |
-| `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return at once; then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |
+| `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return when the process has started; then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |
 
 A call from the runner itself (`H.perform(client, action, args)`) comes from outside every pane.
 Use it to test the plugin's refusal of an unknown caller.

@@ -384,8 +384,12 @@ function H.agent(id, opts)
   -- opts.unnamed: the tab gets no label, so Rex shows its generated label.
   local label = opts.title or id
   if opts.unnamed then label = nil end
+  -- opts.keep_open: the pane stays after its process exits (by default Rex closes it on exit,
+  -- observed on Rex 0.0.1792158932-g88fd41).
+  local options = {command = cmd}
+  if opts.keep_open then options.exit = {on_completion = false} end
   local win, err = rex.call('session.new_window', {session_id = sess, window_label = label,
-    layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = cmd}}}})
+    layout = {block = {flavor = 'com.superlogical.terminal.shell', options = options}}})
   if err then error(err_of(err), 0) end
   local a = setmetatable({id = id, label = 'lazyrex-testagent:' .. id, session = sess, window = win.window_id}, Agent)
   a.client = wait('agent ' .. id .. ' to start', function() return resolve(a.label) end, 15)
@@ -409,6 +413,11 @@ end
 
 -- title sets the terminal title of the agent's pane (OSC 2), as an agent CLI does.
 function Agent:title(text) return perform(self.client, 'agent.title', {title = text}) end
+-- exit ends the agent process, as the user quits an agent CLI. The agent cannot be used again.
+function Agent:exit()
+  perform(self.client, 'agent.exit', {})
+  agents[self.id] = nil
+end
 -- call runs an exported plugin action through the agent face: the MCP path.
 function Agent:call(action, args) return perform(self.client, 'agent.call', {action = action, args = args or {}}) end
 -- call_raw is call with the arguments as JSON text. Rex Lua encodes an empty table as {}

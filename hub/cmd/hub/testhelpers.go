@@ -458,7 +458,7 @@ func testAgentMain(argv []string) int {
 	log.SetPrefix("testagent " + *id + " ")
 	ctx := context.Background()
 	var actions []map[string]any
-	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title"} {
+	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.exit"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testagent:"+*id, actions)
@@ -534,13 +534,22 @@ func testAgentMain(argv []string) int {
 			title, _ := args["title"].(string)
 			_, err := fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", title)
 			c.reply(p.CallID, map[string]any{}, err)
+		case "agent.exit": // the agent process exits, as an agent CLI does when the user quits it
+			c.reply(p.CallID, map[string]any{}, nil)
+			go func() { time.Sleep(200 * time.Millisecond); os.Exit(0) }()
 		case "agent.report":
 			// delay_ms: the report process waits before it reports, so a report started later can
-			// finish first. async: answer at once; agent.report_result gives the outcome.
+			// finish first. async: answer when the process has started (its start time is then older
+			// than the start of any later report); agent.report_result gives the outcome.
 			delay, _ := args["delay_ms"].(float64)
 			key, _ := args["async"].(string)
+			wait, err := startTestReport(ctx, inner, int(delay))
+			if err != nil {
+				c.reply(p.CallID, nil, err)
+				return
+			}
 			if key == "" {
-				out, err := runTestReport(ctx, inner, int(delay))
+				out, err := wait()
 				c.reply(p.CallID, out, err)
 				return
 			}
@@ -548,7 +557,7 @@ func testAgentMain(argv []string) int {
 			reports[key] = nil
 			mu.Unlock()
 			go func() {
-				out, err := runTestReport(ctx, inner, int(delay))
+				out, err := wait()
 				mu.Lock()
 				reports[key] = &asyncReport{out, err}
 				mu.Unlock()
@@ -586,28 +595,35 @@ type asyncReport struct {
 	err error
 }
 
-// runTestReport runs one report in a new process, as an agent hook runs: the hub orders hook
+// startTestReport starts one report in a new process, as an agent hook runs: the hub orders hook
 // reports by the start time of the reporting process (identity.go). The process waits delay ms
-// before it reports.
-func runTestReport(ctx context.Context, args any, delay int) (json.RawMessage, error) {
+// before it reports. wait returns the outcome.
+func startTestReport(ctx context.Context, args any, delay int) (wait func() (json.RawMessage, error), err error) {
 	b, _ := json.Marshal(args)
 	self, _ := os.Executable()
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second+time.Duration(delay)*time.Millisecond)
-	defer cancel()
-	out, err := exec.CommandContext(cctx, self, "testagent", "report", "-delay", strconv.Itoa(delay), string(b)).Output()
-	if err != nil {
-		msg := err.Error()
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			msg = strings.TrimSpace(string(ee.Stderr))
-		}
-		var re rex.RexError
-		if json.Unmarshal([]byte(msg), &re) == nil && re.Code != "" {
-			return nil, &re
-		}
-		return nil, errors.New(msg)
+	cmd := exec.CommandContext(cctx, self, "testagent", "report", "-delay", strconv.Itoa(delay), string(b))
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, err
 	}
-	return json.RawMessage(out), nil
+	return func() (json.RawMessage, error) {
+		defer cancel()
+		if err := cmd.Wait(); err != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			var re rex.RexError
+			if json.Unmarshal([]byte(msg), &re) == nil && re.Code != "" {
+				return nil, &re
+			}
+			return nil, errors.New(msg)
+		}
+		return json.RawMessage(stdout.String()), nil
+	}, nil
 }
 
 // testAgentReport sends one hub.identity.report from this process and prints the result. On a

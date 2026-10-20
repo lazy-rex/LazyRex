@@ -40,6 +40,18 @@ test('resolve by ID, unique tab name and unique prefix; unknown and short prefix
   expect_error(function() resolve('claude:pl') end, 'unknown') -- a prefix needs 4 characters after the colon
 end)
 
+test('a pane that never joins can spawn: the spawn records the identity as its caller', function()
+  local p = planner()
+  local s = p:hub('hub.spawn', {profile = 'shell', key = 'id-spawn-1'})
+  expect(s.status).to_be('open')
+  local parent
+  for _, w in ipairs(p:hub('hub.workers', {}).workers) do
+    if w.spawn_id == s.spawn_id then parent = w.parent end
+  end
+  expect(parent).to_be('claude:plan-2041')
+  expect(p:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed')
+end)
+
 test('a joined legacy pane\'s first report makes a permanent alias', function()
   local d = agent('dave')
   local r = d:report({kind = 'claude', conversation_id = 'dave-conv-1'})
