@@ -68,12 +68,20 @@ Rex detects some programs by itself, with built-in detectors (for example `statu
 
 Status events (observed by Codex in a lab, same build; full report in `agent-wake.md`):
 
-- `block_event` with `name: "program_status_changed"`, `payload: {id, record: {state, app, effective_app, updated_at, owner: {pid, name}}, reason}`. An empty `id` is the root record.
+- `block_event` with `name: "program_status_changed"`, `payload: {id, record: {state, kind?, progress?, app, effective_app, title?, msg?, updated_at, owner: {pid, name}}, reason}`. An empty `id` is the root record. Optional fields are absent when the report does not set them. `msg` is the decoded text, not base64 (lab, Rex 1203: a report with `kind=question` and a base64 `msg` gave `kind: "question"` and `msg: "Allow edit of a.txt?"`). The event has no sequence number and no prompt id.
 - `program_status_removed` with `payload: {ids, reason: "clear"}`. Consumers need both events.
 - Claude Code (2.1.301) produced `idle`, `working` and `done` with `app: "claude-code"`.
 - Codex (CLI 0.162.1) produced `working`, then a **removal** instead of `done`. The built-in detector's `turn_end` rule expects an AM/PM clock (`• 9:13 PM`). This Codex prints 24-hour time (`• 21:13`). The cause is from source inspection; no patched detector was tested.
 - A program can report status itself with OSC 7501: `ESC ] 7501 ; state=idle:id=<id>:app=<app> BEL` (or `ESC \`). Colon-separated `key=value`, not JSON. Text fields such as `msg` are base64. Each report replaces the record. `state=clear` removes it. A hook-style shell command that wrote it to `/dev/tty` passed. Installing it as a real agent lifecycle hook is untested. The named hook record in that run had no `owner` field.
 - An empty status list does not mean idle. A clear can occur between two queued Codex turns.
+
+Blocked records of real agents (observed by the Telegram reviewer in a lab, Rex 0.0.1792158932-g88fd41):
+
+- Claude Code 2.1.304, a Bash approval: `state: "blocked"`, `kind: "permission"`, `app: "claude-code"`, and `msg` with the request text.
+- Claude Code 2.1.304, AskUserQuestion: `state: "blocked"`, `kind: "question"`, and `msg` with the question and its options.
+- Codex 0.163.0, a shell approval: `state: "blocked"`, `app: "codex"`, and no `kind` and no `msg`.
+- No record had an `id`. Each was the root record.
+- **`kind` tells why the program waits, not how it reads input.** In the AskUserQuestion menu, the write `"Blue\r"` (5 bytes written) chose the highlighted option Red, not Blue. A consumer that answers a prompt must choose between raw keys and text plus Enter itself. It cannot infer the form from `kind`.
 
 ### Program status needs an attached session
 
@@ -93,6 +101,7 @@ Observed on Rex 0.0.1792158932-g88fd41 (lab `/tmp/rexlab-hub-claude`, 2026-10-20
 - `session.destroy` also needs the attach: it failed with the same `conflict` error on a session that
   the connection had created but not attached (observed on Rex 0.0.1792158932-g88fd41, Go lab test
   `TestPluginStartUnresolvedIntentLab`, 2026-10-20).
+
 
 ### Block events (verified)
 
