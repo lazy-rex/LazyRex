@@ -357,7 +357,7 @@ Deferred work (for example a template start that opens its tabs after the agent'
 
 Tests: `grants_test.go` (validation, matching, ownership, revoke) and `tests/harness/tests/grants.lua` (real path: create during a forward, deferred spawn, refusals, revoke, session reference, migration).
 
-**Placement.** Omit `placement` to open a new tab in the work session. Set `placement.session` to another session ID to use that session. The hub attaches the session before admission. Managed LazyRex app sessions are refused by their recorded ownership, even if their labels change.
+**Placement.** Omit `placement` to open a new tab in the work session. Set `placement.session` to another session ID to use that session. The hub attaches the session before admission.
 
 - New tab: `placement: {session: "session:..."}`.
 - Split: `placement: {session: "session:...", beside: "block:...", direction: "right", ratio: 0.3}`. The anchor must be placed in that session. Direction is `right`, `left`, `above`, or `below`; the default is `right`. Ratio is the fraction for the new pane, greater than 0 and less than 1; the default is `0.5`. Direction and ratio require `beside`.
@@ -437,51 +437,38 @@ Status: lab (Claude, Rex 1203, 2026-10-16). Contract agreed with Codex for the w
 - A lock refuses a path that overlaps (is a parent or a descendant of) another operation's lock. Observed in the lab: a spawn into a locked directory got "conflict: … is locked by worktrees".
 - `hub.cwd.unlock {path, key}`: only the owning operation; idempotent; works after the path is removed. `hub.admin.unlock {path}` is for manual recovery. Locks are durable: the plugin keeps a lock until it can prove its operation finished or was refused.
 
-## App sessions and app mode
+## Removed: app mode
 
-Status: lab (Claude, Rex 1203, 2026-10-16). Home Exit by Codex. Not deployed. It replaces the single swapping session below.
+Status: removed (the user's decision, 2026-10-19: "remove all app mode stuff including state"). Every plugin's tabs open in the one LazyRex session (decision "One LazyRex session; app mode retired").
 
-The maintainer's model: Home is an app launcher, and each plugin is an app. Opening an app hides the user's own sessions. "Exit LazyRex" brings them back.
+An older build had app mode. Opening an app hid the user's own sessions (it detached their blocks), and "Exit LazyRex" (`hub.ui.exit`) rebuilt them. Each plugin also had its own app session (`app:<plugin>` in `ui_sessions`, labeled "LazyRex: <name>"). The hub has none of this now. It has no `hub.ui.exit`, no `hub.ui.mode`, no `hub.changed {what: "mode"}`, and no `session` argument for `hub.ui.tabs`.
 
-App sessions:
-- Each plugin has its own Rex session. Home's session is labeled "LazyRex". Another plugin's session is labeled "LazyRex: <name>". The plugin can set the name with `hub.ui.tabs {tabs, session}`; the default is its first tab title. The hub adds the prefix. "LazyRex" is reserved for Home. A name that another plugin uses gets the plugin ID added.
-- The hub owns a session by its record in `ui_sessions` (key `*` for Home, `app:<plugin>` for an app), not by its label. It adopts an unrecorded session by label only when exactly one has that exact label (a crash between create and record).
-- Apps are mounted only in app mode. Outside it (no cycle), the hub detaches every app view pane: the processes and unsaved input stay, and the session has no placed pane (the maintainer: "hide means detach the block"). Entering app mode restores them with the placeholder method. Home is always mounted. A pane the user put in an app session is not touched. Between apps in app mode nothing is detached.
-- Migration: a view in any other session than its plugin's session is legacy. It retires with `view.retire`, and its tab opens again in the app session. The live state has only the `*` row, so the LazyRex session stays and keeps Home.
+At startup, the hub removes the state of app mode (`hub/cmd/hub/appmodestate.go`). It changes only hub records, and it makes no Rex call:
+- It drops `ui_cycles`, `ui_hidden`, `ui_exit_keys` and `ui_apps`.
+- It deletes the restore placeholders of app mode (`ui_restores` rows whose view ID starts with `hidden:`) and `ui_state` `active`.
+- It keeps `ui_sessions` rows, views and intent records.
+- When it removed something, it emits one `app_mode_state_removed` event with the counts.
 
-App mode (`hub/cmd/hub/appmode.go`):
-- A cycle is one enter and exit. Phases: `capturing`, `hiding`, `active`, `restoring`, `complete`, or `refused`.
-- Enter: `hub.ui.navigate` to a plugin other than Home, with no cycle open, records a new cycle in the same commit as the navigation.
-- Capture: the worker reads `session.view` of every session that is not recorded in `ui_sessions`. It checks every field against the fields the rebuild is proven for (`rex-protocol.md`, "A whole session layout can be rebuilt exactly"). An unknown field, layer kind, split direction or ratio refuses the cycle: nothing is hidden, and the problem is on the cycle. Otherwise one commit records each window (`ui_hidden`), the counts, and the origin (the first recorded session in Rex order). Only then does the hide start.
-- Hide: `session.detach_block` for every recorded block. It is idempotent, so a retry after a crash repeats it.
-- Switching apps while active uses the same cycle. Nothing is captured again.
-- Exit: `hub.ui.exit {for: "user", key}`. The key binds to the cycle it first exits; a retry with the same key reports that cycle, never a later one. With no cycle open, the result is phase `none`. An accepted exit returns phase `restoring`, not done. A navigation into an app is refused while a cycle restores.
-- Restore, per window: a placeholder tab (its nonce recorded first, as for view restores), floating layers back to front, the tiled layer, the focused block, then zoom. The window's record commits only after Rex confirms the window. Per session: the recorded tabs go first in recorded order (`session.move_window`), tabs made while hidden stay after them, and the recorded active tab gets focus. At the end the hub selects the origin session on every app (the maintainer's choice: Rex does not report which session an app shows).
-- A crash during a rebuild: the next pass finds the half-built window (the recorded window, or the window of a proven placeholder). It detaches the recorded blocks again, closes the placeholder, and rebuilds from the start.
-- The hub never closes or replaces a recorded block. A block closed while hidden is a problem `closed`, and its split is pruned. A block moved to another tab is a problem `moved`, and it stays there. A block still in its original tab (an exit during the hide) is put back with its window.
-- A restore that fails (not a known closed or moved pane) keeps its intent. The worker tries again with back-off (1 s, doubling, at most 30 s), and `hub.ui.mode` shows `retry {attempts, error}`. A failure count never makes a window lost (Codex's review). A failed tab order or focus also keeps the restore pending.
-- A placeholder whose `new_window` outcome was unknown keeps its record after the cycle. Each pass closes such a placeholder when it appears with the nonce in its label and arguments, and drops the record when the session is gone. The hub stays attached to each such session, and a layout change there wakes the cleanup; a transient failure retries in 5 s. Lab: with the hub idle, a late placeholder closed 10 ms after it appeared, with no hub call.
-- An exit key with no cycle open binds to "no cycle", so its retry never exits a later cycle.
-- The session focus at the end uses `session.focus_window`, which keeps a restored zoom.
-- `hub.ui.mode` reports `{mode, cycle, phase, problems, hidden, restored}` for the latest cycle. Each phase change and each restored window sends `hub.changed {what: "mode"}`.
-- `hub.navigate.worker` refuses a worker whose tab app mode hides. A worker started in app mode opens visibly in the hub's work session, as before.
+Effects on an old database:
+- The hub restores nothing and closes no pane. A pane that an old active or restoring cycle hid stays detached, and its process keeps running. The user can show it again with Rex (`rex move`). This is intended: it is not a recovery.
+- An old late restore placeholder stays open.
+- A view in an old session (an app session, or a session of an older hub) is legacy. It retires, and its tab opens again in the LazyRex session.
+
+Legacy session cleanup (`settleLegacySession`, on every UI pass, for each session with a legacy `ui_sessions` row):
+- It waits while any view row in the session is not closed. A pending, sending or exited row keeps its own recovery.
+- Rex has no such session: the hub forgets it.
+- The session has blocks (for example user panes): the hub deletes its legacy rows and stops managing it. The session and its panes stay with the user (event `legacy_session_released`).
+- The session has no blocks: the hub destroys it, then forgets it. A failed destroy keeps the rows, and the next pass tries again (event `legacy_cleanup_failed`).
+
+Lab (observed on Rex 0.0.1792158932-g88fd41): `TestAppModeStateRemovedAtStartupLab` (a detached block of an old cycle and an old app session with a user pane: no layout change) and `TestSettleLegacySessionLab`.
+
+## Navigation to an agent
+
 - `hub.navigate.agent {agent}` shows the tab of a live agent (an identity or a legacy agent) on the apps, like `hub.navigate.worker`. It refuses an agent with no open tab or a detached tab. Agents cannot call it. The messaging thread overview calls it when the user clicks an agent. `hub.agents` reports `activity` (the agent's program status, for example `working` or `idle`) for a live agent. Lab (2026-10-18): a click on an agent row in the overview made the agent's tab the active window and closed the overview. Untested: a jump to another session on a real app.
-- Home (Codex): an "Exit LazyRex" widget first, with the phase, the restored counts and each problem. It stays usable when `hub.ui.mode` fails.
-
-Lab results (observed, Rex 1203):
-- `tests/appmode.mjs`: 21 windows and 29 blocks in every lab user session were hidden and rebuilt exactly in 622 to 738 ms. Same PIDs. Unsaved shell input survived. Switching apps kept the cycle. LazyRex sessions kept their tabs. Key rules held. A closed pane and a moved pane were reported; the closed pane's split was pruned with the other ratios kept; a tab made while hidden stayed after the recorded tabs.
-- Crash: with `-lab-fault point=restore-window,mode=exit-mid` the hub stopped with a window half built (the placeholder and one block). A new hub reset that window and restored all 19 windows and 24 blocks exactly, with no placeholder left and no problems.
-- Through the UI: a click on "Exit LazyRex" in the lab Home pane restored 18 windows and 20 panes, and Home showed "Workspace mode." with the counts.
-- A detached agent pane takes notices and keeps running (`rex-protocol.md`, "A detached pane still works for agents").
-- Migration: the 9 Messages views left the LazyRex session and opened in "LazyRex: Messages". LazyRex kept only Home.
-
-- Review fixes (Codex), lab: a session closed while hidden is a `session_closed` problem; a zoomed active tab keeps its zoom; a key replay with no cycle does not exit a later cycle; a late proven placeholder closes while a label-only pane and its record stay (`tests/late-placeholder.mjs`); the crash test passes again.
-
-Untested: app selection on a real app (no app in the lab), and a cycle refusal with a real unknown layout (unit tests cover the check).
 
 ## One LazyRex session (mount and detach)
 
-Status: superseded by "App sessions and app mode" above. Lab (Claude, Rex 1203, 2026-10-16); deployed and live until app sessions replace it.
+Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). Lab (Claude, Rex 1203, 2026-10-16); deployed and live until app sessions replace it.
 
 All plugin views live in one Rex session, labeled `lazyrex`. The home plugin (config `home`, default `lazyrex`) is always mounted, first. Its tab is the menu. One other plugin is **active**, and its tabs are mounted after the home tab. The views of every other plugin are **detached** with `session.detach_block`: their processes and unsaved input stay.
 
@@ -732,7 +719,7 @@ Acceptance: test palette entry, session filtering, form submit, cancel, restart,
 stale source context, and preservation of dirty source input in an isolated Rex
 server. Test thread menu actions through the renderer and hub. Membership changes
 must preserve delivered mail and must not backfill unread mail. New members can read full history through `messaging.history` (default 20, maximum
-50 messages per page). Removed members cannot page group history. Remove app mode only after these checks pass.
+50 messages per page). Removed members cannot page group history.
 
 Membership verification uses the real Lua plugin with a controlled hub on Rex
 `0.0.1792158932-g88fd41`. New messages store their recipient list. Before the first
@@ -774,8 +761,8 @@ list follows `home_redirects` when the hub recreates a missing home session.
 ## One-tab migration: renderer and plugins (2026-10-17)
 
 The hub places plugin tabs without an explicit home in the LazyRex session.
-The hub restores an active app-mode cycle before migration. A failed restoration
-stops migration. The hub retains old app sessions. Existing home sessions,
+App mode is removed: the hub restores nothing (see "Removed: app mode"). The hub
+releases an old app session that holds user panes. Existing home sessions,
 closed-tab revisions, and drafts must survive migration and restart.
 
 Claude owns hub placement, restoration, and migration tests. Codex owns the

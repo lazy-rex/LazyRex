@@ -217,5 +217,5 @@ Rex documents action and keyboard ownership in its
 The renderer's local editor state is outside Rex's workspace keymap.
 Changing a user's application keymap requires a separate scoped change; this audit does not install one.
 
-Source locations: `hub/cmd/hub/events.go`, `agents.go`, `main.go`, `ui.go`, `appmode.go`, and `workers.go`;
+Source locations: `hub/cmd/hub/events.go`, `agents.go`, `main.go`, `ui.go`, `appmodestate.go`, and `workers.go`;
 `hub/cmd/mcp/main.go`; and `view/client.go` and `view/model.go`, all beneath `spikes/03-ui-framework`.

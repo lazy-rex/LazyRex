@@ -602,8 +602,8 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				}
 			}
 
-			// 4. Open missing views (bounded per pass) and restore detached ones (an app being
-			// opened, or a pane the user detached).
+			// 4. Open missing views (bounded per pass) and restore detached ones (a pane the
+			// user detached).
 			var order []tab
 			for _, t := range tabs {
 				if _, ok := want[t.Key]; !ok {

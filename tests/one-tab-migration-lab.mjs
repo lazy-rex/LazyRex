@@ -9,7 +9,8 @@
 //   then:   node one-tab-migration-lab.mjs 6   (New Thread from the palette into another open session)
 // Phase 1 makes the live state: app mode active (a user session hidden), threads in the Messages
 // app session, a saved draft in one thread, a user close of another thread.
-// Phase 2: the hub exits app mode at start and the user session comes back; the threads open in
+// Phase 2: the new hub removes the app-mode state at start (the hidden user session stays
+// detached: docs/hub.md, "Removed: app mode"); the threads open in
 // the LazyRex session with the draft; the closed thread stays closed; the old app session stays;
 // the Home tab stays first; the renderer writes the declared status (OSC 7501, app=rex) and a
 // view close (hub.view.close) clears nothing else and keeps the tab closed.
@@ -230,9 +231,7 @@ if (phase === '1') {
 } else {
   const {R, W, appSess, DRAFT} = JSON.parse(fs.readFileSync(STATE, 'utf8'));
   await waitFor('hub up', () => client('lazyrex-hub'));
-  // 1. The hub exits app mode at start; the user's session comes back.
-  await waitFor('app mode exited', async () => (await hub('hub.ui.mode')).mode === 'workspace', 30000);
-  await waitFor('user tabs back', async () => { const l = await labels(W); return l.includes('w-one') && l.includes('w-two'); }, 30000);
+  // 1. App mode is removed: the hub restores nothing. The hidden user session stays detached.
   // 2. The threads open in the LazyRex session; the draft is kept.
   const lazy = (await sessions()).find(s => s.label === 'LazyRex')?.session_id;
   assert(lazy, 'the LazyRex session exists');

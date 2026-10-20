@@ -715,7 +715,7 @@ atomicity or the absence of transient processes during every failure.
 - `com.superlogical.terminal.write` to a detached block reaches its program. A notice line arrived in a `read` loop.
 - The program keeps running: a counter loop advanced while detached.
 - `com.superlogical.terminal.program_status` answers for a detached block, with the record set before the detach.
-- So hub notices to agents (`agents.go`) and agent readiness work while app mode hides the agent's pane. Probe: `spikes/lab/detached-pane.mjs`.
+- So hub notices to agents (`agents.go`) and agent readiness work while the agent's pane is detached. Probe: `spikes/lab/detached-pane.mjs`.
 - Shell block options go in `options` (`command`, `login`, `exit`). With the command in `args` instead, the command did not run (what ran instead is untested).
 
 ### Text decoration in the app (observed 2026-10-16, Rex 1203)
