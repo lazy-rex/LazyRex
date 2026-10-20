@@ -748,7 +748,13 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		}
 		return map[string]any{"found": false}, nil
 	case "hub.store.get":
-		return h.db.storeGet(ctx, ns, args)
+		out, err := h.db.storeGet(ctx, ns, args)
+		if err == nil && h.test != nil {
+			if err := h.testAfterGet(ctx, ns, args); err != nil {
+				return nil, err
+			}
+		}
+		return out, err
 	case "hub.store.scan":
 		return h.db.storeScan(ctx, ns, args)
 	case "hub.store.op":

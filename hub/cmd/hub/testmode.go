@@ -57,6 +57,10 @@ type injection struct {
 	OpPrefix string // match: the batch's op.key starts with this
 	Writes   string // match: the batch writes or deletes this record key
 	Updates  string // match: the batch writes this record key with an if_rev other than "0"
+	// Reads: match a hub.store.get whose keys include this record key (test read hook). The hub
+	// builds the get reply first, then commits Ops, then returns that reply: the next read sees
+	// the change. It never matches a batch.
+	Reads    string
 	Ops      []any  // committed before the matching batch (no if_rev)
 	Replay   bool   // commit a copy of the matching batch first
 	Fail     string // then fail the matching batch with this message; it commits nothing
@@ -569,7 +573,7 @@ func (in *injection) remaining() any {
 }
 
 func (in *injection) matches(plugin string, args map[string]any) bool {
-	if in.Window != "" || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
+	if in.Window != "" || in.Reads != "" || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
 		return false
 	}
 	opKey := ""
@@ -619,11 +623,15 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	in.OpPrefix, _ = match["op_prefix"].(string)
 	in.Writes, _ = match["writes"].(string)
 	in.Updates, _ = match["updates"].(string)
+	in.Reads, _ = match["reads"].(string)
+	if _, ok := match["reads"]; ok && (in.Reads == "" || len(match) != 1) {
+		return nil, bad("invalid: match.reads must be a nonempty record key, alone in match")
+	}
 	if _, ok := match["window"]; ok {
 		return h.testWindowInject(in, match, args)
 	}
-	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" {
-		return nil, bad("invalid: match needs op_key, op_prefix, writes, updates or window")
+	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" && in.Reads == "" {
+		return nil, bad("invalid: match needs op_key, op_prefix, writes, updates, reads or window")
 	}
 	if _, ok := args["hold"]; ok {
 		return nil, bad("invalid: hold needs match {window = key}")
@@ -653,6 +661,9 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	}
 	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
 		return nil, bad("invalid: an injection needs ops, replay or fail")
+	}
+	if in.Reads != "" && (len(in.Ops) == 0 || in.Replay || in.Fail != "") {
+		return nil, bad("invalid: a reads injection needs ops, and has no replay or fail")
 	}
 	switch t := args["times"].(type) {
 	case nil:
@@ -731,6 +742,55 @@ func (h *Hub) testWindowHold(p perform, caller, key string) <-chan struct{} {
 
 // testBeforeBatch counts a plugin's batch and commits the first matching injection before it.
 // Injected commits call storeBatch directly, so they never match an injection themselves.
+// testAfterGet runs a read hook after a plugin's hub.store.get built its reply. The caller keeps
+// that reply and returns it after this commit, so the reply holds only the old state and the next
+// request sees the new one: Rex delivers one hub request at a time. A get counts once for one
+// injection, however many of its keys match. A commit that fails fails the get with
+// injection_failed and is not counted.
+func (h *Hub) testAfterGet(ctx context.Context, ns string, args map[string]any) error {
+	keys, _ := asList(args["keys"])
+	h.test.mu.Lock()
+	var in *injection
+	for _, c := range h.test.injections {
+		if c.Reads == "" || c.Plugin != ns || c.Times >= 0 && c.Consumed >= c.Times {
+			continue
+		}
+		found := false
+		for _, k := range keys {
+			found = found || k == c.Reads
+		}
+		if !found {
+			continue
+		}
+		if c.Skipped < c.Skip {
+			c.Skipped++
+			break // this get passes; no other injection matches it
+		}
+		in = c
+		break
+	}
+	h.test.mu.Unlock()
+	if in == nil {
+		return nil
+	}
+	b, _ := json.Marshal(in.Ops)
+	var ops []any
+	json.Unmarshal(b, &ops)
+	out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster())
+	if err == nil && !out.committed {
+		err = fmt.Errorf("did not commit: %v", out.result)
+	}
+	if err != nil {
+		return refuse("injection_failed", "injection %d: %v", in.ID, err)
+	}
+	h.test.mu.Lock()
+	in.Consumed++
+	h.test.mu.Unlock()
+	h.afterCommit(ns, out)
+	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": ns, "reads": in.Reads})
+	return nil
+}
+
 func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]any) error {
 	h.test.mu.Lock()
 	h.test.batches[ns]++

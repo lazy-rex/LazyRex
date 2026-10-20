@@ -239,6 +239,16 @@ Injected commits never match an injection.
 `skip = n` lets the first `n` matching batches pass unchanged; the injection acts from the next
 one. For example, `{match = {updates = key}, skip = 1}` acts on the second change of a record.
 
+A read hook, `inject{match = {reads = <record key>}, ops = {...}}`, acts after a read instead of
+before a batch. It matches a `hub.store.get` of the plugin whose `keys` include that key
+(`hub.store.scan` and batches do not match). The hub first builds the get's reply, then commits
+`ops` (without `if_rev`), then returns the reply that it built. So the reply has the old state,
+and the next request has the new state: Rex delivers one hub request at a time. A get counts once,
+however many of its keys match. `skip` and `times` work as for batches. `reads` must be alone in
+`match`, and `ops` is required; `replay`, `fail` and `hold` are refused. If the injected ops do not
+commit, that get fails with the code `injection_failed`, nothing is committed, and the injection
+is not counted. The hook proves what the hub sent, not that the plugin used the reply.
+
 `inject` returns the injection ID. `injection(id)` gives `{consumed, remaining}`.
 `cancel_injection(id)` ends an injection now (for example one with `times = "always"`): it matches
 no later batch, and the file check counts it as used up.
