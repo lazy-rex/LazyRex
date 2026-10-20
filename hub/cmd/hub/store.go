@@ -137,6 +137,7 @@ func revString(n int64) string { return strconv.FormatInt(n, 10) }
 
 // storeScan handles hub.store.scan {prefix?, after?, limit?}: the caller's records in key order,
 // one snapshot per page. Only the caller's namespace. next is the last key when more records exist.
+// A page ends at limit records or at scanPageBytes of encoded records, whichever comes first.
 func (db *DB) storeScan(ctx context.Context, ns string, args map[string]any) (any, error) {
 	prefix, _ := args["prefix"].(string)
 	after, _ := args["after"].(string)
@@ -190,7 +191,11 @@ func (db *DB) storeScan(ctx context.Context, ns string, args map[string]any) (an
 // scanPageBytes bounds the encoded records of one hub.store.scan page, so that a page of large
 // records stays far below the reply limit (Rex's max_message_bytes, about 1 MiB). A page can
 // therefore hold fewer than limit records; callers follow next. A page always holds at least one
-// record: a record is at most the write limit, far below this bound.
+// record, so a scan never stops at a large record. The hub has no record size limit of its own: a
+// record comes from one hub.store.batch, and a Lua plugin sends at most 64 KiB in one request
+// (rex-protocol.md). The reply encoder writes '<', '>' and '&' as 6 bytes, so such a record
+// encodes to at most about 384 KiB. A client with a larger message limit (a Go client gets 1 MiB)
+// can write a record that no reply can carry; nothing guards that case.
 const scanPageBytes = 512 << 10
 
 // scanRecordBytes is the encoded size of one record in a scan result: its key, its value and rev,
