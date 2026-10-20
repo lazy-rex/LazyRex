@@ -1,6 +1,7 @@
 package main
 
-// Plugin sources (design v3, approved 2026-10-20): the manifest rules and the dependency graph.
+// Plugin sources (design v3, approved 2026-10-20; docs/plugin-sources.md): the manifest rules and
+// the dependency graph.
 // A config entry names a source; the manifest (lazyrex.json at the source root) owns the name, the
 // main file, events, notice and depends. These functions read and check; they start nothing.
 
