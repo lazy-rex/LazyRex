@@ -76,7 +76,8 @@ local function hub(action, args) return perform(hub_id, action, args) end
 H.hub = hub
 
 -- wait polls fn until it returns a value other than nil or false. It raises after timeout seconds
--- with what, and with the last error fn raised.
+-- with what, and with the last error fn raised. Callers read the return value; a callback that
+-- assigns an outer local can lose the write after a caught error (docs/testing.md, "Waiting").
 local function wait(what, fn, timeout)
   local deadline = os.time() + (timeout or 10)
   local delay, last = 0.02, nil

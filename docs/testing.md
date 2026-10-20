@@ -350,6 +350,29 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 - Faults exist only in test mode: a hub without `-test` does not declare `hub.test.fault`, and its
   dispatch refuses `hub.test.*`.
 
+### Waiting
+
+`wait(what, fn, timeout)` calls `fn` until it returns a value other than `nil` or `false`, and
+returns that value. It runs `fn` under `pcall`: an error in `fn` is kept and `wait` tries again.
+After `timeout` seconds (default 10) it fails with `what` and the last error.
+
+Read the result from the return value. Return a table for several values. Do not assign an outer
+local inside `fn`: in Rex's Lua, a closure write to a captured local can be lost after a caught
+error (rex-protocol.md, "Rex Lua runtime"), so the test can read a stale value.
+
+```lua
+-- Do not: the write to row can be lost after a caught error in fn.
+local row
+wait('the row', function() row = store('k').value; return row end)
+
+-- Do: read the return value.
+local row = wait('the row', function() return store('k').value end)
+local got = wait('both', function()
+  local a, b = store('a').value, store('b').value
+  return a and b and {a = a, b = b}
+end)
+```
+
 ### Assertions
 
 `expect(v).to_be(x)`, `.to_equal(x)` (deep), `.not_to_be(x)`, `.to_match(pattern)`,
