@@ -228,6 +228,29 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
 - Correction: an earlier version of this section said the reply timed out. That was a probe bug: the handler read `call_id` from `ctx`, not from the event.
 - `rex.action {name, title, run}` in a `rex do` script did not make the action callable from another client: `rex -C <client> do <name>` failed with "no action named". Declaring it with `client.keymap` made the call reach the script (see above).
 
+### Plugin timers (reviewer lab, 2026-10-20)
+
+Observed on Rex `0.0.1792158932-g88fd41`, in an isolated reviewer lab, with
+`lab/probes/timer-every.lua` and `lab/probes/timer-only.lua`:
+
+- `rex.every(2)` continued after a handler caught an error with `pcall`.
+- At 17 seconds, the probe reported 8 ticks, one caught error and `ctx.origin = "timer"`.
+- A seven-second handler using `rex.sleep` blocked timer callbacks. The tick count stayed at 8.
+- After the handler returned, one callback ran. The count became 9, with no callback during the hold.
+- At 37 seconds, the count reached 16. `rex.after(1)` had run once.
+- A script with only `rex.every(1)` and no `rex.on` handler remained active through 36 printed ticks.
+
+This check did not test macOS sleep, intervals of hours, or timer persistence across a process restart.
+
+Implementer lab (`/tmp/rexlab-hubf-claude`, same build, 2026-10-20): the same probe, started in a
+detached block as the hub starts plugins, reached 272 ticks at 549 seconds with a 2-second interval.
+That is one run of about 9 minutes. It does not test macOS sleep or intervals of hours either.
+
+A plugin that needs a daily job (the Automations health check) uses a short tick and the wall
+clock, not a timer of one day. For example, `rex.every(60)` compares the time with a `last_run` record
+in its hub store. It also checks at start, so a run missed while the plugin or the hub was down
+runs at the next start.
+
 ## Durability
 
 - Terminal processes are direct children of `rex server`. When the server stops, they stop. The state dir kept only `host-id`. There is no hot handoff.

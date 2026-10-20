@@ -1033,3 +1033,219 @@ Tests (observed, Rex 0.0.1792158932-g88fd41, lab):
 - `tests/templates-lab.mjs` 2, 5 and 6 (real hub and renderer, a fake app client): the app gets one `session.select` with the new session and its first tab; none for a start into the current session; two apps give `ambiguous_app`, no call, and the hint in the panel. Two full runs with `TEMPLATES_RESTART=1` passed.
 
 Not tested: the real app. A lab has no app, so what `session.select` does on screen is unknown until the maintainer approves a check.
+
+## File watches (hub.watch)
+
+Design approved by the hub features reviewer, 2026-10-20 (design v3 with amendment 1). The user
+decision of 2026-10-20 approves fsnotify (`github.com/fsnotify/fsnotify`). Rex has no file-watch
+API, and plugins are Lua inside Rex, so the hub owns the watch. The first user is the Automations
+plugin: a new file in the vault inbox starts the knowledge worker, or messages it if it runs.
+
+Status: the settle rules, the bounded listing and the change feed are built and unit-tested
+(`hub/cmd/hub/watch.go`, `watch_test.go`). The actions, the fs loop, reconciliation and the plugin
+lifecycle are not built yet. Everything below that is not in `watch.go` is the approved contract,
+not observed behavior.
+
+### Model
+
+The hub watches one directory for a plugin. It keeps a feed with one row per file name: the latest
+settled state of that name. fsnotify events only start a settled check. A settled change gives the
+row a new `seq`, from the database-wide revision counter, so no watch reuses a `seq`. A removed file
+stays as a tombstone until the plugin acknowledges it.
+
+The feed reports the latest state of each name, not every change. A plugin must accept collapsed
+intermediate changes.
+
+### Actions
+
+The caller is the registered plugin client. The namespace is the plugin name, as for `hub.store`.
+Sequence values and cursors are decimal strings.
+
+- `hub.watch.ensure {key, path, glob?, settle_ms?, emit_existing?}` returns
+  `{key, watch_id, state, cursor, watermark}`.
+  - `key` matches `[a-z0-9_.-]{1,64}`. `path` is absolute and clean; the hub does not expand `~`.
+    `glob` matches the base name (`filepath.Match`, default `*`). `settle_ms` is 200 to 60000
+    (default 1000).
+  - The same key and the same spec return the same `watch_id`. Another spec for the key is refused
+    (`watch_conflict`). To change a spec, remove the watch, then ensure it again.
+  - `ensure` is fast. It checks the grant and the path, lists the directory once (bounded, see
+    "Limits"), and commits the watch in one transaction with state `initializing`. It does not
+    wait for any file to settle. If the check fails, it stores nothing and returns the error.
+- `hub.watch.read {key, watch_id, after?, limit?}` returns `{rows, next, watermark, more, state}`.
+  - `after` omitted: the stored cursor. `after = "0"`: from the start.
+  - `limit` default 100, maximum 500. A page also stops at 256 KiB of encoded rows.
+  - A `watch_id` that is not the current watch of `key` is refused (`stale_watch`).
+- `hub.watch.ack {key, watch_id, through}` returns `{cursor}`. See "Acknowledgement".
+- `hub.watch.remove {key, watch_id}` returns `{removed}`. It deletes the watch, its rows and its
+  pending names. Another `watch_id` changes nothing (`removed: false`), so a late remove cannot
+  delete a replacement. A missing key succeeds (a retry after a lost reply).
+- `hub.watch.list {}`: each watch of the caller with `key`, `watch_id`, `path`, `glob`, `state`,
+  `last_error`, `cursor` and `watermark`.
+- Nudge: the hub calls the plugin's `hub.changed` action with `{what: "watch", key, watch_id}`.
+
+### Rows and kinds
+
+Each row has `name`, `path`, `kind`, `seq`, `event_key`, `appearance_key`, and, for a present
+file, `size` and `mtime_ns`. The hub derives `kind` from the row and from the plugin's
+acknowledgements (`acked_present`), never from the page cursor:
+
+| Row | Acknowledged as present | kind |
+| --- | --- | --- |
+| present | no | `created` |
+| present | yes | `changed` |
+| tombstone | yes | `removed` |
+| tombstone | no | `created_removed`: it came and went before an ack covered it |
+
+- When a tombstone becomes present again, the row gets a new `created_seq` and is not acknowledged
+  as present. So a recreated file reads as `created`. A replacement that never settles absent (an
+  atomic save) reads as `changed`.
+- `event_key` is `watch_id:seq`: one delivery of one row state.
+- `appearance_key` is `watch_id:created_seq`: one appearance of a file. A plugin uses it only for
+  start-once work (Automations starts or messages the knowledge worker once per appearance). Other
+  work from a row uses `event_key`. Example: a file is read as `created`, the plugin commits its
+  start-once work, the ack is lost, and the file is removed. The next read returns
+  `created_removed` with a new `event_key` and the same `appearance_key`. The plugin does not start
+  the work again, and it handles the removal.
+- Delivery is at least once. A row that changes after a read moves to a higher `seq`, past the
+  next ack, and comes again.
+
+### Acknowledgement and paging
+
+The consumer loop:
+
+1. `read {key, watch_id}`.
+2. Process each row.
+3. `ack {key, watch_id, through: next}`. Use `next`, not `watermark`.
+4. If `more` is true, go to step 1.
+
+- `next` is the highest `seq` that the read scanned before the first visible row that it did not
+  return. It never passes a visible row that was not returned. Hidden rows (baseline, below) count
+  as scanned, so an ack can pass them.
+- A row that changes between pages gets a higher `seq` and comes on a later page.
+- `ack` with `through` above the watermark is refused (`bad_cursor`) and changes nothing.
+  `through` at or below the stored cursor changes nothing and returns the cursor.
+- Otherwise, every row with `seq <= through` is recorded as acknowledged in its current state.
+  Tombstones with `seq <= through` are deleted. The cursor becomes `through`.
+
+### Initialization
+
+- At `ensure`, the hub stores each eligible name of the listing as a pending initial name.
+  Initialization ends when no pending name remains: each one committed, or dropped because it
+  settled absent. Then the state is `active`. An empty listing is `active` at once.
+- `emit_existing = false` (default): the pending names are the baseline. A baseline file that
+  settles present gets a row that is acknowledged and hidden. Its next settled change shows it
+  (`changed`, or `removed`). A file in the listing that is still being written is baseline, and
+  its later content is not reported.
+- `emit_existing = true`: the pending names commit as normal rows and read as `created`.
+- A name that is not in the `ensure` listing is a later arrival. It reads as `created`, also
+  during initialization.
+- `emit_existing` is a creation option. A restart does not replay it. The pending names are
+  durable, so a hub restart during initialization resumes it.
+- A slow writer keeps its name pending. It does not block `ensure`, reads or other hub requests.
+
+### Settling
+
+One rule applies to every source of a difference: an fsnotify event (Create, Write, Remove,
+Rename; Chmod is ignored), the start scan, the 5-minute scan, the scan after a watcher error, and
+the initial listing.
+
+1. The first observation is an `Lstat` of the name when the source reports it, or "absent".
+2. The name's timer starts, or starts again (`settle_ms`).
+3. When the timer expires, the hub makes a new `Lstat`. If it differs from the last observation,
+   the timer starts again.
+4. If it is equal, the name settled. The hub compares it with the row and commits a change only
+   if they differ.
+
+- The hub uses `Lstat` only, never follows a symlink, and never opens a file. Only regular files
+  are eligible. Names that start with `.` are not tracked.
+- A settled observation that is absent or not eligible becomes a tombstone if the name has a row.
+  With no row, it changes nothing.
+- A scan commits nothing directly. Each name that differs from its row, and each row whose name is
+  missing from the listing, becomes a first observation.
+- A settle timer commits only while the watch is `initializing` or `active`. When a watch leaves
+  those states, its timers are cancelled. A timer from an older open of the watch (its epoch)
+  commits nothing.
+- Before a commit, the hub checks the watched directory's `(dev, ino)` against the open. A
+  directory renamed away makes no tombstones.
+
+Effects: an atomic save (a temp file renamed over `x`) gives one `created` or `changed` for `x`.
+The temp file is hidden or comes and goes inside the settle time. Many writes give one row
+change. Duplicate events and Spotlight changes give nothing when the stat is unchanged. A writer
+that pauses longer than `settle_ms` gives `created`, then `changed`.
+
+### States and errors
+
+| State | Meaning | Retry |
+| --- | --- | --- |
+| `initializing` | pending initial names remain | none needed |
+| `active` | watching | none |
+| `missing` | the directory is gone (`ENOENT`, `ENOTDIR`); no tombstones | every 30 s |
+| `error` | a listing error (`EACCES`, `EIO`, a partial listing), a backend error, `EMFILE`; no commits, rows stay | every 30 s |
+| `too_large` | over an entry limit | each 5-minute scan; reopen at 90% of the limit or less |
+| `not_granted` | the resolved path is outside the plugin's `watch_roots` | at hub start |
+| `backlog_full` | 20000 rows; no commits | the next scan after an ack |
+| `inactive` | the config omits the plugin; watches stay stored | at hub start |
+
+- An `Lstat` error for one name, other than "not found", skips that name in this pass. Its row
+  stays.
+- Each watch has its own `fsnotify.Watcher` (its own kqueue). A backend failure closes only that
+  watch.
+- When a watch becomes `active` again, a settled scan compares the directory with the rows.
+
+### Grants and paths
+
+- The hub config entry of a plugin lists `watch_roots`. A watch path must resolve to a root or to
+  a directory inside one. The manifest cannot grant this. Config changes take effect at hub
+  start.
+- On `ensure` and on every open and scan, `EvalSymlinks(path)` must equal the stored resolved path
+  and be inside a resolved root. Otherwise the state is `not_granted`. This catches a watched
+  directory that was replaced with a symlink to a path outside the root.
+- Before and after `fsnotify.Add`, the hub compares the directory's `(dev, ino)`. A difference
+  closes the watch, and the hub retries after 30 s.
+- This enforces the user's declared intent. It is not an OS security boundary: plugins run as
+  the same user. The kqueue backend opens a symlink entry's target for events (`O_EVTONLY`). The
+  hub reads no data from it and commits nothing for it.
+
+### Limits
+
+- No recursion: one directory per watch.
+- The kqueue backend (fsnotify v1.10.1, macOS) opens one descriptor for every directory entry
+  except sockets and named pipes. This includes ignored names, subdirectories and symlinks. The
+  budget counts all of them plus the directory.
+  - Per watch: 1000 counted entries.
+  - All watches together: 4000 descriptors, and at most half of the soft `RLIMIT_NOFILE`.
+  - 8 watches per plugin.
+- The `ensure` check reads the directory in chunks of 256 and stops as soon as the count passes
+  the limit.
+- The count after each Create event and each scan detects growth. It is not an instantaneous
+  ceiling: the backend opens descriptors for new entries before the hub handles the event.
+- Local file systems only. fsnotify does not support NFS or SMB.
+- Not recoverable:
+  - A change made while the hub is down, or while a watch is not active, and undone before the
+    next scan.
+  - A file created and removed in that time.
+  - A file removed and created again with the same name in that time reads as `changed`, because
+    its inode differs.
+
+### Nudges
+
+- After a commit, the hub sends `hub.changed` in a goroutine, outside action handlers, `h.mu` and
+  database transactions.
+- While the cursor is below the watermark, the hub repeats the nudge after 5 s, after 30 s, then
+  every 5 minutes. It stops when an ack reaches the watermark or the plugin is not registered.
+  `hub.register` starts the schedule again.
+- A plugin also reads at start and on its own `rex.every(300)`.
+
+### Plugin lifecycle
+
+- Watches belong to the plugin name, not to an instance. A plugin restart keeps them. The hub
+  nudges after `hub.register` when rows are waiting.
+- A stopped plugin's watches stay active and collect rows up to the row limit.
+- A plugin that the config omits: its watches become `inactive` and stay stored. When it comes
+  back, a scan compares the directory with the rows. `hub.watch.remove`, or the plugin manager's
+  remove, deletes them.
+
+### Timers
+
+A plugin can use `rex.every` and `rex.after` (rex-protocol.md, "Plugin timers"). A daily job uses
+a short tick and a stored `last_run`, not a hub schedule.
