@@ -74,9 +74,6 @@ type manifestAgent struct {
 // checkNotice checks a manifest notice. The hub pastes it into an agent pane and then sends CR,
 // so a control character (a newline) would submit or change the agent's input.
 func checkNotice(s string) error {
-	if len(s) > 200 {
-		return errors.New("notice must be at most 200 bytes")
-	}
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f {
 			return errors.New("notice must not contain control characters")

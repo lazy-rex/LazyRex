@@ -76,7 +76,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | --- | --- |
 | `name`, `main` | The plugin name and its main file. Required. |
 | `events` | `session` (default) or `all`, as in the hub config. |
-| `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin (hub config `plugins[].notice`). At most 200 bytes, no control characters. Without it, the hub default. |
+| `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin (hub config `plugins[].notice`). No control characters (the hub pastes it, then sends CR). Without it, the hub default. |
 | `requires` | Other plugins that the hub loads for the tests. Paths are relative to the plugin. |
 | `test.agents` | Roster agents in the test hub config. `user` is always there. |
 | `test.transcript` | The hub config `transcript` option. |

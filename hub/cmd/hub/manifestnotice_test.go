@@ -40,10 +40,13 @@ func TestManifestNotice(t *testing.T) {
 	}
 
 	bad := map[string]string{
-		`{"name":"p","main":"p.lua","notice":"two\nlines"}`:                       "control characters",
-		`{"name":"p","main":"p.lua","notice":"esc\u001b"}`:                        "control characters",
-		`{"name":"p","main":"p.lua","notice":"` + strings.Repeat("x", 201) + `"}`: "at most 200 bytes",
-		`{"name":"p","main":"p.lua","notice":7}`:                                  "cannot unmarshal",
+		`{"name":"p","main":"p.lua","notice":"two\nlines"}`: "control characters",
+		`{"name":"p","main":"p.lua","notice":"esc\u001b"}`:  "control characters",
+		`{"name":"p","main":"p.lua","notice":7}`:            "cannot unmarshal",
+	}
+	// No length limit: the approved contract is a string.
+	if _, err := manifestIn(t, `{"name":"p","main":"p.lua","notice":"`+strings.Repeat("x", 201)+`"}`); err != nil {
+		t.Errorf("a 201-byte notice: %v", err)
 	}
 	for body, want := range bad {
 		if _, err := manifestIn(t, body); err == nil || !strings.Contains(err.Error(), want) {
