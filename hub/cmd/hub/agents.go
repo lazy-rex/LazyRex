@@ -332,7 +332,8 @@ func (h *Hub) kickNotices() {
 
 // noticeLoop writes one notice per pending intent revision when its agent is ready.
 // Rex has no atomic "write if idle", so the agent can become busy between check and write.
-// It runs on kicks, not on a timer. A timer is armed only after a failed write, to retry it.
+// It runs on kicks, not on a timer. A timer is armed only to retry: after a failed write, and after
+// a status read that gave an unknown state (a backoff per agent, 5 s to 1 min; noticeStatus).
 func (h *Hub) noticeLoop(ctx context.Context) {
 	var retry <-chan time.Time
 	// tries: agents whose status read gave no state, with the time of the next read (backoff from

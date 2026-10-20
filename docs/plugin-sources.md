@@ -34,10 +34,15 @@ commands).
 ## 1. Config entry
 
 ```json
-{"source": "<dir>", "args": {}}
+{"source": "<dir>", "args": {}, "watch_roots": []}
 {"source": "github:<owner>/<repo>@<ref>", "args": {}}
 ```
 
+- `args`: extra `key=value` arguments of `rex do` (`rex.args` in the plugin). Keys match
+  `[a-z0-9_]+`; the hub's own keys (`hub_client_id`, `instance_id`, `plugin_session`) are refused.
+- `watch_roots`: the directories whose subtrees the plugin may watch (`hub.watch`, docs/hub.md
+  "File watches"). Absolute, clean paths. Without it, every `hub.watch.ensure` is refused. Only
+  the user's config sets it: the manifest has no such field.
 - A source that starts with `github:` is a GitHub source. Any other source is a local directory.
 - A local path is absolute or relative to the directory of the config file. `~` is refused.
 - `<owner>` matches `[A-Za-z0-9-]+`. `<repo>` matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
