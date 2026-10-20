@@ -69,14 +69,13 @@ Run the hook boundary tests without Rex:
 python3 spikes/03-ui-framework/tests/session-start.py
 ```
 
-Start an isolated server with `spikes/lab/server.sh /tmp/identity-lab`.
-Build `hub/cmd/mcp` from the candidate checkout. Then run:
+The adapter test is a Go lab test. Start an isolated server with `lab/server.sh /tmp/rexlab-<team>-<you>` (with no hub). Then run, in `hub/`:
 
 ```sh
-REX_SERVER=unix:///tmp/identity-lab/rex.sock MCP_BIN=/absolute/path/to/mcp node spikes/03-ui-framework/tests/identity-adapter.mjs
+MCP_LAB_SOCKET=/tmp/rexlab-<team>-<you>/rex.sock go test ./cmd/mcp -run TestShimIdentityLab
 ```
 
-The test uses real Rex caller attribution and a controlled hub. It checks:
+`TestShimIdentityLab` builds the shim, and the test itself is the hub. It uses real Rex caller attribution. It checks:
 
 - The adapter joins its legacy mailbox before tool discovery.
 - Discovery does not report a conversation.
@@ -85,7 +84,7 @@ The test uses real Rex caller attribution and a controlled hub. It checks:
 - Calls without valid thread metadata do not use an inherited conversation ID.
 - A rejected identity report does not stop legacy dispatch in stage 1.
 
-Observed on Rex 0.0.1792158932-g88fd41: the adapter test passes.
+Observed on Rex 0.0.1792158932-g88fd41: the adapter test passes (Go port, 2026-10-19).
 The eight hook tests pass. They check explicit server selection, JSON arguments,
 prompt recovery, irrelevant input, missing commands, missing hubs, ambiguous hubs, lost hub clients, and deadlines.
 These tests do not verify the hub's identity state or lifecycle ordering.
