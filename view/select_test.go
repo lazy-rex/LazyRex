@@ -568,6 +568,29 @@ func TestSelectHoverMovesCandidateAndReusesUnchangedFrame(t *testing.T) {
 	}
 }
 
+// The hover candidate stays after the pointer leaves the list, and Enter picks it (the old
+// select-lab.mjs: hover Agent 04, move outside, Enter selects Agent 04).
+func TestSelectEnterPicksHoverCandidateAfterPointerLeaves(t *testing.T) {
+	m := selectModel()
+	m.themeReady = true
+	m.height = 30
+	selectKey(m, tea.KeyEnter)
+	m.View()
+	o := m.visibleSelect
+	original := m.editors["stop/worker"].Choice
+	m.Update(tea.MouseMotionMsg{X: o.X + 2, Y: o.Y + 3}) // Alpha
+	m.View()
+	m.Update(tea.MouseMotionMsg{X: 0, Y: 0}) // outside the overlay
+	m.View()
+	if original == "Alpha" || m.editors["stop/worker"].Choice != original {
+		t.Fatalf("hover changed the value before Enter: %q", m.editors["stop/worker"].Choice)
+	}
+	selectKey(m, tea.KeyEnter)
+	if got := m.editors["stop/worker"].Choice; got != "Alpha" {
+		t.Fatalf("Enter after the pointer left picked %q, want Alpha", got)
+	}
+}
+
 func BenchmarkSelectUnchangedMotionFrame(b *testing.B) {
 	m := selectModel()
 	m.themeReady = true
