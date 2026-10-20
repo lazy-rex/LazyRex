@@ -459,7 +459,8 @@ conditions:
 file never starts a plugin. `plugin status` reports it as `orphaned`. `plugin sync` removes it.
 For example, a cancelled add of the manager can leave one.
 
-**Size bounds.** Decided by the coordinator (2026-10-20): the hub refuses a `lazyrex.json` over
+**Size bounds.** A step 2 decision of the coordinator (2026-10-20), separate from the v3 design
+approval: the hub refuses a `lazyrex.json` over
 64 KiB, with one shared constant and an error that names the file and the size. The hub has no
 main-file bound. Reasons:
 
@@ -485,6 +486,9 @@ How step 2 applies the decision:
 - Manifest, 64 KiB. The hub reads the whole manifest at each start attempt, so the bound keeps
   that read small. The largest manifest today is 588 B, about 1/100 of the bound. Proposed error:
   `<dir>/lazyrex.json is <n> bytes, over the 65536-byte limit`.
+  - The read itself is bounded: the loader reads at most 65537 bytes. A length check after an
+    unbounded read does not meet the memory goal.
+  - Tests: a manifest of exactly 65536 bytes is accepted; 65537 bytes is refused.
 - Main file: no hub bound. The hub does not read the main file: it checks its type, and `rex do`
   reads it. (The digest reads every file, as a stream.) Whether Rex limits the size of a `rex do`
   script: not tested.
