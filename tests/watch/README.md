@@ -39,9 +39,9 @@ The fixture plugin `watchfix` (`fixture.lua`) may watch `LAB/watched` (manifest
 Not covered by a lab test:
 
 - `backlog_full` at 20000 rows. A unit test covers it with a lower limit (`watch_test.go`).
-- The reopen of a `too_large` watch after it shrinks, and the 5-minute scan. Both wait for the
-  5-minute scan.
+- The 5-minute timer itself. `TestWatchPeriodicReopensAfterShrink` (`watchsvc_test.go`) calls the
+  scan directly: growth past the limit, no reopen above 90%, a reopen at 899 entries.
 - A backend error on one watch while another watch stays active. No test injects a backend
   error.
-- The hub descriptor budget for all watches together.
+- The hub descriptor budget in a lab. `TestWatchBudgetCountsBackendDescriptors` covers the count.
 - macOS sleep.

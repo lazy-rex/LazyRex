@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,5 +137,40 @@ func TestWatchBudgetCountsBackendDescriptors(t *testing.T) {
 	}
 	if r.svc.fits(4) {
 		t.Fatal("fits(4) with a budget of 3")
+	}
+}
+
+// The 5-minute scan (periodic, called directly) closes a watch that grew past the entry limit, and
+// opens it again once the directory has at most 90% of the limit; the scan then settles every file.
+// From the reviewer's test of 2367084.
+func TestWatchPeriodicReopensAfterShrink(t *testing.T) {
+	r, dir := newWatchRunTest(t)
+	for i := 0; i < 1001; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%04d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.periodic()
+	if r.fsw != nil || r.state() != "too_large" {
+		t.Fatalf("growth: open %v, state %s", r.fsw != nil, r.state())
+	}
+	for i := 0; i < 2; i++ { // 999 entries: under the limit, over 90% of it
+		os.Remove(filepath.Join(dir, fmt.Sprintf("f%04d", i)))
+	}
+	r.periodic()
+	if r.fsw != nil {
+		t.Fatal("reopened above 90% of the limit")
+	}
+	for i := 2; i < 102; i++ {
+		os.Remove(filepath.Join(dir, fmt.Sprintf("f%04d", i)))
+	}
+	r.periodic()
+	if r.fsw == nil {
+		t.Fatalf("did not reopen: %s", r.state())
+	}
+	time.Sleep(250 * time.Millisecond)
+	r.settle()
+	if got := len(r.rowsOf(t)); got != 899 {
+		t.Fatalf("settled %d files, want 899", got)
 	}
 }
