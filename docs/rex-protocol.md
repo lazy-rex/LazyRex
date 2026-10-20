@@ -200,7 +200,7 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
     - `lab/test/harness.lua` `A`, `self_id`, `hub_id` in `H.setup`: written before any test runs.
     - `lab/test/harness.lua` `hub_id` in `H.restart_hub`: observed correct in a probe. A test body caught two errors (`expect_error`, and a `wait` callback that failed once), after an earlier failed test. Then it restarted the hub. A later `H.hub` call reached the new hub.
     - `lab/test/harness.lua` operation key counter: now a table field. A probe after a failed test showed no lost write (hardening, not a reproduced defect).
-- **A generic `for` header that indexes or concatenates a function call result before a method call or a field read evaluates wrong.** In most cases Rex raises no error. Found by the Tunnels implementer, observed on Rex `0.0.1792158932-g88fd41` (lab, in a fresh test, no `pcall` involved). With `f()` returning `{s = "aaa\nbbb\n"}`:
+- **A generic `for` header that indexes or concatenates a function call result before a method call or a field read evaluates wrong.** In most cases Rex raises no error. Found by the Tunnels implementer, observed on Rex `0.0.1792158932-g88fd41` (lab, in a fresh test, no `pcall` involved). `P` is a line pattern, for example `"[^\n]+"`. In the `.s` examples, `f()` returns the table `{s = "aaa\nbbb\n"}`. In the direct `gmatch` and the concatenation examples, `f()` returns the string `"aaa\nbbb\n"`:
   - `for x in (f().s or ''):gmatch(P)`: no iteration.
   - `for x in f().s:gmatch(P)` and `for x in (f()).s:gmatch(P)`: "attempt to index a non-table object(nil) with key gmatch".
   - `for x in f().s.gmatch(f().s, P)`: the same nil error.
