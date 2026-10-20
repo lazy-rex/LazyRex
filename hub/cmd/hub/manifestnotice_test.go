@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// A manifest can name its notice (plugin sources, step 2a). The harness passes the notices of the
-// plugin under test and of each test.plugins entry to the test hub config as plugins[].notice.
+// A manifest can name its notice (docs/plugin-sources.md, section 10). The lab config names only
+// sources, and the hub reads the notice of each plugin from its manifest.
 func TestManifestNotice(t *testing.T) {
 	dir, err := manifestIn(t, `{"name":"p","main":"p.lua","notice":"New message. Call messaging_read.","test":{"plugins":[{"source":"n"}]}}`)
 	if err == nil || !strings.Contains(err.Error(), "no lazyrex.json") {
@@ -37,10 +37,20 @@ func TestManifestNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(path)
-	var cfg struct {
-		Plugins []struct{ Name, Notice string }
+	var raw struct {
+		Plugins []map[string]any
 	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range raw.Plugins {
+		if _, ok := p["source"]; !ok || len(p) != 1 {
+			t.Errorf("a lab entry is a source only (no args here): %v", p)
+		}
+	}
+	// The hub reads the notices from the manifests.
+	cfg, err := loadConfig(path, false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	notices := map[string]string{}

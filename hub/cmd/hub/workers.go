@@ -1267,18 +1267,21 @@ func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, erro
 	return map[string]any{"agent": id, "status": "navigating"}, nil
 }
 
-// pluginsList reports each running plugin and its declared tabs, for navigation.
+// pluginsList reports each running plugin and its declared tabs, for navigation, and each refused
+// config entry with its error (docs/plugin-sources.md, section 7). A refused entry that no
+// manifest named has name null.
 func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 	h.mu.Lock()
-	var names []string
+	var running []PluginConfig
 	for _, c := range h.cfg.Plugins {
 		if p := h.plugins[c.Name]; p != nil && p.ClientID != "" {
-			names = append(names, c.Name)
+			running = append(running, c)
 		}
 	}
 	h.mu.Unlock()
 	out := []any{}
-	for _, name := range names {
+	for _, c := range running {
+		name := c.Name
 		tabs, err := h.loadTabs(ctx, name)
 		if err != nil {
 			return nil, err
@@ -1287,7 +1290,7 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		for _, t := range tabs {
 			list = append(list, map[string]any{"key": t.Key, "title": t.Title, "route": t.Route})
 		}
-		entry := map[string]any{"plugin": name, "id": name, "name": name, "tabs": list}
+		entry := map[string]any{"plugin": name, "id": name, "name": name, "tabs": list, "source": c.Source, "dir": c.Dir}
 		if cmd := h.landingPanel(ctx, name); cmd != "" {
 			entry["panel"] = cmd // the panel command a Home click opens (panels.go)
 		}
@@ -1297,7 +1300,15 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		out = append(out, entry)
 	}
-	return map[string]any{"plugins": out}, nil
+	refused := []any{}
+	for _, r := range h.cfg.Refused {
+		var name any
+		if r.Name != "" {
+			name = r.Name
+		}
+		refused = append(refused, map[string]any{"entry": r.Entry, "source": r.Source, "name": name, "state": "refused", "error": r.Err.Error()})
+	}
+	return map[string]any{"plugins": out, "refused": refused}, nil
 }
 
 var countSuffix = regexp.MustCompile(` \(\d+\)$`)

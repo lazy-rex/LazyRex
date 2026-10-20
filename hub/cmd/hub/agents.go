@@ -326,7 +326,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		for _, n := range pending {
 			h.mu.Lock()
 			a, pl := h.noticeTarget(n.agent), h.plugins[n.ns]
-			due := a != nil && pl != nil && a.ready() && n.intentRev > a.delivered[n.ns]
+			due := a != nil && pl != nil && pl.Notice != "" && a.ready() && n.intentRev > a.delivered[n.ns]
 			sess, block, conn := "", "", ""
 			if due {
 				sess, block, conn = h.bindingSession(a), a.BlockID, a.ClientID

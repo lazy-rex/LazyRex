@@ -196,9 +196,7 @@ func TestAgentFaceReplyGuardLab(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	h, _ := workerTestHub(t)
-	if err := json.Unmarshal([]byte(`{"plugins":[{"name":"lab"}]}`), &h.cfg); err != nil {
-		t.Fatal(err)
-	}
+	h.cfg.Plugins = []PluginConfig{{Name: "lab"}}
 	r, err := rex.Dial(ctx, socket)
 	if err != nil {
 		t.Fatal(err)

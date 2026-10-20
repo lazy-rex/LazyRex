@@ -106,9 +106,11 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 	return err
 }
 
+// recoverPlugins recovers each resolved plugin in start order: dependencies first (sources.go
+// startOrder).
 func (h *Hub) recoverPlugins(ctx context.Context) {
-	for _, c := range h.cfg.Plugins {
-		pl := h.plugins[c.Name]
+	for _, name := range h.cfg.StartOrder {
+		pl := h.plugins[name]
 		pl.lifecycle.Lock()
 		if err := h.recoverPlugin(ctx, pl); err != nil {
 			log.Printf("plugin %s: %v", pl.Name, err)
@@ -603,4 +605,12 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		return map[string]any{"agent": id, "block_id": block}, nil
 	}
 	return nil, bad("unknown admin action")
+}
+
+// noticed reports whether a plugin has a notice in its manifest.
+func (h *Hub) noticed(name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl := h.plugins[name]
+	return pl != nil && pl.Notice != ""
 }

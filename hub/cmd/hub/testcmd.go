@@ -660,26 +660,24 @@ func (l *lab) stop() []string {
 }
 
 func (o *testOpts) hubConfig(l *lab) (string, error) {
+	// Local source entries only (docs/plugin-sources.md, section 9): the lab needs no lock. The hub
+	// reads each manifest itself.
 	type plug struct {
-		Name       string            `json:"name"`
-		Path       string            `json:"path"`
-		Events     string            `json:"events,omitempty"`
-		Notice     string            `json:"notice,omitempty"`
+		Source     string            `json:"source"`
 		Args       map[string]string `json:"args,omitempty"`
 		WatchRoots []string          `json:"watch_roots,omitempty"`
 	}
 	plugins := []plug{}
+	add := func(dir, name string) {
+		plugins = append(plugins, plug{Source: dir, Args: l.args[name], WatchRoots: l.watchRoots[name]})
+	}
 	if o.home != nil { // the home plugin: every real hub config loads it
-		plugins = append(plugins, plug{Name: "lazyrex", Path: o.home.main, Events: o.home.m.Events, Notice: o.home.m.Notice})
+		add(o.home.dir, "lazyrex")
 	}
 	for _, d := range o.m.deps {
-		plugins = append(plugins, plug{Name: d.m.Name, Path: d.main, Events: d.m.Events, Notice: d.m.Notice})
+		add(d.dir, d.m.Name)
 	}
-	plugins = append(plugins, plug{Name: o.m.Name, Path: o.m.mainPath, Events: o.m.Events, Notice: o.m.Notice})
-	for i := range plugins {
-		plugins[i].Args = l.args[plugins[i].Name]
-		plugins[i].WatchRoots = l.watchRoots[plugins[i].Name]
-	}
+	add(o.dir, o.m.Name)
 	agents := []manifestAgent{{ID: "user", Name: "User"}}
 	agents = append(agents, o.m.Test.Agents...)
 	view := filepath.Join(l.dir, "testview.sh")

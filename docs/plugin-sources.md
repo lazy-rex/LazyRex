@@ -8,19 +8,19 @@ Built on main:
 
 - Step 1: the manifest rules and the dependency graph (`hub/cmd/hub/sources.go`). These functions
   read and check. They start nothing.
-- Step 2a: both manifest parsers accept `notice`: the harness parser, and the step 1 parser. The
-  step 1 parser is not used at hub start yet.
-  - The harness forwards a nonempty manifest notice into the existing config field
-    `plugins[].notice` of the generated lab config (`testcmd.go` hubConfig). So a harness lab uses
-    the manifest notice today.
-  - Production start reads only the config: the entry's `notice`, or the default text.
+- Step 2a: both manifest parsers accept `notice`.
 - Step 2b: the bounded manifest read (`readManifestBytes`, 64 KiB), for both loaders.
 - Step 2c, part 1: the harness reads `test.plugins` (`requires` is refused), with the hub's manifest
-  and graph rules. The home plugin is `plugins/lazyrex/`. The generated lab config still has
-  `name` and `path` entries until part 2.
+  and graph rules. The home plugin is `plugins/lazyrex/`.
+- Step 2c, part 2 (`pluginconfig.go`): config source entries (section 1), resolved once at hub
+  start. A GitHub source is refused as "not installed" until step 3. The manifest owns `events`
+  and `notice`; a `notify` op without a notice fails with `no_notice` (section 10). Hub start
+  spawns in `startOrder`. `hub.plugins` reports `source` and `dir` for each running plugin, and a
+  `refused` list. The harness lab config has local source entries only.
 
-Not built: the rest of step 2 (config source entries, states, managed plugins) and step 3 (the
-lock, the cache, the commands).
+Not built: the rest of step 2 (2d: a resolution at each start attempt, the `waiting` and
+`retained` states, `run` and `candidate`; 2e: managed plugins) and step 3 (the lock, the cache, the
+commands).
 
 ## Terms
 

@@ -41,7 +41,9 @@ lazy-rex/
 
 Requirements: Rex, Go, and Node 22 or later for the tests.
 
-1. Copy `hub.example.json` and `profiles.example.json`, and set the paths.
+1. Copy `hub.example.json` and `profiles.example.json`, and set the paths. Each `plugins` entry
+   names a source: a plugin directory with `lazyrex.json`, absolute or relative to the config
+   file (docs/plugin-sources.md).
 2. Start the hub with hot reload: `./dev.sh /path/to/hub.json`. Without `DEV_REAL=1`, the hub
    refuses a real Rex server: use a lab server (`lab/server.sh /tmp/rexlab`) while you develop.
 

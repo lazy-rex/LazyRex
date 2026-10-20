@@ -10,33 +10,12 @@
   }
  ],
  "plugins": [
-  {
-   "name": "lazyrex",
-   "path": "/path/to/LazyRex/plugins/lazyrex/lazyrex.lua"
-  },
-  {
-   "name": "messaging",
-   "path": "/path/to/Messaging/messaging.lua"
-  },
-  {
-   "name": "profiles",
-   "path": "/path/to/Profiles/profiles.lua"
-  },
-  {
-   "name": "templates",
-   "path": "/path/to/Templates/templates.lua",
-   "events": "all"
-  },
-  {
-   "name": "tunnels",
-   "path": "/path/to/Tunnels/tunnels.lua",
-   "events": "all"
-  },
-  {
-   "name": "worktrees",
-   "path": "/path/to/Worktrees/worktrees.lua",
-   "events": "all"
-  }
+  {"source": "LazyRex/plugins/lazyrex"},
+  {"source": "Messaging"},
+  {"source": "Profiles"},
+  {"source": "Templates"},
+  {"source": "Tunnels"},
+  {"source": "Worktrees"}
  ],
  "profiles": "/path/to/.lazyrex/profiles.json",
  "palette_lua": "/path/to/.config/rex/lazyrex_palette.lua",
