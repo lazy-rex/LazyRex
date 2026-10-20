@@ -389,9 +389,11 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 					t.next = time.Now().Add(t.wait)
 					arm(t.wait)
 				}
+				// Check the agent and the plugin again: a stop during the read clears the plugin's
+				// run, and with it the notice. The notice then waits for the next run.
 				h.mu.Lock()
-				a = h.noticeTarget(n.agent)
-				waiting = a != nil && n.intentRev > a.delivered[n.ns]
+				a, pl = h.noticeTarget(n.agent), h.plugins[n.ns]
+				waiting = a != nil && pl != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns]
 			}
 			due := waiting && a.ready()
 			sess, block, conn, notice := "", "", "", ""
