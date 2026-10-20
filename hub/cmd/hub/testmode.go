@@ -796,6 +796,11 @@ func (h *Hub) testWrite(ctx context.Context, plugin string, args map[string]any)
 		return nil, err
 	}
 	if !out.committed {
+		// A stale if_rev: a test that read a record and writes it back must not overwrite a newer
+		// plugin commit, and it needs a code that it can tell from a malformed write.
+		if c, _ := out.result.(map[string]any)["conflict"].(map[string]any); c["kind"] == "revision" {
+			return nil, refuse("conflict", "the write did not commit: record %v is at rev %v", c["key"], c["rev"])
+		}
 		return nil, bad("invalid: the write did not commit: %v", out.result)
 	}
 	h.afterCommit(plugin, out)

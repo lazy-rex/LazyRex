@@ -328,7 +328,7 @@ function H.with_injection(spec, n, fn)
 end
 
 -- write commits store ops in the plugin's namespace now, as another writer: {key, value} or
--- {key, delete = true}.
+-- {key, delete = true}, each with an optional if_rev (a stale one fails with the code conflict).
 function H.write(ops, plugin) return hub('hub.test.write', {plugin = plugin or A.plugin, ops = ops}) end
 
 -- put_operation saves an operation record {key, fingerprint, result}, as an older plugin saved it.

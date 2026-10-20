@@ -215,8 +215,12 @@ does not hide the result.
 ### Writes from outside the plugin
 
 `write(ops)` commits store ops in the plugin's namespace now, as another writer would:
-`{key, value}` or `{key, delete = true}`, without `if_rev`. Use it to set up data that an older
-plugin version wrote. `put_operation{key, fingerprint, result}` saves an operation record (what
+`{key, value}` or `{key, delete = true}`. Use it to set up data that an older plugin version
+wrote. An op can add `if_rev` (a revision from `store(key)`; `'0'` means absent), as in
+`hub.store.batch`. If a record has another revision, the write fails with the code `conflict`
+(message `record <key> is at rev <rev>`) and commits no op of the batch. A test that reads a
+record, changes it and writes it back must use `if_rev`: without it, the write can overwrite a
+commit that the plugin made in between. `put_operation{key, fingerprint, result}` saves an operation record (what
 `hub.store.op` returns), for example the result of an older plugin version.
 
 ### Concurrent writes
