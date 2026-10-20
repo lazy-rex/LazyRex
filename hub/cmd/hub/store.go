@@ -156,25 +156,49 @@ func (db *DB) storeScan(ctx context.Context, ns string, args map[string]any) (an
 	defer rows.Close()
 	records := map[string]any{}
 	var keys []string
+	size, full := 0, false
 	for rows.Next() {
 		var key, value string
 		var rev int64
 		if err := rows.Scan(&key, &value, &rev); err != nil {
 			return nil, err
 		}
-		keys = append(keys, key)
-		if len(keys) <= limit {
-			records[key] = map[string]any{"value": json.RawMessage(value), "rev": revString(rev)}
+		if len(keys) == limit {
+			keys = append(keys, key) // only to show that more records exist
+			break
 		}
+		record := map[string]any{"value": json.RawMessage(value), "rev": revString(rev)}
+		n := scanRecordBytes(key, record)
+		if len(keys) > 0 && size+n > scanPageBytes {
+			full = true // this record starts the next page
+			break
+		}
+		size += n
+		keys = append(keys, key)
+		records[key] = record
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	out := map[string]any{"records": records}
-	if len(keys) > limit {
-		out["next"] = keys[limit-1]
+	if full || len(keys) > limit {
+		out["next"] = keys[len(records)-1]
 	}
 	return out, nil
+}
+
+// scanPageBytes bounds the encoded records of one hub.store.scan page, so that a page of large
+// records stays far below the reply limit (Rex's max_message_bytes, about 1 MiB). A page can
+// therefore hold fewer than limit records; callers follow next. A page always holds at least one
+// record: a record is at most the write limit, far below this bound.
+const scanPageBytes = 512 << 10
+
+// scanRecordBytes is the encoded size of one record in a scan result: its key, its value and rev,
+// and the separators. It uses the encoder that writes the reply, so escapes are counted.
+func scanRecordBytes(key string, record map[string]any) int {
+	k, _ := json.Marshal(key)
+	v, _ := json.Marshal(record)
+	return len(k) + len(v) + 2 // ':' and ','
 }
 
 func (db *DB) storeGet(ctx context.Context, ns string, args map[string]any) (any, error) {
