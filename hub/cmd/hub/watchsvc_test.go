@@ -96,3 +96,27 @@ func TestWatchSettleCommitsARemoval(t *testing.T) {
 		t.Fatalf("no tombstone: %+v %v", row, ok)
 	}
 }
+
+// A root grants itself and every directory below it, also the filesystem root, but not a sibling
+// that shares its prefix (review of 2367084).
+func TestInsideRootsContainment(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		p     string
+		roots []string
+		want  bool
+	}{
+		{dir, []string{"/"}, true},
+		{dir, []string{dir}, true},
+		{filepath.Join(dir, "a", "b"), []string{dir}, true},
+		{dir + "-sibling", []string{dir}, false},
+		{filepath.Dir(dir), []string{dir}, false},
+	} {
+		if got := insideRoots(c.p, c.roots); got != c.want {
+			t.Errorf("insideRoots(%q, %q) = %v", c.p, c.roots, got)
+		}
+	}
+}

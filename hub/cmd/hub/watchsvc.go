@@ -208,7 +208,9 @@ func insideRoots(p string, roots []string) bool {
 		if err != nil {
 			continue
 		}
-		if p == rr || strings.HasPrefix(p, rr+string(filepath.Separator)) {
+		// Rel, not a prefix test: a prefix test with a separator fails for the root "/" ("//").
+		rel, err := filepath.Rel(rr, p)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return true
 		}
 	}
