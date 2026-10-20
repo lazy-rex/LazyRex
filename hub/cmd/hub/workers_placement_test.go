@@ -173,9 +173,7 @@ func TestWorkerPlacementLab(t *testing.T) {
 			t.Fatalf("default split: %+v", view)
 		}
 		foreign := session(t)
-		managed := session(t)
-		h.ui.sess[managed] = appKeyPrefix + "messages"
-		for _, placement := range []map[string]any{{"session": foreign, "beside": anchor.Block}, {"session": managed}, {"session": "session:00000000-0000-0000-0000-000000000001"}} {
+		for _, placement := range []map[string]any{{"session": foreign, "beside": anchor.Block}, {"session": "session:00000000-0000-0000-0000-000000000001"}} {
 			if _, err := h.spawnWorker(ctx, p, map[string]any{"for": "user", "profile": "probe", "key": "refused", "placement": placement}); err == nil {
 				t.Fatalf("accepted %v", placement)
 			}

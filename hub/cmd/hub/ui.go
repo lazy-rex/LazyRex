@@ -3,11 +3,9 @@ package main
 // UI framework, hub side (../../README.md and docs/architecture.md, "UI framework"):
 // the LazyRex session, declared tabs, views, the reconciler, renderer check-in, and navigation.
 //
-// Each plugin has its own Rex session (an "app"). The home plugin's session is labeled "LazyRex";
-// another plugin's session is labeled "LazyRex: <name>", with the name the plugin declares (default:
-// its first tab title). Every declared tab is always mounted in its plugin's session. The hub owns a
-// session by its record in ui_sessions, never by its label. App mode (appmode.go) hides the user's
-// own sessions while an app is open, and restores them on "Exit LazyRex".
+// Every plugin's tabs are mounted in the one LazyRex session. The hub owns a session by its record
+// in ui_sessions, never by its label. App mode and per-plugin app sessions are removed
+// (appmodestate.go).
 //
 // Rex delivers requests to the hub one at a time (at most 16 waiting), so handlers here only
 // record intent and return. One worker does the Rex work for the whole session, serially.
@@ -30,12 +28,9 @@ import (
 )
 
 const uiSchema = `
--- plugin '*' is the LazyRex session, which every plugin shares. 'app:<plugin>' is a plugin's app
--- session of an older build: its views retire, and the session stays (it may hold user panes).
--- Other rows are sessions of an older hub (one per plugin): their views retire, then the session goes.
+-- plugin '*' is the LazyRex session, which every plugin shares. Every other row is a legacy session of an
+-- older build (one per plugin, or 'app:<plugin>'): its views retire, then settleLegacySession cleans it up.
 CREATE TABLE IF NOT EXISTS ui_sessions (plugin TEXT PRIMARY KEY, session_id TEXT NOT NULL);
--- The session name a plugin declared (hub.ui.tabs "session"). The label is "LazyRex: <name>".
-CREATE TABLE IF NOT EXISTS ui_apps (plugin TEXT PRIMARY KEY, name TEXT NOT NULL);
 -- key 'nav': the latest navigation target "<plugin>/<tab>", done when shown. It commits before any
 -- layout change. (key 'active' is from the single-session build and is not read.)
 CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -63,7 +58,6 @@ const (
 const (
 	uiSessionKey   = "*"
 	uiSessionLabel = "LazyRex"
-	appKeyPrefix   = "app:"
 )
 
 // sessionGone reports whether err says the session does not exist. Rex 1203 answers a missing
@@ -73,39 +67,31 @@ func sessionGone(err error) bool {
 	return errors.As(err, &re) && (re.Code == "session_not_found" || re.Code == "not_found")
 }
 
-// isAppKey reports whether a ui_sessions key names a current session (home or app), not a legacy one.
-func isAppKey(key string) bool { return key == uiSessionKey || strings.HasPrefix(key, appKeyPrefix) }
-
-// appKey is the ui_sessions key of the plugin's own session. Every plugin shares the LazyRex
-// session (the maintainer, 2026-10-17). A view in a recorded app:<plugin> session of an older build is
-// legacy: it retires and its tab opens again in the LazyRex session.
-func (h *Hub) appKey(plugin string) string { return uiSessionKey }
-
-// legacyView reports whether a view's session is not its plugin's own session. The hub retires it.
-func (h *Hub) legacyView(plugin, sess string) bool {
+// legacyView reports whether a view's session is not the LazyRex session, which every plugin
+// shares (the maintainer, 2026-10-17). The hub retires it, and its tab opens again in the LazyRex
+// session. A session of an older build (one per plugin, or app:<plugin>) is legacy.
+func (h *Hub) legacyView(sess string) bool {
 	h.ui.mu.Lock()
 	defer h.ui.mu.Unlock()
-	return h.ui.sess[sess] != h.appKey(plugin)
+	return h.ui.sess[sess] != uiSessionKey
 }
 
 type uiState struct {
-	mu           sync.Mutex
-	kick         chan struct{}
-	spawned      int                       // views opened in this pass (worker only)
-	retire       map[string]time.Time      // attachment -> last view.retire request (worker only)
-	retryArmed   bool                      // a delayed kick is scheduled (retryLater)
-	labeled      map[string]string         // session_id -> the label the worker last set
-	sess         map[string]string         // session_id -> ui_sessions key, for event routing
-	restoreRetry *restoreRetry             // a failing app-mode restore (appmode.go)
-	lateSess     map[string]bool           // user sessions with unresolved restore placeholders (appmode.go)
-	recorded     chan struct{}             // closed (and replaced) when a session is recorded (sessionRecorded)
-	expect       map[string]map[string]int // window -> labels the hub wrote whose echo is due (tabrename.go)
-	renaming     map[string]pendingRename  // window -> a user rename waiting for its plugin
-	labelQ       []labelEvent              // window_label_changed events waiting for the label worker, in order
-	labelKick    chan struct{}             // wakes the label worker
-	navMu        sync.Mutex                // serializes the navigation order check and its commit (uiNavigate)
-	navSeq       int64                     // the newest navigation request
-	navOpens     map[string]*navOpen       // navigation_id -> a view.open that runs outside the request queue
+	mu         sync.Mutex
+	kick       chan struct{}
+	spawned    int                       // views opened in this pass (worker only)
+	retire     map[string]time.Time      // attachment -> last view.retire request (worker only)
+	retryArmed bool                      // a delayed kick is scheduled (retryLater)
+	labeled    map[string]string         // session_id -> the label the worker last set
+	sess       map[string]string         // session_id -> ui_sessions key, for event routing
+	recorded   chan struct{}             // closed (and replaced) when a session is recorded (sessionRecorded)
+	expect     map[string]map[string]int // window -> labels the hub wrote whose echo is due (tabrename.go)
+	renaming   map[string]pendingRename  // window -> a user rename waiting for its plugin
+	labelQ     []labelEvent              // window_label_changed events waiting for the label worker, in order
+	labelKick  chan struct{}             // wakes the label worker
+	navMu      sync.Mutex                // serializes the navigation order check and its commit (uiNavigate)
+	navSeq     int64                     // the newest navigation request
+	navOpens   map[string]*navOpen       // navigation_id -> a view.open that runs outside the request queue
 }
 
 // navOpen is one hub.ui.navigate to an undeclared tab. view.open runs in the background, because
@@ -158,7 +144,7 @@ func (h *Hub) uiStart(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, uiSchema); err != nil {
 		return err
 	}
-	if _, err := h.db.ExecContext(ctx, appModeSchema); err != nil {
+	if err := h.removeAppModeState(ctx); err != nil {
 		return err
 	}
 	if err := formsStart(ctx, h.db); err != nil {
@@ -197,14 +183,6 @@ func (h *Hub) uiStart(ctx context.Context) error {
 	}
 	if err := h.pairStart(ctx); err != nil {
 		return err
-	}
-	// App mode is retired (one LazyRex session). A cycle that an older build left active is
-	// exited here: the worker restores the user's sessions with the existing restore.
-	if res, err := h.db.ExecContext(ctx, `UPDATE ui_cycles SET phase = 'restoring', updated = ?
-		WHERE phase IN ('capturing', 'hiding', 'active')`, now()); err != nil {
-		return err
-	} else if n, _ := res.RowsAffected(); n > 0 {
-		h.ev.emit("app_mode_retired", map[string]any{"cycles": n})
 	}
 	// Attachments belong to one hub generation (Renderer contract). Renderers attach again.
 	if _, err := h.db.ExecContext(ctx, `UPDATE views SET client_id = '', attachment = '' WHERE status = 'open'`); err != nil {
@@ -496,7 +474,7 @@ func (h *Hub) uiPlugins(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
-// reconcile makes each plugin's session match its declared tabs, moves app mode on, then
+// reconcile makes each plugin's session match its declared tabs, then
 // applies the latest navigation. It returns true when more work remains.
 func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 	h.ui.spawned = 0
@@ -505,12 +483,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	home := h.homePlugin()
-	// A cycle of an older build's app mode: legacy views do not retire until its restore is done,
-	// so a failed restore leaves the old layout as it is (Codex's review).
-	cur, err := currentCycle(ctx, h.db)
-	if err != nil {
-		return false, err
-	}
 	// The LazyRex session exists before any plugin declares a tab: it is where Home opens.
 	appSess, err := h.appSession(ctx, uiSessionKey, uiSessionLabel)
 	if err != nil {
@@ -554,7 +526,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				if v.Session != "" && v.Session != sess {
 					running := true
 					switch {
-					case cur != nil: // the app-mode restore finishes first
 					case v.Status == "open":
 						running = h.retireLegacy(ctx, v)
 					case v.Status == "exited" || v.Status == "prepared" || v.Status == "sending":
@@ -677,12 +648,8 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 		}
 	}
 
-	// 6. App mode: capture and hide the user's sessions, or restore them (appmode.go).
-	if again, err := h.appModeStep(ctx); err != nil {
-		return false, err
-	} else if again {
-		more = true
-	}
+	// 6. Legacy sessions whose last view closed: release or destroy them.
+	h.settleLegacySessions(ctx)
 
 	// 7. Navigation: show the target tab on every connected app, once it is mounted. The intent
 	// is durable. A newer navigation replaces it; this pass then skips the stale target, and the
@@ -1123,7 +1090,7 @@ func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool
 		}
 		return true
 	}
-	legacy := h.legacyView(plugin, sess) && h.notHome(ctx, plugin, tabKey, sess)
+	legacy := h.legacyView(sess) && h.notHome(ctx, plugin, tabKey, sess)
 	if !self && legacy {
 		// A view of an older hub's session: retiring it does not close the tab.
 		h.closeViewRow(ctx, id, "legacy")
@@ -1233,7 +1200,7 @@ func (h *Hub) uiChildExited(ctx context.Context, blockID string) bool {
 		go h.formEnded(context.Background(), v.ID, fc, false, "")
 		return true
 	}
-	if h.legacyView(v.Plugin, v.Session) && h.notHome(ctx, v.Plugin, v.Tab, v.Session) {
+	if h.legacyView(v.Session) && h.notHome(ctx, v.Plugin, v.Tab, v.Session) {
 		// A view of an older hub's session: its exit retires it and counts no crash for the tab.
 		// The handler only records it; the worker closes the pane (closeLegacy).
 		h.db.ExecContext(ctx, `UPDATE views SET status = 'exited', client_id = '', attachment = '' WHERE view_id = ? AND status = 'open'`, v.ID)
@@ -1264,15 +1231,13 @@ func (h *Hub) viewByBlock(ctx context.Context, blockID string) (*view, error) {
 	return v, err
 }
 
-// uiSessionChanged reacts to layout changes in a home or app session (snap back), and in a user
-// session that may get a late restore placeholder (closeLatePlaceholders).
+// uiSessionChanged reacts to layout changes in the LazyRex session (snap back), and in a session
+// with a side-slot replacement.
 func (h *Hub) uiSessionChanged(sess string) {
 	h.ui.mu.Lock()
-	key, ok := h.ui.sess[sess]
-	late := h.ui.lateSess[sess]
+	key := h.ui.sess[sess]
 	h.ui.mu.Unlock()
-	// A user session with an unresolved restore placeholder: a late placeholder can appear in it.
-	if (ok && isAppKey(key)) || late {
+	if key == uiSessionKey {
 		h.kickUI("")
 	}
 	// An unresolved side-slot replacement: its pane can appear in this session.
@@ -1286,7 +1251,7 @@ func (h *Hub) uiSessionDestroyed(ctx context.Context, sess string) {
 	_, ok := h.ui.sess[sess]
 	h.ui.mu.Unlock()
 	if ok {
-		// A home or app session comes back at once. A legacy session is gone.
+		// The LazyRex session comes back at once. A legacy session is gone.
 		h.forgetSession(ctx, sess, "destroyed")
 		h.kickUI("")
 	}
@@ -1295,7 +1260,6 @@ func (h *Hub) uiSessionDestroyed(ctx context.Context, sess string) {
 // --- Actions ---
 
 // uiTabs replaces the calling plugin's declared tab set. The first tab is the plugin's home.
-// "session" optionally names the plugin's app session; the hub labels it "LazyRex: <session>".
 // An empty list is valid: a plugin with only a landing panel has no tabs (panels.go).
 func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (any, error) {
 	list, ok := asList(args["tabs"])
@@ -1304,14 +1268,6 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 	}
 	if len(list) == 0 && plugin == h.homePlugin() {
 		return nil, bad("the home plugin needs at least one tab")
-	}
-	name, named := args["session"].(string)
-	if _, present := args["session"]; present && !named {
-		return nil, bad("session must be text")
-	}
-	name = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), uiSessionLabel+":"))
-	if named && (name == "" || len(name) > 60 || strings.ContainsAny(name, "\n\r\t")) {
-		return nil, bad("session must be a name of 1 to 60 characters on one line")
 	}
 	seen := map[string]bool{}
 	var tabs []tab
@@ -1376,14 +1332,6 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ui_tabs WHERE plugin = ?`, plugin); err != nil {
 		return nil, err
 	}
-	if named {
-		_, err = tx.ExecContext(ctx, `INSERT INTO ui_apps VALUES (?, ?) ON CONFLICT (plugin) DO UPDATE SET name = excluded.name`, plugin, name)
-	} else {
-		_, err = tx.ExecContext(ctx, `DELETE FROM ui_apps WHERE plugin = ?`, plugin)
-	}
-	if err != nil {
-		return nil, err
-	}
 	statusChanged := false
 	for _, t := range tabs {
 		o := old[t.Key]
@@ -1411,9 +1359,7 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 }
 
 // uiNavigate records a navigation and returns. The worker opens the tab if needed and shows it on
-// every app. A newer navigation replaces an older one that is not done. A navigation to an app
-// (not the home plugin) enters app mode: the worker first hides the user's sessions (appmode.go).
-// It is refused while an exit restores them.
+// every app. A newer navigation replaces an older one that is not done.
 // navigationTab lets an explicit navigation declare a lazy tab once. Restore and reconciliation
 // use only existing declarations. The plugin interprets the route derived from the tab key.
 func (h *Hub) navigationTab(ctx context.Context, plugin, key string, open func(context.Context, string, string, any, any) error) error {
@@ -1545,20 +1491,12 @@ func (h *Hub) navigateCommitLocked(ctx context.Context, plugin, key string, seq 
 	if seq != h.ui.navSeq {
 		return false, nil
 	}
-	// The app-mode entry and the target commit together, before any layout change: a crash then
-	// resumes the capture and the focus.
+	// The target commits before any layout change: a crash then resumes the focus.
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	cur, err := currentCycle(ctx, tx)
-	if err != nil {
-		return false, err
-	}
-	if cur != nil && cur.Phase == "restoring" {
-		return false, bad("conflict: Exit LazyRex is restoring your sessions; open the app when it finishes")
-	}
 	if _, err := tx.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND tab = ?`, plugin, key); err != nil {
 		return false, err
 	}
@@ -1686,7 +1624,7 @@ func (h *Hub) uiDescribe(ctx context.Context, args map[string]any) (any, error) 
 		return nil, err
 	}
 	var sess string
-	h.db.QueryRowContext(ctx, `SELECT session_id FROM ui_sessions WHERE plugin = ?`, h.appKey(plugin)).Scan(&sess)
+	h.db.QueryRowContext(ctx, `SELECT session_id FROM ui_sessions WHERE plugin = ?`, uiSessionKey).Scan(&sess)
 	tl := []any{}
 	for _, t := range tabs {
 		tl = append(tl, map[string]any{"tab": t.Key, "route": t.Route, "suppressed": t.Suppressed, "session_id": t.Session})
@@ -1699,7 +1637,7 @@ func (h *Hub) uiDescribe(ctx context.Context, args map[string]any) (any, error) 
 		}
 		vl = append(vl, row)
 	}
-	// default_session_id: where tabs without a home session live (the plugin's app session).
+	// default_session_id: where tabs without a home session live (the LazyRex session).
 	// home_redirects: each replaced home session -> the session its tabs use now (hometabs.go).
 	redirects, err := h.homeRedirects(ctx)
 	if err != nil {
@@ -1777,15 +1715,91 @@ func (h *Hub) closeLegacy(ctx context.Context, v *view, why string) bool {
 	}
 	h.closeViewRow(ctx, v.ID, why)
 	h.ev.emit("view_retired", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "why": why})
-	var recorded int
-	h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_sessions WHERE session_id = ? AND plugin != ? AND plugin NOT LIKE 'app:%'`, v.Session, uiSessionKey).Scan(&recorded)
-	if recorded == 1 {
-		if blocks, err := h.blocksIn(ctx, v.Session); err == nil && len(blocks) == 0 {
-			if err := h.rex.Call(ctx, "session.destroy", map[string]any{"session_id": v.Session}, nil); err == nil {
-				h.forgetSession(ctx, v.Session, "legacy retired")
-			}
+	h.kickUI(v.Plugin) // the pass settles the legacy session (settleLegacySessions)
+	return true
+}
+
+// settleLegacySessions runs settleLegacySession for every session that has a legacy ui_sessions
+// row. The worker calls it once per pass, so a failed cleanup is tried again on the next pass.
+func (h *Hub) settleLegacySessions(ctx context.Context) {
+	rows, err := h.db.QueryContext(ctx, `SELECT DISTINCT session_id FROM ui_sessions WHERE plugin != ?`, uiSessionKey)
+	if err != nil {
+		log.Printf("ui: legacy sessions: %v", err)
+		return
+	}
+	var sessions []string
+	for rows.Next() {
+		var s string
+		if rows.Scan(&s) == nil {
+			sessions = append(sessions, s)
 		}
 	}
-	h.kickUI(v.Plugin)
-	return true
+	rows.Close()
+	for _, s := range sessions {
+		h.settleLegacySession(ctx, s)
+	}
+}
+
+// settleLegacySession cleans up a session of an older build after its last view row closed. It
+// waits while any view row in the session is not closed: a pending, sending or exited row keeps
+// its own recovery. Then:
+//   - Rex has no such session: the hub forgets it.
+//   - The session has blocks (user panes): the hub deletes its legacy rows and stops managing it.
+//     The session and its panes stay with the user.
+//   - The session has no blocks: the hub destroys it, then forgets it. The legacy rows stay until
+//     the destroy succeeds, so a failed destroy is tried again on the next pass.
+//
+// The Rex calls run in the worker, outside any transaction or lock.
+func (h *Hub) settleLegacySession(ctx context.Context, sess string) {
+	var home, open int
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_sessions WHERE session_id = ? AND plugin = ?`, sess, uiSessionKey).Scan(&home); err != nil {
+		return
+	}
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM views WHERE session_id = ? AND status != 'closed'`, sess).Scan(&open); err != nil || open > 0 {
+		return
+	}
+	if home > 0 { // also the LazyRex session: never destroyed here
+		h.releaseLegacySession(ctx, sess, 0)
+		return
+	}
+	blocks, err := h.blocksIn(ctx, sess)
+	switch {
+	case err != nil && sessionGone(err):
+		h.forgetSession(ctx, sess, "legacy gone")
+	case err != nil:
+		h.legacyCleanupFailed(sess, "session.list_blocks", err)
+	case len(blocks) > 0:
+		h.releaseLegacySession(ctx, sess, len(blocks))
+	default:
+		if err := legacyDestroy(ctx, h, sess); err != nil && !sessionGone(err) {
+			h.legacyCleanupFailed(sess, "session.destroy", err)
+			return
+		}
+		h.forgetSession(ctx, sess, "legacy retired")
+	}
+}
+
+// legacyDestroy destroys a legacy session. Tests replace it to make the destroy fail.
+var legacyDestroy = func(ctx context.Context, h *Hub, sess string) error {
+	return h.rex.Call(ctx, "session.destroy", map[string]any{"session_id": sess}, nil)
+}
+
+// releaseLegacySession deletes a session's legacy rows and keeps the session.
+func (h *Hub) releaseLegacySession(ctx context.Context, sess string, blocks int) {
+	if _, err := h.db.ExecContext(ctx, `DELETE FROM ui_sessions WHERE session_id = ? AND plugin != ?`, sess, uiSessionKey); err != nil {
+		log.Printf("ui: release legacy session %s: %v", sess, err)
+		return
+	}
+	h.ui.mu.Lock()
+	if h.ui.sess[sess] != uiSessionKey {
+		delete(h.ui.sess, sess)
+	}
+	h.ui.mu.Unlock()
+	h.ev.emit("legacy_session_released", map[string]any{"session_id": sess, "blocks": blocks})
+}
+
+func (h *Hub) legacyCleanupFailed(sess, call string, err error) {
+	log.Printf("ui: legacy session %s: %s: %v", sess, call, err)
+	h.ev.emit("legacy_cleanup_failed", map[string]any{"session_id": sess, "call": call, "error": err.Error()})
+	h.retryLater()
 }

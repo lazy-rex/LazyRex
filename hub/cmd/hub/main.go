@@ -197,7 +197,7 @@ var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": tr
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
 var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
 	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.rebind",
-	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.ui.exit", "hub.ui.mode", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
+	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"}
 
@@ -656,10 +656,6 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.appSelectSession(ctx, p, args)
 	case "hub.ui.navigate":
 		return h.uiNavigate(ctx, args)
-	case "hub.ui.exit":
-		return h.uiExit(ctx, args)
-	case "hub.ui.mode":
-		return h.uiMode(ctx)
 	case "hub.ui.reload":
 		return h.uiReload(ctx, args)
 	case "hub.ui.describe":

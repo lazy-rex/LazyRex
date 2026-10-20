@@ -420,12 +420,6 @@ func (h *Hub) resolveWorkerPlacement(ctx context.Context, p workerPlacement) (st
 	if sess == "" {
 		return "", bad("the work session is unavailable; retry when it exists")
 	}
-	h.ui.mu.Lock()
-	owner := h.ui.sess[sess]
-	h.ui.mu.Unlock()
-	if strings.HasPrefix(owner, appKeyPrefix) {
-		return "", bad("placement.session is a managed LazyRex app session")
-	}
 	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
 		return "", err
 	}
@@ -1235,7 +1229,7 @@ func (h *Hub) navigateWorker(ctx context.Context, args map[string]any) (any, err
 		return nil, bad("the tab of %s is gone", id)
 	}
 	if b.Placement == "detached" {
-		return nil, bad("this worker is detached and has no visible tab; if app mode hid it, use Exit LazyRex")
+		return nil, bad("this worker is detached and has no visible tab")
 	}
 	go h.showOnApps(context.Background(), "", s.Session, &view{ID: s.ID, Tab: "worker/" + s.ID, Window: b.WindowID, Block: s.Block})
 	return map[string]any{"spawn_id": id, "status": "navigating"}, nil
@@ -1374,7 +1368,7 @@ var hubToolActions = []map[string]any{
 			"title": map[string]any{"type": "string", "maxLength": 60},
 			"cwd":   map[string]any{"type": "string", "minLength": 1, "description": "An existing absolute directory to start in, for example a worktree from worktree_create. Replaces the profile's cwd."},
 			"placement": map[string]any{"type": "object", "additionalProperties": false, "description": "Default: a new tab in the work session. Choose another session, split beside a placed block, or start detached.", "properties": map[string]any{
-				"session":   map[string]any{"type": "string", "minLength": 1, "description": "Target session ID. Managed LazyRex app sessions are refused."},
+				"session":   map[string]any{"type": "string", "minLength": 1, "description": "Target session ID."},
 				"beside":    map[string]any{"type": "string", "minLength": 1, "description": "A placed block ID in the target session."},
 				"direction": map[string]any{"type": "string", "enum": []string{"right", "left", "above", "below"}, "description": "Requires beside. Default: right."},
 				"ratio":     map[string]any{"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "description": "Requires beside. Fraction for the new pane. Default: 0.5."},

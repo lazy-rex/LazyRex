@@ -75,7 +75,7 @@ func (fs *faults) Set(spec string) error {
 			return fmt.Errorf("unknown fault key %q", k)
 		}
 	}
-	valid := map[string][]string{"store-commit": {"exit", "pause"}, "block-create": {"exit-before", "exit-after"}, "notice-written": {"gate"}, "restore-window": {"exit-mid"}}
+	valid := map[string][]string{"store-commit": {"exit", "pause"}, "block-create": {"exit-before", "exit-after"}, "notice-written": {"gate"}}
 	modes, ok := valid[f.point]
 	if !ok || !contains(modes, f.mode) {
 		return fmt.Errorf("unsupported fault %q", spec)
