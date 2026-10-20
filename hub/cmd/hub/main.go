@@ -46,21 +46,12 @@ type Config struct {
 		Name         string `json:"name"`
 		StatusRecord string `json:"status_record"`
 	} `json:"agents"`
-	Plugins []struct {
-		Name   string `json:"name"`
-		Path   string `json:"path"`
-		Notice string `json:"notice"`
-		// Events is "session" (default: Rex events of the work session) or "all" (every session,
-		// `rex do --all`). Use "all" only when the plugin needs other sessions' events: each such
-		// plugin receives every server event.
-		Events string `json:"events"`
-		// Args are extra key=value arguments of `rex do` (rex.args in the plugin), for example
-		// worktrees_root. The hub's own keys (pluginArgReserved) are refused.
-		Args map[string]string `json:"args"`
-		// WatchRoots are the directories whose subtrees the plugin may watch (hub.watch, docs/hub.md
-		// "File watches"). Absolute paths. Empty: every hub.watch.ensure is refused.
-		WatchRoots []string `json:"watch_roots"`
-	} `json:"plugins"`
+	// Entries are the config field plugins (pluginconfig.go). loadConfig resolves them into Plugins
+	// (config order), StartOrder (plugin names, dependencies first) and Refused.
+	Entries    []json.RawMessage `json:"plugins"`
+	Plugins    []PluginConfig    `json:"-"`
+	StartOrder []string          `json:"-"`
+	Refused    []RefusedEntry    `json:"-"`
 }
 
 type Agent struct {
@@ -175,26 +166,17 @@ func loadConfig(path string, realServer bool) (Config, error) {
 		}
 		return c, errors.New("refusing the user's real Rex server without -real-server; use a lab server (spikes/lab/server.sh)")
 	}
-	for i := range c.Plugins {
-		if e := c.Plugins[i].Events; e != "" && e != "session" && e != "all" {
-			return c, fmt.Errorf("plugin %s: events must be \"session\" or \"all\"", c.Plugins[i].Name)
-		}
-		for k := range c.Plugins[i].Args {
-			if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
-				return c, fmt.Errorf("plugin %s: arg %q is not allowed", c.Plugins[i].Name, k)
-			}
-		}
-		for _, r := range c.Plugins[i].WatchRoots {
-			if !filepath.IsAbs(r) || filepath.Clean(r) != r {
-				return c, fmt.Errorf("plugin %s: watch root %q must be absolute and clean", c.Plugins[i].Name, r)
-			}
-		}
-		if c.Plugins[i].Notice == "" {
-			c.Plugins[i].Notice = "New message. Call messaging_read."
-		}
-		if c.Plugins[i].Path, err = filepath.Abs(c.Plugins[i].Path); err != nil {
-			return c, err
-		}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return c, err
+	}
+	entries, err := parseEntries(filepath.Dir(abs), c.Entries)
+	if err != nil {
+		return c, fmt.Errorf("%s: %w", path, err)
+	}
+	c.Plugins, c.StartOrder, c.Refused = resolvePlugins(path, entries)
+	for _, r := range c.Refused {
+		log.Printf("plugin entry %d (%s): refused: %v", r.Entry, r.Source, r.Err)
 	}
 	if c.View != "" {
 		if c.View, err = filepath.Abs(c.View); err != nil {
@@ -781,7 +763,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 				return nil, err
 			}
 		}
-		out, err := h.db.storeBatch(ctx, ns, args, h.roster())
+		out, err := h.db.storeBatch(ctx, ns, args, h.roster(), h.noticed(ns))
 		if err != nil {
 			return nil, err
 		}

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hot reload for spike 3. Runs the hub, watches the sources, and reloads what changed:
-#   plugins/<name>/*.lua -> hub.admin.stop + hub.admin.start <name> (open views render again)
+#   plugins/<dir>/*.lua -> hub.admin.stop + hub.admin.start <manifest name> (views render again)
 #   view/*.go           -> build, install the renderer atomically, hub.ui.reload for each plugin
 #   hub/**/*.go         -> build, restart the hub (renderers and plugins reattach)
 # Usage: dev.sh <hub config>. The config names the server, state dir, view path and plugins.
@@ -14,13 +14,16 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 REX_BIN=${REX_BIN:-$(/usr/bin/which rex)}
 field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$CFG" "$1"; }
 SERVER=$(field server); STATE=$(field state); VIEW=$(field view)
-PLUGINS=$(python3 -c "import json,sys; print(' '.join(p['name'] for p in json.load(open(sys.argv[1]))['plugins']))" "$CFG")
 DEV=$STATE/dev; mkdir -p "$DEV"
 L() { env -u REX_SESSION -u REX_BLOCK "$REX_BIN" -S "$SERVER" --autostart=false "$@"; }
 log() { echo "dev: $(date +%H:%M:%S) $*"; }
 
 hub_id() { grep -o '"client_id":"client:[^"]*","event":"hub_started"' "$STATE/events.jsonl" | tail -1 | cut -d'"' -f4; }
 hub_do() { L -C "$(hub_id)" do "$@"; }
+# The manifests own the plugin names (docs/plugin-sources.md). plugin_names asks the running hub;
+# manifest_name reads the manifest of a plugin directory under plugins/.
+plugin_names() { hub_do hub.plugins --json 2>/dev/null | python3 -c "import json,sys; print(' '.join(p['plugin'] for p in json.load(sys.stdin).get('plugins', [])))"; }
+manifest_name() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$1/lazyrex.json"; }
 
 HUB_PID=
 start_hub() {
@@ -43,7 +46,7 @@ build_view() {
 }
 install_view() {
   build_view || return 1
-  for p in $PLUGINS; do log "reload $p: $(hub_do hub.ui.reload --args "{\"plugin\":\"$p\"}" 2>&1)"; done
+  for p in $(plugin_names); do log "reload $p: $(hub_do hub.ui.reload --args "{\"plugin\":\"$p\"}" 2>&1)"; done
 }
 restart_plugin() {
   log "restart plugin $1"
@@ -61,7 +64,7 @@ while :; do
   [ -z "$changed" ] && continue
   case $changed in *"$DIR/hub/"*) start_hub ;; esac
   case $changed in *"$DIR/view/"*) install_view ;; esac
-  for p in $PLUGINS; do
-    case $changed in *"$DIR/plugins/$p/"*) restart_plugin "$p" ;; esac
+  for d in "$DIR"/plugins/*/; do
+    case $changed in *"$d"*) restart_plugin "$(manifest_name "$d")" ;; esac
   done
 done

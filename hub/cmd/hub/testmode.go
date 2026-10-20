@@ -776,7 +776,7 @@ func (h *Hub) testAfterGet(ctx context.Context, ns string, args map[string]any) 
 	b, _ := json.Marshal(in.Ops)
 	var ops []any
 	json.Unmarshal(b, &ops)
-	out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster())
+	out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster(), h.noticed(ns))
 	if err == nil && !out.committed {
 		err = fmt.Errorf("did not commit: %v", out.result)
 	}
@@ -814,7 +814,7 @@ func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]an
 		b, _ := json.Marshal(args)
 		var dup map[string]any
 		json.Unmarshal(b, &dup)
-		out, err := h.db.storeBatch(ctx, ns, dup, h.roster())
+		out, err := h.db.storeBatch(ctx, ns, dup, h.roster(), h.noticed(ns))
 		if err != nil {
 			return fmt.Errorf("injection %d: replay: %w", in.ID, err)
 		}
@@ -824,7 +824,7 @@ func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]an
 		b, _ := json.Marshal(in.Ops)
 		var ops []any
 		json.Unmarshal(b, &ops)
-		out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster())
+		out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster(), h.noticed(ns))
 		if err != nil {
 			return fmt.Errorf("injection %d: %w", in.ID, err)
 		}
@@ -851,7 +851,7 @@ func (h *Hub) testWrite(ctx context.Context, plugin string, args map[string]any)
 	if !ok || len(list) == 0 {
 		return nil, bad("invalid: ops must be a nonempty list")
 	}
-	out, err := h.db.storeBatch(ctx, plugin, map[string]any{"ops": list}, h.roster())
+	out, err := h.db.storeBatch(ctx, plugin, map[string]any{"ops": list}, h.roster(), h.noticed(plugin))
 	if err != nil {
 		return nil, err
 	}

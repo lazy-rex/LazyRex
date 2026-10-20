@@ -571,7 +571,7 @@ the authoritative guards. Worker and directory events invalidate cached advice.
 Read-only status scans run asynchronously. The panel renders a cached snapshot.
 Refresh reuses a scan that is still running. It requests one new scan after the current scan finishes.
 The plugin has no idle scan timer. It refreshes on view focus, worker changes, terminal exits, and relevant directory or block events.
-Set `plugins[].events` to `"all"` for worktrees. The hub passes `plugin_session` because Rex cannot combine `--all` with `-s`.
+The Worktrees manifest sets `"events": "all"`. The hub passes `plugin_session` because Rex cannot combine `--all` with `-s`.
 An explicit query starts a fresh scan. Retries receive the current scan and its completed result.
 A one-shot timer collects results only while a status scan runs. Rex exposes no completion callback for `rex.exec.start`.
 Completed scans call `hub.ui.invalidate`. Content acknowledgements do not start another scan.
@@ -1006,7 +1006,7 @@ Status: lab (Templates pair, Rex 0.0.1792158932-g88fd41). Not deployed. Decision
 
 - Plugin `templates` (`plugins/templates.lua`). Palette commands: "Start Session…" (`/forms/start`), "Save as Template…" (`/forms/save`), "Templates…" (panel `/panels/templates`, the landing). The engine `plugins/templates_run.lua` must sit beside it.
 - Hub actions: `hub.spawn_window {key, session?, title?, layout}` starts one tab of profiles with one Rex request; `hub.spawn.spec {block_id}` gives the launch spec of a spawned pane. Contract: the header of `hub/cmd/hub/spawnwindow.go`.
-- Hub config: add `{"name": "templates", "path": ".../plugins/templates.lua", "events": "all"}` to `plugins`. The profiles file needs no change; `shell` is built in.
+- Hub config: add `{"source": "<the Templates directory>"}` to `plugins` (its manifest must set `"events": "all"`; on 2026-10-20 the Templates manifest has no `events`). The profiles file needs no change; `shell` is built in.
 
 Lab test (observed, real hub and renderer):
 

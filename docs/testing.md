@@ -77,8 +77,8 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | --- | --- |
 | `name`, `main` | The plugin name and its main file. Required. `main` is relative, has no `..`, is not a symlink, and resolves inside the manifest directory (docs/plugin-sources.md, section 2). |
 | `depends` | Plugin names that this plugin needs. The harness refuses a missing dependency and a cycle, as the hub does. |
-| `events` | `session` (default) or `all`, as in the hub config. |
-| `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin (hub config `plugins[].notice`). No control characters (the hub pastes it, then sends CR). Without it, the hub default. |
+| `events` | `session` (default) or `all`: the Rex events that the plugin receives. |
+| `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin No control characters (the hub pastes it, then sends CR). Without it, a `notify` op of the plugin fails with code `no_notice`, and nothing in that batch is written. |
 | `test.plugins` | Other plugins that the hub loads for the tests: `[{"source": "<dir>"}]`. Each source is a directory relative to the manifest directory, with its own `lazyrex.json`. The names come from those manifests. `lazyrex` is refused (the harness adds the home plugin), and so is a name used twice. |
 | `test.agents` | Roster agents in the test hub config. `user` is always there. |
 | `test.transcript` | The hub config `transcript` option. |

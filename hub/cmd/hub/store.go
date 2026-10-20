@@ -275,7 +275,9 @@ type batchOutcome struct {
 }
 
 // storeBatch validates the whole batch, then applies it in one transaction (README section 3).
-func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, roster map[string]bool) (*batchOutcome, error) {
+// noticed reports whether ns has a notice in its manifest: without one, a notify op fails with code
+// no_notice and nothing in the batch is written (docs/plugin-sources.md, section 10).
+func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, roster map[string]bool, noticed bool) (*batchOutcome, error) {
 	rawOps, ok := asList(args["ops"])
 	if !ok {
 		return nil, bad("ops must be a list")
@@ -289,6 +291,9 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 			return nil, bad("each op is an object")
 		}
 		if n, isNotice := m["notify"]; isNotice {
+			if !noticed {
+				return nil, refuse("no_notice", "plugin %s has no notice in its manifest", ns)
+			}
 			nm, ok := n.(map[string]any)
 			if !ok || len(m) != 1 {
 				return nil, bad("a notify op is {notify: {agent, pending}}")
