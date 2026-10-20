@@ -58,6 +58,9 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	h.kickAgentKeymap()
 	h.ev.emit("plugin_registered", map[string]any{"plugin": name, "instance_id": instance, "client_id": pl.ClientID})
 	h.kickViews(name, true) // views rendered while the plugin was away hold a stale tree
+	if h.watches != nil {
+		h.watches.pluginRegistered(name) // rows may wait for it
+	}
 	go h.changed("plugins") // the home lists running plugins; go: register holds h.mu
 	return map[string]any{"namespace": name, "generation": revString(h.generation)}, nil
 }

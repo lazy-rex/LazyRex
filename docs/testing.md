@@ -84,6 +84,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
 | `test.env` | Variables added to the lab environment. See "Isolation". |
 | `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `requires` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id` and `plugin_session` are refused. |
+| `test.watch_roots` | Plugin watch roots (hub config `plugins[].watch_roots`, docs/hub.md "File watches"), keyed by plugin name: the plugin under test, a `requires` entry or `lazyrex`. Each path starts with `${LAB}/` and stays in the lab. The harness creates each directory before the hub starts. |
 | `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
 
 Unknown fields are refused. The harness owns the rest of the hub config (`server`, `state`,
@@ -332,6 +333,7 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'spawn-create', mode = 'lose-answer', op = key}` | The create request runs. If Rex answers yes, the answer becomes `disconnected`: the pane exists and the spawn stays pending. An accessory pane is not adopted by its label, so it stays pending (resolveSpawns only counts candidate panes). If Rex answers with an error, that error stays and the fault stays armed. |
 | `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
 | `{point = 'action', action, when = 'after', mode, key, plugin}` | The handler runs once. If it succeeds, its reply is replaced (`failed` or `disconnected`). If it fails, its own error is the reply and the fault stays armed. |
+| `{point = 'watch-nudge', mode = 'drop', key, plugin}` | The hub does not send the next `hub.changed` nudge of that plugin's watch `key` (any watch if `key` is not given). The repeat schedule continues (docs/hub.md, "Nudges"). |
 
 | `{point = 'action', action, when = 'before', mode = 'gate', key, plugin}` | A barrier for a caller that retries. From the call that fires it until `fault_release(id)`, every matching call gets code `unavailable` and runs no handler. The hub retries a view operation with that outcome every 500 ms, so the operation passes after the release. A gate that is still closed at the end of the file fails the file. `fault_state` reports `gated`, the number of refused calls. `fault_release` of a gate that has not fired is an error. |
 

@@ -219,6 +219,19 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 			}
 		}
 	}
+	for name, roots := range m.Test.WatchRoots {
+		if !names[name] {
+			return fmt.Errorf("test.watch_roots: %q is not the plugin or a requires entry", name)
+		}
+		for _, v := range roots {
+			if !strings.HasPrefix(v, "${LAB}/") {
+				return fmt.Errorf("test.watch_roots %s: %q must start with ${LAB}/", name, v)
+			}
+			if _, err := expandValue(v, dummy); err != nil {
+				return fmt.Errorf("test.watch_roots %s: %w", name, err)
+			}
+		}
+	}
 	if p := m.Test.Profiles; p != "" {
 		if filepath.IsAbs(p) || strings.Contains(p, "${") {
 			return fmt.Errorf("test.profiles %q must be relative to the manifest dir", p)
@@ -237,8 +250,9 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 
 // labValues are the manifest env and plugin args for one lab, expanded and checked.
 type labValuesT struct {
-	env  map[string]string
-	args map[string]map[string]string
+	env        map[string]string
+	args       map[string]map[string]string
+	watchRoots map[string][]string
 }
 
 func (m *manifest) labValues(manifestDir, lab string) (labValuesT, error) {
@@ -254,7 +268,20 @@ func (m *manifest) labValues(manifestDir, lab string) (labValuesT, error) {
 		}
 		return x, nil
 	}
-	out := labValuesT{env: map[string]string{}, args: map[string]map[string]string{}}
+	out := labValuesT{env: map[string]string{}, args: map[string]map[string]string{}, watchRoots: map[string][]string{}}
+	for name, roots := range m.Test.WatchRoots {
+		for _, v := range roots {
+			x, err := expandValue(v, vars)
+			if err != nil {
+				return out, fmt.Errorf("test.watch_roots %s: %w", name, err)
+			}
+			// The root does not exist yet (startLab creates it), so check its lab parent.
+			if filepath.Clean(x) != x || !strings.HasPrefix(x, lab+"/") || strings.Contains(x, "/../") {
+				return out, fmt.Errorf("test.watch_roots %s: %q must stay in the lab", name, v)
+			}
+			out.watchRoots[name] = append(out.watchRoots[name], x)
+		}
+	}
 	for k, v := range m.Test.Env {
 		x, err := value("test.env "+k, v)
 		if err != nil {

@@ -1,0 +1,7 @@
+{
+ "name": "watchfix",
+ "main": "fixture.lua",
+ "test": {
+  "watch_roots": {"watchfix": ["${LAB}/watched"]}
+ }
+}

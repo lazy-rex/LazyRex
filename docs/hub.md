@@ -1041,10 +1041,12 @@ decision of 2026-10-20 approves fsnotify (`github.com/fsnotify/fsnotify`). Rex h
 API, and plugins are Lua inside Rex, so the hub owns the watch. The first user is the Automations
 plugin: a new file in the vault inbox starts the knowledge worker, or messages it if it runs.
 
-Status: the settle rules, the bounded listing and the change feed are built and unit-tested
-(`hub/cmd/hub/watch.go`, `watch_test.go`). The actions, the fs loop, reconciliation and the plugin
-lifecycle are not built yet. Everything below that is not in `watch.go` is the approved contract,
-not observed behavior.
+Status: built. The rules and the feed are in `hub/cmd/hub/watch.go`. The actions, the loop of each
+watch and the nudges are in `watchsvc.go`. Tests:
+
+- Unit tests: `watch_test.go` and `watchsvc_test.go`.
+- Lab tests (observed on Rex `0.0.1792158932-g88fd41`, 2026-10-20): `lazyrex-hub test tests/watch`.
+  `tests/watch/README.md` lists what they cover and what no test covers.
 
 ### Model
 
@@ -1163,8 +1165,9 @@ the initial listing.
 - A scan commits nothing directly. Each name that differs from its row, and each row whose name is
   missing from the listing, becomes a first observation.
 - A settle timer commits only while the watch is `initializing` or `active`. When a watch leaves
-  those states, its timers are cancelled. A timer from an older open of the watch (its epoch)
-  commits nothing.
+  those states, its timers are cancelled. One goroutine owns the watcher and every timer of a
+  watch. Closing the watch forgets every pending name, so a timer from an older open finds
+  nothing to commit. This replaces the epoch counter of the design.
 - Before a commit, the hub checks the watched directory's `(dev, ino)` against the open. A
   directory renamed away makes no tombstones.
 

@@ -57,6 +57,9 @@ type Config struct {
 		// Args are extra key=value arguments of `rex do` (rex.args in the plugin), for example
 		// worktrees_root. The hub's own keys (pluginArgReserved) are refused.
 		Args map[string]string `json:"args"`
+		// WatchRoots are the directories whose subtrees the plugin may watch (hub.watch, docs/hub.md
+		// "File watches"). Absolute paths. Empty: every hub.watch.ensure is refused.
+		WatchRoots []string `json:"watch_roots"`
 	} `json:"plugins"`
 }
 
@@ -95,6 +98,7 @@ type Plugin struct {
 	ChildStart         string
 	ClientID           string     // set by an accepted hub.register
 	Exports            []string   // action names agents may call through the MCP shim
+	WatchRoots         []string   // config watch_roots (watchsvc.go)
 	lifecycle          sync.Mutex // serializes replace, start and stop
 }
 
@@ -114,6 +118,7 @@ type Hub struct {
 	clientID       string
 	rexBinary      string
 	paletteKick    chan struct{} // wakes paletteLoop (kickPalette)
+	watches        *watchSvc     // file watches (watchsvc.go)
 	paletteLoaded  string        // the palette file content of the last config reload (paletteLoop only)
 	lock           *os.File      // holds the flock; kept for the life of the process
 	test           *testState    // test mode (-test, testmode.go); nil otherwise
@@ -175,6 +180,11 @@ func loadConfig(path string, realServer bool) (Config, error) {
 				return c, fmt.Errorf("plugin %s: arg %q is not allowed", c.Plugins[i].Name, k)
 			}
 		}
+		for _, r := range c.Plugins[i].WatchRoots {
+			if !filepath.IsAbs(r) || filepath.Clean(r) != r {
+				return c, fmt.Errorf("plugin %s: watch root %q must be absolute and clean", c.Plugins[i].Name, r)
+			}
+		}
 		if c.Plugins[i].Notice == "" {
 			c.Plugins[i].Notice = "New message. Call messaging_read."
 		}
@@ -199,7 +209,8 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.rebind",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-	"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke"}
+	"hub.plugins", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
+	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list"}
 
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
@@ -325,7 +336,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.agentOrder = append(h.agentOrder, a.ID)
 	}
 	for _, p := range cfg.Plugins {
-		h.plugins[p.Name] = &Plugin{Name: p.Name, Path: p.Path, Notice: p.Notice, Events: p.Events, Args: p.Args}
+		h.plugins[p.Name] = &Plugin{Name: p.Name, Path: p.Path, Notice: p.Notice, Events: p.Events, Args: p.Args, WatchRoots: p.WatchRoots}
 	}
 	if cfg.Test {
 		h.test = newTestState()
@@ -368,6 +379,9 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		return nil, err
 	}
 	h.workersRun(ctx)
+	if err := h.watchStart(ctx); err != nil {
+		return nil, err
+	}
 	h.formsSweep(ctx)
 	h.slotSweep(ctx)
 	go h.paletteLoop(context.Background())
@@ -705,6 +719,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.grantGet(ctx, ns, args)
 	case "hub.grant.revoke":
 		return h.grantRevoke(ctx, ns, args)
+	case "hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list":
+		return h.watchAction(ctx, ns, p.Action, args)
 	case "hub.ui.tabs":
 		return h.uiTabs(ctx, ns, args)
 	case "hub.ui.invalidate":

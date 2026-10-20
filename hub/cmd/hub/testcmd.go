@@ -54,6 +54,9 @@ type manifest struct {
 		// plugins[].args), keyed by plugin name. Values may name ${LAB} and ${PLUGIN}.
 		Env  map[string]string            `json:"env"`
 		Args map[string]map[string]string `json:"args"`
+		// WatchRoots are plugin watch roots (hub config plugins[].watch_roots), keyed by plugin name.
+		// Paths with ${LAB}; the harness creates each one before the hub starts.
+		WatchRoots map[string][]string `json:"watch_roots"`
 		// Profiles is a profile file (relative to the manifest dir) that the harness copies to
 		// LAB/profiles.json, the hub's profile file.
 		Profiles string `json:"profiles"`
@@ -265,6 +268,7 @@ type lab struct {
 	r                   *rex.Rex
 	tracked             map[int]string               // pid -> start time: every process seen under the server or the hub
 	args                map[string]map[string]string // plugin args after expansion (manifest test.args)
+	watchRoots          map[string][]string          // plugin watch roots after expansion (manifest test.watch_roots)
 	profiles            string                       // LAB/profiles.json, the hub's profile file
 	restarts            int                          // hub:restart() calls (restartHub)
 }
@@ -305,7 +309,14 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 		return l, err
 	}
 	l.env = labEnv(dir, l.server, extra.env)
-	l.args, l.profiles = extra.args, filepath.Join(dir, "profiles.json")
+	l.args, l.watchRoots, l.profiles = extra.args, extra.watchRoots, filepath.Join(dir, "profiles.json")
+	for _, roots := range l.watchRoots {
+		for _, r := range roots {
+			if err := os.MkdirAll(r, 0o700); err != nil {
+				return l, err
+			}
+		}
+	}
 	if o.m.Test.Profiles != "" {
 		b, err := os.ReadFile(filepath.Join(o.dir, o.m.Test.Profiles))
 		if err != nil {
@@ -591,11 +602,12 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		return filepath.Join(o.dir, p)
 	}
 	type plug struct {
-		Name   string            `json:"name"`
-		Path   string            `json:"path"`
-		Events string            `json:"events,omitempty"`
-		Notice string            `json:"notice,omitempty"`
-		Args   map[string]string `json:"args,omitempty"`
+		Name       string            `json:"name"`
+		Path       string            `json:"path"`
+		Events     string            `json:"events,omitempty"`
+		Notice     string            `json:"notice,omitempty"`
+		Args       map[string]string `json:"args,omitempty"`
+		WatchRoots []string          `json:"watch_roots,omitempty"`
 	}
 	plugins := []plug{}
 	seen := map[string]bool{}
@@ -612,6 +624,7 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	plugins = append(plugins, plug{Name: o.m.Name, Path: abs(o.m.Main), Events: o.m.Events, Notice: o.m.Notice})
 	for i := range plugins {
 		plugins[i].Args = l.args[plugins[i].Name]
+		plugins[i].WatchRoots = l.watchRoots[plugins[i].Name]
 	}
 	agents := []manifestAgent{{ID: "user", Name: "User"}}
 	agents = append(agents, o.m.Test.Agents...)

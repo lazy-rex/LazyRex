@@ -1,7 +1,7 @@
 package main
 
 // Test-mode faults (docs/testing.md, "Faults"). A test arms a fault with hub.test.fault; it fires
-// once. Two points:
+// once. Three points:
 //   - spawn-create: the Rex request that creates a hub.spawn worker's pane (lose-answer, drop,
 //     refuse; op = the spawn key).
 //   - action: a hub action that a registered plugin calls (when = before | after,
@@ -9,6 +9,8 @@ package main
 //     gate (before only) is a barrier for a caller that retries: from the call that fires it
 //     until hub.test.fault_release, every matching call gets 'unavailable' and runs no handler.
 //     A hub request cannot wait: Rex delivers the hub's calls one at a time.
+//   - watch-nudge: a hub.changed nudge of a watch to the plugin (watchsvc.go; mode drop; key =
+//     the watch key, "" = any). The nudge is not sent.
 // nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
 // counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
@@ -32,11 +34,13 @@ type testFault struct {
 	Gated                int    // gate: the calls that it refused
 }
 
-var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"}}
+var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"},
+	"watch-nudge": {"drop"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
-	"action": {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"}}
+	"action":      {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"},
+	"watch-nudge": {"point", "mode", "key", "plugin"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -74,11 +78,14 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse) or action (fail, lose-reply, gate)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate) or watch-nudge (drop)")
 	}
 	switch f.Point {
 	case "spawn-create":
 		f.Op, _ = args["op"].(string)
+	case "watch-nudge":
+		f.Key, _ = args["key"].(string)
+		f.Plugin = plugin
 	case "action":
 		f.Action, _ = args["action"].(string)
 		f.When, _ = args["when"].(string)

@@ -126,6 +126,9 @@ func (s *settler) recheck(name string, o watchObs, now time.Time) bool {
 	return false
 }
 
+// drop forgets name without a result (its Lstat failed; the row stays).
+func (s *settler) drop(name string) { delete(s.pending, name) }
+
 // due returns the names whose timers expired at now, in name order.
 func (s *settler) due(now time.Time) []string {
 	var out []string
@@ -245,6 +248,71 @@ func (db *DB) watchByID(ctx context.Context, q interface {
 		FROM watches WHERE watch_id = ?`, id).Scan(&w.Plugin, &w.Key, &w.ID, &w.Path, &w.Resolved, &w.Glob, &w.SettleMs, &w.EmitExisting,
 		&w.State, &w.LastError, &w.Cursor, &w.Watermark)
 	return w, err
+}
+
+// watchRowStates returns each row as an observation (a tombstone is absent) and the pending
+// initial names, for a scan.
+func (db *DB) watchRowStates(ctx context.Context, id string) (map[string]watchObs, map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name, present, ino, size, mtime_ns FROM watch_rows WHERE watch_id = ?`, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	out := map[string]watchObs{}
+	for rows.Next() {
+		var name string
+		var present bool
+		var o watchObs
+		if err := rows.Scan(&name, &present, &o.Ino, &o.Size, &o.MtimeNs); err != nil {
+			return nil, nil, err
+		}
+		if !present {
+			o = watchObs{}
+		} else {
+			o.Exists, o.Eligible = true, true
+		}
+		out[name] = o
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	pending := map[string]bool{}
+	prows, err := db.QueryContext(ctx, `SELECT name FROM watch_pending WHERE watch_id = ?`, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer prows.Close()
+	for prows.Next() {
+		var name string
+		if err := prows.Scan(&name); err != nil {
+			return nil, nil, err
+		}
+		pending[name] = true
+	}
+	return out, pending, prows.Err()
+}
+
+// rowDiffers reports whether observation o differs from a row (ok false: no row).
+func rowDiffers(row watchObs, ok bool, o watchObs) bool {
+	if !ok || !row.present() {
+		return o.present()
+	}
+	return !o.present() || row.Ino != o.Ino || row.Size != o.Size || row.MtimeNs != o.MtimeNs
+}
+
+// deleteWatch deletes a watch, its rows and its pending names.
+func (db *DB) deleteWatch(ctx context.Context, id string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{`DELETE FROM watch_rows WHERE watch_id = ?`, `DELETE FROM watch_pending WHERE watch_id = ?`, `DELETE FROM watches WHERE watch_id = ?`} {
+		if _, err := tx.ExecContext(ctx, q, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (db *DB) setWatchState(ctx context.Context, id, state, lastError string) error {
