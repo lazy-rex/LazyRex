@@ -46,6 +46,9 @@ type configEntry struct {
 	// of the hub process. "" until then.
 	name string
 	seen string     // the manifest name of the last resolution that read one (reported; never a record key)
+	// prior is the name that the plugins row records for this source (Hub.priorNames). A source that
+	// gives no name at the first resolution binds it, so a live old instance keeps its record.
+	prior string
 	cand *pluginRun // the last resolution, when it passed
 	err  error      // the last resolution, when it refused the entry
 }
@@ -132,11 +135,18 @@ func (e *configEntry) checkSource(cfgDir string) error {
 func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 	src := make([]*sourceEntry, len(entries))
 	runs := make([]*pluginRun, len(entries))
+	prior := make([]bool, len(entries)) // the entry claims its prior name
+	noName := func(i int, e *configEntry, s *sourceEntry) {
+		if e.name == "" && e.prior != "" {
+			s.Name, prior[i] = e.prior, true
+		}
+	}
 	for i, e := range entries {
 		s := &sourceEntry{Index: e.index, Source: e.Source, Name: e.name}
 		src[i] = s
 		if e.github {
 			s.Err = fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
+			noName(i, e, s)
 			continue
 		}
 		m, main, err := readPluginManifest(e.dir)
@@ -146,6 +156,7 @@ func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 		switch {
 		case err != nil:
 			s.Err = fmt.Errorf("plugin source %s: %w", e.Source, err)
+			noName(i, e, s)
 		case e.name != "" && m.Name != e.name:
 			s.Err = fmt.Errorf("plugin %s: the manifest name changed from %s to %s; restart the hub", e.name, e.name, m.Name)
 		default:
@@ -165,7 +176,7 @@ func resolveEntries(cfgPath string, entries []*configEntry) []*configEntry {
 	}
 	for i, e := range entries {
 		s := src[i]
-		if runs[i] != nil && uses[s.Name] == 1 {
+		if (runs[i] != nil || prior[i]) && uses[s.Name] == 1 {
 			e.name = s.Name
 		}
 		e.err, e.cand = s.Err, nil

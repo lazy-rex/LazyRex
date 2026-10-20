@@ -109,11 +109,18 @@ func newInstanceID(plugin string, gen int64) string {
 	return fmt.Sprintf("%s-%d-%s", plugin, gen, hex.EncodeToString(b))
 }
 
-// loadPluginRow returns the persisted desired state and instance, creating a "running" row if absent.
+// loadPluginRow returns the persisted desired state, instance and run, creating a "running" row if
+// absent. It records the source of the entry that bound the name: a later hub start binds the
+// same name to that entry when its source gives no name (priorNames).
 func (h *Hub) loadPluginRow(ctx context.Context, pl *Plugin) error {
 	_, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugins (name, desired) VALUES (?, 'running')`, pl.Name)
 	if err != nil {
 		return err
+	}
+	if pl.entry != nil {
+		if _, err := h.db.ExecContext(ctx, `UPDATE plugins SET source = ? WHERE name = ?`, pl.entry.Source, pl.Name); err != nil {
+			return err
+		}
 	}
 	var run string
 	err = h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run FROM plugins WHERE name = ?`, pl.Name).
@@ -134,6 +141,47 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ? WHERE name = ?`,
 		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.Name)
 	return err
+}
+
+// priorNames sets each entry's prior name: the name of the plugins row that records the entry's
+// exact source. Several rows with one source (a manifest renamed across a restart): the one row
+// with a recorded block, else none. Rows from before the source was recorded have none. It runs
+// at hub start, before the first resolution.
+func (h *Hub) priorNames(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT name, source, block_id FROM plugins WHERE source != '' ORDER BY name`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type row struct{ name, block string }
+	bySource := map[string][]row{}
+	for rows.Next() {
+		var r row
+		var source string
+		if err := rows.Scan(&r.name, &source, &r.block); err != nil {
+			return err
+		}
+		bySource[source] = append(bySource[source], r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, e := range h.entries {
+		list := bySource[e.Source]
+		var live []row
+		for _, r := range list {
+			if r.block != "" {
+				live = append(live, r)
+			}
+		}
+		switch {
+		case len(live) == 1:
+			e.prior = live[0].name
+		case len(list) == 1:
+			e.prior = list[0].name
+		}
+	}
+	return nil
 }
 
 // resolveLocked resolves every entry (resolveEntries) and makes a record for each name that it

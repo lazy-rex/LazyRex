@@ -264,3 +264,38 @@ func TestPluginsListStates(t *testing.T) {
 		t.Errorf("plugins %v, %d entries", got.Plugins, len(got.Entries))
 	}
 }
+
+// An entry whose source gives no name binds its prior name (the plugins row's name for that
+// source), refused, so the record of a live old instance stays. A source that gives a name binds
+// that name: a manifest renamed across a restart takes the new name. A prior name in use by
+// another entry is a duplicate name.
+func TestPluginEntriesPriorName(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "gone"), 0o700)
+	plugDir(t, dir, "renamed", `{"name":"new","main":"r.lua"}`, "r.lua")
+	plugDir(t, dir, "owner", `{"name":"taken","main":"o.lua"}`, "o.lua")
+	os.MkdirAll(filepath.Join(dir, "clash"), 0o700)
+	c, err := writeConfig(t, dir, `[{"source":"gone"},{"source":"renamed"},{"source":"owner"},{"source":"clash"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, renamed, owner, clash := c.entries[0], c.entries[1], c.entries[2], c.entries[3]
+	gone.prior, renamed.prior, clash.prior = "old", "was", "taken"
+	order := resolveEntries(c.path, c.entries)
+	if gone.name != "old" || gone.cand != nil || gone.err == nil || !strings.HasPrefix(gone.err.Error(), "plugin source gone: no lazyrex.json") {
+		t.Errorf("gone: %q %v", gone.name, gone.err)
+	}
+	if renamed.name != "new" || renamed.err != nil {
+		t.Errorf("renamed: %q %v", renamed.name, renamed.err)
+	}
+	if owner.name != "" || clash.name != "" || owner.err == nil || owner.err.Error() != "entries 3 and 4 have the same name taken" {
+		t.Errorf("a prior name in use: %q %q %v", owner.name, clash.name, owner.err)
+	}
+	var names []string
+	for _, e := range order {
+		names = append(names, e.name)
+	}
+	if strings.Join(names, ",") != "new,old" {
+		t.Errorf("order %v", names)
+	}
+}

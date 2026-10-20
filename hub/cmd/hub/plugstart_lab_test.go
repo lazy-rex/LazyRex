@@ -399,3 +399,39 @@ func TestPluginStartUnresolvedIntentLab(t *testing.T) {
 		t.Errorf("%d intents abandoned", n)
 	}
 }
+
+// A hub restart with a source that gives no name (reviewer, hub-review-2d1-blockers): the plugins
+// row records the entry's source, so the record keeps its name. The old process lives and is
+// retained, hub.plugins reports the name and the dir of its run, and hub.admin.stop ends it.
+func TestPluginRetainedUnreadableSourceLab(t *testing.T) {
+	breaks := map[string]func(s *startLab){
+		"missing manifest":   func(s *startLab) { os.Remove(filepath.Join(s.src, "a", "lazyrex.json")) },
+		"malformed manifest": func(s *startLab) { s.writeSource("a", `{"name":`, "") },
+		"missing main file":  func(s *startLab) { os.Remove(filepath.Join(s.src, "a", "main.lua")) },
+	}
+	for what, breakSource := range breaks {
+		t.Run(what, func(t *testing.T) {
+			s := newStartLab(t, "a")
+			s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+			s.start()
+			s.registered("a")
+			old := s.status("a")
+			oldStart := startTime(old.ChildPID)
+			s.stop()
+			breakSource(s)
+			s.start()
+			s.wait("a is retained", func() bool { return s.status("a").State == "retained" })
+			if st := s.status("a"); st.ChildPID != old.ChildPID || st.BlockID != old.BlockID || !alive(old.ChildPID, oldStart) {
+				t.Errorf("the old process lives in its block: %+v, old %+v", st, old)
+			}
+			if e := s.entry("a"); e["name"] != "a" || e["state"] != "retained" || e["dir"] != filepath.Join(s.src, "a") || !strings.HasPrefix(fmt.Sprint(e["error"]), "plugin source src/a: ") {
+				t.Errorf("hub.plugins: %v", e)
+			}
+			s.must("hub.admin.stop", map[string]any{"plugin": "a"})
+			s.wait("the retained process ends", func() bool { return !alive(old.ChildPID, oldStart) })
+			if st := s.status("a"); st.State != "stopped" || st.BlockID != "" {
+				t.Errorf("after the stop: %+v", st)
+			}
+		})
+	}
+}

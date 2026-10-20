@@ -26,6 +26,13 @@ On the branch `plugins/step2d` (in review), step 2d part 1:
   resolution that gives it without a conflict. A duplicate name refuses every entry with it (step
   1), also when one entry resolved earlier: that owner keeps its name and a running instance; the
   other entry binds nothing. Two entries with one name at hub start: neither binds.
+- The plugins row records the source of the entry that bound its name (column `source`). At hub
+  start, an entry whose source gives no name (a missing or malformed manifest, a missing main
+  file, a GitHub source that is not installed) binds the name of that row. So a live old instance
+  keeps its record: it is retained, and `hub.admin.stop` ends it. A source that gives a name binds
+  that name. Limit (step 2e, "Records kept for an instance"): a manifest renamed across a restart
+  leaves the row of the old name without an entry, as on main. Rows from before this change have
+  no source.
 - The states `refused` and `retained`. A refused start retires nothing. A recorded instance that
   still lives makes the record `retained`; `hub.register` from it fails with code `retained`.
 - `run`: the plugins row saves it at each spawn (column `run`). Notices use `run.notice`. Watch

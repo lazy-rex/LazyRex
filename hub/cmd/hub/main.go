@@ -343,6 +343,9 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.agentOrder = append(h.agentOrder, a.ID)
 	}
 	h.entries = cfg.entries
+	if err := h.priorNames(ctx); err != nil {
+		return nil, err
+	}
 	h.entriesMu.Lock()
 	h.resolveLocked() // binds the names and makes their records
 	for _, e := range h.entries {
