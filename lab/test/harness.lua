@@ -521,6 +521,16 @@ function View:rename_tab(label)
   local _, err = rex.call('session.set_window_label', {session_id = self.session, window_id = self.window, label = label})
   if err then error(err_of(err), 0) end
 end
+-- tab_label returns the label of the view's Rex tab. (The field label is the renderer client label.)
+function View:tab_label()
+  local sv, err = rex.call('session.view', {session_id = self.session})
+  if err then error(err_of(err), 0) end
+  local windows = sv.windows or {}
+  for _, w in ipairs(windows) do
+    if w.window_id == self.window then return w.label end
+  end
+  return nil
+end
 function View:status() return perform(self.client, 'testview.status', {}) end
 
 -- A table field, not a local: a closure write to a captured local can be lost after a catch

@@ -37,6 +37,9 @@ local actions = {
   {name = 'view.action', kind = 'client', title = 'Action', args = obj},
   {name = 'view.open', kind = 'client', title = 'Open a lazy tab', args = obj},
   {name = 'view.seen', kind = 'client', title = 'The user looks at a view', args = obj},
+  {name = 'view.rename', kind = 'client', title = 'The user renamed a tab', args = obj},
+  {name = 'fix.title', kind = 'client', title = 'Declare a tab with a new title, as an unread count does',
+    args = {type = 'object', properties = {key = {type = 'string'}, title = {type = 'string'}}, required = {'key', 'title'}}},
   {name = 'fix.put', kind = 'client', title = 'Put a record', description = 'Write {key, value}.',
     args = {type = 'object', properties = {key = {type = 'string'}, value = {}}, required = {'key', 'value'}}},
   {name = 'fix.get', kind = 'client', title = 'Get a record', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
@@ -195,8 +198,30 @@ local function view_open(args)
   return {}
 end
 
+-- retitle declares a tab with a new title, as the messaging plugin does for an unread count. The hub
+-- then writes the new label: that label is not a user rename.
+local function retitle(args)
+  for _, t in ipairs(tabs) do
+    if t.key == args.key then t.title = args.title end
+  end
+  hub('hub.ui.tabs', {tabs = tabs})
+  return {}
+end
+
 local function view(action, args)
   if action == 'view.open' then return view_open(args) end
+  -- view.rename: the plugin keeps the user's title literally and declares it again, as the messaging
+  -- plugin does. The record renames lists every title in order.
+  if action == 'view.rename' then
+    for _, t in ipairs(tabs) do
+      if t.route == args.route then t.title = args.title end
+    end
+    local list = get('renames') or {}
+    list[#list + 1] = args.title
+    put('renames', list)
+    hub('hub.ui.tabs', {tabs = tabs})
+    return {}
+  end
   if action == 'view.seen' then put('seen', {route = args.route, reason = args.reason}); return {} end
   if action == 'view.render' then
     if args.route == '/home' then return {tree = home_tree()} end
@@ -241,6 +266,7 @@ rex.on('client_perform_requested', function(ctx, ev)
     elseif ev.action:sub(1, 5) == 'view.' then
       return view(ev.action, ev.args)
     end
+    if ev.action == 'fix.title' then return retitle(ev.args) end
     return domain(ev.action, ev.args or {}, ev.requester.principal and ev.requester.principal.pid)
   end)
   if ok then

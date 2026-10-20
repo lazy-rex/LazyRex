@@ -189,6 +189,7 @@ operations, effects and retries.
 | `v:draft(node, text, base_revision, key)`, `v:send(node, text, draft_revision, key)` | Draft save and send. |
 | `v:effect_retry(key)`, `v:history(before)` | Retry failed effects; read an older history page. |
 | `v:rename_tab(label)` | Renames the view's Rex tab, as the user does. The hub sends `view.rename`. |
+| `v:tab_label()` | The label of the view's Rex tab. (`v.label` is the renderer's client label.) |
 | `v:seen(reason)` | Reports that the user looks at the view (`hub.view.seen`, default reason `focus`), as the renderer does. The plugin gets `view.seen` later. In the lab no app is connected, so a navigation alone does not count as seen. |
 
 An operation is final when its status is not `pending` and its effects are not `pending`. The
