@@ -1215,8 +1215,10 @@ that pauses longer than `settle_ms` gives `created`, then `changed`.
   - Per watch: 1000 counted entries.
   - All watches together: 4000 descriptors, and at most half of the soft `RLIMIT_NOFILE`.
   - 8 watches per plugin.
-- The `ensure` check reads the directory in chunks of 256 and stops as soon as the count passes
-  the limit.
+- The `ensure` check and every scan read the directory in chunks of 256. They stop as soon as the
+  number of listed entries passes 1000. This limit counts every entry, sockets and named pipes
+  too: they need no descriptor, but they still cost work in the hub. A directory over it is
+  `too_large`.
 - The count after each Create event and each scan detects growth. It is not an instantaneous
   ceiling: the backend opens descriptors for new entries before the hub handles the event.
 - Local file systems only. fsnotify does not support NFS or SMB.

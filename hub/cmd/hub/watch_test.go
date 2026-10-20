@@ -111,6 +111,25 @@ func TestListWatchDirCountsIgnoredEntriesAndStopsEarly(t *testing.T) {
 	}
 }
 
+// The listing bound counts every entry: entries without a descriptor (named pipes) still stop the
+// listing early (review of 3036308).
+func TestListWatchDirBoundsEntriesWithoutDescriptors(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 1300; i++ {
+		if err := syscall.Mkfifo(filepath.Join(dir, fmt.Sprintf("pipe-%04d", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, err := listWatchDir(dir, "*", 1000, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Over || l.Chunks != 4 || l.Seen != 1024 || l.Count != 0 || len(l.Entries) != 1024 {
+		t.Fatalf("over %v, chunks %d, seen %d, count %d, entries %d; want true, 4, 1024, 0, 1024",
+			l.Over, l.Chunks, l.Seen, l.Count, len(l.Entries))
+	}
+}
+
 func TestObserveEntryDoesNotFollowSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "target"), "data")

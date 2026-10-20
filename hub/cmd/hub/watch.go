@@ -161,13 +161,16 @@ type watchEntry struct {
 // watchListing is a bounded listing of a watched directory.
 type watchListing struct {
 	Entries []watchEntry // the names that watchName tracks
+	Seen    int          // every listed entry
 	Count   int          // entries that the kqueue backend opens a descriptor for: all but sockets and named pipes
-	Over    bool         // Count passed the limit, and the listing stopped there
+	Over    bool         // Seen passed the limit, and the listing stopped there
 	Chunks  int          // ReadDir calls
 }
 
-// listWatchDir reads dir in chunks and stops as soon as Count passes limit, so a large directory is
-// never read whole. A listing error is returned as is: the caller commits nothing from it.
+// listWatchDir reads dir in chunks and stops as soon as Seen passes limit, so a large directory is
+// never read whole. The limit applies to every entry, not only to Count: entries without a
+// descriptor (sockets, named pipes) still cost work. Count <= Seen, so the descriptor limit holds
+// too. A listing error is returned as is: the caller commits nothing from it.
 func listWatchDir(dir, glob string, limit, chunk int) (watchListing, error) {
 	var l watchListing
 	f, err := os.Open(dir)
@@ -179,6 +182,7 @@ func listWatchDir(dir, glob string, limit, chunk int) (watchListing, error) {
 		ents, err := f.ReadDir(chunk)
 		l.Chunks++
 		for _, e := range ents {
+			l.Seen++
 			t := e.Type()
 			if t&(fs.ModeSocket|fs.ModeNamedPipe) == 0 {
 				l.Count++
@@ -187,7 +191,7 @@ func listWatchDir(dir, glob string, limit, chunk int) (watchListing, error) {
 				l.Entries = append(l.Entries, watchEntry{Name: e.Name(), Regular: t.IsRegular()})
 			}
 		}
-		if l.Count > limit {
+		if l.Seen > limit {
 			l.Over = true
 			return l, nil
 		}
