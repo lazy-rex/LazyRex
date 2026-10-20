@@ -94,6 +94,13 @@ func (h *Hub) watchStart(ctx context.Context) error {
 	return nil
 }
 
+// watchBackendDescriptors are the descriptors that one fsnotify watcher opens for itself: the
+// kqueue backend (v1.10.1, newKqueue) opens a kqueue and a close pipe with two ends.
+const watchBackendDescriptors = 3
+
+// watchDescriptors is what one watch needs: its entries (count), the directory, and the backend.
+func watchDescriptors(count int) int { return count + 1 + watchBackendDescriptors }
+
 func watchDescriptorLimit() int {
 	var rl syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rl); err != nil {
@@ -362,7 +369,7 @@ func (r *watchRun) open() {
 	case l.Over:
 		r.inactive("too_large", fmt.Sprintf("more than %d entries", limit), false)
 		return
-	case !r.svc.reserve(r.lw.id, l.Count+1):
+	case !r.svc.reserve(r.lw.id, watchDescriptors(l.Count)):
 		r.inactive("too_large", "the hub descriptor budget is used up", false)
 		return
 	}
@@ -481,7 +488,7 @@ func (r *watchRun) recount() (watchListing, bool) {
 	case l.Over:
 		r.inactive("too_large", fmt.Sprintf("more than %d entries", watchEntryLimit), false)
 		return l, false
-	case !r.svc.reserve(r.lw.id, l.Count+1):
+	case !r.svc.reserve(r.lw.id, watchDescriptors(l.Count)):
 		r.inactive("too_large", "the hub descriptor budget is used up", false)
 		return l, false
 	}
@@ -778,7 +785,7 @@ func (h *Hub) watchEnsure(ctx context.Context, ns string, args map[string]any) (
 			return nil, refuse("watch_error", "list: %v", err)
 		case l.Over:
 			return nil, refuse("watch_too_large", "%s has more than %d entries", w.Path, watchEntryLimit)
-		case !h.watches.fits(l.Count + 1):
+		case !h.watches.fits(watchDescriptors(l.Count)):
 			return nil, refuse("watch_too_large", "the hub descriptor budget is used up")
 		}
 		var names []string

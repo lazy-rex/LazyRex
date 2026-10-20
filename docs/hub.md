@@ -1214,7 +1214,8 @@ that pauses longer than `settle_ms` gives `created`, then `changed`.
 - No recursion: one directory per watch.
 - The kqueue backend (fsnotify v1.10.1, macOS) opens one descriptor for every directory entry
   except sockets and named pipes. This includes ignored names, subdirectories and symlinks. The
-  budget counts all of them plus the directory.
+  budget counts all of them, the directory, and 3 descriptors
+  that each watcher opens for itself (a kqueue and a close pipe with two ends).
   - Per watch: 1000 counted entries.
   - All watches together: 4000 descriptors, and at most half of the soft `RLIMIT_NOFILE`.
   - 8 watches per plugin.

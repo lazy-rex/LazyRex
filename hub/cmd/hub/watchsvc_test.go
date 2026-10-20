@@ -120,3 +120,21 @@ func TestInsideRootsContainment(t *testing.T) {
 		}
 	}
 }
+
+// The budget counts the backend's own descriptors: fsnotify's kqueue backend opens a kqueue and a
+// close pipe (two ends) for each watcher, besides the directory and its entries (review of 2367084).
+func TestWatchBudgetCountsBackendDescriptors(t *testing.T) {
+	r, _ := newWatchRunTest(t)
+	if got := r.svc.used[r.lw.id]; got != 4 {
+		t.Fatalf("an empty directory reserved %d descriptors, want 4", got)
+	}
+	r.closeFS()
+	r.svc.fdLimit = 3
+	r.open()
+	if r.fsw != nil || r.state() != "too_large" {
+		t.Fatalf("opened with a budget of 3: open %v, state %s", r.fsw != nil, r.state())
+	}
+	if r.svc.fits(4) {
+		t.Fatal("fits(4) with a budget of 3")
+	}
+}
