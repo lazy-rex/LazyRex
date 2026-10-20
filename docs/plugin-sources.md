@@ -200,9 +200,10 @@ unchanged`.
 1. `<state>/plugins/.lock`: all commands on one state, for any config or lock file.
 2. `<lockfile>.lck`.
 
-A second command fails at once: `another plugin command runs (pid N)`. The hub takes no flock. A
-rename replaces the lock, and cache entries are immutable, so the hub reads the old lock or the new
-lock, never a mix.
+A second command fails at once: `another plugin command runs (pid N)`. No hub code in this design
+takes a flock. (The plugin manager design adds a hub writer that takes both flocks; then N can be
+the hub's pid.) A rename replaces the lock, and cache entries are immutable, so a hub start reads
+the old lock or the new lock, never a mix.
 
 ## 7. Start, states and dependencies
 
@@ -413,7 +414,9 @@ with the features pair, on top of step 2.
 - `args`: as in a config entry.
 - `watch_roots`: an array of absolute, clean paths. Step 2 checks only this shape and keeps the
   value. Its meaning belongs to the plugin manager design.
-- Unknown fields are refused.
+- Unknown fields are refused. This rule also keeps the fields `user_messaging` and `prompts` out of
+  the managed file: only the user's config can set them (user decision, 2026-10-19). They are not
+  hub fields yet; the plugin manager design names them. A new managed field needs a design change.
 
 **Missing and malformed file.**
 
@@ -437,6 +440,17 @@ with the features pair, on top of step 2.
 - Order: config entries first, then managed entries in file order, for the tie rule of
   `startOrder`.
 - `hub.admin.start {"source": ...}` names a managed entry too.
+
+**Reload (open question, for the step 2 plan).** The approved design (section 7) re-reads the
+manifests and the lock at each start attempt. It does not reload the config entry list: a config
+change needs a hub restart, as today. When the hub reads the managed file again is not decided
+yet. The plugin manager needs a reload while the hub runs. Any reload rule must keep these
+conditions:
+
+- A reload keeps `run` (the running-instance metadata) and unresolved spawn intents when an entry
+  changes or disappears.
+- A malformed managed file is never a request to stop running instances or to delete lock
+  entries.
 
 **Commands.** `sync`, `update` and `status` read the config entries and the managed entries.
 `update` accepts a managed `id` as well as a name or a source.
