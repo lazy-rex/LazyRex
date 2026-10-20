@@ -38,9 +38,12 @@ import (
 
 // manifest is lazyrex.json in a plugin repository.
 type manifest struct {
-	Name     string         `json:"name"`
-	Main     string         `json:"main"`
-	Events   string         `json:"events"`
+	Name   string `json:"name"`
+	Main   string `json:"main"`
+	Events string `json:"events"`
+	// Notice is the text the hub writes into an agent pane when the plugin sets a pending notice
+	// (hub config plugins[].notice). Empty: the hub default.
+	Notice   string         `json:"notice"`
 	Requires []manifestPlug `json:"requires"`
 	Test     struct {
 		Agents        []manifestAgent `json:"agents"`
@@ -68,6 +71,20 @@ type manifestAgent struct {
 	Name string `json:"name"`
 }
 
+// checkNotice checks a manifest notice. The hub pastes it into an agent pane and then sends CR,
+// so a control character (a newline) would submit or change the agent's input.
+func checkNotice(s string) error {
+	if len(s) > 200 {
+		return errors.New("notice must be at most 200 bytes")
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("notice must not contain control characters")
+		}
+	}
+	return nil
+}
+
 func loadManifest(dir string) (*manifest, error) {
 	path := filepath.Join(dir, "lazyrex.json")
 	b, err := os.ReadFile(path)
@@ -85,6 +102,9 @@ func loadManifest(dir string) (*manifest, error) {
 	}
 	if m.Events != "" && m.Events != "session" && m.Events != "all" {
 		return nil, fmt.Errorf("%s: events must be session or all", path)
+	}
+	if err := checkNotice(m.Notice); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for _, r := range m.Requires {
 		if r.Name == "" || r.Path == "" {
@@ -577,6 +597,7 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		Name   string            `json:"name"`
 		Path   string            `json:"path"`
 		Events string            `json:"events,omitempty"`
+		Notice string            `json:"notice,omitempty"`
 		Args   map[string]string `json:"args,omitempty"`
 	}
 	plugins := []plug{}
@@ -591,7 +612,7 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 			seen[r.Name] = true
 		}
 	}
-	plugins = append(plugins, plug{Name: o.m.Name, Path: abs(o.m.Main), Events: o.m.Events})
+	plugins = append(plugins, plug{Name: o.m.Name, Path: abs(o.m.Main), Events: o.m.Events, Notice: o.m.Notice})
 	for i := range plugins {
 		plugins[i].Args = l.args[plugins[i].Name]
 	}
