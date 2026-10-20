@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +48,9 @@ func readPluginManifest(dir string) (*pluginManifest, string, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
 		return nil, "", fmt.Errorf("%s/lazyrex.json: %w", dir, err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, "", fmt.Errorf("%s/lazyrex.json: data after the manifest object", dir)
 	}
 	if err := m.check(); err != nil {
 		return nil, "", fmt.Errorf("%s/lazyrex.json: %w", dir, err)
@@ -232,32 +236,34 @@ func checkGraph(entries []*sourceEntry) {
 	}
 }
 
-// startOrder lists the entries that checkGraph did not refuse, dependencies first; ties keep the
-// config order.
+// startOrder lists the entries that checkGraph did not refuse, in a stable topological order: each
+// step takes the first entry in config order whose dependencies are all listed.
 func startOrder(entries []*sourceEntry) []*sourceEntry {
-	byName := map[string]*sourceEntry{}
+	var ready []*sourceEntry
 	for _, e := range entries {
 		if e.Err == nil && e.Name != "" {
-			byName[e.Name] = e
+			ready = append(ready, e)
 		}
 	}
-	added := map[*sourceEntry]bool{}
+	listed := map[string]bool{}
 	var out []*sourceEntry
-	var add func(e *sourceEntry)
-	add = func(e *sourceEntry) {
-		if added[e] {
-			return
+	for len(ready) > 0 {
+		i := 0
+		for ; i < len(ready); i++ {
+			ok := true
+			for _, d := range ready[i].Depends {
+				ok = ok && listed[d]
+			}
+			if ok {
+				break
+			}
 		}
-		added[e] = true
-		for _, d := range e.Depends {
-			add(byName[d])
+		if i == len(ready) {
+			break // not reached after checkGraph: each dependency is listed or refused its dependent
 		}
-		out = append(out, e)
-	}
-	for _, e := range entries {
-		if byName[e.Name] == e {
-			add(e)
-		}
+		listed[ready[i].Name] = true
+		out = append(out, ready[i])
+		ready = append(ready[:i], ready[i+1:]...)
 	}
 	return out
 }

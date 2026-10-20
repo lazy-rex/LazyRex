@@ -42,6 +42,8 @@ func TestReadPluginManifest(t *testing.T) {
 		`{"name":"p","main":"/etc/hosts"}`:                "inside the plugin directory",
 		`{"name":"p","main":"./p.lua"}`:                   "inside the plugin directory",
 		`{"name":"p","main":"lib"}`:                       "inside the plugin directory",
+		`{"name":"p","main":"p.lua"} {"unexpected":true}`: "data after the manifest object",
+		`{"name":"p","main":"p.lua"} trailing`:            "data after the manifest object",
 	}
 	for body, want := range bad {
 		d := t.TempDir()
@@ -161,14 +163,22 @@ type graphErr string
 func (e graphErr) Error() string { return string(e) }
 
 func TestStartOrder(t *testing.T) {
-	es := entries([]string{"top", "mid", "base"}, []string{"other"}, []string{"mid", "base"}, []string{"base"}, []string{"bad", "missing"})
-	checkGraph(es)
-	var names []string
-	for _, e := range startOrder(es) {
-		names = append(names, e.Name)
+	// A stable topological order: each step takes the first ready entry in config order.
+	cases := map[string][][]string{
+		"other base mid top": {{"top", "mid"}, {"other"}, {"mid", "base"}, {"base"}, {"bad", "missing"}},
+		"other base top":     {{"top", "base"}, {"other"}, {"base"}}, // reviewer case: other and base are ready first
+		"a b c":              {{"a"}, {"b"}, {"c"}},
 	}
-	if got := strings.Join(names, " "); got != "base mid top other" {
-		t.Errorf("order: %s", got)
+	for want, spec := range cases {
+		es := entries(spec...)
+		checkGraph(es)
+		var names []string
+		for _, e := range startOrder(es) {
+			names = append(names, e.Name)
+		}
+		if got := strings.Join(names, " "); got != want {
+			t.Errorf("order: got %s, want %s", got, want)
+		}
 	}
 }
 
