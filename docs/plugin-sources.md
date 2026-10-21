@@ -80,8 +80,9 @@ Step 3 Part A is on main (08dbb89): the lock (`pluginlock.go`), the cache and `l
 
 On the branch `plugins/step3a-partb` (in review), step 3 Part B: `resolveEntries` resolves a
 GitHub source from its cache entry, with one lock snapshot for each resolution. A run records its
-commit, and `hub.plugins` reports `commit` and the candidate fields (section 7). Not built yet: the
-lab test of a start from a read-only cache entry.
+commit, and `hub.plugins` reports `commit` and the candidate fields (section 7). The lab test
+`TestPluginCacheStartLab` starts a GitHub plugin from its read-only cache entry, updates it, and
+reloads.
 
 ## Terms
 
@@ -618,7 +619,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A trusted and an untrusted locked commit | sync rebuilds the fields; sync refuses with the update text | U |
 | Two commands on one state with two lock files | the second fails at once | U |
 | Hub start during a sync | the old or the new lock, never a mix | U |
-| A start from a read-only cache entry that dofiles siblings | runs | L |
+| A start from a read-only cache entry that loads a sibling module (`require`) | runs | L |
 | `hub.admin.start {source}` after a repair | the entry resolves and starts | H |
 | A notify from a plugin without a notice | `no_notice`; no record written | U, H |
 | Harness: the home plugin under test; a `test.plugins` duplicate or `lazyrex` | one home plugin; a harness error | U |
