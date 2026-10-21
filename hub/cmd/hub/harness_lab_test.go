@@ -48,7 +48,7 @@ var keptLab = regexp.MustCompile(`lab kept: (/tmp/lrt-[0-9]+)`)
 // assertLabsGone checks that no process names a kept lab directory, then removes the directories.
 func assertLabsGone(t *testing.T, out string) {
 	t.Helper()
-	ps, err := exec.Command("ps", "-axww", "-o", "pid=,command=").Output()
+	ps, err := exec.Command("ps", "-eww", "-o", "pid=,command=").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

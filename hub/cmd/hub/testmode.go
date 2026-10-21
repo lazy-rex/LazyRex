@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1244,11 +1243,12 @@ func (h *Hub) parityLog(plugin, route string, tree map[string]any) {
 	}
 }
 
-// procArgs returns the command line of pid, split on white space ("" fields dropped).
+// procArgs returns the command line of pid (procArgv: ps words on macOS, the exact arguments on
+// Linux), or nil.
 func procArgs(pid int) []string {
-	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", fmt.Sprint(pid)).Output()
+	argv, err := procArgv(pid)
 	if err != nil {
 		return nil
 	}
-	return strings.Fields(string(out))
+	return argv
 }

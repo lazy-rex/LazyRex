@@ -560,7 +560,7 @@ func (l *lab) track(pid int) {
 // snapshot records every live descendant of the server and the hub (lab panes are the server's
 // children, in their own process groups: observed on Rex 0.0.1792158932-g88fd41, lab).
 func (l *lab) snapshot() {
-	out, err := exec.Command("ps", "-axo", "pid=,ppid=").Output()
+	out, err := exec.Command("ps", "-eo", "pid=,ppid=").Output() // -eo: the same list with BSD and procps ps
 	if err != nil {
 		return
 	}
@@ -648,9 +648,9 @@ func (l *lab) stop() []string {
 			// harness bug. The run fails and names it.
 			sort.Ints(alive)
 			for _, pid := range alive {
-				cmd, _ := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+				argv, _ := procArgv(pid)
 				problems = append(problems, fmt.Sprintf("cleanup: process survived the lab server: pid %d, start %s, command %s (not signaled)",
-					pid, l.tracked[pid], strings.TrimSpace(string(cmd))))
+					pid, l.tracked[pid], strings.Join(argv, " ")))
 			}
 			break
 		}
