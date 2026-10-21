@@ -1410,3 +1410,46 @@ agents"). The hub never chooses the input form from `kind`.
 prompt has `prompt_id`, `generation`, `agent`, `session_id`, `block_id`, `kind`, `msg`,
 `msg_truncated`, `app` and `opened_at`. The hub reads the list and `rev` under one lock, so `rev`
 describes exactly that list. `hub.agents` gives `block_id` for each live agent.
+
+### Prompt pushes
+
+The hub calls the action `hub.prompt` on each registered plugin with the `prompts` grant:
+
+```json
+{"hub_generation": "7", "rev": "12", "agent": "alice",
+ "prompt": {"prompt_id": "…", "generation": 3, "agent": "alice", "session_id": "…", "block_id": "…",
+            "kind": "permission", "msg": "…", "msg_truncated": false, "app": "claude-code", "opened_at": "…"},
+ "closed": {"prompt_id": "…", "reason": "replaced"}}
+```
+
+A push gives the **current** state of one agent. `prompt: null` means that the agent has no open
+prompt. `closed` names the agent's last closed prompt, for the plugin's text only. `rev` is the rev
+of the agent's last change.
+
+Delivery (`hub/cmd/hub/promptpush.go`):
+
+- Each registration of the plugin (instance and client) has one sender with a set of dirty agents.
+  A prompt change marks the agent dirty for every sender.
+- The sender sends one agent at a time, with the state current at the send. It has at most one call
+  outstanding (5 s, with `timeout_ms` 3000).
+- A failed call, a timeout or a lost reply leaves the agent dirty. The next call sends the state
+  current then, after 1 s, 5 s, then every 30 s. A change during the wait only marks its agent dirty.
+- So a lost reply never hides a close, and the hub keeps no event history. A plugin that never
+  answers costs one goroutine and one call at a time.
+- A new registration starts with every agent dirty that had a prompt in this hub run. The sender of
+  the old registration ends after its outstanding call, and its result changes nothing.
+
+**The plugin's apply rule.** The plugin keeps `applied[agent]` (the rev of the last state it
+applied) and one `floor` (the rev of the last snapshot it applied). The effective rev of an agent
+is `max(applied[agent], floor)`.
+
+1. A push with rev `r` for agent `a` applies only if `r` is higher than the effective rev of `a`.
+   Then `applied[a] = r`.
+2. A snapshot (`hub.prompts`) with rev `R`: for each agent in the list or in local state, if its
+   effective rev is lower than `R`, take its state from the snapshot (absence means no open prompt)
+   and set `applied[a] = R`. Then `floor = max(floor, R)`.
+3. The plugin takes `hub_generation` only from its own accepted `hub.register` reply
+   (`generation`). A new generation drops every saved prompt, `applied` and `floor`. A push or a
+   snapshot with another `hub_generation` is ignored. A message never changes the generation.
+
+So a push and a snapshot can arrive in any order: the older one is ignored.

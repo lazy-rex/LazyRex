@@ -153,7 +153,8 @@ type Hub struct {
 	ev             *eventLog
 	faults         *faults
 	generation     int64
-	prompts        promptBook // open prompts (prompts.go); h.mu guards it
+	prompts        promptBook               // open prompts (prompts.go); h.mu guards it
+	promptSenders  map[string]*promptSender // plugin -> the prompt sender of its registration (promptpush.go)
 	clientID       string
 	rexBinary      string
 	paletteKick    chan struct{} // wakes paletteLoop (kickPalette)

@@ -107,6 +107,7 @@ func (h *Hub) syncPrompt(a *Agent) {
 	b.open[a.ID] = p
 	b.rev++
 	b.agentRev[a.ID] = b.rev
+	h.markPromptDirty(a.ID)
 	h.ev.emit("prompt_opened", map[string]any{"agent": a.ID, "prompt_id": p.ID, "generation": p.Gen, "rev": b.rev})
 }
 
@@ -116,6 +117,7 @@ func (h *Hub) closePrompt(p *prompt, reason string) {
 	b.last[p.Agent] = closedPrompt{ID: p.ID, Reason: reason}
 	b.rev++
 	b.agentRev[p.Agent] = b.rev
+	h.markPromptDirty(p.Agent)
 	h.ev.emit("prompt_closed", map[string]any{"agent": p.Agent, "prompt_id": p.ID, "reason": reason, "rev": b.rev})
 }
 
