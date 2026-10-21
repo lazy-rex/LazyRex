@@ -24,7 +24,10 @@ import (
 )
 
 const workersSchema = `
--- One row per hub.spawn request. status: sending (outcome unknown), open, failed, closed.
+-- One row per hub.spawn request. status: prepared (admitted, no create request sent yet), sending
+-- (the create request may have been sent: outcome unknown until resolved), open, failed, closed.
+-- generation is the hub generation that admitted the row: a prepared row of an older generation
+-- was never sent.
 -- request is the exact request content; a retry with the same key must match it.
 CREATE TABLE IF NOT EXISTS spawns (spawn_id TEXT PRIMARY KEY, caller TEXT NOT NULL, key TEXT NOT NULL,
   request TEXT NOT NULL,
@@ -32,6 +35,7 @@ CREATE TABLE IF NOT EXISTS spawns (spawn_id TEXT PRIMARY KEY, caller TEXT NOT NU
   session_id TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, window_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', created TEXT NOT NULL,
   effective_args TEXT NOT NULL DEFAULT '',
+  generation INTEGER NOT NULL DEFAULT 0,
   UNIQUE (caller, key));
 -- Agents that a spawn created. IDs are never reused: the mailbox history belongs to one instance.
 CREATE TABLE IF NOT EXISTS dyn_agents (agent TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL,
@@ -191,6 +195,8 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		`ALTER TABLE spawns ADD COLUMN cwd TEXT NOT NULL DEFAULT ''`,
 		// The args after defaults, as JSON; '' on rows from before it was recorded (hub.spawn.spec).
 		`ALTER TABLE spawns ADD COLUMN effective_args TEXT NOT NULL DEFAULT ''`,
+		// The hub generation that admitted the row; 0 on rows from before the prepared state.
+		`ALTER TABLE spawns ADD COLUMN generation INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err
@@ -203,6 +209,9 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 // spawned agent keeps its binding across a hub restart.
 func (h *Hub) workersLoad(ctx context.Context) error {
 	if err := h.workersSchemaStart(ctx); err != nil {
+		return err
+	}
+	if err := h.failUnsentSpawns(ctx); err != nil {
 		return err
 	}
 	rows, err := h.db.QueryContext(ctx, `SELECT agent, name, profile FROM dyn_agents ORDER BY created, agent`)
@@ -285,7 +294,7 @@ func (h *Hub) profilesList(ctx context.Context) (any, error) {
 		return nil, err
 	}
 	running := map[string]int{}
-	rows, err := h.db.QueryContext(ctx, `SELECT profile, COUNT(*) FROM spawns WHERE status IN ('sending', 'open') GROUP BY profile`)
+	rows, err := h.db.QueryContext(ctx, `SELECT profile, COUNT(*) FROM spawns WHERE status IN ('prepared', 'sending', 'open') GROUP BY profile`)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +328,7 @@ func scanSpawn(sc interface{ Scan(...any) error }, extra ...any) (*spawnRow, err
 
 func (s *spawnRow) result() map[string]any {
 	status := s.Status
-	if status == "sending" {
+	if status == "prepared" || status == "sending" {
 		status = "pending"
 	}
 	out := map[string]any{"spawn_id": s.ID, "status": status}
@@ -552,7 +561,7 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	}
 	// Commit the intent: the spawn row and, for an agent profile, its new agent.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	s := &spawnRow{ID: randomID("spawn-"), Caller: caller, Key: key, Profile: prof.ID, Parent: caller, Status: "sending", Created: now, Session: sess}
+	s := &spawnRow{ID: randomID("spawn-"), Caller: caller, Key: key, Profile: prof.ID, Parent: caller, Status: "prepared", Created: now, Session: sess}
 	if s.Cwd, err = h.effectiveCwd(prof, cwdArg); err != nil {
 		return nil, err
 	}
@@ -569,6 +578,9 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 		return nil, err
 	}
 	h.spawnAdmitted(s, prof, name)
+	if err := h.markSending(ctx, s); err != nil {
+		return s.result(), nil // nothing was sent: the spawn failed (not_created)
+	}
 	argv := spawnArgv(s, prof, resolved)
 	// Rex's default login setting: the worker gets the user's login environment, like a pane the
 	// user opens. With login false it gets the Rex server's environment (observed in the lab, 1203).
@@ -685,7 +697,7 @@ func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Prof
 		return "", err
 	}
 	eff, _ := json.Marshal(effective)
-	if _, err := tx.ExecContext(ctx, `UPDATE spawns SET effective_args = ? WHERE spawn_id = ?`, string(eff), s.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE spawns SET effective_args = ?, generation = ? WHERE spawn_id = ?`, string(eff), h.generation, s.ID); err != nil {
 		return "", err
 	}
 	return name, nil
@@ -785,9 +797,90 @@ func (h *Hub) openSpawn(ctx context.Context, s *spawnRow, window, block string) 
 	return nil
 }
 
+// spawnNotCreated starts the error of a spawn whose create request was never sent. Nothing of it
+// exists in Rex, so a retry with a new key is safe.
+const spawnNotCreated = "not_created"
+
+// markSending records, in one transaction, that the create request of rows may be sent now. It runs
+// after the admission commits and before the request, so a hub that stops in between leaves the
+// rows prepared, and the next hub fails them as not created (failUnsentSpawns). Each row must still
+// be prepared. On an error nothing is sent, and the rows fail as not created.
+func (h *Hub) markSending(ctx context.Context, rows ...*spawnRow) error {
+	err := h.setSending(ctx, rows)
+	if err == nil {
+		for _, s := range rows {
+			s.Status = "sending"
+		}
+		return nil
+	}
+	// A request context that ended must not leave the rows prepared until the next hub.
+	fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, s := range rows {
+		h.failSpawn(fctx, s, spawnNotCreated+": "+err.Error())
+	}
+	return err
+}
+
+func (h *Hub) setSending(ctx context.Context, rows []*spawnRow) error {
+	if err := h.spawnSendingFault(rows); err != nil {
+		return err
+	}
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, s := range rows {
+		res, err := tx.ExecContext(ctx, `UPDATE spawns SET status = 'sending' WHERE spawn_id = ? AND status = 'prepared'`, s.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return fmt.Errorf("spawn %s is no longer prepared", s.ID)
+		}
+	}
+	return tx.Commit()
+}
+
+// failUnsentSpawns fails each prepared spawn of an older hub generation. That hub stopped after the
+// admission and before it marked the row sending, so it sent no create request, and no pane of the
+// spawn exists. A sending row stays: its request may have reached Rex, and one empty search does
+// not prove that no pane comes (rex-protocol.md, "A request outlives its client").
+func (h *Hub) failUnsentSpawns(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT spawn_id FROM spawns WHERE status = 'prepared' AND generation < ?`, h.generation)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	why := spawnNotCreated + ": the hub stopped before it sent the create request"
+	for _, id := range ids {
+		res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status = 'prepared'`, why, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			h.ev.emit("spawn_failed", map[string]any{"spawn_id": id, "error": why})
+		}
+	}
+	return nil
+}
+
 func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) {
 	// The agent ID stays retired: join refuses an agent whose spawn failed.
-	h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status = 'sending'`, why, s.ID)
+	h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status IN ('prepared', 'sending')`, why, s.ID)
 	s.Status, s.Error = "failed", why
 	h.ev.emit("spawn_failed", map[string]any{"spawn_id": s.ID, "error": why})
 	h.changed("workers")
@@ -1058,7 +1151,7 @@ func (h *Hub) windowOf(ctx context.Context, sess, block string) string {
 // workersList reports every spawn that is not closed, with its state: starting, running, exited
 // or failed. A failed spawn stays in the list, with its error, until hub.stop dismisses it.
 func (h *Hub) workersList(ctx context.Context) (any, error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('sending', 'open', 'failed') ORDER BY created`)
+	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('prepared', 'sending', 'open', 'failed') ORDER BY created`)
 	if err != nil {
 		return nil, err
 	}
@@ -1158,7 +1251,7 @@ func (h *Hub) stop(ctx context.Context, p perform, args map[string]any) (any, er
 	switch s.Status {
 	case "closed":
 		return map[string]any{"spawn_id": id, "status": "closed"}, nil
-	case "sending":
+	case "prepared", "sending":
 		return nil, bad("not_ready: %s has no identified pane yet, so the hub cannot stop it. An agent spawn opens when its agent joins; otherwise close its tab by hand", id)
 	case "failed":
 		res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'closed', closed_by = ? WHERE spawn_id = ? AND status = 'failed'`, caller, id)
@@ -1666,7 +1759,7 @@ func (h *Hub) liveCwds(ctx context.Context, path string) ([]any, error) {
 
 // cwdWorkers lists workers that block removal. Use the same rule for advice and locked admission.
 func cwdWorkers(ctx context.Context, q rowsQuerier, path string) ([]any, error) {
-	rows, err := q.QueryContext(ctx, `SELECT spawn_id, cwd, status FROM spawns WHERE status IN ('sending', 'open')`)
+	rows, err := q.QueryContext(ctx, `SELECT spawn_id, cwd, status FROM spawns WHERE status IN ('prepared', 'sending', 'open')`)
 	if err != nil {
 		return nil, err
 	}

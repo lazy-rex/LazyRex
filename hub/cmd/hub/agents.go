@@ -256,7 +256,7 @@ func (h *Hub) join(ctx context.Context, p perform, args map[string]any) (any, er
 		if err != nil {
 			return nil, fmt.Errorf("agent %s: spawn: %w", id, err)
 		}
-		if s.Status != "sending" && s.Status != "open" {
+		if s.Status != "prepared" && s.Status != "sending" && s.Status != "open" {
 			return nil, bad("agent %s is retired (its spawn is %s)", id, s.Status)
 		}
 		spawn = s
@@ -270,6 +270,10 @@ func (h *Hub) join(ctx context.Context, p perform, args map[string]any) (any, er
 	}
 	if block == "" {
 		return nil, bad("caller pid %d is not in a Rex pane", p.Requester.Principal.PID)
+	}
+	if spawn != nil && spawn.Status == "prepared" {
+		// The create request is not sent yet, so no pane of this spawn exists.
+		return nil, bad("not_ready: agent %s is still starting; retry", id)
 	}
 	if spawn != nil && spawn.Status == "sending" {
 		// The spawn's outcome is unknown (the hub restarted during new_window). A join from the

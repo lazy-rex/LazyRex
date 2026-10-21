@@ -54,7 +54,7 @@ type testFault struct {
 	Gated                int    // gate: the calls that it refused
 }
 
-var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"},
+var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
 	"plugin-create": {"refuse", "lose-answer", "hold-send"},
 	"prompt-answer": {"close", "refuse", "lose-reply", "short"}}
@@ -108,7 +108,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send) or prompt-answer (close, refuse, lose-reply, short)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send) or prompt-answer (close, refuse, lose-reply, short)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -226,7 +226,8 @@ func (h *Hub) peekFault(match func(*testFault) bool) bool {
 func (h *Hub) spawnCreateFaulted(ctx context.Context, key, method string, req map[string]any, out any) error {
 	match := func(mode string) func(*testFault) bool {
 		return func(f *testFault) bool {
-			return f.Point == "spawn-create" && (mode == "" || f.Mode == mode) && (f.Op == "" || f.Op == key)
+			modeOK := f.Mode == mode || mode == "" && f.Mode != "fail-sending" // fail-sending is spawnSendingFault's
+			return f.Point == "spawn-create" && modeOK && (f.Op == "" || f.Op == key)
 		}
 	}
 	// lose-answer, as an after fault: it fires only when Rex answers yes. A genuine error is the
@@ -249,6 +250,31 @@ func (h *Hub) spawnCreateFaulted(ctx context.Context, key, method string, req ma
 		return &rex.RexError{Code: "disconnected", Message: "injected fault: the create was not sent"}
 	}
 	return &rex.RexError{Code: "refused", Message: "injected fault: Rex refused the create"}
+}
+
+// spawnSendingFault applies an armed spawn-create fault of mode fail-sending: the transition of the
+// rows to sending fails, so the hub sends no create request, and the rows fail as not created. op
+// matches the key of any row (a window leaf key is window/<key>/<n>). It does nothing outside test
+// mode.
+func (h *Hub) spawnSendingFault(rows []*spawnRow) error {
+	if h.test == nil {
+		return nil
+	}
+	f := h.takeFault(func(f *testFault) bool {
+		if f.Point != "spawn-create" || f.Mode != "fail-sending" {
+			return false
+		}
+		for _, s := range rows {
+			if f.Op == "" || f.Op == s.Key {
+				return true
+			}
+		}
+		return false
+	})
+	if f == nil {
+		return nil
+	}
+	return fmt.Errorf("injected fault: the transition to sending failed")
 }
 
 // createBlock sends the create request of a plugin instance's block, or applies an armed

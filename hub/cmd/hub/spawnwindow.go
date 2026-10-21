@@ -303,7 +303,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	defer tx.Rollback()
 	for i, l := range leaves {
 		s := &spawnRow{ID: randomID("spawn-"), Caller: caller, Key: fmt.Sprintf("%s%s/%d", windowKeyPrefix, key, i),
-			Profile: profs[i].ID, Parent: caller, Status: "sending", Created: now, Session: sess, Cwd: cwds[i]}
+			Profile: profs[i].ID, Parent: caller, Status: "prepared", Created: now, Session: sess, Cwd: cwds[i]}
 		// The leaf request has the hub.spawn fields, so hub.spawn.spec reads both kinds of rows.
 		lreq := map[string]any{"profile": l.Profile, "title": l.Title, "args": l.Args, "window": key, "leaf": i}
 		if lreq["args"] == nil {
@@ -340,6 +340,9 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 		h.spawnAdmitted(s, profs[i], names[i])
 		opts := map[string]any{"command": spawnArgv(s, profs[i], resolved[i]), "exit": map[string]any{"on_completion": false}, "cwd": s.Cwd}
 		blocks[i] = map[string]any{"flavor": "com.superlogical.terminal.shell", "label": "lazyrex-spawn:" + s.ID, "options": opts}
+	}
+	if err := h.markSending(ctx, rows...); err != nil {
+		return h.windowResult(ctx, key, string(idsJSON)) // nothing was sent: every leaf failed (not_created)
 	}
 	next := 0
 	label := title
@@ -438,7 +441,7 @@ func (h *Hub) windowResult(ctx context.Context, key, idsJSON string) (any, error
 	}
 	status := "open"
 	switch {
-	case counts["sending"] > 0:
+	case counts["prepared"]+counts["sending"] > 0:
 		status = "pending"
 	case counts["failed"] > 0:
 		status = "failed"

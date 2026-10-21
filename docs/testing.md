@@ -350,6 +350,7 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'spawn-create', mode = 'drop', op = key}` | `hub.spawn` sends no create request and gets `disconnected`. The spawn stays pending; no pane exists. |
 | `{point = 'spawn-create', mode = 'refuse', op = key}` | No create request; Rex error `refused`. The spawn fails. |
 | `{point = 'spawn-create', mode = 'lose-answer', op = key}` | The create request runs. If Rex answers yes, the answer becomes `disconnected`: the pane exists and the spawn stays pending. An accessory pane is not adopted by its label, so it stays pending (resolveSpawns only counts candidate panes). If Rex answers with an error, that error stays and the fault stays armed. |
+| `{point = 'spawn-create', mode = 'fail-sending', op = key}` | The commit of the sending state fails, so the hub sends no create request. The spawn fails with an error that starts with `not_created`. Also for `hub.spawn_window`: `op` then matches a leaf key (`window/<key>/<n>`), and every leaf of the window fails. |
 | `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
 | `{point = 'action', action, when = 'after', mode, key, plugin}` | The handler runs once. If it succeeds, its reply is replaced (`failed` or `disconnected`). If it fails, its own error is the reply and the fault stays armed. |
 | `{point = 'watch-nudge', mode = 'drop', key, plugin}` | The hub does not send the next `hub.changed` nudge of that plugin's watch `key` (any watch if `key` is not given). The repeat schedule continues (docs/hub.md, "Nudges"). |
@@ -370,7 +371,7 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 - A hub request cannot wait for a test: Rex delivers the hub's requests one at a time, and every
   other caller waits behind a held request (rex-protocol.md, "The hub has one request queue"). So
   a barrier refuses calls (gate); it does not hold them.
-- `op` matches the `hub.spawn` key. Only `hub.spawn` has the spawn-create point; `hub.spawn_window` does not.
+- `op` matches the `hub.spawn` key. Only `hub.spawn` has the spawn-create point; `hub.spawn_window` does not, except mode `fail-sending`.
 - `action` must be a hub action that a plugin can call. `hub.test.*` actions are refused. A field
   that does not apply to the point is refused. Every field is a string, except `nth` (a positive
   integer).

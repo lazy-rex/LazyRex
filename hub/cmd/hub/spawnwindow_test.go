@@ -247,6 +247,33 @@ func TestSpawnWindowLab(t *testing.T) {
 		}
 	})
 
+	t.Run("NotCreated", func(t *testing.T) {
+		h, p := setup(t)
+		target := session(t)
+		real := windowCreate
+		t.Cleanup(func() { windowCreate = real })
+		calls := 0
+		windowCreate = func(ctx context.Context, h *Hub, req map[string]any, out any) error {
+			calls++
+			return real(ctx, h, req, out)
+		}
+		// The sending transition of the batch fails: no create, and every leaf fails as not created.
+		allow := rejectSending(t, h)
+		out := call(t, h, p, map[string]any{"for": "user", "key": "refused", "session": target, "layout": layout})
+		allow()
+		if out["status"] != "failed" || calls != 0 {
+			t.Fatalf("refused: %#v, %d calls", out, calls)
+		}
+		for _, l := range out["leaves"].([]any) {
+			if l.(map[string]any)["status"] != "failed" || !strings.HasPrefix(l.(map[string]any)["error"].(string), "not_created: ") {
+				t.Fatalf("refused leaf: %#v", l)
+			}
+		}
+		if blocks, _ := h.blocksIn(ctx, target); len(blocks) != 0 {
+			t.Fatalf("refused: %d panes", len(blocks))
+		}
+	})
+
 	t.Run("UnknownOutcomes", func(t *testing.T) {
 		h, p := setup(t)
 		target := session(t)

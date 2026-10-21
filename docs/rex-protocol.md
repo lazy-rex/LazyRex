@@ -293,6 +293,20 @@ runs at the next start.
 - Terminal processes are direct children of `rex server`. When the server stops, they stop. The state dir kept only `host-id`. There is no hot handoff.
 - LazyRex accepts this: the Rex server is the stable core, and LazyRex can restart without losing terminals.
 
+### A request outlives its client
+
+Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-21. A client wrote one create request
+(`session.new_window`, and in a second run `session.new_block`) and exited at once, without
+reading the answer. Rex completed both requests:
+
+- A search of the session 30 ms after the write found no pane with the request's label.
+- A search 1 s after the write found the pane.
+
+So a request that a client wrote can still take effect after the client is gone, and one empty
+search does not prove that the request had no effect. Only a request that was never written proves
+that nothing was created. The hub records a spawn as `sending` before it writes the request, and
+treats a `sending` spawn as unknown, never as failed (hub.md, "Lifecycle").
+
 ## Caller identity
 
 - The location that `whoami` reports comes from the caller's `REX_SESSION` / `REX_BLOCK` environment. **A caller can spoof it** with another real block ID.
