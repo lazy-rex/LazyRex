@@ -19,12 +19,12 @@ import (
 const fakeHookRex = `#!/bin/sh
 case "$HOOK_MODE" in
 nohub) echo 'hub not found' >&2; exit 4 ;;
-slow) sleep 10 ;;
+slow) exec sleep 10 ;;
 esac
 case "$*" in
 *"client ls --json") printf '%s' "$HOOK_CLIENTS"; exit 0 ;;
 esac
-[ "$HOOK_MODE" = hang ] && sleep 10
+[ "$HOOK_MODE" = hang ] && exec sleep 10
 printf '%s\0' "$$" "$PPID" "$@" > "$HOOK_CAPTURE.tmp" && mv "$HOOK_CAPTURE.tmp" "$HOOK_CAPTURE"
 echo 'This output must not become model context.'
 [ -n "$HOOK_LINGER" ] && sleep 1
