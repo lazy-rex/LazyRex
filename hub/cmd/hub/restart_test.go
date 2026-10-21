@@ -78,7 +78,9 @@ func TestFakeHub(t *testing.T) {
 		// A descendant keeps the ready fd open after this child exits.
 		keep := exec.Command("/bin/sleep", "30")
 		keep.ExtraFiles = []*os.File{os.NewFile(uintptr(env.readyFD), "ready")}
-		keep.Start()
+		if err := keep.Start(); err != nil {
+			os.Exit(98)
+		}
 		os.WriteFile(os.Getenv("FAKE_HUB_STARTS")+".keep", []byte(strconv.Itoa(keep.Process.Pid)), 0o600)
 		signalReady(env.readyFD, env.expectState)
 		os.Exit(1)
@@ -403,8 +405,10 @@ func TestRestartRetiresTheReadyReader(t *testing.T) {
 	wr := newWrapperTest(t, "leak-ready", "ready-exit0")
 	t.Cleanup(func() {
 		if b, err := os.ReadFile(wr.starts + ".keep"); err == nil {
-			pid, _ := strconv.Atoi(string(b))
-			syscall.Kill(pid, syscall.SIGKILL)
+			// Only a parsed, positive pid: Kill(0) or a negative pid would signal a process group.
+			if pid, err := strconv.Atoi(string(b)); err == nil && pid > 0 {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
 		}
 	})
 	if code := waitCode(t, wr.runAsync()); code != 0 {
