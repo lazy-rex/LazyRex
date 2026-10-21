@@ -38,12 +38,17 @@ func (o pluginCmdOpts) url(r githubRef) string {
 	return "https://github.com/" + r.Owner + "/" + r.Repo
 }
 
-// pluginCmdConfig is the part of the hub config that the commands read: state, lock and plugins.
-// The commands use no Rex, so the server and agent checks of loadConfig do not apply.
+// pluginCmdConfig is the part of the hub config that the commands read: state, lock, plugins and
+// managed_plugins. The commands use no Rex, so the server and agent checks of loadConfig do not
+// apply.
 type pluginCmdConfig struct {
 	path    string // as given: the texts name it
 	state   string
 	lock    string // the lock file
+	managed string // the managed file (section 13)
+	config  []*configEntry
+	// entries are the config entries, then the managed entries (addManaged). loadSnapshot sets them
+	// under both flocks.
 	entries []*configEntry
 }
 
@@ -53,9 +58,10 @@ func readPluginCmdConfig(cfgPath string) (*pluginCmdConfig, error) {
 		return nil, err
 	}
 	var c struct {
-		State   string            `json:"state"`
-		Lock    string            `json:"lock"`
-		Plugins []json.RawMessage `json:"plugins"`
+		State          string            `json:"state"`
+		Lock           string            `json:"lock"`
+		Plugins        []json.RawMessage `json:"plugins"`
+		ManagedPlugins string            `json:"managed_plugins"`
 	}
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("%s: %w", cfgPath, err)
@@ -77,7 +83,33 @@ func readPluginCmdConfig(cfgPath string) (*pluginCmdConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &pluginCmdConfig{path: cfgPath, state: state, lock: lockPath(cfgPath, c.Lock), entries: entries}, nil
+	// The managed file: the field relative to the config directory, else <state>/plugins.json (as
+	// loadConfig).
+	managed := filepath.Join(state, "plugins.json")
+	if c.ManagedPlugins != "" {
+		managed = c.ManagedPlugins
+		if !filepath.IsAbs(managed) {
+			managed = filepath.Join(filepath.Dir(abs), managed)
+		}
+	}
+	return &pluginCmdConfig{path: cfgPath, state: state, lock: lockPath(cfgPath, c.Lock), managed: managed, config: entries}, nil
+}
+
+// loadSnapshot reads the lock and then the managed file, as one snapshot. The caller holds both
+// flocks, so a writer that follows the flock protocol cannot add a managed source and its pin
+// between the two reads. A managed file that does not parse fails the command: a command that
+// ignored it could drop the managed lock entries (section 13).
+func (cfg *pluginCmdConfig) loadSnapshot() (*pluginLock, error) {
+	lock, err := readLock(cfg.lock)
+	if err != nil {
+		return nil, err
+	}
+	managed, err := parseManaged(cfg.managed)
+	if err != nil {
+		return nil, fmt.Errorf("managed plugin file %s: %w", cfg.managed, err)
+	}
+	cfg.entries = addManaged(cfg.config, managed)
+	return lock, nil
 }
 
 // lockCommands takes the two exclusive flocks of section 6, in order: <state>/plugins/.lock (all
@@ -159,10 +191,23 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 		return fmt.Errorf("plugin %s: %w", cmd, err)
 	}
 	defer release()
-	old, err := readLock(cfg.lock)
-	if err != nil {
-		// A lock that does not decode is never taken as an empty lock, and never replaced.
+	old, err := cfg.loadSnapshot()
+	var inv *lockInvalidError
+	var rerr *lockReadError
+	switch {
+	case errors.As(err, &inv), errors.As(err, &rerr):
+		// A lock that does not decode is never taken as an empty lock, and never replaced. Its text
+		// names the next step.
 		return fmt.Errorf("plugin %s: %w", cmd, err)
+	case err != nil:
+		return fail(err)
+	}
+	// A refused managed entry (its source is also in the config) blocks the command, like every
+	// other refusal. It needs no network, so it stops the command before any git call.
+	for _, e := range cfg.entries {
+		if e.static != nil {
+			return fail(e.static)
+		}
 	}
 	tmpRoot := filepath.Join(cfg.state, "plugins", ".tmp")
 	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
@@ -362,6 +407,9 @@ func checkNewGraph(cfg *pluginCmdConfig, next *pluginLock) error {
 	src := make([]*sourceEntry, len(cfg.entries))
 	for i, e := range cfg.entries {
 		s := &sourceEntry{Index: e.index, Source: e.Source}
+		if e.managed != "" {
+			s.Label = e.identity()
+		}
 		src[i] = s
 		dir := e.dir
 		if e.github {
@@ -389,8 +437,7 @@ func checkNewGraph(cfg *pluginCmdConfig, next *pluginLock) error {
 }
 
 // selectEntries gives the entries that the update arguments select (the approved update rule).
-// An argument that starts with "managed:" selects only by managed id (no managed entries exist
-// yet). Another argument selects by exact source or by plugin name; one entry that matches both
+// An argument that starts with "managed:" selects only by managed id. Another argument selects by exact source or by plugin name; one entry that matches both
 // counts once. Each argument must select exactly one entry, and it must be a GitHub entry. No
 // argument selects every GitHub entry. The rule needs no git.
 func selectEntries(cfg *pluginCmdConfig, lock *pluginLock, args []string) (map[*configEntry]bool, error) {
@@ -407,6 +454,9 @@ func selectEntries(cfg *pluginCmdConfig, lock *pluginLock, args []string) (map[*
 	// (section 7, "Entry identity").
 	names := map[*configEntry]string{}
 	for _, e := range cfg.entries {
+		if e.static != nil {
+			continue // a refused managed entry claims no name
+		}
 		if e.github {
 			if _, _, err := lockedDir(cfg.path, cfg.state, lock, e); err == nil {
 				names[e] = lock.Plugins[e.Source].Name
@@ -417,11 +467,10 @@ func selectEntries(cfg *pluginCmdConfig, lock *pluginLock, args []string) (map[*
 	}
 	for _, a := range args {
 		var match []*configEntry
-		if !strings.HasPrefix(a, "managed:") {
-			for _, e := range cfg.entries {
-				if e.Source == a || names[e] == a {
-					match = append(match, e)
-				}
+		id, isManaged := strings.CutPrefix(a, "managed:")
+		for _, e := range cfg.entries {
+			if isManaged && e.managed == id || !isManaged && (e.Source == a || names[e] == a) {
+				match = append(match, e)
 			}
 		}
 		switch len(match) {
@@ -431,9 +480,12 @@ func selectEntries(cfg *pluginCmdConfig, lock *pluginLock, args []string) (map[*
 		default:
 			ids := make([]string, len(match))
 			for i, e := range match {
-				ids[i] = fmt.Sprintf("entry %d", e.index)
+				ids[i] = e.identity()
 			}
 			return nil, fmt.Errorf("%s selects %s; write managed:<id> or the exact source", a, strings.Join(ids, ", "))
+		}
+		if match[0].static != nil {
+			return nil, match[0].static
 		}
 		if !match[0].github {
 			return nil, fmt.Errorf("%s is a local source; update changes GitHub sources only", a)
@@ -457,7 +509,7 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 		return false, fmt.Errorf("plugin status: %w", err)
 	}
 	defer release()
-	lock, err := readLock(cfg.lock)
+	lock, err := cfg.loadSnapshot()
 	if err != nil {
 		return false, fmt.Errorf("plugin status: %w", err)
 	}
@@ -467,6 +519,11 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 		referenced[le.Dir] = true
 	}
 	for _, e := range cfg.entries {
+		if e.static != nil {
+			ok = false
+			fmt.Fprintf(w, "%s\trefused: %v\t%s\n", e.Source, e.static, e.identity())
+			continue
+		}
 		if !e.github {
 			continue
 		}
@@ -490,7 +547,7 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 		if state != "ok" {
 			ok = false
 		}
-		fmt.Fprintf(w, "%s\tref %s\tcommit %s\tcache %s\n", e.Source, r.Ref, commit, state)
+		fmt.Fprintf(w, "%s\tref %s\tcommit %s\tcache %s\t%s\n", e.Source, r.Ref, commit, state, e.identity())
 	}
 	var orphans []string
 	for src := range lock.Plugins {
