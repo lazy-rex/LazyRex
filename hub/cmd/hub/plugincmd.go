@@ -469,7 +469,7 @@ func selectEntries(cfg *pluginCmdConfig, lock *pluginLock, args []string) (map[*
 		var match []*configEntry
 		id, isManaged := strings.CutPrefix(a, "managed:")
 		for _, e := range cfg.entries {
-			if isManaged && e.managed == id || !isManaged && (e.Source == a || names[e] == a) {
+			if isManaged && id != "" && e.managed == id || !isManaged && (e.Source == a || names[e] == a) {
 				match = append(match, e)
 			}
 		}

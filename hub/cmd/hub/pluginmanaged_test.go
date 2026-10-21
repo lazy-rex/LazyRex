@@ -369,3 +369,28 @@ func TestManagedReadUnderFlock(t *testing.T) {
 		t.Fatalf("status %d: %s", code, out)
 	}
 }
+
+// "managed:" with an empty id selects nothing: a config entry has no managed id, so it never
+// matches. One and two config entries, and no managed entry; no pin moves.
+func TestManagedEmptyID(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		env := newCmdEnv(t)
+		env.repo("lazy-rex", "Messaging", "messaging")
+		env.repo("lazy-rex", "Profiles", "profiles")
+		srcs := []string{srcM, srcP}[:n]
+		cfg := env.config(srcs...)
+		if err := env.sync(cfg); err != nil {
+			t.Fatal(err)
+		}
+		before := env.lockBytes()
+		env.repos["lazy-rex/Messaging"].commit(map[string]string{"main.lua": "2"})
+		env.repos["lazy-rex/Profiles"].commit(map[string]string{"main.lua": "2"})
+		err := env.update(cfg, "managed:")
+		if err == nil || err.Error() != "plugin update: no entry has the name, source or identity managed:" {
+			t.Errorf("%d entries: %v", n, err)
+		}
+		if !bytes.Equal(before, env.lockBytes()) {
+			t.Errorf("%d entries: a pin moved", n)
+		}
+	}
+}
