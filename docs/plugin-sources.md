@@ -226,9 +226,8 @@ lazyrex-hub plugin sync`.
   `.` are stages, not entries.
 - There is no prune. A running plugin can `dofile` a sibling file later (Tunnels does), so the hub
   must not delete an entry that is in use.
-- **The prune lock** (the hub side of the planned prune; on the branch `hub/prune-lease`, in
-  review). Each admitted start opens `<state>/plugins/prune.lock` and takes a shared flock on its
-  own descriptor. It takes it before the resolution that reads the lock file (`checkStart`;
+- **The prune lock** (the hub side of the planned prune; on main, f5fe259). Each admitted start
+  opens `<state>/plugins/prune.lock` and takes a shared flock on its own descriptor. It takes it before the resolution that reads the lock file (`checkStart`;
   `validateCandidate` in `hub.admin.replace`). Spawn releases it after hub.db has saved the run.
   Each start that ends without a spawn releases it. A waiting plugin holds nothing. Prune takes an
   exclusive flock without waiting. So each entry that a start can use is in a lock file or in a
