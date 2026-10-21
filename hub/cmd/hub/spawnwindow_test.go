@@ -212,7 +212,8 @@ func TestSpawnWindowLab(t *testing.T) {
 			t.Fatal(err)
 		}
 		sm := spec.(map[string]any)
-		if sm["found"] != true || sm["profile"] != "task" || sm["args"].(map[string]string)["task"] != "a; $(x)" || sm["cwd"] != realB || sm["title"] != "Tests" {
+		if sm["found"] != true || sm["profile"] != "task" || sm["args"].(map[string]string)["task"] != "a; $(x)" || sm["cwd"] != realB || sm["title"] != "Tests" ||
+			sm["requested_title"] != "Tests" || sm["title_source"] != "request" {
 			t.Fatalf("spec: %#v", sm)
 		}
 		// A hub.spawn row has the same spec.
@@ -222,7 +223,8 @@ func TestSpawnWindowLab(t *testing.T) {
 			t.Fatal(err)
 		}
 		spec, _ = h.spawnSpec(ctx, p, map[string]any{"block_id": single.(map[string]any)["block_id"].(string)})
-		if sm := spec.(map[string]any); sm["profile"] != "task" || sm["args"].(map[string]string)["task"] != "t" {
+		if sm := spec.(map[string]any); sm["profile"] != "task" || sm["args"].(map[string]string)["task"] != "t" ||
+			sm["requested_title"] != nil || sm["title_source"] != "request" || sm["title"] == "" {
 			t.Fatalf("single spec: %#v", sm)
 		}
 		// The spec has the args after defaults.
@@ -460,4 +462,22 @@ func TestSpawnWindowLab(t *testing.T) {
 			t.Fatalf("refusal created %d panes, %d windows", len(blocks), windows)
 		}
 	})
+}
+
+// requestedTitle tells an explicit title from none given, and old or malformed requests from both.
+func TestRequestedTitle(t *testing.T) {
+	for request, want := range map[string][2]string{
+		`{"profile":"p","title":"Build","args":{}}`: {"Build", "request"},
+		`{"profile":"p","title":"","args":{}}`:      {"", "request"},
+		`{"profile":"p","title":"Claude 1"}`:        {"Claude 1", "request"}, // an explicit title equal to a default
+		`{}`:                                        {"", "unknown"},
+		`{"title":7}`:                               {"", "unknown"},
+		`not json`:                                  {"", "unknown"},
+		``:                                          {"", "unknown"},
+	} {
+		title, source := requestedTitle(request)
+		if title != want[0] || source != want[1] {
+			t.Errorf("%s: %q %q, want %q %q", request, title, source, want[0], want[1])
+		}
+	}
 }

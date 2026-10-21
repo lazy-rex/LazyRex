@@ -489,6 +489,28 @@ func (h *Hub) spawnSpec(ctx context.Context, p perform, args map[string]any) (an
 	if args0 == nil {
 		args0 = map[string]string{}
 	}
-	return map[string]any{"found": true, "spawn_id": s.ID, "profile": s.Profile, "args": args0, "args_source": source, "cwd": s.Cwd,
-		"title": s.Title, "session_id": s.Session, "window_id": s.Window, "agent_id": s.Agent}, nil
+	out := map[string]any{"found": true, "spawn_id": s.ID, "profile": s.Profile, "args": args0, "args_source": source, "cwd": s.Cwd,
+		"title": s.Title, "session_id": s.Session, "window_id": s.Window, "agent_id": s.Agent}
+	requested, titleSource := requestedTitle(request)
+	out["title_source"] = titleSource
+	if requested != "" {
+		out["requested_title"] = requested
+	}
+	return out, nil
+}
+
+// requestedTitle reads the title that the caller gave, from a spawn's request. title is the
+// resolved title (a default when none was given), so a template cannot tell an explicit title
+// from it. source is "request" when the request has a title string (also ""), else "unknown":
+// a request that is not JSON, or that has no title string, cannot tell.
+func requestedTitle(request string) (title, source string) {
+	var req map[string]any
+	if json.Unmarshal([]byte(request), &req) != nil {
+		return "", "unknown"
+	}
+	t, ok := req["title"].(string)
+	if !ok {
+		return "", "unknown"
+	}
+	return t, "request"
 }
