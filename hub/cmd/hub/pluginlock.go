@@ -5,9 +5,10 @@ package main
 // rebuild it. The hub only reads the lock (readLock, lockedDir); the plugin commands write it
 // (writeLock), always by a rename.
 //
-// The pin (lockPin) is the same on every machine that fetches the same commit. dir is local: it
-// names this machine's cache entry. A lock entry from another machine therefore has a dir that the
-// local cache may not have, and sync repairs it like any missing cache entry.
+// For one source string and one commit, the pin (lockPin) is the same on every machine: the name
+// and the digest depend only on the commit's tree. dir is local: it names this machine's cache
+// entry. A lock entry from another machine therefore has a dir that the local cache may not have,
+// and sync repairs it like any missing cache entry.
 
 import (
 	"bytes"

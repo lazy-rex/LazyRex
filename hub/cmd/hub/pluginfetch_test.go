@@ -364,7 +364,10 @@ func TestGitErrorBounded(t *testing.T) {
 	// A git subprocess that writes 12 KiB to stderr: the alias is a test fixture in this command
 	// only; it changes no git config.
 	_, err := runGit(context.Background(), t.TempDir(), "-c", "alias.noisy=!printf '%012288d' 0 >&2; exit 1", "noisy")
-	if err == nil || len(err.Error()) > gitErrLimit {
+	if err == nil {
+		t.Fatal("runGit gave no error")
+	}
+	if len(err.Error()) > gitErrLimit {
 		t.Fatalf("error of %d bytes, want at most %d", len(err.Error()), gitErrLimit)
 	}
 }

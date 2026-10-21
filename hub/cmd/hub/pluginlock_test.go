@@ -109,20 +109,23 @@ func TestReadLockUnreadable(t *testing.T) {
 	}
 }
 
-// An empty or missing string field decodes to "": it is an agreement failure of the entry, so
+// An empty, missing or null string field decodes to "": it is an agreement failure of the entry, so
 // sync can repair it (section 3, "Repair"). A missing commit is untrusted: the text names update.
 func TestLockDerivedFieldsMissing(t *testing.T) {
 	src := "github:lazy-rex/Messaging@main"
 	r, _ := parseGithub(src)
 	for _, field := range []string{"name", "owner", "repo", "ref", "ref_kind", "commit", "digest", "dir"} {
-		for _, mode := range []string{"empty", "missing"} {
+		for _, mode := range []string{"empty", "missing", "null"} {
 			fields := map[string]any{}
 			raw, _ := json.Marshal(goodLockEntry())
 			json.Unmarshal(raw, &fields)
-			if mode == "empty" {
+			switch mode {
+			case "empty":
 				fields[field] = ""
-			} else {
+			case "missing":
 				delete(fields, field)
+			default:
+				fields[field] = nil // a JSON null in a string field is a missing value
 			}
 			body, _ := json.Marshal(map[string]any{"version": 1, "plugins": map[string]any{src: fields}})
 			l, err := decodeLock(body)
