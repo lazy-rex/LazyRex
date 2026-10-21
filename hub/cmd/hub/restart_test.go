@@ -412,3 +412,28 @@ func TestRestartRetiresTheReadyReader(t *testing.T) {
 		t.Errorf("%d runChild goroutines are left", n)
 	}
 }
+
+// A state path with a newline cannot be framed in the ready line: the wrapper refuses it before it
+// makes the directory or starts a hub. A symlink to such a directory is refused after resolution.
+func TestRestartRefusesANewlineInTheState(t *testing.T) {
+	wr := newWrapperTest(t, "ready-exit0")
+	bad := filepath.Join(wr.dir, "a\nb")
+	if code := wr.w.main(bad); code != 1 || !strings.Contains(wr.text(), "newline") {
+		t.Fatalf("exit %d\n%s", code, wr.text())
+	}
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Errorf("the wrapper made the directory: %v", err)
+	}
+	os.Mkdir(bad, 0o700)
+	link := filepath.Join(wr.dir, "link")
+	os.Symlink(bad, link)
+	if code := wr.w.main(link); code != 1 {
+		t.Errorf("a symlink to it: exit %d", code)
+	}
+	if n := wr.startCount(); n != 0 {
+		t.Errorf("%d starts, want 0", n)
+	}
+	if _, err := os.Stat(filepath.Join(bad, "restart.lock")); !os.IsNotExist(err) {
+		t.Errorf("restart.lock exists: %v", err)
+	}
+}

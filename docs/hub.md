@@ -455,7 +455,7 @@ Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The 
 **Ownership: one wrapper for each state.**
 
 1. Before it starts a child, the wrapper reads the config with the hub's own `loadConfig`. That function reads the config and the managed file; it opens no store, no Rex connection and no plugin.
-2. The wrapper makes the state directory (0700) and takes its canonical form: absolute, symlinks resolved.
+2. The wrapper makes the state directory (0700) and takes its canonical form: absolute, symlinks resolved. A state path with a newline is refused (exit 1) before the directory is made, and again after the resolution: the ready line cannot carry it.
 3. The wrapper takes an fcntl write lock on `<state>/restart.lock` without waiting, and holds it for its life. If another process holds the lock, the wrapper starts no hub, prints `another restart wrapper owns <state> (pid N)` and exits 1. The pid is printed only when the system names the holder. Another error (for example a permission error) is printed as it is.
 
 **The child.** The wrapper starts its own binary with two environment variables. The hub reads and unsets both at the top of `main`, so no process that the hub starts inherits them (`restartenv.go`):

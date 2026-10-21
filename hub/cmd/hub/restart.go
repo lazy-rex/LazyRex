@@ -92,6 +92,11 @@ func restartArgs(args []string) []string {
 
 // main resolves and owns the state, then runs children until a stop.
 func (w *wrapper) main(stateDir string) int {
+	// The ready line is "ready <state>\n": a newline in the state cannot be framed.
+	if strings.Contains(stateDir, "\n") {
+		w.out.Printf("restart: the state path %q contains a newline; use another state directory", stateDir)
+		return 1
+	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		w.out.Printf("restart: %v", err)
 		return 1
@@ -99,6 +104,10 @@ func (w *wrapper) main(stateDir string) int {
 	state, err := canonicalState(stateDir)
 	if err != nil {
 		w.out.Printf("restart: %v", err)
+		return 1
+	}
+	if strings.Contains(state, "\n") {
+		w.out.Printf("restart: the state path %q contains a newline; use another state directory", state)
 		return 1
 	}
 	w.state = state
