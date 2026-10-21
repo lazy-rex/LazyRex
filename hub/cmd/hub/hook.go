@@ -54,13 +54,6 @@ func runHook(args, self []string) int {
 	}
 	if len(args) == 2 && args[0] == "-reporter" {
 		hookReport(args[1]) // returns only when it reports nothing
-		// No report. A command that the reporter ran (rex client ls) can have left a child in the
-		// reporter's group. -reporter is internal: the hook starts it as the leader of a new group, so
-		// the group holds only the reporter and what it started; end that group (this process too).
-		// A reporter that does not lead its group kills nothing.
-		if syscall.Getpgrp() == os.Getpid() {
-			syscall.Kill(0, syscall.SIGKILL)
-		}
 		return 0
 	}
 	if len(args) != 1 || (args[0] != "claude" && args[0] != "codex") {
@@ -74,19 +67,45 @@ func runHook(args, self []string) int {
 	if cmd.Start() != nil {
 		return 0
 	}
-	// Poll and reap here, not with cmd.Wait: until this process reaps the reporter, its pid (and so
-	// its group ID) cannot be reused, so the deadline kill cannot reach another process.
+	// The hook, which made the group, ends it: when the reporter exits or at the deadline, it kills
+	// the group, then reaps the reporter. Until the reap, the reporter's pid (and so the group ID)
+	// cannot be reused, so the kill reaches only this group: the reporter and what it started (a
+	// child that rex or `rex client ls` left behind). Not cmd.Wait: it would reap first.
 	pid := cmd.Process.Pid
+	waitExit(pid, hookDeadline)
+	syscall.Kill(-pid, syscall.SIGKILL)
 	var status syscall.WaitStatus
-	for deadline := time.Now().Add(hookDeadline); ; time.Sleep(20 * time.Millisecond) {
-		if wpid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); wpid == pid || err != nil {
-			return 0
+	syscall.Wait4(pid, &status, 0, nil)
+	return 0
+}
+
+// waitExit waits until the process pid exits or the timeout passes. It does not reap the process.
+// It watches the exit with kqueue (EVFILT_PROC, NOTE_EXIT). A process that already exited and is
+// not reaped cannot be registered (ESRCH): it counts as exited. On any other error it waits for the
+// whole timeout.
+func waitExit(pid int, timeout time.Duration) {
+	kq, err := unix.Kqueue()
+	if err != nil {
+		time.Sleep(timeout)
+		return
+	}
+	defer unix.Close(kq)
+	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_EXIT}
+	deadline := time.Now().Add(timeout)
+	out := make([]unix.Kevent_t, 1)
+	for {
+		ts := unix.NsecToTimespec(int64(max(time.Until(deadline), 0)))
+		// Any event returns: the exit, or a registration error that kevent puts in out (EV_ERROR).
+		_, err := unix.Kevent(kq, []unix.Kevent_t{ev}, out, &ts)
+		switch {
+		case err == unix.EINTR:
+			continue
+		case err == unix.ESRCH:
+			return
+		case err != nil:
+			time.Sleep(time.Until(deadline))
 		}
-		if time.Now().After(deadline) {
-			syscall.Kill(-pid, syscall.SIGKILL)
-			syscall.Wait4(pid, &status, 0, nil)
-			return 0
-		}
+		return
 	}
 }
 

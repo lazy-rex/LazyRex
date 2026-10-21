@@ -411,3 +411,38 @@ func TestHookLeavesNoChild(t *testing.T) {
 		}
 	}
 }
+
+// A reporter run directly (`hook -reporter`, here as the first process of a pipeline, so it leads
+// the group) must not signal a group peer that it did not start. (Reviewer case.)
+func TestHookDirectReporterPreservesPipelinePeer(t *testing.T) {
+	l := newHookLab(t)
+	reporter := l.command("-reporter")
+	reporter.Args = append(reporter.Args, "codex")
+	reporter.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	input, err := reporter.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reporter.Start(); err != nil {
+		t.Fatal(err)
+	}
+	peer := exec.Command("/bin/sleep", "30")
+	peer.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: reporter.Process.Pid}
+	if err := peer.Start(); err != nil {
+		reporter.Process.Kill()
+		reporter.Wait()
+		t.Fatal(err)
+	}
+	peerExit := make(chan error, 1)
+	go func() { peerExit <- peer.Wait() }()
+	input.Write([]byte(`{}`)) // no report: hookReport returns
+	input.Close()
+	reporter.Wait()
+	select {
+	case err := <-peerExit:
+		t.Fatalf("the reporter killed a pipeline peer that it did not start: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		peer.Process.Kill()
+		<-peerExit
+	}
+}
