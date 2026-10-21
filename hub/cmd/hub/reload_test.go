@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,5 +31,43 @@ func TestUpdateManagedTakesEveryParsedField(t *testing.T) {
 	}
 	if o.name != "bound" || o.managed != "x" {
 		t.Errorf("the update changed the identity: name %q managed %q", o.name, o.managed)
+	}
+}
+
+// hub.plugins.reload from an agent pane, or from a plugin pane process that is not the registered
+// instance, is refused before the reload reads the managed file. An operator (no pane) passes the
+// guard.
+func TestReloadRefusesPaneCallers(t *testing.T) {
+	h, _ := workerTestHub(t)
+	dir := t.TempDir()
+	h.cfg.managedPath = filepath.Join(dir, "plugins.json")
+	writeManaged(t, dir, `{"plugins":[`) // malformed: a reload that runs reports it
+	pid := os.Getpid()
+	var p perform
+	json.Unmarshal([]byte(fmt.Sprintf(`{"action":"hub.plugins.reload","requester":{"client_id":"c9","principal":{"pid":%d}}}`, pid)), &p)
+	want := "hub.plugins.reload is refused from agent panes and from plugin processes that are not the registered instance"
+	cases := map[string]func(){
+		"an agent pane": func() {
+			h.agents = map[string]*Agent{"x": {BlockID: "b1", ChildPID: pid, ChildStart: startTime(pid)}}
+			h.plugins = map[string]*Plugin{}
+		},
+		"a plugin pane, not the registered instance": func() {
+			h.agents = map[string]*Agent{}
+			h.plugins = map[string]*Plugin{"p": {Name: "p", entry: &configEntry{name: "p"}, ClientID: "c1", ChildPID: pid, ChildStart: startTime(pid)}}
+		},
+	}
+	for name, set := range cases {
+		set()
+		_, err := h.reloadAction(context.Background(), p)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if h.managedErr != nil {
+			t.Errorf("%s: the reload ran: %v", name, h.managedErr)
+		}
+	}
+	h.agents, h.plugins = map[string]*Agent{}, map[string]*Plugin{}
+	if _, err := h.reloadAction(context.Background(), p); !isRefusal(err, "invalid") || h.managedErr == nil {
+		t.Errorf("an operator: %v (the reload must run and report the malformed file)", err)
 	}
 }

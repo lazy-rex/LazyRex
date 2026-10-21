@@ -689,6 +689,10 @@ hub runs. Config entries do not reload: a config change needs a hub restart, as 
   lock. Hub start recovery holds the reload lock for its whole run.
 - The reply: `{added, changed, removed, readded, errors}`. `errors` maps a plugin name to the
   error of its start.
+- The reload runs its starts before it replies, as `hub.admin.start` does. It does not wait for a
+  registration. Rex gives the hub one request at a time, so a reload that waits on a start's
+  lifecycle lock holds the hub's other requests for that time. A caller timeout does not roll
+  back a reload: the entries are already applied. Read `hub.plugins` to see the result.
 - Events: `plugins_reloaded {added, changed, removed}` and `plugins_reload_refused {error}`.
 
 A reload keeps `run` and unresolved spawn intents when an entry changes or disappears.

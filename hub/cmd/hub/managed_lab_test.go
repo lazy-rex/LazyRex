@@ -179,6 +179,21 @@ func TestManagedReloadLab(t *testing.T) {
 		t.Errorf("%d spawn intents of m; want 1", n)
 	}
 
+	// A new id with the same name and source adopts the kept record: after a removal, and as one
+	// id change in one reload. The instance runs on.
+	s.reload()
+	if r = s.reload("mid2=m"); list(r["readded"]) != "[m]" || list(r["added"]) != "[mid2]" {
+		t.Errorf("re-add as mid2: %v", r)
+	}
+	s.same("m", first, start)
+	if r = s.reload("mid=m"); list(r["readded"]) != "[m]" || list(r["removed"]) != "[mid2]" || list(r["added"]) != "[mid]" {
+		t.Errorf("the id change mid2 to mid: %v", r)
+	}
+	s.same("m", first, start)
+	if st := s.status("m"); !st.Registered || st.State != "running" || len(s.events("plugin_spawn_intent", "m")) != 1 {
+		t.Errorf("m after the id changes: %+v", st)
+	}
+
 	// Remove, then a crash: no respawn. Re-add: a new instance.
 	s.reload()
 	s.exit("m")
@@ -327,6 +342,8 @@ func TestManagedReloadAdmissionLab(t *testing.T) {
 	if st := s.status("m"); st.State != "refused" || st.Registered {
 		t.Errorf("hold-before: %+v", st)
 	}
+	// The held start sees the removal: the hold fires, then the swap, then the kept refusal.
+	inOrder(t, s.order(), "fault m", 1, "plugins_reloaded", 1, "plugin_refused m", 1)
 
 	s.reload("mid=m")
 	s.registered("m")
@@ -344,6 +361,9 @@ func TestManagedReloadAdmissionLab(t *testing.T) {
 	if st := s.status("m"); st.Registered || st.State != "retained" {
 		t.Errorf("hold-after: %+v", st)
 	}
+	// The start was admitted before the swap (the hold fires after the admission), and its spawn
+	// completes after the swap.
+	inOrder(t, s.order(), "fault m", 2, "plugins_reloaded", 3, "plugin_spawn_intent m", 3)
 	s.stopKept("m", st.ChildPID, start)
 }
 
@@ -368,4 +388,94 @@ func TestManagedReloadAfterRecoveryLab(t *testing.T) {
 	s.wait("m is retained", func() bool { return s.status("m").State == "retained" })
 	st := s.status("m")
 	s.stopKept("m", st.ChildPID, startTime(st.ChildPID))
+}
+
+// nth returns the index of the n-th (1-based) x in order, or -1.
+func nth(order []string, x string, n int) int {
+	for i, o := range order {
+		if o == x {
+			if n--; n == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// inOrder checks that each (event, n) pair comes after the one before it.
+func inOrder(t *testing.T, order []string, pairs ...any) {
+	t.Helper()
+	last := -1
+	for i := 0; i < len(pairs); i += 2 {
+		x, n := pairs[i].(string), pairs[i+1].(int)
+		j := nth(order, x, n)
+		if j < 0 || j < last {
+			t.Errorf("%s #%d at %d must come after index %d: %v", x, n, j, last, order)
+			return
+		}
+		last = j
+	}
+}
+
+// A reload removes m while an unresolved spawn intent of m is open (a create that may still
+// complete in a live session): m is kept and keeps ownership. The reload reports the intent, a
+// stop gives unresolved_intent and the record stays, and a hub restart keeps the kept record.
+// When the intent's session closes, the stop drops it.
+func TestManagedReloadUnresolvedIntentLab(t *testing.T) {
+	s := newStartLab(t)
+	s.writeSource("m", `{"name":"m","main":"main.lua"}`, "m")
+	s.writeManagedIDs("mid=m")
+	s.start()
+	s.registered("m")
+	s.must("hub.admin.stop", map[string]any{"plugin": "m"})
+	s.stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := s.l.r.Call(ctx, "session.create", map[string]any{"label": "intent-probe"}, &created); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDB(filepath.Join(s.l.dir, "hub", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO spawn_intents (instance_id, plugin, status, session_id) VALUES ('m-0-held', 'm', 'sending', ?)`, created.SessionID)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.start()
+	r := s.reload()
+	if list(r["removed"]) != "[mid]" || !strings.Contains(fmt.Sprint(r["errors"].(map[string]any)["m"]), "may still create a block") {
+		t.Errorf("reload: %v", r)
+	}
+	if k := s.kept("m"); k == nil || k["state"] != "refused" {
+		t.Errorf("kept: %v", k)
+	}
+	stopText := "unresolved_intent: plugin m: the stop is not complete: spawn m-0-held in session " + created.SessionID + " may still create a block."
+	if _, err := s.call("hub.admin.stop", map[string]any{"plugin": "m"}); err == nil || !strings.Contains(err.Error(), stopText) {
+		t.Fatalf("stop with an open intent: %v", err)
+	}
+	if !s.hasRecord("m") {
+		t.Error("the record is dropped while its intent is open")
+	}
+	intents := len(s.events("plugin_spawn_intent", "m"))
+	s.stop()
+	s.start()
+	s.wait("the kept m after the restart", func() bool { return s.kept("m") != nil })
+	if k := s.kept("m"); k["state"] != "refused" || len(s.events("plugin_spawn_intent", "m")) != intents {
+		t.Errorf("kept after the restart: %v", k)
+	}
+	if err := s.l.r.Call(ctx, "session.attach", map[string]any{"session_id": created.SessionID, "event_scope": "session"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.l.r.Call(ctx, "session.destroy", map[string]any{"session_id": created.SessionID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.must("hub.admin.stop", map[string]any{"plugin": "m"})
+	if s.hasRecord("m") || s.kept("m") != nil {
+		t.Error("the record stays after a complete stop")
+	}
 }
