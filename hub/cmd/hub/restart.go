@@ -283,9 +283,9 @@ func (w *wrapper) runChild() childEnd {
 		return childEnd{stop: 1}
 	}
 	pid := cmd.Process.Pid
-	w.out.Printf("restart: started hub pid %d (attempt %d)", pid, w.attempt)
-	w.writeStatus("starting", time.Time{})
 
+	// The readers start first, before any status I/O, so a slow status write never stops the
+	// hub's output.
 	// The ready line, then EOF: the hub closes its end after the line, or at its exit.
 	readyc := make(chan string, 1)
 	readDone := make(chan struct{})
@@ -333,6 +333,8 @@ func (w *wrapper) runChild() childEnd {
 		cmd.Wait()
 		exitc <- cmd.ProcessState
 	}()
+	w.out.Printf("restart: started hub pid %d (attempt %d)", pid, w.attempt)
+	w.writeStatus("starting", time.Time{})
 
 	ready := false
 	onReady := func(line string) bool {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -416,5 +417,48 @@ func TestHubChildrenKeepTheDefaultSIGPIPE(t *testing.T) {
 		if err != nil || !strings.Contains(string(out), want) {
 			t.Errorf("%s: %q, %v; want %s", mode, out, err, want)
 		}
+	}
+}
+
+// The output readers start right after the child starts, before any status write: a status write
+// that hangs (a FIFO at restart.json.tmp holds it) does not stop the hub's output. The hub writes
+// 10 MiB and finishes while the status write still waits.
+func TestRestartOutputDrainsBeforeStatusIO(t *testing.T) {
+	wr := newWrapperTest(t, "spew", "ready-exit0")
+	t.Setenv("FAKE_SPEW", strconv.Itoa(10<<20))
+	state := filepath.Join(wr.dir, "state")
+	os.Mkdir(state, 0o700)
+	fifo := filepath.Join(state, "restart.json.tmp")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := wr.runAsync()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			go func() {
+				f, err := os.Open(fifo) // the reader end lets the status write finish
+				if err == nil {
+					io.Copy(io.Discard, f)
+					f.Close()
+				}
+			}()
+		}
+	}
+	t.Cleanup(release)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(wr.starts + ".spewed"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			waitCode(t, done)
+			t.Fatal("the hub could not finish its output while the status write waited")
+		}
+	}
+	release()
+	if code := waitCode(t, done); code != 0 {
+		t.Fatalf("exit %d\n%s", code, wr.text())
 	}
 }
