@@ -84,7 +84,7 @@ commit, and `hub.plugins` reports `commit` and the candidate fields (section 7).
 `TestPluginCacheStartLab` starts a GitHub plugin from its read-only cache entry, updates it, and
 reloads.
 
-On the branch `hub/replace` (in review): `hub.admin.replace` (section 14).
+`hub.admin.replace` (section 14) is on main (74190de).
 
 ## Terms
 
@@ -762,8 +762,8 @@ How step 2 applies the decision:
 
 ## 14. Replace (`hub.admin.replace`)
 
-Status: on the branch `hub/replace` (in review). The contract (r1) has the hub reviewer's
-approval, with corrections that are applied here.
+Status: on main (74190de). The contract (r1) has the hub reviewer's approval, with corrections
+that are applied here.
 
 `hub.admin.replace {"plugin": "<name>", "expect_instance": "<instance id>"}` replaces the running
 instance of an entry-backed plugin with a new instance from its current candidate. It is an admin
