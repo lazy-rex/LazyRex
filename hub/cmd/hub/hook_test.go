@@ -66,6 +66,8 @@ func newHookLab(t *testing.T) *hookLab {
 	return &hookLab{t: t, dir: dir, capture: filepath.Join(dir, "args"), env: map[string]string{
 		"LAZYREX_HOOK_HELPER": "1", "REX_SERVER": "unix:///tmp/hook-test/rex.sock", "REX_SESSION": "session:lab",
 		"REX_BLOCK": "block:lab", "REX_BIN": rex, "HOOK_CLIENTS": string(clients), "PATH": os.Getenv("PATH"),
+		// A -race build of a helper otherwise sleeps 1 s at its exit, past the timing checks.
+		"GORACE": "atexit_sleep_ms=0",
 	}}
 }
 
@@ -264,7 +266,16 @@ func TestHookReporterStartsBeforeInputAndDescendsFromTheHook(t *testing.T) {
 	if err := a.Start(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond) // the older reporter has started and waits for its input
+	// Wait until the older reporter (the hook's child) exists and waits for its input. A fixed sleep
+	// was too short for a -race build.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if exec.Command("pgrep", "-P", strconv.Itoa(a.Process.Pid)).Run() == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the older hook started no reporter")
+		}
+	}
 	b := newer.command("claude")
 	b.Stdin = bytes.NewReader(event("newer"))
 	if err := b.Start(); err != nil {
