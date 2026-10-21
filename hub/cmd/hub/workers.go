@@ -1410,7 +1410,10 @@ func (h *Hub) changed(what ...string) {
 			h.kickNotices()
 		}
 		if w == "plugins" {
-			h.reapPromptSenders() // a registration that ended stops its prompt sender
+			// A registration that ended stops its prompt sender. Non-blocking: it takes h.mu (so no
+			// caller of changed holds h.mu; changed takes it below too), closes channels and deletes
+			// map entries. No Rex call and no store call.
+			h.reapPromptSenders()
 		}
 	}
 	h.mu.Lock()
