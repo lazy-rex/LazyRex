@@ -1591,7 +1591,9 @@ func (h *Hub) changed(what ...string) {
 				}
 			}(p.ClientID, p.Name, w)
 		}
-		h.kickViews(p.Name, true)
+		for _, w := range what {
+			h.markChanged(p.Name, w)
+		}
 	}
 }
 

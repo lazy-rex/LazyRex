@@ -893,8 +893,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 			h.test.invalidate[ns]++
 			h.test.mu.Unlock()
 		}
-		h.kickViews(ns, true)
-		return map[string]any{"status": "accepted"}, nil
+		return h.uiInvalidate(ctx, ns, args)
 	case "hub.cwd.lock":
 		return h.cwdLock(ctx, ns, args)
 	case "hub.cwd.check":
@@ -968,7 +967,11 @@ func (h *Hub) afterCommit(ns string, out *batchOutcome) {
 	if len(out.intentRev) > 0 {
 		h.kickNotices()
 	}
-	h.kickViews(ns, true) // the plugin's data changed: render its open views again
+	keys := make([]string, 0, len(out.revs))
+	for k := range out.revs {
+		keys = append(keys, k)
+	}
+	h.markCommit(ns, keys) // the views whose declaration matches a committed key render again
 }
 
 // callerInManagedPane reports whether pid runs inside an agent or plugin pane. It walks the

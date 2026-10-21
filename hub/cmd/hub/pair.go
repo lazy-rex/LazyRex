@@ -96,7 +96,7 @@ func (h *Hub) setViewLayout(ctx context.Context, v *view, layout string) error {
 		h.closeTranscript(ctx, v.ID)
 	}
 	h.ev.emit("view_layout_changed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "from": from, "to": layout})
-	h.kickViews(v.Plugin, true)
+	h.markView(v.Plugin, v.ID, causeLayout) // the layout is in this view's snapshot only
 	return nil
 }
 
@@ -119,7 +119,7 @@ func (h *Hub) transcriptChanged(ctx context.Context, viewID string) {
 	var plugin string
 	h.db.QueryRowContext(ctx, `SELECT plugin FROM views WHERE view_id = ?`, viewID).Scan(&plugin)
 	if plugin != "" {
-		h.kickViews(plugin, true)
+		h.markView(plugin, viewID, causeLayout)
 	}
 }
 

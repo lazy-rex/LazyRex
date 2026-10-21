@@ -62,7 +62,8 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	h.kickAgentKeymap()
 	h.kickWaiting() // a dependent can wait for this plugin
 	h.ev.emit("plugin_registered", map[string]any{"plugin": name, "instance_id": instance, "client_id": pl.ClientID})
-	h.kickViews(name, true) // views rendered while the plugin was away hold a stale tree
+	h.clearDeclarations(name)        // a new instance declares again
+	h.kickViews(name, causeRegister) // views rendered while the plugin was away hold a stale tree
 	if h.watches != nil {
 		h.watches.pluginRegistered(name) // rows may wait for it
 	}

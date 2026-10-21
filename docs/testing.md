@@ -216,6 +216,7 @@ does not hide the result.
 | `batches()` | The number of `hub.store.batch` calls of the plugin. |
 | `invalidates(plugin?)` | The number of `hub.ui.invalidate` calls of the plugin. A count that stays the same over an interval proves only that the plugin made no `hub.ui.invalidate` call in that interval. It does not prove that no other idle render loop runs. |
 | `calls(action, {after?, plugin?})` | The recorded hub service calls of the plugin (`hub.test.calls`): a list of `{seq, action, instance_id, args}`, oldest first, and the full reply `{calls, next, dropped}`. The hub records each call of the registered current instance, except `hub.test.*`, once, when it arrives: before the action faults run. A call that fails (also by a fault or a closed gate) is recorded too. `args` is the call's args object as the hub received it: for `hub.store.scan`, no `prefix` means a scan of all records. `after` returns only later calls. `next` is the highest `seq` that the hub gave, for any plugin: keep it as a baseline (`local _, base = calls('none')`, then `base.next`). A `seq` belongs to one hub process: a hub restart starts again from 1 with an empty record, so a cursor does not cross a restart. `after` must be a whole number from 0. An unknown plugin is refused. The hub keeps the last 1000 calls of each plugin. `dropped` is true when it dropped a call after `after`; a test that proves "never" checks that `dropped` is false. |
+| `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared}`, in `view_id` order. `declared` is the declaration that the view has now (`{prefixes, changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
 | `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
 | `H.args.lab` | The lab dir. |
 | `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |
@@ -338,8 +339,8 @@ a record (`plugstart_lab_test.go`). A hub without `-test` refuses the key.
 - The file `LAB/testview-hold` controls the test views of one route: line 1 is the route, line 2
   the mode. `hold` (the default) keeps them between attach and subscribe, at most 20 s; the
   subscribe is not sent yet. `fail-subscribe-once` makes the first subscribe fail, simulated by
-  the test view. `testview.status` reports `held`, `hold_expired`, `subscribed` and
-  `subscribe_failures`.
+  the test view. `testview.status` reports `held`, `hold_expired`, `subscribed`,
+  `subscribe_failures` and `changes` (the count of `view.changed` notifications).
 
 ### Faults
 
@@ -363,9 +364,10 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'prompt-answer', mode = 'refuse', when = 'write' or 'enter', fail_code = code}` | The next answer write (`write`: the keys or the paste; `enter`: the Enter) is not sent and fails with `fail_code` (default `not_found`). |
 | `{point = 'prompt-answer', mode = 'lose-reply' or 'short', when = 'write' or 'enter'}` | The next answer write is sent. lose-reply: its reply is lost (`disconnected`). short: the reply reports one byte fewer than the data. |
 
+| `{point = 'view-render', mode = 'hold', key = route, plugin, hold_ms}` | The next render result of a view of `plugin` with that route (any route if `key` is not given) waits after the plugin answered `view.render`, before the hub uses it, until `fault_release(id)`, at most 30 s, or `hold_ms` ms. It holds the plugin's view worker, not the hub's request queue, so a test can commit, invalidate or register during the hold (render_deps.lua). |
 | `{point = 'action', action, when = 'before', mode = 'gate', key, plugin}` | A barrier for a caller that retries. From the call that fires it until `fault_release(id)`, every matching call gets code `unavailable` and runs no handler. The hub retries a view operation with that outcome every 500 ms, so the operation passes after the release. A gate that is still closed at the end of the file fails the file. `fault_state` reports `gated`, the number of refused calls. `fault_release` of a gate that has not fired is an error. |
 
-- `nth = n` (action, status-read, start-admission, plugin-create and prompt-answer faults) fires on the n-th matching call; the default is 1. Every armed
+- `nth = n` (action, status-read, start-admission, plugin-create, prompt-answer and view-render faults) fires on the n-th matching call; the default is 1. Every armed
   fault that matches counts the call, also when another fault fires. An after fault counts only
   calls whose handler succeeded. A call that a closed gate refuses counts for no fault: it does
   not reach the hub.

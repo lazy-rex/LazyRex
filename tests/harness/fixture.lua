@@ -30,7 +30,7 @@ end
 
 local obj = {type = 'object'}
 local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub',
-  'fix.measure'}
+  'fix.measure', 'fix.register'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -64,6 +64,7 @@ local actions = {
     args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}}, required = {'action'}}},
   {name = 'fix.measure', kind = 'client', title = 'Call a hub action as the plugin; return sizes, not the reply',
     args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}, timeout_ms = {type = 'integer'}}, required = {'action'}}},
+  {name = 'fix.register', kind = 'client', title = 'Register the plugin again', args = obj},
 }
 rex.call('client.keymap', {actions = actions})
 
@@ -71,6 +72,13 @@ local function who(pid)
   local r = hub('hub.identify', {pid = pid})
   if not r.found then error({code = 'unknown_caller', message = 'the hub does not recognize the caller'}) end
   return r.agent
+end
+
+-- register registers the plugin. fix.register calls it again (render_deps.lua: a registration
+-- clears the declarations).
+local function register()
+  return hub('hub.register', {plugin = 'harnessfix', instance_id = instance_id, exports = exports,
+    commands = {{id = 'fix_form', title = 'Fixture form', route = '/forms/fix', action = 'fix.put'}}})
 end
 
 local function domain(action, args, pid)
@@ -112,6 +120,9 @@ local function domain(action, args, pid)
     return {scheduled = true}
   elseif action == 'fix.spawn' then
     return {spawn = hub('hub.spawn', {profile = 'shell', key = args.key, on_behalf = args.as_pid or pid}), pid = pid}
+  elseif action == 'fix.register' then
+    register()
+    return {}
   elseif action == 'fix.hub' then
     -- The hub's answer as data, so a test can check the exact error code.
     local res, err = rex.call('client.perform', {client_id = hub_id, action = args.action, args = args.args or {}, timeout_ms = 10000})
@@ -226,6 +237,15 @@ local function view(action, args)
   if action == 'view.render' then
     if args.route == '/home' then return {tree = home_tree()} end
     if args.route == '/forms/fix' then return {tree = form_tree()} end
+    -- /lazy/deps-<x> (render_deps.lua): the record spec/deps-<x> is the deps declaration of the
+    -- reply ('fail' fails the render); the text shows the record data/deps-<x>.
+    local dname = args.route:match('^/lazy/(deps%-.+)$')
+    if dname then
+      local spec = get('spec/' .. dname)
+      if spec == 'fail' then error({code = 'render_error', message = 'spec is fail'}) end
+      return {tree = {title = 'Deps', nodes = {{id = 'lazy', type = 'widget', text = tostring(get('data/' .. dname)),
+        action = {name = 'poke', label = 'Poke', enabled = true, user_only = 'changes nothing'}}}}, deps = spec}
+    end
     if args.route:match('^/lazy/') then return {tree = {title = 'Lazy', nodes = {{id = 'lazy', type = 'widget', text = args.route}}}} end
     return {tree = {title = 'Unknown', nodes = {{id = 'unknown', type = 'error', text = 'no route ' .. tostring(args.route)}}}}
   elseif action == 'view.action' then
@@ -247,6 +267,7 @@ local function view(action, args)
       return {navigate = targets[kind]}
     end
     if args.route == '/home' and args.node_id == 'gated_nav' then return {navigate = {plugin = 'harnessfix', tab = 'gated/a'}} end
+    if args.route:match('^/lazy/deps%-') and args.node_id == 'lazy' then return {} end -- the tree stays the same
     if args.route == '/forms/fix' and args.node_id == 'go_home' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
     if args.route == '/forms/fix' and args.node_id == 'form' then
       put('form', {value = args.input and args.input.values and args.input.values.value or ''})
@@ -277,7 +298,6 @@ rex.on('client_perform_requested', function(ctx, ev)
   end
 end)
 
-hub('hub.register', {plugin = 'harnessfix', instance_id = instance_id, exports = exports,
-  commands = {{id = 'fix_form', title = 'Fixture form', route = '/forms/fix', action = 'fix.put'}}})
+register()
 hub('hub.ui.tabs', {tabs = tabs})
 rex.call('client.set_label', {label = 'lazyrex-plugin:harnessfix'})

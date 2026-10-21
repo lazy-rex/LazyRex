@@ -74,8 +74,9 @@ If no snapshot exists, it returns a tree with a loading node and schedules plugi
 Plugin output replaces the snapshot only if it belongs to the current view and attachment generation.
 The hub schedules this work outside the Rex request handler.
 The plugin can then call hub storage without a nested call cycle.
-The hub renders every open view of a plugin after a store commit in its namespace.
-A plugin calls `hub.view.invalidate {routes}` for changes outside storage.
+After a store commit in its namespace, the hub renders the plugin's open views again: every view,
+or only the views whose declared dependencies match ("Render dependencies", below).
+A plugin calls `hub.ui.invalidate {routes?}` for changes outside storage.
 
 The hub calls `view.changed {view_id, attachment, revision}` on the renderer after a snapshot changes.
 The renderer checks the requester against the current hub client ID.
@@ -91,6 +92,52 @@ If a callback arrives during a fetch, the renderer fetches again when its snapsh
 A revision gap requires a full fetch, not replay of intermediate revisions.
 A disconnected renderer retains its local text and shows that the hub is unavailable.
 It resolves the current hub and repeats attachment, subscription, and fetch when the connection returns.
+
+### Render dependencies
+
+A `view.render` reply can add `"deps": {"prefixes": [...], "changes": [...]}` beside `tree`
+(renderdeps.go). The hub then renders the view again only for the triggers that it declares.
+
+- `prefixes`: a committed key (written or deleted, from `hub.store.batch`) marks the view when it
+  starts with a prefix. `""` matches every key. Missing (or no `deps`): every commit of the plugin
+  marks the view. An empty list: no commit marks it. A batch without record writes (notices only)
+  marks only the views without prefixes. A conflict and a replay of a saved op commit nothing.
+- `changes`: a subset of `agents`, `plugins`, `workers` and `profiles`. The hub renders every view
+  of every registered plugin on such a change. Missing: as that. An empty list: no change marks the
+  view. The plugin still gets `hub.changed {what}`, so it can call `hub.ui.invalidate {routes}`.
+- Rex Lua encodes an empty table as `{}`: the hub reads `{}` as the empty list, so
+  `deps = {prefixes = {}}` is the explicit empty list.
+- Malformed deps (not an object; a list that is not strings; more than 64 prefixes; a prefix over
+  512 bytes; an unknown name in `changes`; an unknown field) count as no declaration. The tree is
+  shown, and the event `view_deps_invalid {plugin, view_id, route, error}` comes when the error text
+  changes.
+- What to declare: each key that the render reads with `hub.store.get` (a key as a prefix also
+  matches longer keys: only extra renders), and the prefix of each `hub.store.scan` (a scan without
+  a prefix needs `""`). A missing prefix gives a stale view until another trigger. `calls()` in a test
+  shows the reads (testing.md).
+
+The other triggers do not use the declaration:
+
+- Every open view of the plugin: plugin registration, `hub.ui.invalidate {}` and a tab status
+  change.
+- The open views of one tab: a navigation to that tab.
+- Only that view: `hub.ui.invalidate {routes}` (views whose route equals one of 1 to 64 non-empty
+  strings), a new attachment, a view without a snapshot, a pair layout change, a transcript change,
+  the end of one of its operations (which also sends `view.changed` when the tree is unchanged),
+  and `hub.test.view.render`. Before render dependencies, each trigger in this list except the
+  first, and a navigation, rendered every view of the plugin.
+
+Lifetime and races:
+
+- A declaration belongs to the plugin instance that rendered it. A new registration clears all
+  declarations of the plugin, and a result from before it installs nothing.
+- A failed render (an error, no tree, or a transient failure) and a malformed declaration leave the
+  view with no declaration until its next good render. A closed view loses its state; a render of
+  it that ends later installs nothing. A hub restart starts with no declarations.
+- The hub takes a view's causes before it calls `view.render`. While that render runs, every
+  trigger marks the view without the filter (the hub does not know the declaration that the
+  running render gives), and the view renders again after it. So a commit that changes the
+  declaration is never lost. There is at most one pending render for each view.
 
 ### Version 1 view tree
 
