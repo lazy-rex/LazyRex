@@ -1,23 +1,65 @@
 package main
 
 import (
+	"errors"
 	"fmt"
-	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
-// procInfo returns the parent pid and the start time of pid. ok is false if the process does not exist.
+// procRecord is what one process information read gives: the parent pid and the start time. The
+// start time is "<seconds>.<microseconds>" on every system, so stored values and startBefore
+// compare the same way. procRead (process_darwin.go, process_linux.go) reads it.
+type procRecord struct {
+	ppid  int
+	start string
+}
+
+// errProcGone is procRead's verified answer that the system has no such process. Every other
+// error is a failed read: no answer.
+var errProcGone = errors.New("no such process")
+
+// procUserHZ is the clock tick rate of /proc/<pid>/stat starttime (USER_HZ). Linux exports
+// /proc times in USER_HZ, which is 100 on the usual architectures. So a Linux start time has a
+// 10 ms resolution: two processes that start in the same tick have equal start times.
+const procUserHZ = 100
+
+// parseProcStat reads the parent pid (field 4) and starttime (field 22) of a /proc/<pid>/stat
+// line. Field 2, the command name in parentheses, can hold spaces and parentheses, so the fields
+// are counted after the last ')'. btime is the boot time in seconds.
+func parseProcStat(line string, btime int64) (procRecord, error) {
+	i := strings.LastIndexByte(line, ')')
+	if i < 0 {
+		return procRecord{}, fmt.Errorf("stat line without a command name: %q", line)
+	}
+	f := strings.Fields(line[i+1:]) // f[0] is field 3 (state)
+	if len(f) < 20 {
+		return procRecord{}, fmt.Errorf("stat line with %d fields after the command name", len(f))
+	}
+	ppid, err := strconv.Atoi(f[1])
+	if err != nil {
+		return procRecord{}, fmt.Errorf("stat ppid %q: %v", f[1], err)
+	}
+	ticks, err := strconv.ParseInt(f[19], 10, 64)
+	if err != nil {
+		return procRecord{}, fmt.Errorf("stat starttime %q: %v", f[19], err)
+	}
+	sec := btime + ticks/procUserHZ
+	usec := (ticks % procUserHZ) * (1000000 / procUserHZ)
+	return procRecord{ppid: ppid, start: fmt.Sprintf("%d.%06d", sec, usec)}, nil
+}
+
+// procInfo returns the parent pid and the start time of pid. ok is false if the process does not
+// exist or the read failed: use it only where a failed read must count as "not this process".
 func procInfo(pid int) (ppid int, start string, ok bool) {
-	kp, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil || kp.Proc.P_pid == 0 {
+	r, err := procRead(pid)
+	if err != nil {
 		return 0, "", false
 	}
-	st := kp.Proc.P_starttime
-	return int(kp.Eproc.Ppid), fmt.Sprintf("%d.%06d", st.Sec, st.Usec), true
+	return r.ppid, r.start, true
 }
 
 // startTime identifies one process lifetime together with its pid. "" if the process does not exist.
@@ -29,38 +71,42 @@ func startTime(pid int) string {
 	return s
 }
 
-// descendsFrom reports whether pid is ancestor or a descendant of ancestor.
+// ancestryOf returns pid and its ancestors, nearest first, until pid 1. An error means the walk is
+// incomplete: a read failed, a process in the chain ended, or the walk passed 64 processes. The
+// pids read before the error are still returned: a match among them is a real match.
+func ancestryOf(read func(int) (procRecord, error), pid int) ([]int, error) {
+	var chain []int
+	for seen := 0; pid > 1; seen++ {
+		if seen == 64 {
+			return chain, errors.New("the walk passed 64 processes")
+		}
+		chain = append(chain, pid)
+		r, err := read(pid)
+		if err != nil {
+			return chain, fmt.Errorf("process %d: %w", pid, err)
+		}
+		pid = r.ppid
+	}
+	return chain, nil
+}
+
+// descendsFrom reports whether pid is ancestor or a descendant of ancestor. It is positive
+// attribution only: a failed walk gives false, so a caller that refuses on false fails closed.
+// A guard that allows on false must use ancestryOf and refuse on its error.
 // This is attribution, not security: double-fork, setsid and nohup can break the chain.
 func descendsFrom(pid, ancestor int) bool {
 	if pid <= 0 || ancestor <= 0 {
 		return false
 	}
-	for seen := 0; pid > 1 && seen < 64; seen++ {
-		if pid == ancestor {
-			return true
-		}
-		ppid, _, ok := procInfo(pid)
-		if !ok {
-			return false
-		}
-		pid = ppid
-	}
-	return false
+	chain, _ := ancestryOf(procRead, pid)
+	return slices.Contains(chain, ancestor)
 }
 
 // argvHas reports whether the command line of pid contains the argument arg.
 // The hub uses it to check that a pane runs the plugin instance it launched.
 func argvHas(pid int, arg string) bool {
-	out, err := exec.Command("ps", "-ww", "-o", "command=", "-p", fmt.Sprint(pid)).Output()
-	if err != nil {
-		return false
-	}
-	for _, f := range strings.Fields(string(out)) {
-		if f == arg {
-			return true
-		}
-	}
-	return false
+	argv, err := procArgv(pid)
+	return err == nil && slices.Contains(argv, arg)
 }
 
 // alive reports whether pid still runs the same process lifetime.

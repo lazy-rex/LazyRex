@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -170,6 +171,9 @@ type Hub struct {
 	// a plugin's lifecycle, then entriesMu, then mu. No code takes a lifecycle lock while it holds
 	// entriesMu or mu. pl.entry changes only under entriesMu and then mu.
 	reloadMu     sync.Mutex // serializes hub.plugins.reload and hub start recovery
+	// procRead is the process information read of the caller guards (callerInManagedPane). nil:
+	// procRead. A test sets its own Hub's reader; no test changes a package variable.
+	procRead func(pid int) (procRecord, error)
 	entriesMu    sync.Mutex
 	entries      []*configEntry
 	managedErr   error // the managed file is malformed (h.entriesMu): hub.plugins reports it once
@@ -759,7 +763,9 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.view.operation":
 		return h.viewOperation(ctx, p, args)
 	case "hub.admin.start", "hub.admin.stop", "hub.admin.rebind", "hub.admin.unlock":
-		if h.callerInManagedPane(pid) {
+		if in, err := h.callerInManagedPane(pid); err != nil {
+			return nil, unverifiedCaller(err)
+		} else if in {
 			return nil, bad("admin actions are refused from agent and plugin panes")
 		}
 		if p.Action == "hub.admin.unlock" {
@@ -871,21 +877,31 @@ func (h *Hub) afterCommit(ns string, out *batchOutcome) {
 	h.kickViews(ns, true) // the plugin's data changed: render its open views again
 }
 
-// callerInManagedPane reports whether pid runs inside an agent or plugin pane.
-func (h *Hub) callerInManagedPane(pid int) bool {
+// callerInManagedPane reports whether pid runs inside an agent or plugin pane. It walks the
+// ancestry once, outside h.mu. Three outcomes: a match (true), a complete walk without a match
+// (false), and an incomplete walk without a match (an error). A guard that allows on false must
+// refuse on the error: a failed process information read never lets a caller pass.
+func (h *Hub) callerInManagedPane(pid int) (bool, error) {
+	read := h.procRead
+	if read == nil {
+		read = procRead
+	}
+	chain, walkErr := ancestryOf(read, pid)
+	in := func(c int) bool { return c > 0 && slices.Contains(chain, c) }
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, a := range h.everyAgent() {
-		if a.live() && descendsFrom(pid, a.ChildPID) {
-			return true
+		if a.live() && in(a.ChildPID) {
+			return true, nil
 		}
 	}
 	for _, p := range h.plugins {
-		if p.ChildPID > 0 && descendsFrom(pid, p.ChildPID) {
-			return true
+		if in(p.ChildPID) {
+			return true, nil
 		}
 	}
-	return false
+	// No match in the pids read. With an incomplete walk the answer is unknown: the guard refuses.
+	return false, walkErr
 }
 
 func (h *Hub) tools() any {

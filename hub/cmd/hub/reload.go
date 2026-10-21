@@ -20,10 +20,22 @@ import (
 // reload checks a plugin caller again after it takes reloadMu: a queued caller can become kept.
 func (h *Hub) reloadAction(ctx context.Context, p perform) (any, error) {
 	caller := h.pluginByClient(p.Requester.ClientID)
-	if caller == nil && h.callerInManagedPane(p.Requester.Principal.PID) {
-		return nil, bad("hub.plugins.reload is refused from agent panes and from plugin processes that are not the registered instance")
+	if caller == nil {
+		in, err := h.callerInManagedPane(p.Requester.Principal.PID)
+		if err != nil {
+			return nil, unverifiedCaller(err)
+		}
+		if in {
+			return nil, bad("hub.plugins.reload is refused from agent panes and from plugin processes that are not the registered instance")
+		}
 	}
 	return h.reload(ctx, caller, p.Requester.ClientID)
+}
+
+// unverifiedCaller is the refusal of an admin guard whose ancestry walk is incomplete: the
+// caller can be in an agent or plugin pane, so the guard refuses.
+func unverifiedCaller(err error) error {
+	return bad("cannot check the caller's process ancestry: %v; admin actions need a verified caller", err)
 }
 
 // sameManaged reports whether a managed entry is unchanged: the same source, args and watch roots.
