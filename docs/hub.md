@@ -463,7 +463,7 @@ Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The 
 - `LAZYREX_READY_FD=3`: the write end of a pipe. After `hub_started`, the hub writes `ready <canonical state>` once and closes it. Ready means that the hub has started (after `hub_started`). It does not mean that the plugins are healthy. The hub sets FD_CLOEXEC on the fd, so no child of the hub holds the pipe open.
 - `LAZYREX_EXPECT_STATE`: the wrapper's canonical state. After `loadConfig`, before it makes the state directory or takes `hub.lock`, the hub compares its config state in the canonical form. Another state, or a state that cannot be resolved, prints `... start a new wrapper` and exits 3. No store, no Rex connection, no plugin.
 
-**When the child exits.** The wrapper classifies an exit only after the ready pipe ends (at most 2 s after the exit), so "ready, then an immediate exit" counts as after ready.
+**When the child exits.** The wrapper classifies an exit only after the ready pipe ends (at most 2 s after the exit), so "ready, then an immediate exit" counts as after ready. Then the wrapper closes its read end of the pipe, also when a descendant of the hub still holds the write end, so no reader is left for the next start.
 
 | Child exit | Wrapper |
 | --- | --- |

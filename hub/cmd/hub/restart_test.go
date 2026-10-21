@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +26,7 @@ import (
 //   - wait: no ready line, exit 0 at SIGTERM
 //   - ready-ignore: ready, then ignore SIGTERM
 //   - ready-other: a ready line for another state, then wait
+//   - leak-ready: a descendant inherits the ready fd; ready, then exit 1
 //   - lock: take the restart lock on FAKE_LOCK_STATE, print "locked", wait
 func TestFakeHub(t *testing.T) {
 	plan := os.Getenv("FAKE_HUB_PLAN")
@@ -70,6 +73,14 @@ func TestFakeHub(t *testing.T) {
 	case "ready-ignore":
 		signalReady(env.readyFD, env.expectState)
 		time.Sleep(time.Hour)
+	case "leak-ready":
+		// A descendant keeps the ready fd open after this child exits.
+		keep := exec.Command("/bin/sleep", "30")
+		keep.ExtraFiles = []*os.File{os.NewFile(uintptr(env.readyFD), "ready")}
+		keep.Start()
+		os.WriteFile(os.Getenv("FAKE_HUB_STARTS")+".keep", []byte(strconv.Itoa(keep.Process.Pid)), 0o600)
+		signalReady(env.readyFD, env.expectState)
+		os.Exit(1)
 	case "ready-other":
 		signalReady(env.readyFD, "/elsewhere")
 		<-term
@@ -376,5 +387,28 @@ func TestRestartArgs(t *testing.T) {
 	got := restartArgs([]string{"-config", "c.json", "-restart", "--restart=true", "-real-server"})
 	if strings.Join(got, " ") != "-config c.json -real-server" {
 		t.Errorf("%q", got)
+	}
+}
+
+// A descendant that keeps the ready pipe open after the child's exit: the wrapper stops waiting
+// after readyEOFWait, and it closes the read end and ends the reader on every return of runChild.
+// No reader goroutine is left for a later restart window.
+func TestRestartRetiresTheReadyReader(t *testing.T) {
+	wr := newWrapperTest(t, "leak-ready", "ready-exit0")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(wr.starts + ".keep"); err == nil {
+			pid, _ := strconv.Atoi(string(b))
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	if code := waitCode(t, wr.runAsync()); code != 0 {
+		t.Fatalf("exit %d, want 0\n%s", code, wr.text())
+	}
+	if !strings.Contains(wr.text(), "still open") {
+		t.Errorf("no line about the open pipe:\n%s", wr.text())
+	}
+	buf := make([]byte, 1<<20)
+	if n := strings.Count(string(buf[:runtime.Stack(buf, true)]), "(*wrapper).runChild.func"); n != 0 {
+		t.Errorf("%d runChild goroutines are left", n)
 	}
 }

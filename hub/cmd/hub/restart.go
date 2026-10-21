@@ -261,12 +261,17 @@ func (w *wrapper) runChild() childEnd {
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
-		defer r.Close()
 		line, _ := bufio.NewReader(io.LimitReader(r, 4096)).ReadString('\n')
 		if line != "" {
 			readyc <- line
 		}
 		io.Copy(io.Discard, r)
+	}()
+	// On every return: close the read end and end the reader, also when a descendant still holds
+	// the write end (the 2 s limit below). A Close ends a blocked Read of a pipe.
+	defer func() {
+		r.Close()
+		<-readDone
 	}()
 	exitc := make(chan *os.ProcessState, 1)
 	go func() {
