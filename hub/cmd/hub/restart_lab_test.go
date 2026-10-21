@@ -19,6 +19,8 @@ import (
 //  3. hub.admin.shutdown: the hub exits 0, the wrapper exits 0.
 //  4. A new wrapper; the config then names another state, and the lab server stops: the restarted
 //     child exits 3 and the wrapper exits 3, with nothing made in the new state.
+//  5. The palette launch: the wrapper in a labeled pane; its lines in the pane, the hub's output in
+//     <state>/hub.log only.
 func TestRestartWrapperLab(t *testing.T) {
 	if os.Getenv("SHUTDOWN_LAB") != "1" {
 		t.Skip("set SHUTDOWN_LAB=1 to run the restart lab test (it starts its own lab server)")
@@ -60,7 +62,8 @@ func TestRestartWrapperLab(t *testing.T) {
 
 	wlog := filepath.Join(tmp, "wrapper.log")
 	wrapper, exit := startRestartWrapper(t, bin, cfg, wlog)
-	waitHubStarted(t, wlog)
+	hubLog := filepath.Join(state, "hub.log") // the hub's output; the wrapper's lines go to its pane (wlog) and here
+	waitHubStarted(t, hubLog)
 	waitLogLine(t, wlog, " ready\n")
 
 	// 1. A second wrapper: no hub, exit 1, the same Rex clients.
@@ -85,7 +88,7 @@ func TestRestartWrapperLab(t *testing.T) {
 			t.Fatalf("no second ready:\n%s", readFile(wlog))
 		}
 	}
-	client := lastHubStarted(t, wlog)
+	client := lastHubStarted(t, hubLog)
 
 	// 3. hub.admin.shutdown: the hub exits 0 and the wrapper exits 0.
 	if out, err := rexIn("-C", client, "do", "hub.admin.shutdown"); err != nil {
@@ -110,6 +113,42 @@ func TestRestartWrapperLab(t *testing.T) {
 	for _, f := range []string{"hub.lock", "hub.db", "events.jsonl", "restart.lock"} {
 		if _, err := os.Stat(filepath.Join(newState, f)); !os.IsNotExist(err) {
 			t.Errorf("%s exists in the new state", f)
+		}
+	}
+
+	// 5. The launch that the palette entry uses: the wrapper in a labeled pane. The pane shows the
+	// wrapper's lines; the hub's output is in <state>/hub.log only; <state>/dev/hub.log (dev.sh) is
+	// never written.
+	writeCfg(state)
+	if out, err := rexIn("new", "--shell=none", "launch", "--", "/bin/sleep", "300"); err != nil {
+		t.Fatalf("new session: %v\n%s", err, out)
+	}
+	started := strings.Count(readFile(hubLog), "\"event\":\"hub_started\"")
+	if out, err := rexIn("run", "-s", "launch", "--shell=none", "--focus=false", "--keep-open", "--label", "lazyrex-hub-wrapper",
+		"--", bin, "-config", cfg, "-restart"); err != nil {
+		t.Fatalf("rex run: %v\n%s", err, out)
+	}
+	pane := func() string { out, _ := rexIn("capture", "-b", "lazyrex-hub-wrapper"); return out }
+	for deadline := time.Now().Add(20 * time.Second); !strings.Contains(pane(), " ready"); time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no ready in the pane:\n%s", pane())
+		}
+	}
+	if n := strings.Count(readFile(hubLog), "\"event\":\"hub_started\""); n != started+1 {
+		t.Errorf("hub_started in hub.log: %d, want %d", n, started+1)
+	}
+	if p := pane(); strings.Contains(p, "hub_started") || !strings.Contains(p, "restart: started hub") {
+		t.Errorf("pane:\n%s", p)
+	}
+	if _, err := os.Stat(filepath.Join(state, "dev", "hub.log")); !os.IsNotExist(err) {
+		t.Errorf("dev/hub.log exists: %v", err)
+	}
+	if out, err := rexIn("-C", lastHubStarted(t, hubLog), "do", "hub.admin.shutdown"); err != nil {
+		t.Fatalf("shutdown: %v\n%s", err, out)
+	}
+	for deadline := time.Now().Add(20 * time.Second); !strings.Contains(pane(), "exited: status 0"); time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the wrapper did not stop:\n%s", pane())
 		}
 	}
 }

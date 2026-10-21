@@ -39,7 +39,10 @@ const (
 type wrapper struct {
 	bin      string
 	args     []string
-	out      *log.Logger // the wrapper's own lines: its pane
+	pane     io.Writer   // the wrapper's pane (its stderr)
+	out      *log.Logger // the wrapper's own lines: the pane, and the log once it is open
+	log      *restartLog
+	logHook  func(*restartLog) // a test changes the log (sizes, a stalled disk) before it starts
 	now      func() time.Time
 	after    func(time.Duration) <-chan time.Time // the stop wait and the ready pipe wait
 	backoff  func(time.Duration) <-chan time.Time // the delay before a restart
@@ -72,7 +75,7 @@ func restartMain(cfg Config, args []string) int {
 		log.Print(err)
 		return 1
 	}
-	w := &wrapper{bin: bin, args: args, out: log.New(os.Stderr, "", log.LstdFlags), now: time.Now,
+	w := &wrapper{bin: bin, args: args, pane: os.Stderr, now: time.Now,
 		after: time.After, backoff: time.After, stopWait: childStopWait, sigs: sigs}
 	return w.main(cfg.State)
 }
@@ -92,6 +95,7 @@ func restartArgs(args []string) []string {
 
 // main resolves and owns the state, then runs children until a stop.
 func (w *wrapper) main(stateDir string) int {
+	w.out = log.New(w.pane, "", log.LstdFlags) // until the log is open: no child runs yet
 	// The ready line is "ready <state>\n": a newline in the state cannot be framed.
 	if strings.Contains(stateDir, "\n") {
 		w.out.Printf("restart: the state path %q contains a newline; use another state directory", stateDir)
@@ -117,6 +121,14 @@ func (w *wrapper) main(stateDir string) int {
 		return 1
 	}
 	defer lock.Close()
+	// The log opens only under the lock: the wrapper is the only writer of <state>/hub.log.
+	w.log = newRestartLog(state, w.pane)
+	if w.logHook != nil {
+		w.logHook(w.log)
+	}
+	w.log.start()
+	defer w.log.close(logEndWait)
+	w.out = log.New(w.log, "", log.LstdFlags)
 	return w.run()
 }
 
@@ -247,8 +259,15 @@ func (w *wrapper) runChild() childEnd {
 		w.out.Printf("restart: %v", err)
 		return childEnd{stop: 1}
 	}
+	or, ow, err := os.Pipe()
+	if err != nil {
+		r.Close()
+		wr.Close()
+		w.out.Printf("restart: %v", err)
+		return childEnd{stop: 1}
+	}
 	cmd := exec.Command(w.bin, w.args...)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	cmd.Stdout, cmd.Stderr = ow, ow // one pipe keeps the order of stdout and stderr
 	cmd.ExtraFiles = []*os.File{wr} // fd 3
 	// Its own process group: Ctrl-C or a closed pane signals only the wrapper, which stops the child.
 	// Otherwise a SIGHUP death of the child would count as a failure and look like a restart.
@@ -256,8 +275,10 @@ func (w *wrapper) runChild() childEnd {
 	cmd.Env = append(os.Environ(), "LAZYREX_READY_FD=3", "LAZYREX_EXPECT_STATE="+w.state)
 	err = cmd.Start()
 	wr.Close()
+	ow.Close()
 	if err != nil {
 		r.Close()
+		or.Close()
 		w.out.Printf("restart: start: %v", err)
 		return childEnd{stop: 1}
 	}
@@ -276,12 +297,37 @@ func (w *wrapper) runChild() childEnd {
 		}
 		io.Copy(io.Discard, r)
 	}()
-	// On every return: close the read end and end the reader, also when a descendant still holds
-	// the write end (the 2 s limit below). A Close ends a blocked Read of a pipe.
-	defer func() {
-		r.Close()
-		<-readDone
+	outDone := make(chan struct{})
+	go func() {
+		defer close(outDone)
+		w.log.readRun(or)
 	}()
+	// retire ends this run's pipes: it waits at most readyEOFWait for EOF on both (a descendant of
+	// the hub can hold them open), then closes both read ends and waits for both readers. A Close
+	// ends a blocked Read of a pipe. Output after that is discarded. It runs before the exit line,
+	// so no byte of this run follows that line or mixes into the next run.
+	retired := false
+	retire := func() {
+		if retired {
+			return
+		}
+		retired = true
+		limit := w.after(readyEOFWait)
+	wait:
+		for _, done := range []chan struct{}{readDone, outDone} {
+			select {
+			case <-done:
+			case <-limit:
+				w.out.Printf("restart: the hub's output or ready pipe is still open after its exit; later output is discarded")
+				break wait
+			}
+		}
+		r.Close()
+		or.Close()
+		<-readDone
+		<-outDone
+	}
+	defer retire()
 	exitc := make(chan *os.ProcessState, 1)
 	go func() {
 		cmd.Wait()
@@ -304,17 +350,13 @@ func (w *wrapper) runChild() childEnd {
 		select {
 		case line := <-readyc:
 			if !onReady(line) {
-				w.stopChild(pid, cmd, exitc)
+				w.stopChild(pid, cmd, exitc, retire)
 				w.writeStatus("stopped", time.Time{})
 				return childEnd{stop: 1}
 			}
 		case ps := <-exitc:
 			// Classify only after the ready pipe ends, so "ready, then an exit" is after ready.
-			select {
-			case <-readDone:
-			case <-w.after(readyEOFWait):
-				w.out.Printf("restart: the ready pipe is still open after the hub's exit")
-			}
+			retire()
 			select {
 			case line := <-readyc:
 				if !onReady(line) {
@@ -329,7 +371,7 @@ func (w *wrapper) runChild() childEnd {
 			return end
 		case s := <-w.sigs:
 			w.out.Printf("restart: %v: stopping hub pid %d", s, pid)
-			code := w.stopChild(pid, cmd, exitc)
+			code := w.stopChild(pid, cmd, exitc, retire)
 			w.writeStatus("stopped", time.Time{})
 			return childEnd{stop: code}
 		}
@@ -337,11 +379,13 @@ func (w *wrapper) runChild() childEnd {
 }
 
 // stopChild sends SIGTERM to the child the wrapper started, waits at most stopWait, then kills
-// it. It returns the wrapper's exit status: 0 after a stop, 1 after a kill.
-func (w *wrapper) stopChild(pid int, cmd *exec.Cmd, exitc chan *os.ProcessState) int {
+// it. retire ends the run's pipes before the exit line. It returns the wrapper's exit status: 0
+// after a stop, 1 after a kill.
+func (w *wrapper) stopChild(pid int, cmd *exec.Cmd, exitc chan *os.ProcessState, retire func()) int {
 	cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case ps := <-exitc:
+		retire()
 		w.lastExit = exitDesc(ps)
 		w.out.Printf("restart: hub pid %d exited: %s", pid, w.lastExit)
 		return 0
@@ -349,6 +393,7 @@ func (w *wrapper) stopChild(pid int, cmd *exec.Cmd, exitc chan *os.ProcessState)
 	}
 	cmd.Process.Kill()
 	ps := <-exitc
+	retire()
 	w.lastExit = exitDesc(ps)
 	w.out.Printf("restart: the hub did not stop within %s; killed (%s)", w.stopWait, w.lastExit)
 	return 1

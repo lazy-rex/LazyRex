@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -28,6 +27,9 @@ import (
 //   - ready-other: a ready line for another state, then wait
 //   - leak-ready: a descendant inherits the ready fd; ready, then exit 1
 //   - noready-exit1: the ready fd closes without a line; exit 1 after 300 ms
+//   - spew: ready, FAKE_SPEW bytes without a newline on stdout, exit 1
+//   - panic-after-ready: ready, "panic: x" on stderr, exit 2
+//   - leak-out: a descendant inherits stdout and stderr; ready, exit 1
 //   - lock: take the restart lock on FAKE_LOCK_STATE, print "locked", wait
 func TestFakeHub(t *testing.T) {
 	plan := os.Getenv("FAKE_HUB_PLAN")
@@ -89,6 +91,32 @@ func TestFakeHub(t *testing.T) {
 		syscall.Close(env.readyFD)
 		time.Sleep(300 * time.Millisecond)
 		os.Exit(1)
+	case "spew":
+		// Ready, then FAKE_SPEW bytes without a newline on stdout, then exit 1.
+		signalReady(env.readyFD, env.expectState)
+		n, _ := strconv.Atoi(os.Getenv("FAKE_SPEW"))
+		chunk := bytes.Repeat([]byte("x"), 64<<10)
+		for ; n > 0; n -= len(chunk) {
+			os.Stdout.Write(chunk[:min(n, len(chunk))])
+		}
+		os.WriteFile(os.Getenv("FAKE_HUB_STARTS")+".spewed", nil, 0o600)
+		os.Exit(1)
+	case "panic-after-ready":
+		signalReady(env.readyFD, env.expectState)
+		os.Stderr.WriteString("panic: x\n")
+		os.Exit(2)
+	case "leak-out":
+		// A descendant keeps stdout and stderr open after this child exits.
+		keep := exec.Command("/bin/sleep", "30")
+		keep.Stdout, keep.Stderr = os.Stdout, os.Stderr
+		if err := keep.Start(); err != nil {
+			os.Exit(98)
+		}
+		f, _ := os.OpenFile(os.Getenv("FAKE_HUB_STARTS")+".keep", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f.WriteString(strconv.Itoa(keep.Process.Pid) + "\n")
+		f.Close()
+		signalReady(env.readyFD, env.expectState)
+		os.Exit(1)
 	case "ready-other":
 		signalReady(env.readyFD, "/elsewhere")
 		<-term
@@ -118,7 +146,7 @@ func newWrapperTest(t *testing.T, plan ...string) *wrapperRun {
 	t.Setenv("GORACE", "atexit_sleep_ms=0") // a -race child otherwise sleeps 1 s at its exit
 	wr := &wrapperRun{dir: dir, out: &bytes.Buffer{}, starts: filepath.Join(dir, "starts"),
 		clock: time.Date(2026, 10, 21, 15, 0, 0, 0, time.UTC)}
-	wr.w = &wrapper{bin: os.Args[0], args: []string{"-test.run=^TestFakeHub$"}, out: log.New(syncWriter{&wr.mu, wr.out}, "", 0),
+	wr.w = &wrapper{bin: os.Args[0], args: []string{"-test.run=^TestFakeHub$"}, pane: syncWriter{&wr.mu, wr.out},
 		now:   func() time.Time { wr.mu.Lock(); defer wr.mu.Unlock(); return wr.clock },
 		after: time.After,
 		backoff: func(d time.Duration) <-chan time.Time {
