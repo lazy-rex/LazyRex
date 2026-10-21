@@ -16,31 +16,47 @@ It produces no model context. The command has a three-second deadline.
 ## Installation
 
 Build the binary (`hub/` module: `go build -o ~/.lazyrex/bin/lazyrex-hub ./cmd/hub`).
-Add one entry to the existing `SessionStart` list. Preserve the other hooks.
-Use the absolute installed path in each command.
+Add the entries below to the existing lists. Preserve the other hooks.
+JSON does not expand `~`: replace `/ABSOLUTE/HOME` with the absolute path of your home directory.
+These are the exact entries; `lazyrex-hub setup` and a switch of existing hooks use the same text.
 
-Codex (`~/.codex/hooks.json`):
+Codex (`~/.codex/hooks.json`), one entry in `hooks.SessionStart`:
 
 ```json
 {
-  "hooks": {
-    "SessionStart": [{
-      "hooks": [{
-        "type": "command",
-        "command": "/absolute/path/.lazyrex/bin/lazyrex-hub hook codex",
-        "timeout": 5
-      }]
-    }]
-  }
+  "hooks": [
+    {
+      "type": "command",
+      "command": "/ABSOLUTE/HOME/.lazyrex/bin/lazyrex-hub hook codex",
+      "timeout": 5
+    }
+  ]
 }
 ```
 
 Review and trust the new Codex hook through `/hooks` before relying on it.
 Do not disable hook trust for normal use.
 
-Claude Code (`~/.claude/settings.json`): use the same entry with `claude` as the final command argument.
-Add that command to `UserPromptSubmit` as well. This hook reports `source=prompt`.
+Claude Code (`~/.claude/settings.json`), one entry in `hooks.SessionStart` and the same entry in
+`hooks.UserPromptSubmit`:
+
+```json
+{
+  "hooks": [
+    {
+      "type": "command",
+      "command": "/ABSOLUTE/HOME/.lazyrex/bin/lazyrex-hub hook claude",
+      "timeout": 5
+    }
+  ]
+}
+```
+
+The `UserPromptSubmit` entry reports `source=prompt`.
 The next prompt can repair a lost report after a hub outage.
+
+To switch from the Python hook, replace the command `python3 /ABSOLUTE/HOME/.lazyrex/bin/session-start.py claude`
+(or `codex`) with the command above, in each entry that has it. Keep `"timeout": 5`.
 
 ## Process order
 
