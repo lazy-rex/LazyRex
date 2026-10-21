@@ -384,7 +384,7 @@ func TestRestartSecondWrapperStartsNoChild(t *testing.T) {
 }
 
 func TestRestartArgs(t *testing.T) {
-	got := restartArgs([]string{"-config", "c.json", "-restart", "--restart=true", "-real-server"})
+	got := restartArgs([]string{"-config", "c.json", "-restart", "--restart=true", "-restart=1", "-restart=TRUE", "--restart=t", "-real-server"})
 	if strings.Join(got, " ") != "-config c.json -real-server" {
 		t.Errorf("%q", got)
 	}

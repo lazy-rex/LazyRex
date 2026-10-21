@@ -81,9 +81,9 @@ func restartMain(cfg Config, args []string) int {
 func restartArgs(args []string) []string {
 	var out []string
 	for _, a := range args {
-		switch a {
-		case "-restart", "--restart", "-restart=true", "--restart=true":
-			continue
+		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if strings.HasPrefix(a, "-") && name == "restart" {
+			continue // every form: -restart, --restart, -restart=<any value>
 		}
 		out = append(out, a)
 	}
