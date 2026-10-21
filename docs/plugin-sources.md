@@ -403,6 +403,74 @@ This repository, one branch per step:
    read-only cache entry.
 4. Docs: hub.md, testing.md (the manifest table), README.
 
+**Step 3 split (proposed).** The coordinator split step 3 into two parts (2026-10-21), so that two
+pairs can work at the same time. Part A can start now. Part B starts after step 2e is on main.
+Both parts are in package `main` of `hub/cmd/hub`.
+
+- **Part A: the commands and the files** (sections 3 to 6). Part A owns:
+  - the lock file format and its read and write (section 3), with the version check;
+  - the config field `lock` and its default (section 1), in `Config`. The hub start accepts the
+    field; a missing lock file is not an error;
+  - the cache layout, publish and permissions (section 4), and the digest function;
+  - refs and fetch (section 5): all git use;
+  - the agreement check and the trusted-commit rule (section 3);
+  - `lazyrex-hub plugin sync|update|status`, all or nothing, the graph check and the two flocks
+    (section 6);
+  - the error texts of sections 3 to 6, and the cache texts of section 8.
+
+  Part A adds new files only (for example `pluginlock.go`, `plugincache.go`, `plugincmd.go`), plus
+  the `lock` field in `main.go` and the `plugin` case in `main`. It reads the config with
+  `parseEntries` and the manifests with `readPluginManifest`, and does not change them. It reads
+  config entries only. When step 2e is on main, Part A adds the managed entries (section 13).
+- **Part B: the hub side.** Part B owns `resolveEntries` for a GitHub source: it replaces the
+  "not installed" refusal with the calls below. It adds the commit to `pluginRun` and to
+  `hub.plugins` (`run.commit`, `"candidate": {commit}`, section 7), and adds the lab test of a
+  start from a read-only cache entry.
+
+**The interface.** Part A gives these functions. Part B calls them and no other Part A code.
+
+```go
+// readLock reads the lock file. A missing file gives an empty lock and no error. A file that
+// does not parse, or has another version, gives an error.
+func readLock(path string) (*pluginLock, error)
+
+// lockedDir checks the lock entry of the GitHub entry e and its cache entry, without git and
+// without the network: the key lookup, the agreement check (section 3), the cache entry, the
+// manifest name and the digest (section 4). It returns the absolute cache directory and the
+// locked commit. It only reads files.
+func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir, commit string, err error)
+```
+
+- The error of `lockedDir` is a final text of section 3 or 8, with the `-config <cfgPath>` of
+  its command: no lock entry (`is not installed`), an agreement mismatch (`does not match:
+  <field>`, with the `sync` or `update` text by the trusted-commit rule), no cache entry, and a
+  changed cache entry (`digest mismatch`). Part B uses the text as the entry error unchanged.
+- Part B calls `readLock` once in each resolution (each start attempt re-reads the lock, section
+  7), and `lockedDir` once for each GitHub entry. A `readLock` error refuses every GitHub entry
+  with the text `plugin <source>: the lock file <path> cannot be read: <error>; run lazyrex-hub
+  plugin sync -config <cfg>`. The hub start does not fail (section 1: only a malformed config
+  fails the start).
+- After `lockedDir`, Part B reads the manifest with `readPluginManifest(dir)`, as for a local
+  source, so the manifest rules and the graph are the same for both kinds of source.
+- No hub code takes a flock (section 6). The hub reads the lock with one read. The commands
+  replace the file with a rename, so the hub reads the old lock or the new lock.
+- For tests, the commands are also Go functions with an option for the remote URL, so a test can
+  use a local bare repository (`file://`) in place of GitHub:
+
+  ```go
+  type pluginCmdOpts struct {
+  	// remote gives the fetch URL of github:<owner>/<repo>. Default: https://github.com/<owner>/<repo>.
+  	remote func(owner, repo string) string
+  }
+  func pluginSync(ctx context.Context, cfgPath string, o pluginCmdOpts) error
+  func pluginUpdate(ctx context.Context, cfgPath string, args []string, o pluginCmdOpts) error
+  ```
+
+  The Part B lab test calls `pluginSync` in the test process to make the lock and the cache. Then
+  it starts the hub binary, which reads them.
+- A change of these signatures or of the error texts needs the agreement of both parts and of
+  their reviewers.
+
 ## 12. Acceptance matrix
 
 U = Go unit test, L = Go lab test, H = Lua harness test.
