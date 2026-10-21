@@ -557,6 +557,10 @@ func testAgentMain(argv []string) int {
 				c.reply(p.CallID, out, err)
 				return
 			}
+			// A Linux start time has a resolution of one clock tick (procUserHZ): a report that
+			// starts in the same tick has an equal start time, not a later one. Two ticks after the
+			// start, the boot clock has passed the tick of this process.
+			time.Sleep(2 * time.Second / procUserHZ)
 			mu.Lock()
 			reports[key] = nil
 			mu.Unlock()

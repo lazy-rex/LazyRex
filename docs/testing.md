@@ -174,7 +174,7 @@ Methods:
 | `a:program_status(state)` | Reports the root program status record of the agent's pane (OSC 7501), for example `idle`, `working` or `blocked`, as an agent CLI does. The hub reads it for notice readiness (`tests/harness/tests/notice_ready.lua`). |
 | `a:exit()` | Ends the agent process, as the user quits an agent CLI. The agent cannot be used again. |
 | `a:report{kind, conversation_id, source, block}` | `hub.identity.report` from a new process in the pane, like an agent hook. `block` is an optional hint (the hub ignores a wrong one). |
-| `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return when the process has started; then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |
+| `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return when the process has started and two clock ticks have passed (a Linux start time has a 10 ms resolution); then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |
 
 A call from the runner itself (`H.perform(client, action, args)`) comes from outside every pane.
 Use it to test the plugin's refusal of an unknown caller.
