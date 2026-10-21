@@ -90,7 +90,7 @@ func fetchTest(t *testing.T, r *testRepo, fetchRef, commit string, byID bool) (s
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ft, err := fetchCommit(context.Background(), state, tmp, r.url(), "lazy-rex", "Messaging", fetchRef, commit, byID)
+	ft, err := fetchCommit(context.Background(), state, tmp, r.url(), "lazy-rex", "Messaging", "", fetchRef, commit, byID)
 	return state, ft, err
 }
 

@@ -113,7 +113,7 @@ func TestReadLockUnreadable(t *testing.T) {
 // sync can repair it (section 3, "Repair"). A missing commit is untrusted: the text names update.
 func TestLockDerivedFieldsMissing(t *testing.T) {
 	src := "github:lazy-rex/Messaging@main"
-	r, _ := parseGithub(src)
+	r := githubEntry(t, src).githubRef()
 	for _, field := range []string{"name", "owner", "repo", "ref", "ref_kind", "commit", "digest", "dir"} {
 		for _, mode := range []string{"empty", "missing", "null"} {
 			fields := map[string]any{}
@@ -177,10 +177,7 @@ func TestLockAgreement(t *testing.T) {
 		{"github:lazy-rex/Messaging@main", func(e *lockEntry) { e.Digest = "sha256:abc" }, "digest", ""},
 	}
 	for _, c := range cases {
-		r, ok := parseGithub(c.source)
-		if !ok {
-			t.Fatalf("parseGithub(%q)", c.source)
-		}
+		r := githubEntry(t, c.source).githubRef()
 		e := goodLockEntry()
 		c.edit(e)
 		if got := e.agree(r); got != c.field {
@@ -297,4 +294,19 @@ func TestWriteLockReadersSeeOldOrNew(t *testing.T) {
 	if len(left) != 0 {
 		t.Fatalf("temporary files left: %v", left)
 	}
+}
+
+// githubEntry parses one GitHub source as a config entry (parseEntries, checkSource).
+func githubEntry(t *testing.T, source string) *configEntry {
+	t.Helper()
+	es, err := parseEntries(t.TempDir(), []json.RawMessage{json.RawMessage(`{"source":` + jsonString(source) + `}`)})
+	if err != nil || !es[0].github {
+		t.Fatalf("parse %s: %v", source, err)
+	}
+	return es[0]
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

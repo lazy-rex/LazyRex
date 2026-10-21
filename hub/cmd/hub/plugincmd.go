@@ -174,7 +174,7 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 		if !e.github {
 			continue
 		}
-		r, _ := parseGithub(e.Source)
+		r := e.githubRef()
 		if err := checkRef(ctx, tmpRoot, r.Ref); err != nil {
 			return fail(fmt.Errorf("%s: %w", e.Source, err))
 		}
@@ -192,7 +192,7 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 			continue
 		}
 		le := old.Plugins[e.Source]
-		r, _ := parseGithub(e.Source)
+		r := e.githubRef()
 		var (
 			got  *lockEntry
 			verb string
@@ -322,12 +322,12 @@ func fetchNew(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoo
 // fetchAt fetches commit (by fetchRef) and gives its complete lock entry.
 func fetchAt(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, r githubRef, fetchRef, commit, kind string, byID bool) (*lockEntry, error) {
 	ft, err := withTmp(tmpRoot, func(tmp string) (*fetchedTree, error) {
-		return fetchCommit(ctx, cfg.state, tmp, o.url(r), r.Owner, r.Repo, fetchRef, commit, byID)
+		return fetchCommit(ctx, cfg.state, tmp, o.url(r), r.Owner, r.Repo, r.Subdir, fetchRef, commit, byID)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &lockEntry{lockPin: lockPin{Name: ft.Manifest.Name, Owner: r.Owner, Repo: r.Repo, Ref: r.Ref, RefKind: kind,
+	return &lockEntry{lockPin: lockPin{Name: ft.Manifest.Name, Owner: r.Owner, Repo: r.Repo, Subdir: r.Subdir, Ref: r.Ref, RefKind: kind,
 		Commit: commit, Digest: ft.Digest}, Dir: ft.Dir}, nil
 }
 
@@ -470,7 +470,7 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 		if !e.github {
 			continue
 		}
-		r, _ := parseGithub(e.Source)
+		r := e.githubRef()
 		le := lock.Plugins[e.Source]
 		commit, state := "-", "ok"
 		if le != nil && le.Commit != "" {

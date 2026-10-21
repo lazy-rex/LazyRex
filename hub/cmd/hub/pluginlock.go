@@ -45,6 +45,7 @@ type lockPin struct {
 	Name    string `json:"name"`
 	Owner   string `json:"owner"`
 	Repo    string `json:"repo"`
+	Subdir  string `json:"subdir"` // the plugin directory in the repository; "" for the root
 	Ref     string `json:"ref"`
 	RefKind string `json:"ref_kind"` // branch, tag or commit
 	Commit  string `json:"commit"`
@@ -228,16 +229,12 @@ func writeLock(path string, l *pluginLock) error {
 	return d.Sync()
 }
 
-// githubRef is a parsed GitHub source: github:<owner>/<repo>@<ref>.
-type githubRef struct{ Owner, Repo, Ref string }
+// githubRef is a parsed GitHub source: github:<owner>/<repo>[/<subdir>]@<ref>.
+type githubRef struct{ Owner, Repo, Subdir, Ref string }
 
-// parseGithub parses a GitHub source string. parseEntries has already checked its form.
-func parseGithub(source string) (githubRef, bool) {
-	m := githubSource.FindStringSubmatch(source)
-	if m == nil {
-		return githubRef{}, false
-	}
-	return githubRef{m[1], m[2], m[3]}, true
+// githubRef gives the parts of a GitHub entry. parseEntries (checkSource) parsed them.
+func (e *configEntry) githubRef() githubRef {
+	return githubRef{Owner: e.owner, Repo: e.repo, Subdir: e.subdir, Ref: e.gitRef}
 }
 
 // refKinds gives the ref kinds that the form of ref allows (section 5, "Ref forms"): a commit
@@ -279,6 +276,8 @@ func (e *lockEntry) agree(r githubRef) string {
 		return "owner"
 	case e.Repo != r.Repo:
 		return "repo"
+	case e.Subdir != r.Subdir:
+		return "subdir"
 	case e.Ref != r.Ref:
 		return "ref"
 	case !slices.Contains(refKinds(r.Ref), e.RefKind):

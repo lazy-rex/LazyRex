@@ -48,6 +48,8 @@ type configEntry struct {
 	dir        string            // a local source: the absolute directory
 	github     bool
 	static     error // a refusal that no resolution changes (a managed source that the config also names)
+	// A GitHub source: github:<owner>/<repo>[/<subdir>]@<ref> (docs/plugin-sources.md, section 1).
+	owner, repo, subdir, gitRef string
 	// name binds at the first resolution that gives it without a conflict, and stays for the life
 	// of the hub process. "" until then.
 	name string
@@ -57,7 +59,10 @@ type configEntry struct {
 }
 
 var (
-	githubSource  = regexp.MustCompile(`^github:([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)@(\S+)$`)
+	// githubSource is github:<owner>/<repo>[/<subdir>]@<ref>. The first @ ends the path: owner, repo
+	// and subdir never contain @, and the ref is the rest (it can contain @ or #).
+	githubSource  = regexp.MustCompile(`^github:([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)(/[^@]*)?@(\S+)$`)
+	subdirSegment = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	removedFields = []string{"name", "path", "events", "notice"}
 )
 
@@ -228,7 +233,17 @@ func (e *configEntry) checkSource(cfgDir string) error {
 		if m == nil || m[2] == "." || m[2] == ".." {
 			return fmt.Errorf("source %s: write github:<owner>/<repo>@<ref>", s)
 		}
+		if m[3] != "" {
+			d := m[3][1:]
+			for _, seg := range strings.Split(d, "/") {
+				if !subdirSegment.MatchString(seg) || seg == "." || seg == ".." {
+					return fmt.Errorf("source %s: subdir %s must be a relative path of names (A-Z, a-z, 0-9, ., _, -)", s, d)
+				}
+			}
+		}
 		e.github = true
+		e.owner, e.repo, e.gitRef = m[1], m[2], m[4]
+		e.subdir = strings.TrimPrefix(m[3], "/")
 	case strings.HasPrefix(s, "~"):
 		return fmt.Errorf("source %s: ~ is not expanded: write an absolute path, or a path relative to the config directory", s)
 	default:

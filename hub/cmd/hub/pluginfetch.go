@@ -168,10 +168,11 @@ type fetchedTree struct {
 }
 
 // fetchCommit fetches commit at url into a temporary bare repository in tmp and publishes its tree
-// for owner/repo (section 5, "Fetch", steps 1 to 7). fetchRef is the exact ref to fetch (a
-// branch or tag ref), or the commit ID itself. byID tells that fetchRef is a commit ID: a failed
-// fetch is then an unavailable commit. Nothing is published when a check fails.
-func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, fetchRef, commit string, byID bool) (*fetchedTree, error) {
+// for owner/repo (section 5, "Fetch", steps 1 to 7). The entry is the whole tree; subdir, when
+// set, names the plugin directory in it. fetchRef is the exact ref to fetch (a branch or tag ref),
+// or the commit ID itself. byID tells that fetchRef is a commit ID: a failed fetch is then an
+// unavailable commit. Nothing is published when a check fails.
+func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, subdir, fetchRef, commit string, byID bool) (*fetchedTree, error) {
 	gitDir := filepath.Join(tmp, "git")
 	if _, err := runGit(ctx, tmp, "init", "-q", "--bare", gitDir); err != nil {
 		return nil, err
@@ -199,6 +200,11 @@ func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, fetchRef,
 	if err != nil {
 		return nil, err
 	}
+	// With a subdir, the plugin directory must be a directory of the tree with a lazyrex.json (step
+	// 6). ls-tree lists files only, so the manifest path proves both.
+	if _, ok := tree[subdir+"/lazyrex.json"]; subdir != "" && !ok {
+		return nil, fmt.Errorf("%s is not a plugin directory at commit %s", subdir, commit)
+	}
 	stage, err := newStage(stateDir, owner, repo, commit)
 	if err != nil {
 		return nil, err
@@ -208,7 +214,7 @@ func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, fetchRef,
 		stage.discard()
 		return nil, err
 	}
-	m, _, err := readPluginManifest(stage.Dir)
+	m, _, err := readPluginManifest(filepath.Join(stage.Dir, filepath.FromSlash(subdir)))
 	if err != nil {
 		stage.discard()
 		// The stage is removed, so the text names the commit in place of the stage path.

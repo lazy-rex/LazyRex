@@ -220,18 +220,19 @@ func (e *cacheStateError) Error() string { return e.text }
 
 // lockedDir checks the lock entry of the GitHub entry e and its cache entry, without git and
 // without the network: the key lookup, the agreement check (section 3), the cache entry, the
-// digest (section 4) and the manifest name. It returns the absolute cache directory and the
-// locked commit. It only reads files, and never the lock file: lock is the caller's snapshot.
+// digest (section 4) and the manifest name. It returns the absolute plugin directory (the cache
+// entry, or <entry>/<subdir> for a source with a subdir) and the locked commit. It only reads
+// files, and never the lock file: lock is the caller's snapshot.
 // cfgPath is the config as the commands name it in the texts.
 func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir, commit string, err error) {
 	le := lock.Plugins[e.Source]
 	if le == nil {
 		return "", "", fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
 	}
-	r, ok := parseGithub(e.Source)
-	if !ok {
+	if !e.github {
 		return "", "", fmt.Errorf("plugin %s: not a GitHub source", e.Source)
 	}
+	r := e.githubRef()
 	if field := le.agree(r); field != "" {
 		return "", "", lockMismatch(cfgPath, e.Source, le, r, field)
 	}
@@ -257,12 +258,24 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
 	if err != nil {
 		return "", "", fmt.Errorf("plugin %s: cannot read the cache entry %s: %w", le.Name, dir, err)
 	}
-	m, _, err := readPluginManifest(dir)
+	// The entry is the whole commit; the plugin directory is <entry>/<subdir> (section 4). The digest
+	// passed, so the fetch checked that directory; an absent one means a changed entry.
+	plugDir := filepath.Join(dir, filepath.FromSlash(le.Subdir))
+	if le.Subdir != "" {
+		fi, err := os.Lstat(plugDir)
+		switch {
+		case errors.Is(err, fs.ErrNotExist), err == nil && !fi.IsDir():
+			return "", "", changed
+		case err != nil:
+			return "", "", fmt.Errorf("plugin %s: cannot read the cache entry %s: %w", le.Name, dir, err)
+		}
+	}
+	m, _, err := readPluginManifest(plugDir)
 	if err != nil {
 		return "", "", fmt.Errorf("plugin source %s: %w", e.Source, err)
 	}
 	if m.Name != le.Name {
 		return "", "", lockMismatch(cfgPath, e.Source, le, r, "name")
 	}
-	return dir, le.Commit, nil
+	return plugDir, le.Commit, nil
 }
