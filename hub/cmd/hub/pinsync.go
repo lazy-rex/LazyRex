@@ -46,7 +46,7 @@ type pinEntry struct {
 // final newline. The same pins and identity give the same bytes.
 func encodePinDoc(d *pinDoc) ([]byte, error) {
 	sorted := *d
-	sorted.Entries = slices.Clone(d.Entries)
+	sorted.Entries = append([]pinEntry{}, d.Entries...) // never null: an empty document has []
 	sort.Slice(sorted.Entries, func(i, j int) bool { return sorted.Entries[i].Source < sorted.Entries[j].Source })
 	b, err := json.MarshalIndent(&sorted, "", "  ")
 	if err != nil {
@@ -78,7 +78,7 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 	if err := json.Unmarshal(top.Entries, &raws); err != nil || raws == nil {
 		return nil, errors.New("entries must be an array")
 	}
-	d := &pinDoc{Version: pinDocVersion, Hub: top.Hub}
+	d := &pinDoc{Version: pinDocVersion, Hub: top.Hub, Entries: []pinEntry{}}
 	seen := map[string]bool{}
 	for i, raw := range raws {
 		var e pinEntry

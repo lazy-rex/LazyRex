@@ -162,3 +162,19 @@ func TestPeerBase(t *testing.T) {
 		}
 	}
 }
+
+// A document without entries is an empty array, also from a new pinDoc and after a decode.
+func TestPinDocEmpty(t *testing.T) {
+	b, err := encodePinDoc(&pinDoc{Version: 1, Hub: pinHub})
+	if err != nil || !strings.Contains(string(b), `"entries": []`) {
+		t.Fatalf("a new empty document: %s %v", b, err)
+	}
+	d, err := decodePinDoc([]byte(`{"version":1,"hub":"` + pinHub + `","entries":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, _ := encodePinDoc(d)
+	if _, err := decodePinDoc(again); err != nil {
+		t.Fatalf("the round trip: %s: %v", again, err)
+	}
+}
