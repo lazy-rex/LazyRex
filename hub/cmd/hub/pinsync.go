@@ -301,7 +301,8 @@ func syncDir(dir string) error {
 // both flocks it reads the lock and the managed file as one snapshot. It exports each GitHub
 // entry of the config and of the managed file, and only when every one passes lockedDir: a machine
 // never exports a pin that it cannot run itself. A lock entry without an entry is not exported,
-// and a local source has no pin. The pull identity is made on the first export.
+// and a local source has no pin. A failed check writes nothing and makes no pull identity. After
+// the checks, the first export makes the pull identity; it stays when the write to w then fails.
 func pluginExport(cfgPath string, w io.Writer) error {
 	fail := func(err error) error { return fmt.Errorf("plugin export: %w", err) }
 	cfg, err := readPluginCmdConfig(cfgPath)
@@ -337,6 +338,8 @@ func pluginExport(cfgPath string, w io.Writer) error {
 	if err != nil {
 		return fail(err)
 	}
-	_, err = w.Write(b)
-	return err
+	if _, err := w.Write(b); err != nil {
+		return fail(err)
+	}
+	return nil
 }

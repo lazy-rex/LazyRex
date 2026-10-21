@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -276,5 +277,19 @@ func TestExportMain(t *testing.T) {
 	}
 	if code := pluginCmdMain([]string{"export", "-config", cfg, "x"}, &out, &errb); code != 2 {
 		t.Errorf("an argument: exit %d", code)
+	}
+}
+
+// failWriter fails each write.
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// A failed write of the document has the plugin export prefix.
+func TestExportWriteError(t *testing.T) {
+	env := newCmdEnv(t)
+	cfg := env.config(env.local("loc", "loc"))
+	if err := pluginExport(cfg, failWriter{}); err == nil || err.Error() != "plugin export: disk full" {
+		t.Fatalf("got %v", err)
 	}
 }
