@@ -52,6 +52,9 @@ type Config struct {
 	// Entries are the config field plugins (pluginconfig.go). loadConfig checks them into entries,
 	// in config order. The hub resolves the entries at each start attempt (resolveEntries).
 	Entries []json.RawMessage `json:"plugins"`
+	// Lock is the lock file of the GitHub sources (docs/plugin-sources.md, section 3), relative
+	// to the config directory. Empty: the default of lockPath. A missing lock file is not an error.
+	Lock string `json:"lock"`
 	// ManagedPlugins is the managed file of the plugin manager (docs/plugin-sources.md, section 13),
 	// relative to the config directory. Default: <state>/plugins.json.
 	ManagedPlugins string `json:"managed_plugins"`
@@ -272,6 +275,8 @@ func main() {
 			os.Exit(testViewMain(os.Args[2:]))
 		case "testagent":
 			os.Exit(testAgentMain(os.Args[2:]))
+		case "plugin":
+			os.Exit(pluginCmdMain(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 	fs := &faults{}
