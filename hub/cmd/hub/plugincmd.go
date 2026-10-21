@@ -71,7 +71,13 @@ func readPluginCmdConfig(cfgPath string) (*pluginCmdConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cfgPath, err)
 	}
-	return &pluginCmdConfig{path: cfgPath, state: c.State, lock: lockPath(cfgPath, c.Lock), entries: entries}, nil
+	// A relative state is relative to the working directory, as for the hub. The command makes it
+	// absolute once, because git runs in other directories.
+	state, err := filepath.Abs(c.State)
+	if err != nil {
+		return nil, err
+	}
+	return &pluginCmdConfig{path: cfgPath, state: state, lock: lockPath(cfgPath, c.Lock), entries: entries}, nil
 }
 
 // lockCommands takes the two exclusive flocks of section 6, in order: <state>/plugins/.lock (all

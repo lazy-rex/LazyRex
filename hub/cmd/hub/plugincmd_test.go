@@ -18,11 +18,12 @@ import (
 
 // cmdEnv is a config directory, a state directory and the GitHub repositories of one test.
 type cmdEnv struct {
-	t     *testing.T
-	dir   string // the config directory
-	state string
-	repos map[string]*testRepo // "owner/repo" to the repository
-	opts  pluginCmdOpts
+	t        *testing.T
+	dir      string // the config directory
+	state    string
+	repos    map[string]*testRepo // "owner/repo" to the repository
+	opts     pluginCmdOpts
+	cfgState string // the state field of the config, when it differs from state (a relative state)
 }
 
 func newCmdEnv(t *testing.T) *cmdEnv {
@@ -64,7 +65,11 @@ func (env *cmdEnv) config(sources ...string) string {
 	for _, s := range sources {
 		plugins = append(plugins, map[string]any{"source": s})
 	}
-	b, _ := json.Marshal(map[string]any{"server": "unix:///tmp/lrt-x/rex.sock", "state": env.state,
+	st := env.state
+	if env.cfgState != "" {
+		st = env.cfgState
+	}
+	b, _ := json.Marshal(map[string]any{"server": "unix:///tmp/lrt-x/rex.sock", "state": st,
 		"agents": []map[string]string{{"id": "user", "name": "User"}}, "plugins": plugins})
 	p := filepath.Join(env.dir, "hub.json")
 	if err := os.WriteFile(p, b, 0o600); err != nil {
@@ -649,5 +654,35 @@ func TestCommandRefNotFound(t *testing.T) {
 	err := env.sync(env.config("github:lazy-rex/Messaging@nope"))
 	if err == nil || err.Error() != "plugin sync: github:lazy-rex/Messaging@nope: ref nope is not found; the lock is unchanged" {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// A relative state is relative to the working directory of the command, as for the hub. Every
+// command works with it: install, repair, update and status.
+func TestRelativeState(t *testing.T) {
+	env := newCmdEnv(t)
+	env.cfgState = "state"
+	env.state = filepath.Join(env.dir, "state")
+	t.Cleanup(func() { removeTree(env.state) })
+	t.Chdir(env.dir)
+	r := env.repo("lazy-rex", "Messaging", "messaging")
+	cfg := env.config(srcM)
+	if err := env.sync(cfg); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	removeTree(env.entryDir(srcM))
+	if err := env.sync(cfg); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	c2 := r.commit(map[string]string{"main.lua": "2"})
+	if err := env.update(cfg); err != nil || env.lock().Plugins[srcM].Commit != c2 {
+		t.Fatalf("update: %v", err)
+	}
+	var out, errb bytes.Buffer
+	if code := pluginCmdMain([]string{"status", "-config", "hub.json"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "cache ok") {
+		t.Fatalf("status: %d %s %s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(env.dir, "state", "plugins", "github")); err != nil {
+		t.Fatalf("the cache is not under the relative state: %v", err)
 	}
 }
