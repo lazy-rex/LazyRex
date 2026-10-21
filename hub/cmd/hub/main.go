@@ -640,12 +640,20 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 	} else {
 		reply["result"] = result
 	}
-	if err := sendReply(ctx, h.rex, p.Action, reply); err != nil { // replyguard.go
-		log.Printf("reply %s %s: %v", p.Action, p.CallID, err)
+	replyErr := sendReply(ctx, h.rex, p.Action, reply) // replyguard.go
+	if replyErr != nil {
+		log.Printf("reply %s %s: %v", p.Action, p.CallID, replyErr)
 	}
 	log.Printf("%s from %s pid %d -> %v", p.Action, p.Requester.ClientID, p.Requester.Principal.PID, err)
-	if p.Action == "hub.admin.shutdown" && err == nil && h.shutdown != nil {
-		h.shutdown() // after the reply: the caller gets {"stopping": true} before the connection closes
+	h.afterReply(p.Action, err, replyErr)
+}
+
+// afterReply runs what an answered call starts after its reply: hub.admin.shutdown stops the hub,
+// only after the reply {"stopping": true} was delivered. A failed reply stops nothing: the caller
+// saw an error or a timeout, the hub still runs, and a retry is correct.
+func (h *Hub) afterReply(action string, err, replyErr error) {
+	if action == "hub.admin.shutdown" && err == nil && replyErr == nil && h.shutdown != nil {
+		h.shutdown()
 	}
 }
 
