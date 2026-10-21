@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -460,5 +461,28 @@ func TestRestartOutputDrainsBeforeStatusIO(t *testing.T) {
 	release()
 	if code := waitCode(t, done); code != 0 {
 		t.Fatalf("exit %d\n%s", code, wr.text())
+	}
+}
+
+// A failed or short write counts only the bytes that did not reach the file as dropped, and puts
+// the writer in drop mode.
+func TestRestartLogPartialWriteCountsOnlyLostBytes(t *testing.T) {
+	for _, fail := range []error{errors.New("disk error"), nil} { // nil: a short write without an error
+		tl := newTestLog(t, 1<<20)
+		tl.writeFile = func(f *os.File, b []byte) (int, error) {
+			n, _ := f.Write(b[:10])
+			return n, fail
+		}
+		tl.start()
+		tl.push(bytes.Repeat([]byte("q"), 100))
+		waitLog(t, func() bool { tl.restartLog.mu.Lock(); defer tl.restartLog.mu.Unlock(); return tl.dropped != 0 })
+		tl.restartLog.mu.Lock()
+		dropped := tl.dropped
+		tl.restartLog.mu.Unlock()
+		if dropped != 90 {
+			t.Errorf("error %v: dropped %d, want 90", fail, dropped)
+		}
+		waitLog(t, func() bool { return strings.Contains(tl.paneText(), "cannot be written") })
+		tl.close(time.Second)
 	}
 }

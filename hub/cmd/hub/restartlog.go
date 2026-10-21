@@ -302,7 +302,7 @@ func (l *restartLog) writeChunk(c []byte) {
 	l.mu.Unlock()
 	if n > 0 {
 		line := fmt.Sprintf("restart: dropped %d bytes of hub output since %s\n", n, since.Format(time.RFC3339))
-		if !l.put([]byte(line)) {
+		if _, ok := l.put([]byte(line)); !ok {
 			l.mu.Lock()
 			l.dropLocked(int64(len(c)))
 			l.mu.Unlock()
@@ -315,28 +315,32 @@ func (l *restartLog) writeChunk(c []byte) {
 		}
 		l.mu.Unlock()
 	}
-	if !l.put(c) {
+	if n, ok := l.put(c); !ok && n < len(c) {
 		l.mu.Lock()
-		l.dropLocked(int64(len(c)))
+		l.dropLocked(int64(len(c) - n)) // only the bytes that did not reach the file
 		l.mu.Unlock()
 	}
 }
 
-// put writes b to the file, rotating first when b would pass the size.
-func (l *restartLog) put(b []byte) bool {
+// put writes b to the file, rotating first when b would pass the size. It returns the bytes that
+// reached the file. A failed write, or a short write without an error, enters drop mode.
+func (l *restartLog) put(b []byte) (int, bool) {
 	if l.f == nil {
-		return false
+		return 0, false
 	}
 	if l.size+int64(len(b)) > l.fileMax && l.size > 0 && !l.rotate() {
-		return false
+		return 0, false
 	}
 	n, err := l.writeFile(l.f, b)
 	l.size += int64(n)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
 		l.enterDrop(err)
-		return false
+		return n, false
 	}
-	return true
+	return n, true
 }
 
 // close ends the log: the writer gets at most wait to write the queue, the pane the same.
