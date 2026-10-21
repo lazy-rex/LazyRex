@@ -13,7 +13,7 @@ import (
 func TestSpawnLocalFailureStages(t *testing.T) {
 	h, _ := appModeHub(t)
 	pl := &Plugin{Name: "p"}
-	err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
+	err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
 	var se *spawnError
 	if !errors.As(err, &se) || se.stage != "session" || !se.known {
 		t.Errorf("no work session: %#v", err)
@@ -26,7 +26,7 @@ func TestSpawnLocalFailureStages(t *testing.T) {
 	if _, err := h.db.Exec(`DROP TABLE spawn_intents`); err != nil {
 		t.Fatal(err)
 	}
-	err = h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
+	err = h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
 	if !errors.As(err, &se) || se.stage != "intent" || !se.known {
 		t.Errorf("an intent insert failure: %#v", err)
 	}
@@ -82,7 +82,7 @@ func TestSpawnKnownFailureIntents(t *testing.T) {
 				t.Fatal(err)
 			}
 			pl := &Plugin{Name: "p"}
-			err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
+			err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
 			var se *spawnError
 			if !errors.As(err, &se) || !se.known || se.stage != c.stage || se.open != c.open {
 				t.Fatalf("spawn: %#v", err)

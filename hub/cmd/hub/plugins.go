@@ -400,6 +400,12 @@ func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) er
 	if pl.Desired != "running" {
 		return nil
 	}
+	// The prune lock (prunelock.go): from before the resolution until the run is saved.
+	lease, err := h.takeStartLease()
+	if err != nil {
+		return fmt.Errorf("plugin %s: %w", pl.Name, err)
+	}
+	defer lease.release()
 	e, cand, err := h.checkStart(pl)
 	if err == errKept {
 		return h.recoverKept(ctx, pl) // removed before admission: spawn nothing
@@ -430,7 +436,7 @@ func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) er
 			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
 		}
 	}
-	return h.startOrWait(ctx, pl, e, cand)
+	return h.startOrWait(ctx, pl, e, cand, lease)
 }
 
 // registeredLocked reports whether the plugin name has an accepted hub.register for its current
@@ -447,7 +453,7 @@ func (h *Hub) registeredLocked(name string) bool {
 // kicks, so a register between them is not lost. Waiting creates no spawn intent. A dependency that
 // stops after the check does not change this start. e is the admitted entry: after a removal
 // (pl.entry != e) the start still completes, but it writes no state, so the kept state stays.
-func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, e *configEntry, cand *pluginRun) error {
+func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, e *configEntry, cand *pluginRun, lease *startLease) error {
 	h.mu.Lock()
 	var missing []string
 	for _, d := range cand.Depends {
@@ -466,7 +472,7 @@ func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, e *configEntry, cand 
 	}
 	h.mu.Unlock()
 	if missing == nil {
-		return h.spawn(ctx, pl, cand)
+		return h.spawn(ctx, pl, cand, lease)
 	}
 	if changed {
 		h.ev.emit("plugin_waiting", map[string]any{"plugin": pl.Name, "waiting": missing})
@@ -776,8 +782,9 @@ func (h *Hub) abandonIntent(ctx context.Context, instance string) error {
 }
 
 // spawn starts a new instance from the candidate cand, which becomes its run. A failure is a
-// *spawnError.
-func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
+// *spawnError. It releases lease when the run is saved in hub.db: from then on, prune sees the run.
+// The caller releases it on the other paths.
+func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *startLease) error {
 	sess := h.workSession()
 	if sess == "" {
 		return &spawnError{stage: "session", known: true, err: fmt.Errorf("spawn %s: the LazyRex session is gone; the next UI pass creates it", pl.Name)}
@@ -787,10 +794,19 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 		return &spawnError{stage: "intent", known: true, err: err}
 	}
 	h.mu.Lock()
+	wasInstance, wasSession, wasClient, wasRun, wasSource := pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source
 	pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source = instance, sess, "", *cand, cand.Source
 	run := pl.run
-	h.savePlugin(ctx, pl)
+	if err := h.savePlugin(ctx, pl); err != nil {
+		// The run is not durable: prune could not see it, so nothing is sent. The record keeps its
+		// state from before this spawn. The intent was never sent, so it is abandoned now, or by
+		// the next intent resolution if this update fails too.
+		pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source = wasInstance, wasSession, wasClient, wasRun, wasSource
+		h.mu.Unlock()
+		return h.knownFailure(ctx, "save", instance, "prepared", fmt.Errorf("spawn %s: %w; nothing was sent", pl.Name, err))
+	}
 	h.mu.Unlock()
+	lease.release()
 	h.ev.emit("plugin_spawn_intent", map[string]any{"plugin": pl.Name, "instance_id": instance})
 	if f := h.faults.take("block-create", "exit-before", ""); f != nil {
 		h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "instance_id": instance})
