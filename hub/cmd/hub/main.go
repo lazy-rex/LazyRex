@@ -154,6 +154,8 @@ type Hub struct {
 	paletteLoaded  string        // the palette file content of the last config reload (paletteLoop only)
 	lock           *os.File      // holds the flock; kept for the life of the process
 	test           *testState    // test mode (-test, testmode.go); nil otherwise
+	// shutdown cancels main's signal context, as SIGTERM does (hub.admin.shutdown). nil: no stop.
+	shutdown func()
 
 	mu           sync.Mutex
 	identMu      sync.Mutex // serializes identity reports (identity.go)
@@ -250,7 +252,7 @@ var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": tr
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
 var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
-	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind",
+	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
@@ -330,7 +332,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	h.shutdown = stop
 	h.run(ctx)
+	// Exit status (docs/hub.md, "Stop and exit status"): 0 after a signal or hub.admin.shutdown, 1
+	// when the Rex connection closed (h.run logged it) with the context still live.
+	if ctx.Err() == nil {
+		os.Exit(1)
+	}
 }
 
 // start takes the lock, opens the store and connects to Rex. Clients find the hub by its label (target.resolve).
@@ -632,6 +640,9 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 		log.Printf("reply %s %s: %v", p.Action, p.CallID, err)
 	}
 	log.Printf("%s from %s pid %d -> %v", p.Action, p.Requester.ClientID, p.Requester.Principal.PID, err)
+	if p.Action == "hub.admin.shutdown" && err == nil && h.shutdown != nil {
+		h.shutdown() // after the reply: the caller gets {"stopping": true} before the connection closes
+	}
 }
 
 func (h *Hub) pluginByClient(clientID string) *Plugin {
@@ -764,7 +775,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.viewEffectRetry(ctx, p, args)
 	case "hub.view.operation":
 		return h.viewOperation(ctx, p, args)
-	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock":
+	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown":
 		if in, err := h.callerInManagedPane(pid); err != nil {
 			return nil, unverifiedCaller(err)
 		} else if in {
@@ -772,6 +783,13 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		}
 		if p.Action == "hub.admin.unlock" {
 			return h.cwdUnlock(ctx, "", true, args)
+		}
+		if p.Action == "hub.admin.shutdown" {
+			// The stop itself starts in answer, after the reply.
+			if len(args) > 0 {
+				return nil, bad("hub.admin.shutdown takes no arguments")
+			}
+			return map[string]any{"stopping": true}, nil
 		}
 		return h.adminAction(ctx, p.Action, args)
 	}

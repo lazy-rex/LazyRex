@@ -23,7 +23,7 @@ func TestAdminGuardsRefuseUnknownAncestry(t *testing.T) {
 	h.procRead = func(pid int) (procRecord, error) { return procRecord{}, errors.New("injected read failure") }
 	pid := os.Getpid()
 	want := "cannot check the caller's process ancestry: process " + fmt.Sprint(pid) + ": injected read failure; admin actions need a verified caller"
-	for _, action := range []string{"hub.admin.start", "hub.admin.stop", "hub.admin.rebind", "hub.admin.unlock", "hub.plugins.reload"} {
+	for _, action := range []string{"hub.admin.start", "hub.admin.stop", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown", "hub.plugins.reload"} {
 		var p perform
 		json.Unmarshal([]byte(fmt.Sprintf(`{"action":%q,"args":{"plugin":"p"},"requester":{"client_id":"c9","principal":{"pid":%d}}}`, action, pid)), &p)
 		_, err := h.dispatch(context.Background(), p)
