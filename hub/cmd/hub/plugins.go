@@ -735,17 +735,45 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	return true, nil
 }
 
-// spawnError is a spawn failure and its stage (session, intent, create, child). known: no
-// instance runs, because no request went to Rex or Rex refused it; the intent is closed. Otherwise
+// spawnError is a spawn failure and its stage (session, intent, sending, create, child). known:
+// no instance runs, because no request went to Rex or Rex refused it. open is the status of an
+// intent that stays open after a known failure (the hub could not abandon it), else "". Otherwise
 // the outcome is unknown, and the intent stays open for resolveIntents.
 type spawnError struct {
 	stage string
 	known bool
+	open  string
 	err   error
 }
 
 func (e *spawnError) Error() string { return e.err.Error() }
 func (e *spawnError) Unwrap() error { return e.err }
+
+// knownFailure is a known spawn failure at stage. It abandons the intent instance, which has the
+// status status. If the abandonment fails, the intent stays open, and the error says so.
+func (h *Hub) knownFailure(ctx context.Context, stage, instance, status string, err error) *spawnError {
+	if aerr := h.abandonIntent(ctx, instance); aerr != nil {
+		return &spawnError{stage: stage, known: true, open: status, err: fmt.Errorf("%w; the intent %s stays %s: %v", err, instance, status, aerr)}
+	}
+	return &spawnError{stage: stage, known: true, err: err}
+}
+
+// abandonIntent sets the status of the intent instance to abandoned, and checks that one row
+// changed.
+func (h *Hub) abandonIntent(ctx context.Context, instance string) error {
+	res, err := h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'abandoned' WHERE instance_id = ?`, instance)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("%d intent rows changed, not 1", n)
+	}
+	return nil
+}
 
 // spawn starts a new instance from the candidate cand, which becomes its run. A failure is a
 // *spawnError.
@@ -769,7 +797,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 		exitNow()
 	}
 	if _, err := h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'sending' WHERE instance_id = ?`, instance); err != nil {
-		return &spawnError{stage: "intent", known: true, err: err} // nothing was sent; the intent stays prepared
+		return h.knownFailure(ctx, "sending", instance, "prepared", err) // nothing was sent
 	}
 	command := []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", run.Path, "-s", sess,
 		"hub_client_id=" + h.clientID, "instance_id=" + instance}
@@ -810,8 +838,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 		var re *rex.RexError
 		if errors.As(err, &re) && re.Code != "disconnected" {
 			// Rex answered with an error: the block was not created.
-			h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'abandoned' WHERE instance_id = ?`, instance)
-			return &spawnError{stage: "create", known: true, err: fmt.Errorf("spawn %s: %w", pl.Name, err)}
+			return h.knownFailure(ctx, "create", instance, "sending", fmt.Errorf("spawn %s: %w", pl.Name, err))
 		}
 		// Otherwise the outcome is unknown and the intent stays 'sending'.
 		return &spawnError{stage: "create", err: fmt.Errorf("spawn %s: %w", pl.Name, err)}

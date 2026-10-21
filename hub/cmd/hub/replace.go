@@ -51,7 +51,15 @@ func (h *Hub) validateCandidate(pl *Plugin) (*configEntry, *pluginRun, error) {
 var spawnStageText = map[string]string{
 	"session": "no work session",
 	"intent":  "the spawn intent was not recorded",
+	"sending": "the spawn intent was not marked as sending",
 	"create":  "Rex refused the new block",
+}
+
+// openIntentText tells what a start does with an intent that a known failure left open
+// (resolveIntents): a prepared intent was never sent; a sending intent stays unresolved.
+var openIntentText = map[string]string{
+	"prepared": "hub.admin.start resolves it, because a prepared intent was never sent",
+	"sending":  "hub.admin.start refuses with unresolved_intent until the intent's session closes",
 }
 
 func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error) {
@@ -140,6 +148,10 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	}
 	if err := h.spawn(ctx, pl, cand); err != nil {
 		var se *spawnError
+		if errors.As(err, &se) && se.known && se.open != "" {
+			// No block can exist, but the store keeps the intent open: say so, as hub.plugins does.
+			return nil, refuse("spawn_failed", "plugin %s: %s: %v; the old instance %s is retired, and hub.plugins shows the open intent as pending; %s", name, spawnStageText[se.stage], se.err, owned, openIntentText[se.open])
+		}
 		if errors.As(err, &se) && se.known {
 			return nil, refuse("spawn_failed", "plugin %s: %s: %v; the old instance %s is retired, and the plugin has no instance; start it with hub.admin.start", name, spawnStageText[se.stage], se.err, owned)
 		}

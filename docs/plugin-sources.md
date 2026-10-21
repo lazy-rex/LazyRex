@@ -810,8 +810,14 @@ The spawn outcome:
   reply has the same fields (`commit` only for a GitHub source). Success means that this request
   created the reported instance. It does not mean that the instance registered or works.
 - A known failure, with nothing created: `spawn_failed`. The text names the stage: no work
-  session, the spawn intent was not recorded, or Rex refused the new block. The old instance is
-  retired, and the plugin has no instance; start it with `hub.admin.start`.
+  session, the spawn intent was not recorded, the spawn intent was not marked as sending, or Rex
+  refused the new block. The old instance is retired, and the plugin has no instance; start it
+  with `hub.admin.start`.
+- A known failure whose intent stays open: `spawn_failed`. The hub abandons the intent after a
+  known failure, and checks the update. If the update fails, the text names the intent and its
+  status, and `hub.plugins` reports it as pending. A `prepared` intent was never sent:
+  `hub.admin.start` resolves it. A `sending` intent (Rex refused the block) stays unresolved:
+  `hub.admin.start` gets `unresolved_intent` until the intent's session closes.
 - An unknown outcome (a timeout, a disconnect, no block ID, or a failed read of the child pid):
   `spawn_unknown`. The intent stays open, and `hub.plugins` reports it. Do not retry: a later
   replace gets `unresolved_intent` while the intent is unresolved, so no second instance can

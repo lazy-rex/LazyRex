@@ -53,3 +53,61 @@ func TestReplaceArguments(t *testing.T) {
 		t.Errorf("an unknown plugin: %v", err)
 	}
 }
+
+// A known spawn failure after the intent insert abandons the intent, and checks that it did. An
+// intent that the store keeps open is in the error (open), and ownedInstance reports it as
+// pending. A SQLite trigger refuses the status updates; a plugin-create fault refuses the create.
+// Nothing reaches Rex (the hub has no Rex client).
+func TestSpawnKnownFailureIntents(t *testing.T) {
+	for _, c := range []struct {
+		name, refuse string // refuse: the statuses that the trigger refuses
+		rexRefuses   bool
+		stage, open  string // open: the status that stays, "" for abandoned
+	}{
+		{"the sending update", "'sending'", false, "sending", ""},
+		{"the sending update and its abandonment", "'sending', 'abandoned'", false, "sending", "prepared"},
+		{"a Rex refusal", "'none'", true, "create", ""},
+		{"a Rex refusal and its abandonment", "'abandoned'", true, "create", "sending"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _ := appModeHub(t)
+			h.faults = &faults{}
+			h.test = &testState{}
+			if c.rexRefuses {
+				h.test.faults = []*testFault{{Point: "plugin-create", Mode: "refuse", Nth: 1}}
+			}
+			h.ui.sess["session:home"] = uiSessionKey
+			if _, err := h.db.Exec(`CREATE TRIGGER refuse_status BEFORE UPDATE OF status ON spawn_intents
+				WHEN NEW.status IN (` + c.refuse + `) BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+				t.Fatal(err)
+			}
+			pl := &Plugin{Name: "p"}
+			err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
+			var se *spawnError
+			if !errors.As(err, &se) || !se.known || se.stage != c.stage || se.open != c.open {
+				t.Fatalf("spawn: %#v", err)
+			}
+			var status string
+			if err := h.db.QueryRow(`SELECT status FROM spawn_intents WHERE instance_id = ?`, pl.InstanceID).Scan(&status); err != nil {
+				t.Fatal(err)
+			}
+			want := c.open
+			if want == "" {
+				want = "abandoned"
+			}
+			if status != want {
+				t.Errorf("the intent is %s; want %s", status, want)
+			}
+			id, pending := h.ownedInstance(pl)
+			if c.open != "" && (id != pl.InstanceID || !pending) {
+				t.Errorf("ownedInstance: %q, %v; want the open intent %s", id, pending, pl.InstanceID)
+			}
+			if c.open == "" && id != "" {
+				t.Errorf("ownedInstance: %q after the abandonment", id)
+			}
+			if c.open != "" && !strings.Contains(err.Error(), "stays "+c.open) {
+				t.Errorf("the text: %v", err)
+			}
+		})
+	}
+}

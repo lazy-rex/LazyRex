@@ -262,3 +262,55 @@ func TestReplaceReloadRemovalLab(t *testing.T) {
 	s.refusedWith("a replace of a kept record", err, "refused", "has no config entry")
 	s.stopKept("m", st.ChildPID, start)
 }
+
+// A known spawn failure whose intent the store keeps open: a trigger in hub.db refuses the status
+// updates. The refusal and hub.plugins both report the open intent. A prepared intent does not stop
+// a start; a sending intent does.
+func TestReplaceOpenIntentLab(t *testing.T) {
+	s := newStartLab(t, "a")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	run, _ := s.startRun("a")
+	db, err := openDB(filepath.Join(s.l.dir, "hub", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	trigger := func(statuses string) {
+		t.Helper()
+		if _, err := db.Exec(`DROP TRIGGER IF EXISTS refuse_status`); err != nil {
+			t.Fatal(err)
+		}
+		if statuses == "" {
+			return
+		}
+		if _, err := db.Exec(`CREATE TRIGGER refuse_status BEFORE UPDATE OF status ON spawn_intents
+			WHEN NEW.status IN (` + statuses + `) BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	trigger("'sending', 'abandoned'")
+	_, err = s.replace("a", run.InstanceID)
+	s.refusedWith("a failed sending update", err, "spawn_failed", "the spawn intent was not marked as sending", "stays prepared",
+		"the old instance "+run.InstanceID+" is retired", "hub.plugins shows the open intent as pending")
+	if e := s.entry("a"); e["instance_id"] == "" || e["instance_pending"] != true {
+		t.Errorf("hub.plugins a with a prepared intent: %v", e)
+	}
+	trigger("")
+	s.must("hub.admin.start", map[string]any{"plugin": "a"})
+	run, _ = s.startRun("a")
+
+	trigger("'abandoned'")
+	s.must("hub.test.fault", map[string]any{"point": "plugin-create", "mode": "refuse", "key": "a", "plugin": "a"})
+	_, err = s.replace("a", run.InstanceID)
+	s.refusedWith("a refusal that is not abandoned", err, "spawn_failed", "Rex refused the new block", "stays sending", "unresolved_intent")
+	e := s.entry("a")
+	pending, _ := e["instance_id"].(string)
+	if pending == "" || e["instance_pending"] != true {
+		t.Errorf("hub.plugins a with a sending intent: %v", e)
+	}
+	trigger("")
+	_, err = s.call("hub.admin.start", map[string]any{"plugin": "a"})
+	s.refusedWith("a start with the sending intent", err, "unresolved_intent", pending)
+}
