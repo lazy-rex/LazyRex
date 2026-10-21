@@ -34,6 +34,11 @@ type pluginRun struct {
 	// WatchRoots are the directories whose subtrees the plugin may watch (hub.watch, docs/hub.md
 	// "File watches"). Absolute paths. Empty: every hub.watch.ensure is refused.
 	WatchRoots []string `json:"watch_roots,omitempty"`
+	// Prompts and UserMessaging are the grants of the Telegram hub support (docs/hub.md, "Agent
+	// prompts and acting as the user"). Only the user's config entry sets them; the manifest has no
+	// such fields. A grant check reads the run of the registered instance.
+	Prompts       bool `json:"prompts,omitempty"`
+	UserMessaging bool `json:"user_messaging,omitempty"`
 }
 
 // configEntry is one item of the config field plugins. Its identity is its index and its exact
@@ -42,13 +47,15 @@ type configEntry struct {
 	Source string `json:"source"`
 	// Args are extra key=value arguments of `rex do` (rex.args in the plugin), for example
 	// worktrees_root. The hub's own keys (pluginArgReserved) are refused.
-	Args       map[string]string `json:"args"`
-	WatchRoots []string          `json:"watch_roots"`
-	index      int               // 1-based, as the error texts count; 0 for a managed entry
-	managed    string            // the managed id (section 13); "" for a config entry
-	dir        string            // a local source: the absolute directory
-	github     bool
-	static     error // a refusal that no resolution changes (a managed source that the config also names)
+	Args          map[string]string `json:"args"`
+	WatchRoots    []string          `json:"watch_roots"`
+	Prompts       bool              `json:"prompts"`
+	UserMessaging bool              `json:"user_messaging"`
+	index         int               // 1-based, as the error texts count; 0 for a managed entry
+	managed       string            // the managed id (section 13); "" for a config entry
+	dir           string            // a local source: the absolute directory
+	github        bool
+	static        error // a refusal that no resolution changes (a managed source that the config also names)
 	// A GitHub source: github:<owner>/<repo>[/<subdir>]@<ref> (docs/plugin-sources.md, section 1).
 	owner, repo, subdir, gitRef string
 	// name binds at the first resolution that gives it without a conflict, and stays for the life
@@ -72,6 +79,7 @@ var (
 func parseEntries(cfgDir string, raws []json.RawMessage) ([]*configEntry, error) {
 	var out []*configEntry
 	first := map[string]int{}
+	messenger := 0 // the entry with user_messaging
 	for i, raw := range raws {
 		n := i + 1
 		var keys map[string]json.RawMessage
@@ -96,6 +104,12 @@ func parseEntries(cfgDir string, raws []json.RawMessage) ([]*configEntry, error)
 		first[e.Source] = n
 		if err := e.checkFields(); err != nil {
 			return nil, fmt.Errorf("plugin entry %d: %w", n, err)
+		}
+		if e.UserMessaging {
+			if messenger != 0 {
+				return nil, fmt.Errorf("entries %d and %d both set user_messaging", messenger, n)
+			}
+			messenger = n
 		}
 		out = append(out, e)
 	}
@@ -356,7 +370,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			// keeps the binding (uses below), and its running instance continues.
 			s.Name, s.Depends = m.Name, m.Depends
 			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Path: main, Events: m.Events, Notice: m.Notice,
-				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots}
+				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots, Prompts: e.Prompts, UserMessaging: e.UserMessaging}
 		}
 	}
 	checkGraph(src)

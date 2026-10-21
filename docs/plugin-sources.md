@@ -111,6 +111,9 @@ Pin sync step 1 (section 6a): `lazyrex-hub plugin export` and `lazyrex-hub plugi
 - `watch_roots`: the directories whose subtrees the plugin may watch (`hub.watch`, docs/hub.md
   "File watches"). Absolute, clean paths. Without it, every `hub.watch.ensure` is refused. Only
   the user's config sets it: the manifest has no such field.
+- `prompts` and `user_messaging`: booleans, false when absent. They grant the agent prompts and
+  the user's Messaging identity (docs/hub.md, "Agent prompts and acting as the user"). Only the
+  user's config sets them. Two entries with `user_messaging` are a malformed config.
 - A source that starts with `github:` is a GitHub source. Any other source is a local directory.
 - A local path is absolute or relative to the directory of the config file. `~` is refused.
 - `<owner>` matches `[A-Za-z0-9-]+`. `<repo>` matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
@@ -775,8 +778,9 @@ with the features pair, on top of step 2.
 - `watch_roots`: an array of absolute, clean paths. Step 2 checks only this shape and keeps the
   value. Its meaning belongs to the plugin manager design.
 - Unknown fields are refused. This rule also keeps the fields `user_messaging` and `prompts` out of
-  the managed file: only the user's config can set them (user decision, 2026-10-19). They are not
-  hub fields yet; the plugin manager design names them. A new managed field needs a design change.
+  the managed file: only the user's config can set them (user decision, 2026-10-19). They are hub
+  config fields (docs/hub.md, "Agent prompts and acting as the user"). A new managed field needs a
+  design change.
 
 **Missing and malformed file.**
 

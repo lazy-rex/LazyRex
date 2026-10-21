@@ -1352,3 +1352,30 @@ a multibyte character makes two chunks that are not valid UTF-8, and Rex replace
   replaces each such byte with U+FFFD before the hub gets the text. The hub digests the replaced
   text: `a\255b` from Lua gives the digest of `a` U+FFFD `b`. A plugin that digests a body before
   it sends it gets the same value only for valid UTF-8 (rex-protocol.md, "Client RPC").
+
+## Agent prompts and acting as the user (Telegram hub support)
+
+Design approved by the hub features reviewer, 2026-10-21 (design v2 with amendments 1-3, and the
+retention rule of H1d). The first user is the Telegram plugin: it shows an agent's open prompt on
+the user's phone, sends the user's answer to the agent's pane, and reads and sends the user's
+messages.
+
+Status: part 1 (prompts and answers) is in progress. Part 2 (acting as the user) waits for the
+Messaging change.
+
+### Grants
+
+Two fields of a plugin entry in the user's config grant this access. Both are booleans, and both
+are false when absent.
+
+- `prompts`: the plugin gets the prompt events of every agent, reads `hub.prompts` and calls
+  `hub.prompt.answer`. A prompt can show secrets from the pane, so other plugins get nothing.
+- `user_messaging`: the plugin calls `hub.user.call`, and Messaging acts for the user. At most one
+  entry sets it. Two entries are a malformed config: `entries 2 and 4 both set user_messaging`.
+
+Only the user's config sets them (user decision, 2026-10-19). A manifest that names them is
+refused by the unknown-field rule, and so is a managed entry (plugin-sources.md, section 13). An
+agent can change plugin settings through the plugin manager; it must not be able to give a plugin
+the user's identity or the pane prompts. The grant belongs to the entry: the hub checks it for the
+current registered instance of that entry (the caller's `client_id` is the plugin's registered
+client), not for a name in a request.

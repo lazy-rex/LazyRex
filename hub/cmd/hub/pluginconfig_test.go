@@ -39,7 +39,9 @@ func TestPluginEntriesMalformed(t *testing.T) {
 		`[{"source":"a"},{"source":"b"},{"source":"a"}]`: `entries 1 and 3 have the same source a`,
 		`[{"source":"a","args":{"instance_id":"x"}}]`:    `plugin entry 1: arg "instance_id" is not allowed`,
 		`[{"source":"a","watch_roots":["rel"]}]`:         `plugin entry 1: watch root "rel" must be absolute and clean`,
-		`[7]`:                                            `plugin entry 1: json: cannot unmarshal`,
+		`[{"source":"a","user_messaging":true},{"source":"b"},{"source":"c","user_messaging":true}]`: `entries 1 and 3 both set user_messaging`,
+		`[{"source":"a","prompts":"yes"}]`: `plugin entry 1: json: cannot unmarshal string`,
+		`[7]`:                              `plugin entry 1: json: cannot unmarshal`,
 	}
 	for plugins, want := range bad {
 		if _, err := writeConfig(t, dir, plugins); err == nil || !strings.Contains(err.Error(), want) {
@@ -335,5 +337,26 @@ func TestPluginRegisteredLocked(t *testing.T) {
 		if got := h.registeredLocked(name); got != want {
 			t.Errorf("%s: registered %v; want %v", name, got, want)
 		}
+	}
+}
+
+// The grants prompts and user_messaging come from the user's config entry only: the entry's run
+// carries them, and a manifest that names them is refused (docs/hub.md "Agent prompts").
+func TestPluginEntryGrants(t *testing.T) {
+	dir := t.TempDir()
+	plugDir(t, dir, "plugins/tg", `{"name":"telegram","main":"t.lua"}`, "t.lua")
+	plugDir(t, dir, "plugins/m", `{"name":"messaging","main":"m.lua"}`, "m.lua")
+	plugDir(t, dir, "plugins/x", `{"name":"sneaky","main":"x.lua","prompts":true}`, "x.lua")
+	c, err := writeConfig(t, dir, `[{"source":"plugins/tg","prompts":true,"user_messaging":true},{"source":"plugins/m","user_messaging":false},{"source":"plugins/x"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveEntries(noLock(c.path), c.entries, nil)
+	tg, m, x := c.entries[0], c.entries[1], c.entries[2]
+	if tg.cand == nil || !tg.cand.Prompts || !tg.cand.UserMessaging || m.cand == nil || m.cand.Prompts || m.cand.UserMessaging {
+		t.Fatalf("grants: %+v %+v", tg.cand, m.cand)
+	}
+	if x.err == nil || !strings.Contains(x.err.Error(), `unknown field "prompts"`) {
+		t.Errorf("a manifest with prompts: %v", x.err)
 	}
 }
