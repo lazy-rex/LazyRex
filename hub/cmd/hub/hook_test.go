@@ -333,3 +333,31 @@ func TestHookReporterModeKeepsTheServerGate(t *testing.T) {
 		}
 	}
 }
+
+// The input bound: an input of exactly hookInputLimit bytes is read whole; a longer one gets no
+// report, also when its first hookInputLimit bytes are a valid event.
+func TestHookInputLimit(t *testing.T) {
+	event, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
+	pad := func(n int) []byte { return append(append([]byte(nil), event...), bytes.Repeat([]byte(" "), n-len(event))...) }
+	cases := []struct {
+		name   string
+		input  []byte
+		report bool
+	}{
+		{"exact limit", pad(hookInputLimit), true},
+		{"valid prefix, then invalid data", append(pad(hookInputLimit), "not-json"...), false},
+		{"valid JSON over the limit", pad(hookInputLimit + 1), false},
+	}
+	for _, c := range cases {
+		l := newHookLab(t)
+		os.Remove(l.capture)
+		cmd := l.command("codex")
+		cmd.Stdin = bytes.NewReader(c.input)
+		if err := cmd.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if got := l.read() != nil; got != c.report {
+			t.Fatalf("%s: report %v, want %v", c.name, got, c.report)
+		}
+	}
+}

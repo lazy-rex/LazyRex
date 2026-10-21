@@ -31,8 +31,9 @@ import (
 // hookDeadline bounds a whole hook run; the agent's hook timeout is 5 s.
 const hookDeadline = 3 * time.Second
 
-// hookInputLimit bounds the hook input. A larger input is not valid JSON after the cut, so the
-// hook reports nothing.
+// hookInputLimit bounds the hook input: no unbounded read in a process that every agent start runs
+// (the coordinator, 2026-10-21; the same reason as the manifest bound). A longer input gets no
+// report. It is never parsed as a prefix.
 const hookInputLimit = 1 << 20
 
 var hookSources = map[string]bool{"startup": true, "resume": true, "clear": true, "compact": true, "fork": true, "prompt": true}
@@ -83,8 +84,8 @@ func hookReport(kind string) {
 	if kind != "claude" && kind != "codex" {
 		return
 	}
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, hookInputLimit))
-	if err != nil {
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, hookInputLimit+1))
+	if err != nil || len(data) > hookInputLimit {
 		return
 	}
 	var event map[string]any

@@ -4,7 +4,11 @@
 It needs only the `lazyrex-hub` binary and `rex` on `PATH`. `REX_BIN` can select an absolute Rex executable.
 The source is `hub/cmd/hub/hook.go`.
 
-The hook reads the agent's hook JSON from standard input (at most 1 MiB). It sends `kind`, `conversation_id`, `source`, and a `block` hint to `hub.identity.report`.
+The hook reads the agent's hook JSON from standard input. It sends `kind`, `conversation_id`, `source`, and a `block` hint to `hub.identity.report`.
+
+The input is bounded to 1 MiB, because every agent start runs this process and it must not read without a bound (the same reason as the manifest bound).
+A longer input gets no report; it is never parsed as a prefix. A SessionStart event is a few KB.
+A UserPromptSubmit event contains the user's prompt, so a prompt near 1 MiB gets no `prompt` report. That report only repairs a lost one.
 Rex attests the caller PID. The hub must verify the pane and the current process generation before accepting the report.
 The hook does not trust `REX_SESSION` or `REX_BLOCK` as proof.
 
