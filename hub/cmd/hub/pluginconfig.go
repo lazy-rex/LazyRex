@@ -120,8 +120,8 @@ func (e *configEntry) identity() string {
 	return fmt.Sprintf("entry %d", e.index)
 }
 
-// managedFileLimit bounds the read of the managed file. The file lists entries of about 200 bytes,
-// so 1 MiB is far above any real list.
+// managedFileLimit bounds the read of the managed file (the coordinator, 2026-10-21): a larger
+// file is malformed. The plugin manager refuses to write a file over it.
 const managedFileLimit = 1 << 20
 
 var managedID = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)

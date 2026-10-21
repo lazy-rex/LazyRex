@@ -62,9 +62,15 @@ func TestManagedFileMalformed(t *testing.T) {
 			t.Errorf("%s: entries %d; want the config entry only", body, len(c.entries))
 		}
 	}
-	writeManaged(t, dir, `{"plugins":[]}`+strings.Repeat(" ", managedFileLimit))
+	// The limit: exactly 1 MiB is accepted, one byte more is refused.
+	empty := `{"plugins":[]}`
+	writeManaged(t, dir, empty+strings.Repeat(" ", managedFileLimit-len(empty)))
+	if c, _ := writeConfig(t, dir, `[]`); c.managedErr != nil {
+		t.Errorf("a file of exactly %d bytes: %v", managedFileLimit, c.managedErr)
+	}
+	writeManaged(t, dir, empty+strings.Repeat(" ", managedFileLimit-len(empty)+1))
 	if c, _ := writeConfig(t, dir, `[]`); c.managedErr == nil || !strings.Contains(c.managedErr.Error(), "over the 1048576-byte limit") {
-		t.Errorf("an oversize file: %v", c.managedErr)
+		t.Errorf("a file of %d bytes: %v", managedFileLimit+1, c.managedErr)
 	}
 	os.Remove(filepath.Join(dir, "plugins.json"))
 	if c, err := writeConfig(t, dir, `[{"source":"a"}]`); err != nil || c.managedErr != nil || len(c.entries) != 1 {

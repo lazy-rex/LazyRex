@@ -602,9 +602,12 @@ with the features pair, on top of step 2.
 
 **Missing and malformed file.**
 
-- A missing file is an empty list. The manager may never have written it.
-- A malformed file: bad JSON, an unknown field, a bad `id` or source, two entries with the same
-  `id`, or two entries with the same source.
+- A missing file is an empty list. The manager may never have written it. Only a file with an
+  empty `plugins` array is another empty list.
+- A malformed file: bad JSON, a root that is not an object with a `plugins` array (also `null`,
+  `{}` and `{"plugins": null}`), an unknown field, a bad `id` or source, two entries with the same
+  `id`, two entries with the same source, or a file over 1 MiB (1048576 bytes; the coordinator,
+  2026-10-21; the plugin manager refuses to write a larger file).
   - Hub start does not fail. The hub starts the config plugins and refuses every managed entry.
     `hub.plugins` reports the file error once, as `{"managed_file": "<path>", "error": "..."}`.
     Reason: a defect of the manager must not stop the plugins that the user configured.
