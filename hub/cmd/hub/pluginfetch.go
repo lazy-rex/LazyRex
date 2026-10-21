@@ -1,0 +1,405 @@
+package main
+
+// Refs and fetch (docs/plugin-sources.md, section 5). This file has all git use of the hub. Only
+// plugin sync and plugin update run it; hub start never runs git.
+//
+// The fetched tree must be the commit's tree exactly: the archive has the same file paths as
+// ls-tree, and each file's content has the blob ID that ls-tree gives. So .gitattributes
+// export-ignore and export-subst cannot change what is published, and the digest depends only on
+// the commit. Symlinks and submodules are refused.
+
+import (
+	"archive/tar"
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"strings"
+)
+
+// gitErrLimit bounds the git error output that a text quotes.
+const gitErrLimit = 4 << 10
+
+// runGit runs git in dir. Git uses the user's credential helper and url.insteadOf, and never asks
+// for a password (GIT_TERMINAL_PROMPT=0). The error quotes git's standard error.
+func runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var out bytes.Buffer
+	stderr := &limitedBuffer{max: gitErrLimit}
+	cmd.Stdout, cmd.Stderr = &out, stderr
+	if err := cmd.Run(); err != nil {
+		return nil, gitError(err, stderr)
+	}
+	return out.Bytes(), nil
+}
+
+// gitError is the error of a git command: its trimmed standard error, else the exit error.
+func gitError(err error, stderr *limitedBuffer) error {
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return errors.New(msg)
+	}
+	return err
+}
+
+// limitedBuffer keeps the first max bytes written to it.
+type limitedBuffer struct {
+	bytes.Buffer
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if room := b.max - b.Len(); room > 0 {
+		b.Buffer.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+// checkRef checks the form of a ref (section 5, "Ref forms"): 40 lowercase hex (a commit),
+// refs/heads/<name>, refs/tags/<name>, or a name. A short hex is a name. git check-ref-format
+// checks the full ref; a name is checked as refs/heads/<name>.
+func checkRef(ctx context.Context, dir, ref string) error {
+	invalid := fmt.Errorf("%s is not a valid ref", ref)
+	full := ref
+	switch {
+	case commitID.MatchString(ref):
+		return nil
+	case strings.HasPrefix(ref, "refs/heads/"), strings.HasPrefix(ref, "refs/tags/"):
+	case strings.HasPrefix(ref, "refs/"):
+		return invalid
+	default:
+		full = "refs/heads/" + ref
+	}
+	if _, err := runGit(ctx, dir, "check-ref-format", full); err != nil {
+		return invalid
+	}
+	return nil
+}
+
+// resolved is a ref that ls-remote resolved: the commit, the ref kind, and the exact ref to fetch.
+type resolved struct {
+	Commit, Kind, FetchRef string
+}
+
+// resolveRef resolves ref at url with ls-remote (section 5, "Resolve"). Only lines whose name
+// equals one of the asked refs count; ls-remote also gives suffix matches such as
+// refs/heads/team/<name>, which are dropped. A name that is both a branch and a tag is refused. A
+// tag resolves to its peeled commit when it is annotated. A commit ID is not resolved.
+func resolveRef(ctx context.Context, dir, url, ref string) (resolved, error) {
+	if commitID.MatchString(ref) {
+		return resolved{Commit: ref, Kind: "commit", FetchRef: ref}, nil
+	}
+	head, tag := "refs/heads/"+ref, "refs/tags/"+ref
+	switch {
+	case strings.HasPrefix(ref, "refs/heads/"):
+		head, tag = ref, ""
+	case strings.HasPrefix(ref, "refs/tags/"):
+		head, tag = "", ref
+	}
+	args := []string{"ls-remote", "--", url}
+	for _, r := range []string{head, tag} {
+		if r != "" {
+			args = append(args, r)
+		}
+	}
+	if tag != "" {
+		args = append(args, tag+"^{}")
+	}
+	out, err := runGit(ctx, dir, args...)
+	if err != nil {
+		return resolved{}, err
+	}
+	found := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		id, name, ok := strings.Cut(line, "\t")
+		if !ok || !commitID.MatchString(id) {
+			continue
+		}
+		if name == head || name == tag || name == tag+"^{}" {
+			found[name] = id
+		}
+	}
+	hc, isHead := found[head]
+	tc, isTag := found[tag]
+	if p, ok := found[tag+"^{}"]; ok && isTag {
+		tc = p
+	}
+	switch {
+	case head != "" && tag != "" && isHead && isTag:
+		return resolved{}, fmt.Errorf("ref %s is both a branch and a tag: write refs/heads/%s or refs/tags/%s", ref, ref, ref)
+	case isHead:
+		return resolved{Commit: hc, Kind: "branch", FetchRef: head}, nil
+	case isTag:
+		return resolved{Commit: tc, Kind: "tag", FetchRef: tag}, nil
+	}
+	return resolved{}, fmt.Errorf("ref %s is not found", ref)
+}
+
+// errUnavailable is a commit that the remote does not give.
+type errUnavailable struct {
+	commit string
+	err    error
+}
+
+func (e *errUnavailable) Error() string {
+	return fmt.Sprintf("commit %s is not available: %v", e.commit, e.err)
+}
+
+// fetchedTree is a fetched commit, published in the cache.
+type fetchedTree struct {
+	Dir      string // the lock field dir, relative to <state>/plugins
+	Digest   string
+	Manifest *pluginManifest
+}
+
+// fetchCommit fetches commit at url into a temporary bare repository in tmp and publishes its tree
+// for owner/repo (section 5, "Fetch", steps 1 to 7). fetchRef is the exact ref to fetch (a
+// branch or tag ref), or the commit ID itself. byID tells that fetchRef is a commit ID: a failed
+// fetch is then an unavailable commit. Nothing is published when a check fails.
+func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, fetchRef, commit string, byID bool) (*fetchedTree, error) {
+	gitDir := filepath.Join(tmp, "git")
+	if _, err := runGit(ctx, tmp, "init", "-q", "--bare", gitDir); err != nil {
+		return nil, err
+	}
+	if _, err := runGit(ctx, gitDir, "fetch", "-q", "--depth", "1", "--", url, fetchRef); err != nil {
+		if byID {
+			return nil, &errUnavailable{commit, err}
+		}
+		return nil, err
+	}
+	got, err := runGit(ctx, gitDir, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
+	if err != nil {
+		if t, terr := runGit(ctx, gitDir, "cat-file", "-t", "FETCH_HEAD"); terr == nil {
+			return nil, fmt.Errorf("%s is a %s, not a commit", commit, strings.TrimSpace(string(t)))
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(string(got)) != commit {
+		return nil, fmt.Errorf("ref %s moved during the fetch; run the command again", fetchRef)
+	}
+	if t, err := runGit(ctx, gitDir, "cat-file", "-t", commit); err != nil || strings.TrimSpace(string(t)) != "commit" {
+		return nil, fmt.Errorf("%s is not a commit", commit)
+	}
+	tree, err := lsTree(ctx, gitDir, commit)
+	if err != nil {
+		return nil, err
+	}
+	stage, err := newStage(stateDir, owner, repo, commit)
+	if err != nil {
+		return nil, err
+	}
+	files, err := archiveInto(ctx, gitDir, commit, tree, stage.Dir)
+	if err != nil {
+		stage.discard()
+		return nil, err
+	}
+	m, _, err := readPluginManifest(stage.Dir)
+	if err != nil {
+		stage.discard()
+		// The stage is removed, so the text names the commit in place of the stage path.
+		return nil, errors.New(strings.ReplaceAll(err.Error(), stage.Dir, "the tree of "+commit))
+	}
+	rel, err := stage.publish()
+	if err != nil {
+		return nil, err
+	}
+	return &fetchedTree{Dir: rel, Digest: digestOf(files), Manifest: m}, nil
+}
+
+// treeFile is one file of a commit's tree, from ls-tree.
+type treeFile struct {
+	Exec bool
+	OID  string // the blob ID
+}
+
+// lsTree lists the files of commit (section 5, step 4). Mode 100644 is a file and 100755 an
+// executable file. A symlink (120000), a submodule (160000) and any other mode are refused.
+func lsTree(ctx context.Context, gitDir, commit string) (map[string]treeFile, error) {
+	out, err := runGit(ctx, gitDir, "ls-tree", "-r", "-z", "--full-tree", commit)
+	if err != nil {
+		return nil, err
+	}
+	files := map[string]treeFile{}
+	for _, rec := range bytes.Split(out, []byte{0}) {
+		if len(rec) == 0 {
+			continue
+		}
+		meta, p, ok := strings.Cut(string(rec), "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) != 3 {
+			return nil, fmt.Errorf("ls-tree: cannot read %q", rec)
+		}
+		switch f[0] {
+		case "100644", "100755":
+		case "120000":
+			return nil, fmt.Errorf("plugin trees with symlinks are not supported: %s", p)
+		case "160000":
+			return nil, fmt.Errorf("submodules are not supported: %s", p)
+		default:
+			return nil, fmt.Errorf("mode %s is not supported: %s", f[0], p)
+		}
+		if err := checkTreePath(p); err != nil {
+			return nil, err
+		}
+		files[p] = treeFile{Exec: f[0] == "100755", OID: f[2]}
+	}
+	return files, nil
+}
+
+// checkTreePath refuses a path that is absolute, not clean, or has an empty, "." or ".."
+// component.
+func checkTreePath(p string) error {
+	bad := p == "" || strings.HasPrefix(p, "/") || strings.ContainsRune(p, 0) || path.Clean(p) != p
+	for _, part := range strings.Split(p, "/") {
+		if part == "" || part == "." || part == ".." {
+			bad = true
+		}
+	}
+	if bad {
+		return fmt.Errorf("the tree has a path that is not allowed: %q", p)
+	}
+	return nil
+}
+
+// archiveInto runs git archive and extracts the archive into dir (section 5, step 5).
+func archiveInto(ctx context.Context, gitDir, commit string, tree map[string]treeFile, dir string) ([]digestFile, error) {
+	cmd := exec.CommandContext(ctx, "git", "archive", "--format=tar", commit)
+	cmd.Dir = gitDir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	stderr := &limitedBuffer{max: gitErrLimit}
+	cmd.Stderr = stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	files, xerr := extractTar(bufio.NewReader(out), commit, tree, dir)
+	io.Copy(io.Discard, out)
+	werr := cmd.Wait()
+	if xerr != nil {
+		return nil, xerr
+	}
+	if werr != nil {
+		return nil, gitError(werr, stderr)
+	}
+	return files, nil
+}
+
+// extractTar extracts a tar stream of commit into dir. Its entries must be the tree exactly: each
+// file of tree once, with its blob ID, and no other file. Directory entries are accepted only as
+// parents of tree files, and one pax global header (git archive writes the commit ID in it) only
+// first. The mode comes from the tree, not from the archive. It gives the digest lines.
+func extractTar(r io.Reader, commit string, tree map[string]treeFile, dir string) ([]digestFile, error) {
+	parents := map[string]bool{}
+	for p := range tree {
+		for d := path.Dir(p); d != "."; d = path.Dir(d) {
+			parents[d] = true
+		}
+	}
+	mismatch := func(p, why string) error {
+		return fmt.Errorf("the archive of %s does not match its tree: %s: %s", commit, p, why)
+	}
+	seen := map[string]bool{}
+	var files []digestFile
+	tr := tar.NewReader(r)
+	for i := 0; ; i++ {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("the archive of %s: %w", commit, err)
+		}
+		switch h.Typeflag {
+		case tar.TypeXGlobalHeader:
+			if i != 0 {
+				return nil, mismatch(h.Name, "a second global header")
+			}
+			continue
+		case tar.TypeDir:
+			p := strings.TrimSuffix(h.Name, "/")
+			if checkTreePath(p) != nil || !parents[p] || seen[p+"/"] {
+				return nil, mismatch(h.Name, "an unexpected directory")
+			}
+			seen[p+"/"] = true
+			continue
+		case tar.TypeReg:
+		default:
+			return nil, mismatch(h.Name, fmt.Sprintf("entry type %q is not allowed", h.Typeflag))
+		}
+		p := h.Name
+		if checkTreePath(p) != nil {
+			return nil, mismatch(p, "the path is not allowed")
+		}
+		tf, ok := tree[p]
+		if !ok {
+			return nil, mismatch(p, "the file is not in the tree")
+		}
+		if seen[p] {
+			return nil, mismatch(p, "the file appears twice")
+		}
+		seen[p] = true
+		df, err := writeTreeFile(filepath.Join(dir, filepath.FromSlash(p)), tr, h.Size, tf.Exec)
+		if err != nil {
+			return nil, err
+		}
+		if df.oid != tf.OID {
+			return nil, mismatch(p, "the content differs from the blob")
+		}
+		df.Path = p
+		files = append(files, df.digestFile)
+	}
+	for p := range tree {
+		if !seen[p] {
+			return nil, mismatch(p, "the file is not in the archive")
+		}
+	}
+	return files, nil
+}
+
+// writtenFile is a written file: its digest line and its git blob ID.
+type writtenFile struct {
+	digestFile
+	oid string
+}
+
+// writeTreeFile writes one file of a stage: 0700 for an executable file, else 0600 (publish sets
+// the published modes from these). It hashes the content for the digest and for the blob ID.
+func writeTreeFile(p string, r io.Reader, size int64, exec bool) (writtenFile, error) {
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return writtenFile{}, err
+	}
+	mode := os.FileMode(0o600)
+	if exec {
+		mode = 0o700
+	}
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return writtenFile{}, err
+	}
+	defer f.Close()
+	sum, blob := sha256.New(), sha1.New()
+	fmt.Fprintf(blob, "blob %d\x00", size)
+	n, err := io.Copy(io.MultiWriter(f, sum, blob), r)
+	if err != nil {
+		return writtenFile{}, err
+	}
+	if err := f.Close(); err != nil {
+		return writtenFile{}, err
+	}
+	w := writtenFile{digestFile: digestFile{Exec: exec, Size: n}, oid: hex.EncodeToString(blob.Sum(nil))}
+	copy(w.Sum[:], sum.Sum(nil))
+	return w, nil
+}
