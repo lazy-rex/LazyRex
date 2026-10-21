@@ -1378,7 +1378,9 @@ refused by the unknown-field rule, and so is a managed entry (plugin-sources.md,
 agent can change plugin settings through the plugin manager; it must not be able to give a plugin
 the user's identity or the pane prompts. The grant belongs to the entry: the hub checks it for the
 current registered instance of that entry (the caller's `client_id` is the plugin's registered
-client), not for a name in a request.
+client), not for a name in a request. The grant also needs a config entry: a kept record (its entry
+was removed, for example by a reload) has no grant, also while its old instance runs. A grant
+added to an entry applies when the instance starts again (the instance's run carries it).
 
 ### Prompts
 

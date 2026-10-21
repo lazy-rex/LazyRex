@@ -55,7 +55,7 @@ func answerHub(t *testing.T) (*Hub, *Agent, *Plugin, *fakeWrite) {
 	setStatus(h, a, statusRecord{State: "blocked", Kind: "question", Msg: "Pick a color"})
 	f := &fakeWrite{}
 	f.install(t)
-	return h, a, &Plugin{Name: "telegram", run: pluginRun{Prompts: true}}, f
+	return h, a, &Plugin{Name: "telegram", entry: &configEntry{index: 1}, run: pluginRun{Prompts: true}}, f
 }
 
 func answer(t *testing.T, h *Hub, pl *Plugin, id, key string, input map[string]any) (map[string]any, error) {

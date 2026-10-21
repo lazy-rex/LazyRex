@@ -55,7 +55,7 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 		}
 	}
 	pl.ClientID, pl.Exports = p.Requester.ClientID, exports
-	if pl.run.Prompts {
+	if pl.promptsGranted() {
 		h.startPromptSender(pl)
 	}
 	go h.saveCommands(context.Background(), name, cmds) // go: register holds h.mu

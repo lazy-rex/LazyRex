@@ -65,7 +65,7 @@ func registerTG(h *Hub, instance, client string) *Plugin {
 	}
 	pl := h.plugins["telegram"]
 	if pl == nil {
-		pl = &Plugin{Name: "telegram", run: pluginRun{Prompts: true}}
+		pl = &Plugin{Name: "telegram", entry: &configEntry{index: 1}, run: pluginRun{Prompts: true}}
 		h.plugins["telegram"] = pl
 	}
 	pl.InstanceID, pl.ClientID = instance, client

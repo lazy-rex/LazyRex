@@ -59,7 +59,7 @@ func (h *Hub) markPromptDirty(agent string) {
 // be held.
 func (h *Hub) promptSenderCurrent(s *promptSender) bool {
 	pl := h.plugins[s.plugin]
-	return h.promptSenders[s.plugin] == s && pl != nil && pl.InstanceID == s.instance && pl.ClientID == s.client
+	return h.promptSenders[s.plugin] == s && pl != nil && pl.InstanceID == s.instance && pl.ClientID == s.client && pl.promptsGranted()
 }
 
 // promptState is the push for one agent: its current prompt (or null), its rev and its last close.

@@ -156,7 +156,7 @@ func TestPromptsList(t *testing.T) {
 	if _, err := h.promptsList(&Plugin{Name: "other"}); err == nil || !strings.Contains(err.Error(), "no prompts grant") {
 		t.Fatalf("no grant: %v", err)
 	}
-	tg := &Plugin{Name: "telegram", run: pluginRun{Prompts: true}}
+	tg := &Plugin{Name: "telegram", entry: &configEntry{index: 1}, run: pluginRun{Prompts: true}}
 	status(h, "block:b", map[string]any{"state": "blocked", "kind": "question", "msg": "Pick one"})
 	out, err := h.promptsList(tg)
 	if err != nil {
@@ -181,5 +181,19 @@ func TestAgentsListBlockID(t *testing.T) {
 	list := h.agentsList(map[string]any{}).(map[string]any)["agents"].([]any)
 	if e := list[0].(map[string]any); e["block_id"] != "block:b" {
 		t.Fatalf("agents: %+v", e)
+	}
+}
+
+// A kept record (its config entry was removed) has no prompts grant, also while its old instance
+// with the grant in its run is registered.
+func TestPromptsGrantNeedsEntry(t *testing.T) {
+	h, _ := promptHub(t)
+	kept := &Plugin{Name: "telegram", run: pluginRun{Prompts: true}}
+	if _, err := h.promptsList(kept); err == nil || !strings.Contains(err.Error(), "no prompts grant") {
+		t.Fatalf("kept record: %v", err)
+	}
+	withEntry := &Plugin{Name: "telegram", entry: &configEntry{index: 1}}
+	if _, err := h.promptsList(withEntry); err == nil {
+		t.Fatal("an entry without the grant in the run")
 	}
 }

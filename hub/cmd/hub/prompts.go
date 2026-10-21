@@ -168,8 +168,8 @@ func (p *prompt) json() map[string]any {
 // promptsList is hub.prompts: the open prompts and the rev that describes exactly this list (both
 // read under one hold of h.mu).
 func (h *Hub) promptsList(pl *Plugin) (any, error) {
-	if !pl.run.Prompts {
-		return nil, refuse("not_granted", "the hub config gives plugin %s no prompts grant", pl.Name)
+	if err := h.checkPromptsGrant(pl); err != nil {
+		return nil, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -184,4 +184,22 @@ func (h *Hub) promptsList(pl *Plugin) (any, error) {
 		list = append(list, h.prompts.open[id].json())
 	}
 	return map[string]any{"hub_generation": revString(h.generation), "rev": revString(h.prompts.rev), "prompts": list}, nil
+}
+
+// promptsGranted reports the prompts grant of a plugin: its run (the instance's config) has it,
+// and the record still has a config entry. A kept record (its entry was removed) has no grant,
+// also while its old instance runs. h.mu must be held.
+func (pl *Plugin) promptsGranted() bool {
+	return pl.entry != nil && pl.run.Prompts
+}
+
+// checkPromptsGrant refuses a plugin without the prompts grant.
+func (h *Hub) checkPromptsGrant(pl *Plugin) error {
+	h.mu.Lock()
+	ok := pl.promptsGranted()
+	h.mu.Unlock()
+	if !ok {
+		return refuse("not_granted", "the hub config gives plugin %s no prompts grant", pl.Name)
+	}
+	return nil
 }

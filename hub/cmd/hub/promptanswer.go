@@ -152,8 +152,8 @@ func resultJSON(v map[string]any) string {
 
 // promptAnswer is the handler of hub.prompt.answer.
 func (h *Hub) promptAnswer(ctx context.Context, pl *Plugin, args map[string]any) (any, error) {
-	if !pl.run.Prompts {
-		return nil, refuse("not_granted", "the hub config gives plugin %s no prompts grant", pl.Name)
+	if err := h.checkPromptsGrant(pl); err != nil {
+		return nil, err
 	}
 	id, _ := args["prompt_id"].(string)
 	key, _ := args["key"].(string)
