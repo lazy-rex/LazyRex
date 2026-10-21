@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -294,4 +295,48 @@ func syncDir(dir string) error {
 	}
 	defer d.Close()
 	return d.Sync()
+}
+
+// pluginExport is lazyrex-hub plugin export: it writes the pin document of the lock to w. Under
+// both flocks it reads the lock and the managed file as one snapshot. It exports each GitHub
+// entry of the config and of the managed file, and only when every one passes lockedDir: a machine
+// never exports a pin that it cannot run itself. A lock entry without an entry is not exported,
+// and a local source has no pin. The pull identity is made on the first export.
+func pluginExport(cfgPath string, w io.Writer) error {
+	fail := func(err error) error { return fmt.Errorf("plugin export: %w", err) }
+	cfg, err := readPluginCmdConfig(cfgPath)
+	if err != nil {
+		return fail(err)
+	}
+	release, err := lockCommands(cfg.state, cfg.lock)
+	if err != nil {
+		return fail(err)
+	}
+	defer release()
+	lock, err := cfg.loadSnapshot()
+	if err != nil {
+		return fail(err)
+	}
+	doc := &pinDoc{Version: pinDocVersion, Entries: []pinEntry{}}
+	for _, e := range cfg.entries {
+		if !e.github {
+			continue
+		}
+		if e.static != nil {
+			return fail(e.static)
+		}
+		if _, _, err := lockedDir(cfg.path, cfg.state, lock, e); err != nil {
+			return fail(err)
+		}
+		doc.Entries = append(doc.Entries, pinEntry{Source: e.Source, lockPin: lock.Plugins[e.Source].lockPin})
+	}
+	if doc.Hub, err = pullIdentity(cfg.lock); err != nil {
+		return fail(err)
+	}
+	b, err := encodePinDoc(doc)
+	if err != nil {
+		return fail(err)
+	}
+	_, err = w.Write(b)
+	return err
 }

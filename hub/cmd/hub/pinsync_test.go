@@ -178,3 +178,103 @@ func TestPinDocEmpty(t *testing.T) {
 		t.Fatalf("the round trip: %s: %v", again, err)
 	}
 }
+
+// export runs plugin export on cfg and gives its output.
+func (env *cmdEnv) export(cfg string) (string, error) {
+	var b bytes.Buffer
+	err := pluginExport(cfg, &b)
+	return b.String(), err
+}
+
+// export writes the pins of each GitHub entry (config and managed) that passes lockedDir, with the
+// lock's pull identity. A local source and an orphaned lock entry are not exported. A second
+// export gives the same bytes.
+func TestExport(t *testing.T) {
+	env := newCmdEnv(t)
+	env.repo("lazy-rex", "Messaging", "messaging")
+	env.repo("lazy-rex", "Templates", "templates")
+	cfg := env.config(srcM, env.local("loc", "loc"))
+	const srcT = "github:lazy-rex/Templates@main"
+	env.managed("t=" + srcT)
+	if err := env.sync(cfg); err != nil {
+		t.Fatal(err)
+	}
+	l := env.lock()
+	orphan := *l.Plugins[srcM]
+	orphan.Ref = "old"
+	l.Plugins["github:lazy-rex/Messaging@old"] = &orphan
+	if err := writeLock(filepath.Join(env.dir, "hub.lock.json"), l); err != nil {
+		t.Fatal(err)
+	}
+	out, err := env.export(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := readPullID(filepath.Join(env.dir, "hub.lock.json"))
+	d, err := decodePinDoc([]byte(out))
+	if err != nil || d.Hub != id || len(d.Entries) != 2 {
+		t.Fatalf("document %s: %v (id %s)", out, err, id)
+	}
+	for _, e := range d.Entries {
+		if want := l.Plugins[e.Source].lockPin; e.lockPin != want {
+			t.Errorf("%s: %+v, want %+v", e.Source, e.lockPin, want)
+		}
+	}
+	if d.Entries[0].Source != srcM || d.Entries[1].Source != srcT {
+		t.Errorf("sources %s, %s", d.Entries[0].Source, d.Entries[1].Source)
+	}
+	if strings.Contains(out, `"dir"`) || strings.Contains(out, env.state) {
+		t.Errorf("a path in the document:\n%s", out)
+	}
+	if again, _ := env.export(cfg); again != out {
+		t.Errorf("a second export changed the bytes")
+	}
+}
+
+// A GitHub entry that does not pass lockedDir, a static refusal and a malformed lock fail the
+// export: nothing is written, and no pull identity is made.
+func TestExportRefused(t *testing.T) {
+	env := newCmdEnv(t)
+	env.repo("lazy-rex", "Messaging", "messaging")
+	cfg := env.config(srcM, env.local("loc", "loc"))
+	lockFile := filepath.Join(env.dir, "hub.lock.json")
+	check := func(what, want string) {
+		t.Helper()
+		out, err := env.export(cfg)
+		if err == nil || err.Error() != "plugin export: "+want || out != "" {
+			t.Errorf("%s: %q %v\nwant %s", what, out, err, want)
+		}
+		if _, err := os.Stat(lockFile + ".id"); err == nil {
+			t.Errorf("%s: a pull identity was made", what)
+		}
+	}
+	check("not installed", "plugin "+srcM+" is not installed: run lazyrex-hub plugin sync -config "+cfg)
+	if err := env.sync(cfg); err != nil {
+		t.Fatal(err)
+	}
+	le := env.lock().Plugins[srcM]
+	writeInto(env.entryDir(srcM), "main.lua", "changed")
+	check("changed", "plugin messaging: the cache entry for commit "+le.Commit+" changed (digest mismatch): run lazyrex-hub plugin sync -config "+cfg)
+	if err := env.sync(cfg); err != nil {
+		t.Fatal(err)
+	}
+	env.managed("dup=" + srcM)
+	check("static", "managed:dup: the source "+srcM+" is also in the config")
+	os.Remove(filepath.Join(env.state, "plugins.json"))
+	os.WriteFile(lockFile, []byte(`{"version":2,"plugins":{}}`), 0o600)
+	check("malformed lock", "the lock file "+lockFile+" is not valid: version 2 is not supported (this hub reads version 1); repair the file or restore it from a backup")
+}
+
+// plugin export through pluginCmdMain: exit 0 and the document on stdout; an argument is a usage
+// error.
+func TestExportMain(t *testing.T) {
+	env := newCmdEnv(t)
+	cfg := env.config(env.local("loc", "loc"))
+	var out, errb bytes.Buffer
+	if code := pluginCmdMain([]string{"export", "-config", cfg}, &out, &errb); code != 0 || !strings.Contains(out.String(), `"entries": []`) {
+		t.Fatalf("exit %d: %s %s", code, out.String(), errb.String())
+	}
+	if code := pluginCmdMain([]string{"export", "-config", cfg, "x"}, &out, &errb); code != 2 {
+		t.Errorf("an argument: exit %d", code)
+	}
+}

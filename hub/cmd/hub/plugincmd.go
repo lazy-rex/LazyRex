@@ -589,11 +589,11 @@ func cacheEntries(state string) []string {
 	return out
 }
 
-// pluginCmdMain runs lazyrex-hub plugin <sync|update|status> -config <cfg> [args]. Exit 0: done;
-// 1: the command failed (or status found an entry that is not ok); 2: a usage error.
+// pluginCmdMain runs lazyrex-hub plugin <sync|update|status|export> -config <cfg> [args]. Exit 0:
+// done; 1: the command failed (or status found an entry that is not ok); 2: a usage error.
 func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: lazyrex-hub plugin sync|update|status -config <cfg> [update: name|source ...]")
+		fmt.Fprintln(stderr, "usage: lazyrex-hub plugin sync|update|status|export -config <cfg> [update: name|source ...]")
 		return 2
 	}
 	if len(args) == 0 {
@@ -603,7 +603,7 @@ func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("plugin "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "hub configuration JSON (required)")
-	if cmd != "sync" && cmd != "update" && cmd != "status" {
+	if cmd != "sync" && cmd != "update" && cmd != "status" && cmd != "export" {
 		return usage()
 	}
 	if err := fs.Parse(args[1:]); err != nil || *cfgPath == "" {
@@ -616,6 +616,8 @@ func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	var err error
 	switch cmd {
+	case "export":
+		err = pluginExport(*cfgPath, stdout)
 	case "status":
 		var ok bool
 		ok, err = runPluginStatus(*cfgPath, stdout)
