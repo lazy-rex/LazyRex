@@ -358,7 +358,9 @@ func main() {
 		}
 		log.Fatal(err)
 	}
-	signalReady(renv.readyFD, h.cfg.State)
+	if err := signalReady(renv.readyFD, h.cfg.State); err != nil {
+		log.Print(err) // the hub runs on; the wrapper sees no ready line
+	}
 	h.shutdown = stop
 	h.run(ctx)
 	// Exit status (docs/hub.md, "Stop and exit status"): 0 after a signal or hub.admin.shutdown, 1

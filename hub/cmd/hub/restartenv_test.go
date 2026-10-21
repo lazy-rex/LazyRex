@@ -81,7 +81,9 @@ func TestSignalReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Close()
-	signalReady(fd, "/private/state")
+	if err := signalReady(fd, "/private/state"); err != nil {
+		t.Fatal(err)
+	}
 	b, err := io.ReadAll(r)
 	if err != nil || string(b) != "ready /private/state\n" {
 		t.Fatalf("%q, %v", b, err)
@@ -145,5 +147,26 @@ func TestHubExpectStateMismatchExits3(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmp, "missing")); !os.IsNotExist(err) {
 		t.Errorf("the hub made the missing state: %v", err)
+	}
+}
+
+// A failed ready write is reported (main logs it once): a pipe without a reader. The fd is closed
+// after the try.
+func TestSignalReadyReportsAFailedWrite(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd, err := syscall.Dup(int(w.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	r.Close()
+	if err := signalReady(fd, "/s"); err == nil {
+		t.Error("a pipe without a reader: no error")
+	}
+	if err := signalReady(-1, "/s"); err != nil {
+		t.Errorf("no fd: %v", err)
 	}
 }

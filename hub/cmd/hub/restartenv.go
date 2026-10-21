@@ -67,14 +67,24 @@ func checkExpectedState(state, expect string) (string, error) {
 	return got, nil
 }
 
-// signalReady writes the ready line once, without blocking, and closes the fd. A write error is
-// ignored: the wrapper then sees EOF without a ready line. A closed pipe gives EPIPE, not SIGPIPE,
-// because the fd is not 1 or 2.
-func signalReady(fd int, state string) {
+// signalReady writes the ready line once, without blocking, and closes the fd. It returns a failed
+// or short write for main to log; the hub runs on, and the wrapper sees EOF without a ready line. A
+// closed pipe gives EPIPE, not SIGPIPE, because the fd is not 1 or 2.
+func signalReady(fd int, state string) error {
 	if fd < 0 {
-		return
+		return nil
 	}
-	syscall.SetNonblock(fd, true)
-	syscall.Write(fd, []byte("ready "+state+"\n"))
-	syscall.Close(fd)
+	defer syscall.Close(fd)
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		return fmt.Errorf("ready fd: %w", err)
+	}
+	line := []byte("ready " + state + "\n")
+	n, err := syscall.Write(fd, line)
+	if err != nil {
+		return fmt.Errorf("ready fd: %w", err)
+	}
+	if n < len(line) {
+		return fmt.Errorf("ready fd: wrote %d of %d bytes", n, len(line))
+	}
+	return nil
 }
