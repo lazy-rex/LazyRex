@@ -424,6 +424,7 @@ Each plugin row records the session of its instance (`plugins.session_id`, and `
 - `hub.admin.replace {plugin, expect_instance}` replaces the running instance with a new instance from the current candidate (plugin-sources.md, section 14). The admin guard applies. After a refusal before the retirement, the replace has retired nothing and spawned nothing; the reconciliation of the spawn intents can still change the owned instance. `spawn_unknown` keeps the intent open. A `spawn_failed` whose intent the hub could not abandon reports that intent as open. `hub.plugins` entries report `instance_id`, `instance_pending`, `desired` and `registered`.
 - The admin guard (`hub.admin.*`, and `hub.plugins.reload` from a caller that is not a registered instance) refuses a caller in an agent or plugin pane. It walks the caller's process ancestry from the Rex-attested pid. Three outcomes: a match (refused), a complete walk to pid 1 without a match (allowed: an operator), and an incomplete walk (refused): the caller has no pid (a missing pid, or a TCP caller: TCP has no pid), a process information read failed, a process in the chain ended, a parent is 0 before pid 1, or the walk passed 64 processes. Only a walk that reaches pid 1 is complete. Text: `cannot check the caller's process ancestry: <error>; admin actions need a verified caller`. A match found before the walk fails still counts. Checks that allow only on a match (registration, pair and view ownership, `hub.identify`) treat an incomplete walk as no match, so they refuse too.
 - `hub.admin.shutdown` stops the hub, as SIGTERM does (see "Stop and exit status"). It takes no arguments: any field is refused (`hub.admin.shutdown takes no arguments`). The admin guard applies. The hub replies `{"stopping": true}` first, then starts the stop. A reply that cannot be delivered stops nothing: the caller sees an error or a timeout, and the hub still runs, so a retry is correct. Plugins stay in their blocks.
+- `hub.info` returns `{"state", "pid", "generation"}`: the canonical state directory (absolute, symlinks resolved), the hub process id, and the hub generation. Any client may call it; it is a read. It takes no arguments (`hub.info takes no arguments`). The planned commands `lazyrex-hub stop` and `status` will use it to find the hub of a config.
 - Process information reads: macOS uses sysctl `kern.proc.pid` (an empty answer means no such process). Linux reads `/proc/<pid>/stat` (the parent pid, and starttime after the last `)`, with the boot time from `/proc/stat` btime) and `/proc/<pid>/cmdline`. Verified on Linux (reviewer, 2026-10-21, Rex 0.0.1792593189-g3f4a0a, Go 1.27.2 linux/amd64, CGO_ENABLED=0): the process and guard unit tests and the plugin lifecycle labs (`TestManaged*Lab`, `TestPlugin*Lab`). The full harness (`TestHarness`: the self-tests, the failure fixtures, the no-match selection, the interrupt cleanup and the isolation checks) passes on Linux at c6f5c15 (reviewer, 2026-10-21, same Rex and Go). Both give the start time as `<seconds>.<microseconds>`. On Linux the resolution is 10 ms (USER_HZ 100): two processes that start in the same tick have equal start times. Equal is not "before" (`startBefore`), so for two hook reports with an equal start time, arrival order decides; the stale-report order is weaker on Linux. Pid reuse: a pid and a start time identify one process lifetime. A false match needs the kernel to give the same pid again within one tick, after the pid space wraps (pid_max: 32768 by default; systemd raises it to 4194304). The hub does not refuse on that case: /proc gives no signal to detect it.
 
 Observed in the lab (Rex 1203): plugins with blocks in a gone session restarted in a new LazyRex session; destroying the work session while the hub ran restarted all three plugins in a new session within about 0.5 s; closing one plugin pane stopped it; a legacy row found its live block and replaced it; a normal restart replaced each instance in place.
@@ -441,10 +442,49 @@ The hub process stops in three ways. Each one has its own exit status:
 | SIGTERM or SIGINT | 0 |
 | `hub.admin.shutdown` (an operator) | 0 |
 | The Rex connection closed (the hub logs `rex connection closed`) | 1 |
+| Under a restart wrapper: the config names another state than the wrapper owns, or a state that does not exist | 3 |
 
-A deliberate stop gives 0, and a lost Rex connection gives 1, so a supervisor can restart only after a failure. A signal while the hub starts (for example while it connects to Rex) is also a deliberate stop: 0. A configuration or start error before the hub runs gives 1 (`log.Fatal`); a missing `-config` gives 2. Plugins stay in their blocks after each stop; the next hub start recovers them.
+A deliberate stop gives 0, and a lost Rex connection gives 1, so a supervisor can restart only after a failure. Status 3 happens only under the restart wrapper, before any side effect of the start (see "Restart wrapper"). The planned command `lazyrex-hub status` will have its own exit statuses; they are not hub process statuses. A signal while the hub starts (for example while it connects to Rex) is also a deliberate stop: 0. A configuration or start error before the hub runs gives 1 (`log.Fatal`); a missing `-config` gives 2. Plugins stay in their blocks after each stop; the next hub start recovers them.
 
 Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The test starts its own lab server (`lab/server.sh` in a new `/tmp/rexlab-shutdown-*` directory) and stops only that server and its own hubs. It checks a refused argument (the hub keeps running), the reply `{"stopping": true}` and exit 0, SIGTERM and exit 0, and exit 1 after the lab server stops. `TestHubSignalDuringStartLab` pauses its lab server (SIGSTOP), so the hub waits in its start for the Rex connection, and checks exit 0 after SIGTERM (before the fix: 1, "terminated signal received"). Observed on Rex 0.0.1792158932-g88fd41 (macOS, 2026-10-21): pass, 8 runs in a row. The unit test `TestAdminShutdownDispatch` checks the refusals and that only the reply path starts the stop.
+
+## Restart wrapper
+
+`lazyrex-hub -config <cfg> -restart` runs the hub as its child and starts it again after a failure (`hub/cmd/hub/restart.go`). The wrapper passes every other argument to the child unchanged. `-restart` under a wrapper is refused.
+
+**Ownership: one wrapper for each state.**
+
+1. Before it starts a child, the wrapper reads the config with the hub's own `loadConfig`. That function reads the config and the managed file; it opens no store, no Rex connection and no plugin.
+2. The wrapper makes the state directory (0700) and takes its canonical form: absolute, symlinks resolved.
+3. The wrapper takes an fcntl write lock on `<state>/restart.lock` without waiting, and holds it for its life. If another process holds the lock, the wrapper starts no hub, prints `another restart wrapper owns <state> (pid N)` and exits 1. The pid is printed only when the system names the holder. Another error (for example a permission error) is printed as it is.
+
+**The child.** The wrapper starts its own binary with two environment variables. The hub reads and unsets both at the top of `main`, so no process that the hub starts inherits them (`restartenv.go`):
+
+- `LAZYREX_READY_FD=3`: the write end of a pipe. After `hub_started`, the hub writes `ready <canonical state>` once and closes it. Ready means that the hub has started (after `hub_started`). It does not mean that the plugins are healthy. The hub sets FD_CLOEXEC on the fd, so no child of the hub holds the pipe open.
+- `LAZYREX_EXPECT_STATE`: the wrapper's canonical state. After `loadConfig`, before it makes the state directory or takes `hub.lock`, the hub compares its config state in the canonical form. Another state, or a state that cannot be resolved, prints `... start a new wrapper` and exits 3. No store, no Rex connection, no plugin.
+
+**When the child exits.** The wrapper classifies an exit only after the ready pipe ends (at most 2 s after the exit), so "ready, then an immediate exit" counts as after ready.
+
+| Child exit | Wrapper |
+| --- | --- |
+| 0 (SIGTERM, `hub.admin.shutdown`) | exits 0, no restart |
+| 3 (another state) | exits 3, no restart |
+| Another failure before the first ready of this wrapper | exits with the child's status (1 for a signal death), no restart |
+| Another failure after a ready | restarts after 1, 2, 4 ... 60 s; a fifth restart within 10 minutes is refused: `gave up`, exit 1 |
+| A ready line for another state (a defect) | stops the child, exits 1 |
+
+A restarted child that fails before its own ready counts as a restart.
+
+**Signals.** SIGTERM, SIGINT or SIGHUP to the wrapper (Ctrl-C in its pane, or closing the pane) stops it and never restarts:
+
+- A child runs: the wrapper sends SIGTERM to that child only, and waits at most 10 s. The child exits: the wrapper exits 0. Otherwise the wrapper kills the child and exits 1 (`the hub did not stop within 10s; killed`).
+- During backoff: the wrapper exits 0 at once. No child starts.
+- The child runs in its own process group, so a terminal signal (Ctrl-C, a closed pane) reaches only the wrapper. A wrapper killed with SIGKILL leaves its hub running; a new wrapper then fails at the hub lock before ready and exits 1.
+- Before the first start: the wrapper exits 0. No child starts.
+
+**Lines and status.** The wrapper writes its own lines, with the time, to its stderr (its pane): started (pid, attempt), ready, the exit status or signal of each child, the restart delay, gave up. The hub's own output goes to the same stderr. `<state>/restart.json` is the wrapper's status for readers, replaced as a whole (a temp file, then a rename): `{"version":1,"pid","start","phase","attempt","last_exit","next_start","since"}`. The phase is one of `starting`, `running`, `backoff`, `gave_up`, `stopped`. A reader trusts the file only while the wrapper holds `restart.lock` with the same pid and that pid has the same start time.
+
+Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the first failure, a deliberate stop, the backoff sequence and gave up, the 10-minute window, signals while starting, while ready and during backoff, a child that ignores SIGTERM, exit 3, a ready line for another state, a second wrapper that another process owns, also through a symlink). `restartenv_test.go`: the variables, the state check, the ready line, `hub.info`, and a real hub binary that exits 3 with no `hub.lock`, `hub.db` or `events.jsonl` in either state.
 
 ## Process log
 

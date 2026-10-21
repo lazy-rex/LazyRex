@@ -254,7 +254,7 @@ var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": tr
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
 var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
-	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown",
+	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
@@ -278,6 +278,8 @@ func findRex(configured string) (string, error) {
 }
 
 func main() {
+	// The restart wrapper's variables (restartenv.go): read and unset first, before any exec.
+	renv, renvErr := takeRestartEnv()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "test":
@@ -297,6 +299,7 @@ func main() {
 	flag.Var(fs, "lab-fault", "lab-only fault, for example point=store-commit,mode=exit (repeatable)")
 	realServer := flag.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
 	testMode := flag.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
+	restart := flag.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")
 	flag.Parse()
 	if *realServer && len(fs.list) > 0 {
 		log.Fatal("-lab-fault is refused with -real-server")
@@ -328,6 +331,23 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if renvErr != nil {
+		log.Fatal(renvErr)
+	}
+	if renv.expectState != "" {
+		state, err := checkExpectedState(cfg.State, renv.expectState)
+		if err != nil {
+			log.Print(err)
+			os.Exit(exitStateMismatch)
+		}
+		cfg.State = state
+	}
+	if *restart {
+		if renv.readyFD >= 0 || renv.expectState != "" {
+			log.Fatal("-restart is refused under a restart wrapper")
+		}
+		os.Exit(restartMain(cfg, restartArgs(os.Args[1:])))
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	h, err := start(ctx, cfg, fs)
@@ -338,6 +358,7 @@ func main() {
 		}
 		log.Fatal(err)
 	}
+	signalReady(renv.readyFD, h.cfg.State)
 	h.shutdown = stop
 	h.run(ctx)
 	// Exit status (docs/hub.md, "Stop and exit status"): 0 after a signal or hub.admin.shutdown, 1
@@ -352,6 +373,12 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if err := os.MkdirAll(cfg.State, 0o700); err != nil {
 		return nil, err
 	}
+	// Every later path uses the canonical state (restartenv.go), also hub.info and the ready line.
+	state, err := canonicalState(cfg.State)
+	if err != nil {
+		return nil, err
+	}
+	cfg.State = state
 	lock, err := os.OpenFile(filepath.Join(cfg.State, "hub.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -748,6 +775,11 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.navigateWorker(ctx, args)
 	case "hub.navigate.agent":
 		return h.navigateAgent(ctx, args)
+	case "hub.info":
+		if len(args) > 0 {
+			return nil, bad("hub.info takes no arguments")
+		}
+		return map[string]any{"state": h.cfg.State, "pid": os.Getpid(), "generation": revString(h.generation)}, nil
 	case "hub.plugins":
 		return h.pluginsList(ctx)
 	case "hub.plugins.reload":

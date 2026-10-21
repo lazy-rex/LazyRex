@@ -1,0 +1,80 @@
+package main
+
+// The hub side of the restart wrapper (docs/hub.md, "Restart wrapper"). The wrapper gives its child
+// two environment variables. main reads and unsets both first, so no process that the hub starts
+// inherits them:
+//   - LAZYREX_READY_FD: the write end of the readiness pipe. After hub_started, the hub writes
+//     "ready <canonical state>\n" once and closes it. Ready means the hub runs; it does not mean
+//     that the plugins are healthy.
+//   - LAZYREX_EXPECT_STATE: the canonical state that the wrapper owns. A hub whose config names
+//     another state (or a state that does not exist) exits 3 before any side effect of start.
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"syscall"
+)
+
+// exitStateMismatch is the hub's exit status when its config state is not the wrapper's state.
+const exitStateMismatch = 3
+
+type restartEnv struct {
+	readyFD     int // -1: no readiness pipe
+	expectState string
+}
+
+// takeRestartEnv reads and unsets the wrapper's variables. It sets FD_CLOEXEC on the ready fd, so
+// no child of the hub holds the pipe open.
+func takeRestartEnv() (restartEnv, error) {
+	e := restartEnv{readyFD: -1, expectState: os.Getenv("LAZYREX_EXPECT_STATE")}
+	s, ok := os.LookupEnv("LAZYREX_READY_FD")
+	os.Unsetenv("LAZYREX_READY_FD")
+	os.Unsetenv("LAZYREX_EXPECT_STATE")
+	if !ok {
+		return e, nil
+	}
+	fd, err := strconv.Atoi(s)
+	if err != nil || fd < 3 {
+		return e, fmt.Errorf("LAZYREX_READY_FD %q is not a descriptor above 2", s)
+	}
+	syscall.CloseOnExec(fd)
+	e.readyFD = fd
+	return e, nil
+}
+
+// canonicalState is the one spelling of a state directory: absolute, symlinks resolved. The hub,
+// the wrapper, the ready line and hub.info use it. The directory must exist.
+func canonicalState(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+// checkExpectedState compares the config state with the wrapper's state, before the hub makes the
+// directory or takes its lock. It returns the canonical state.
+func checkExpectedState(state, expect string) (string, error) {
+	got, err := canonicalState(state)
+	if err != nil {
+		return "", fmt.Errorf("the config state %s cannot be resolved (%v), but this restart wrapper owns %s; start a new wrapper", state, err, expect)
+	}
+	if got != expect {
+		return "", fmt.Errorf("the config state is now %s, but this restart wrapper owns %s; start a new wrapper", got, expect)
+	}
+	return got, nil
+}
+
+// signalReady writes the ready line once, without blocking, and closes the fd. A write error is
+// ignored: the wrapper then sees EOF without a ready line. A closed pipe gives EPIPE, not SIGPIPE,
+// because the fd is not 1 or 2.
+func signalReady(fd int, state string) {
+	if fd < 0 {
+		return
+	}
+	syscall.SetNonblock(fd, true)
+	syscall.Write(fd, []byte("ready "+state+"\n"))
+	syscall.Close(fd)
+}
