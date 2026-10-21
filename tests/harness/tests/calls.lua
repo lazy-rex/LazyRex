@@ -26,3 +26,24 @@ test('calls records a call that fails', function()
   expect(#scans).to_be(1)
   expect(scans[1].args.limit).to_be(0)
 end)
+
+-- A call that an action fault refuses is recorded once: the hub records it before the faults.
+test('calls records a call that a before fault fails, a closed gate refuses, or an after fault fails', function()
+  for _, c in ipairs({{when = 'before', mode = 'fail'}, {when = 'before', mode = 'gate'}, {when = 'after', mode = 'fail'}}) do
+    local _, base = calls('none')
+    local id = fault({point = 'action', action = 'hub.store.scan', when = c.when, mode = c.mode})
+    local r = agent('alice'):call('fix.hub', {action = 'hub.store.scan', args = {prefix = 'message/'}})
+    expect(r.error ~= nil, c.when .. ' ' .. c.mode .. ': the scan fails').to_be(true)
+    if c.mode == 'gate' then fault_release(id) end
+    local scans, out = calls('hub.store.scan', {after = base.next})
+    expect(out.dropped).to_be(false)
+    expect(#scans, c.when .. ' ' .. c.mode .. ': recorded once').to_be(1)
+    expect(scans[1].args.prefix).to_be('message/')
+  end
+end)
+
+test('calls refuses an unknown plugin and a cursor that is not a whole number', function()
+  expect_error(function() calls('hub.store.scan', {plugin = 'no-such-plugin'}) end, 'unknown plugin')
+  expect_error(function() calls('hub.store.scan', {after = 1.5}) end, 'whole number')
+  expect_error(function() calls('hub.store.scan', {after = -1}) end, 'whole number')
+end)

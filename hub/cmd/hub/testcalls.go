@@ -1,9 +1,10 @@
 package main
 
-// The call record (test mode only). The hub records each hub service call of a registered current
-// plugin instance (the actions after the registration check in dispatch) when it arrives, before
-// the action runs, so a call that fails is recorded too. A test reads the record to prove what a
-// plugin did not call, for example that a migration never scans message/ records.
+// The call record (test mode only). The hub records each call of a registered current plugin
+// instance, except hub.test.*, once, when it arrives (dispatchFaulted): before the action faults
+// and the action run, so a call that a fault or the action fails is recorded too. A test reads the
+// record to prove what a plugin did not call, for example that a migration never scans message/
+// records. A seq belongs to one hub process: a hub restart starts again from 1 with an empty record.
 //
 // hub.test.calls {plugin, action?, after?} -> {calls: [{seq, action, instance_id, args}], next, dropped}
 //   after: only calls with seq > after (default 0). action: only calls of this action.
@@ -13,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 )
 
@@ -45,23 +47,29 @@ func (h *Hub) testRecordCall(plugin, instance, action string, raw json.RawMessag
 
 func (h *Hub) testCalls(args map[string]any) (any, error) {
 	plugin, _ := args["plugin"].(string)
-	if plugin == "" {
-		return nil, bad("invalid: plugin is required")
+	h.mu.Lock()
+	known := h.plugins[plugin] != nil
+	h.mu.Unlock()
+	if !known {
+		return nil, bad("invalid: unknown plugin %q", plugin) // a misspelled name must not read as no calls
 	}
 	action, _ := args["action"].(string)
 	var after int64
 	switch v := args["after"].(type) {
 	case nil:
 	case float64:
+		if v != math.Trunc(v) || v < 0 || v > 1<<53 {
+			return nil, bad("invalid: after must be a whole number from 0")
+		}
 		after = int64(v)
 	case string:
 		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return nil, bad("invalid: after must be a number")
+		if err != nil || n < 0 {
+			return nil, bad("invalid: after must be a whole number from 0")
 		}
 		after = n
 	default:
-		return nil, bad("invalid: after must be a number")
+		return nil, bad("invalid: after must be a whole number from 0")
 	}
 	h.test.mu.Lock()
 	defer h.test.mu.Unlock()

@@ -329,6 +329,9 @@ func (h *Hub) dispatchFaulted(ctx context.Context, p perform) (any, error) {
 	if pl == nil {
 		return h.dispatch(ctx, p)
 	}
+	if !strings.HasPrefix(p.Action, "hub.test.") {
+		h.testRecordCall(pl.Name, pl.InstanceID, p.Action, p.Args) // before the faults: a faulted call is recorded too
+	}
 	var args struct {
 		Key any `json:"key"`
 	}

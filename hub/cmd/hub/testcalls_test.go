@@ -9,7 +9,7 @@ import (
 // says dropped; a read after the last dropped seq does not. after and action filter; next is the
 // last seq of any plugin.
 func TestCallRecord(t *testing.T) {
-	h := &Hub{test: newTestState()}
+	h := &Hub{test: newTestState(), plugins: map[string]*Plugin{"p": {Name: "p"}, "q": {Name: "q"}}}
 	h.testRecordCall("q", "q-1", "hub.store.get", json.RawMessage(`{"keys":["k"]}`))
 	for i := 0; i < testCallsKept+1; i++ {
 		action := "hub.store.get"
@@ -45,7 +45,7 @@ func TestCallRecord(t *testing.T) {
 	if qc := q["calls"].([]testCall); len(qc) != 1 || string(qc[0].Args) != `{"keys":["k"]}` || q["dropped"] != false {
 		t.Errorf("another plugin: %+v", q)
 	}
-	for _, args := range []map[string]any{{}, {"plugin": "p", "after": true}, {"plugin": "p", "after": "x"}} {
+	for _, args := range []map[string]any{{}, {"plugin": "nope"}, {"plugin": "p", "after": true}, {"plugin": "p", "after": "x"}, {"plugin": "p", "after": 1.5}, {"plugin": "p", "after": -1.0}, {"plugin": "p", "after": "-1"}} {
 		if _, err := h.testCalls(args); err == nil {
 			t.Errorf("%v: no error", args)
 		}
