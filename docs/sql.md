@@ -86,7 +86,7 @@ Runs a list of 1 to 64 statements in one transaction (`BEGIN IMMEDIATE`). Each s
 |---|---|
 | `null` | NULL |
 | `true`, `false` | INTEGER 1, 0 |
-| an integer number, at most 2^53 in size | INTEGER |
+| an integer number, at most 2^53 in size (larger: refused) | INTEGER |
 | `{"int": "<decimal>"}` | INTEGER, any signed 64-bit value, exact |
 | a number with a fraction or exponent | REAL |
 | a string | TEXT |
@@ -94,14 +94,16 @@ Runs a list of 1 to 64 statements in one transaction (`BEGIN IMMEDIATE`). Each s
 
 Anything else: `invalid_input`.
 
-**Results.** INTEGER: a JSON integer, exact (Go writes int64 exactly). REAL: a JSON number; an
+**Results.** INTEGER: a JSON integer when its size is at most 2^53, else `{"int": "<decimal>"}`.
+Rex Lua cannot hold a larger integer exactly (below). REAL: a JSON number; an
 infinite value is the error `unsupported_value`. TEXT: a JSON string; text that is not valid UTF-8
 comes back as `{"blob": "<base64>"}`. BLOB: `{"blob": "<base64>"}`.
 
-Open fact: a JSON integer above 2^53 is exact only if Rex Lua decodes it into a 64-bit Lua integer.
-That is **untested**. I check it on a lab server before the implementation, and record the
-`rex_version`. If Rex Lua decodes it into a float, INTEGER results above 2^53 come back as
-`{"int": "<decimal>"}` instead.
+Fact (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-21; rex-protocol.md, "Rex Lua
+runtime"): Rex Lua is Lua 5.1, and its numbers are doubles. `rex.json.decode` turns
+9007199254740993 into 9007199254740992. So the hub never sends an integer above 2^53 as a JSON
+number, and a parameter above 2^53 must use `{"int": "<decimal>"}`; a JSON number above 2^53 is
+refused (`invalid_input`), because it was already rounded.
 
 **Limits.**
 
@@ -207,6 +209,6 @@ stopped. Release and rollback procedures add the SQL files to their backup step.
 ## 11. Open points
 
 1. The modernc.org/sqlite version (section 5): the coordinator decides.
-2. Rex Lua integer decoding above 2^53 (section 4): I check it on a lab server.
+2. Settled: Rex Lua integers above 2^53 are not exact (section 4, observed).
 3. The numbers: 1 GiB, 5 s and 10 s, 64 statements, 64 waiting calls, 7 days and 10 000 keys.
 4. Section 8: an operator backup command, or a backup only in the release procedures.
