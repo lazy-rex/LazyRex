@@ -52,18 +52,23 @@ func gitError(err error, stderr *limitedBuffer) error {
 	return err
 }
 
-// limitedBuffer keeps the first max bytes written to it.
+// limitedBuffer keeps the first max bytes written to it, and accepts (drops) the rest, so a child
+// never blocks on a full stderr pipe. The buffer is a named field, not embedded: an embedded
+// bytes.Buffer would give limitedBuffer its ReadFrom, and io.Copy (used by os/exec) would call
+// that and skip the bound.
 type limitedBuffer struct {
-	bytes.Buffer
+	buf bytes.Buffer
 	max int
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if room := b.max - b.Len(); room > 0 {
-		b.Buffer.Write(p[:min(room, len(p))])
+	if room := b.max - b.buf.Len(); room > 0 {
+		b.buf.Write(p[:min(room, len(p))])
 	}
 	return len(p), nil
 }
+
+func (b *limitedBuffer) String() string { return b.buf.String() }
 
 // checkRef checks the form of a ref (section 5, "Ref forms"): 40 lowercase hex (a commit),
 // refs/heads/<name>, refs/tags/<name>, or a name. A short hex is a name. git check-ref-format

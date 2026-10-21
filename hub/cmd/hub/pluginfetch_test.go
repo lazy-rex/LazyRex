@@ -11,6 +11,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -347,4 +348,30 @@ func TestExtractTarMismatch(t *testing.T) {
 			t.Errorf("%s: %v, want %q", name, err, c.want)
 		}
 	}
+}
+
+// The git error text is bounded, also when os/exec copies stderr with io.Copy (which uses
+// ReadFrom when the writer has it).
+func TestGitErrorBounded(t *testing.T) {
+	gitTestEnv(t)
+	b := &limitedBuffer{max: gitErrLimit}
+	if _, err := io.Copy(b, io.LimitReader(zeroReader{}, 3*gitErrLimit)); err != nil {
+		t.Fatal(err)
+	}
+	if b.String() != strings.Repeat("\x00", gitErrLimit) {
+		t.Fatalf("buffer kept %d bytes, want %d", len(b.String()), gitErrLimit)
+	}
+	// A git subprocess that writes 12 KiB to stderr: the alias is a test fixture in this command
+	// only; it changes no git config.
+	_, err := runGit(context.Background(), t.TempDir(), "-c", "alias.noisy=!printf '%012288d' 0 >&2; exit 1", "noisy")
+	if err == nil || len(err.Error()) > gitErrLimit {
+		t.Fatalf("error of %d bytes, want at most %d", len(err.Error()), gitErrLimit)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
 }
