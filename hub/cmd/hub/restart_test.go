@@ -27,6 +27,7 @@ import (
 //   - ready-ignore: ready, then ignore SIGTERM
 //   - ready-other: a ready line for another state, then wait
 //   - leak-ready: a descendant inherits the ready fd; ready, then exit 1
+//   - noready-exit1: the ready fd closes without a line; exit 1 after 300 ms
 //   - lock: take the restart lock on FAKE_LOCK_STATE, print "locked", wait
 func TestFakeHub(t *testing.T) {
 	plan := os.Getenv("FAKE_HUB_PLAN")
@@ -80,6 +81,11 @@ func TestFakeHub(t *testing.T) {
 		keep.Start()
 		os.WriteFile(os.Getenv("FAKE_HUB_STARTS")+".keep", []byte(strconv.Itoa(keep.Process.Pid)), 0o600)
 		signalReady(env.readyFD, env.expectState)
+		os.Exit(1)
+	case "noready-exit1":
+		// A failed ready write: the fd closes without a line, the hub runs on, then fails.
+		syscall.Close(env.readyFD)
+		time.Sleep(300 * time.Millisecond)
 		os.Exit(1)
 	case "ready-other":
 		signalReady(env.readyFD, "/elsewhere")
@@ -435,5 +441,25 @@ func TestRestartRefusesANewlineInTheState(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(bad, "restart.lock")); !os.IsNotExist(err) {
 		t.Errorf("restart.lock exists: %v", err)
+	}
+}
+
+// A hub whose ready write failed runs without a ready line. The wrapper has no ready limit: it
+// stays in "starting" while the hub runs. The hub's exit then counts as an exit before ready, so a
+// failure on the first start ends the wrapper with the hub's status, and a later one is restarted.
+func TestRestartWithoutAReadyLine(t *testing.T) {
+	wr := newWrapperTest(t, "noready-exit1")
+	done := wr.runAsync()
+	wr.waitPhase(t, "starting")
+	time.Sleep(100 * time.Millisecond) // the fd is closed; the hub still runs
+	if s := wr.status(t); s.Phase != "starting" {
+		t.Errorf("phase %s while the hub runs without a ready line", s.Phase)
+	}
+	if code := waitCode(t, done); code != 1 || wr.startCount() != 1 {
+		t.Fatalf("first start: exit %d, %d starts\n%s", code, wr.startCount(), wr.text())
+	}
+	wr = newWrapperTest(t, "ready-exit1", "noready-exit1", "ready-exit0")
+	if code := waitCode(t, wr.runAsync()); code != 0 || wr.startCount() != 3 {
+		t.Fatalf("after a ready: exit %d, %d starts\n%s", code, wr.startCount(), wr.text())
 	}
 }
