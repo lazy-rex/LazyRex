@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -338,7 +339,9 @@ func TestHookReporterModeKeepsTheServerGate(t *testing.T) {
 // report, also when its first hookInputLimit bytes are a valid event.
 func TestHookInputLimit(t *testing.T) {
 	event, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
-	pad := func(n int) []byte { return append(append([]byte(nil), event...), bytes.Repeat([]byte(" "), n-len(event))...) }
+	pad := func(n int) []byte {
+		return append(append([]byte(nil), event...), bytes.Repeat([]byte(" "), n-len(event))...)
+	}
 	cases := []struct {
 		name   string
 		input  []byte
@@ -359,5 +362,34 @@ func TestHookInputLimit(t *testing.T) {
 		if got := l.read() != nil; got != c.report {
 			t.Fatalf("%s: report %v, want %v", c.name, got, c.report)
 		}
+	}
+}
+
+// At the deadline the hook kills the reporter's whole process group, so a child that the reporter
+// (rex) started does not outlive the hook. (Reviewer test; the Python hook killed one process.)
+func TestHookDeadlineLeavesNoChild(t *testing.T) {
+	l := newHookLab(t)
+	pidPath := filepath.Join(l.dir, "sleep.pid")
+	script := "#!/bin/sh\ncase \"$*\" in\n*\"client ls --json\") printf '%s' \"$HOOK_CLIENTS\"; exit 0 ;;\nesac\n" +
+		"sleep 30 &\necho $! > \"$HOOK_SLEEP_PID\"\nwait\n"
+	if err := os.WriteFile(l.env["REX_BIN"], []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l.env["HOOK_SLEEP_PID"] = pidPath
+	input, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
+	cmd := l.command("codex")
+	cmd.Stdin = bytes.NewReader(input)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("the child did not start: %v", err)
+	}
+	pid := atoi(t, strings.TrimSpace(string(data)))
+	start := startTime(pid)
+	if start != "" {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatalf("the hook returned with the reporter's child %d still alive", pid)
 	}
 }

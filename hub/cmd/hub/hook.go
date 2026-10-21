@@ -61,21 +61,26 @@ func runHook(args, self []string) int {
 	}
 	cmd := exec.Command(self[0], append(append([]string(nil), self[1:]...), "-reporter", args[0])...)
 	cmd.Stdin = os.Stdin // an *os.File: the reporter gets the descriptor; this process never reads it
+	// Its own process group, so the deadline kill also reaches what the reporter (rex) started.
+	// The parent stays this process, so the pid chain to the pane does not change.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if cmd.Start() != nil {
 		return 0
 	}
-	done := make(chan struct{})
-	go func() {
-		cmd.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(hookDeadline):
-		cmd.Process.Kill()
-		<-done
+	// Poll and reap here, not with cmd.Wait: until this process reaps the reporter, its pid (and so
+	// its group ID) cannot be reused, so the deadline kill cannot reach another process.
+	pid := cmd.Process.Pid
+	var status syscall.WaitStatus
+	for deadline := time.Now().Add(hookDeadline); ; time.Sleep(20 * time.Millisecond) {
+		if wpid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); wpid == pid || err != nil {
+			return 0
+		}
+		if time.Now().After(deadline) {
+			syscall.Kill(-pid, syscall.SIGKILL)
+			syscall.Wait4(pid, &status, 0, nil)
+			return 0
+		}
 	}
-	return 0
 }
 
 // hookReport is the reporter. On success it does not return: it becomes `rex ... do
