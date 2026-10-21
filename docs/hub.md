@@ -1453,3 +1453,67 @@ is `max(applied[agent], floor)`.
    snapshot with another `hub_generation` is ignored. A message never changes the generation.
 
 So a push and a snapshot can arrive in any order: the older one is ignored.
+
+### Prompt answers
+
+`hub.prompt.answer {prompt_id, input, key}` (plugins with the `prompts` grant) writes the user's
+answer to the pane of an open prompt (`hub/cmd/hub/promptanswer.go`). `input` is exactly one of:
+
+- `{keys: "<text>"}`: one terminal write of these bytes, with no Enter. 1 to 64 bytes. For a menu.
+- `{text: "<text>", submit: true}`: a bracketed paste of the text (newlines become spaces, as in
+  notices), then Enter (`\r`). 1 to 4096 bytes.
+
+The plugin chooses the form. The hub never infers it from `kind`.
+
+Each answer has a durable row in `prompt_answers`, keyed by `(plugin, key)`, with a fingerprint
+(SHA-256 of `{prompt_id, input}`). The steps:
+
+1. **Key check.** A row with the same key and fingerprint returns its recorded `{phase, result}`
+   and writes nothing. A row still writing returns `{phase: "in_progress"}`, which is not final:
+   repeat later. The same key with another fingerprint is `operation_conflict`. The key check comes
+   first, so after a hub restart a repeat with the old `prompt_id` returns the recorded result
+   (H1d), not `prompt_closed`.
+2. **Binding check.** The prompt must be the open prompt of its agent, for the same binding.
+   Otherwise the row is `refused` with `{reason: "prompt_closed"}`, and no byte is written.
+3. The row is inserted in phase `writing` before any byte. Answers for one agent run one at a
+   time.
+4. The binding is checked again right before the write.
+5. `keys`: one write. `text`: the paste, then phase `text_written`, then the binding is checked
+   again (the paste can change the agent's state), then Enter.
+
+Results:
+
+| Phase | Meaning |
+|---|---|
+| `done` | Rex answered every write with every byte written. |
+| `refused` | The prompt is not open. This call wrote zero bytes. |
+| `failed` | Rex refused the first write with `not_found` or `session_not_found`. Zero bytes. |
+| `partial` | The text was written; Enter was not sent (`enter: "not_sent"`, the prompt closed) or Rex refused it (`enter: "failed"`, with `code`). |
+| `unknown` | The first write had another error, a timeout, a lost reply or a short `bytes_written`. Some bytes may be written. |
+| `unknown_after_text` | The text was written; the Enter write's outcome is unknown. |
+
+Only `not_found` and `session_not_found` count as proof of zero bytes (lab, Rex
+0.0.1792158932-g88fd41: a write to a missing block or session wrote nothing). `bad_request` is
+`unknown`: the lab showed it only for a missing `data` field, and the hub always sends `data`.
+
+The hub never repeats a write by itself. A hub start turns a row still `writing` into `unknown` and
+a row in `text_written` into `unknown_after_text`.
+
+**`prompt_closed` means "this call wrote zero bytes".** While the key's row exists, a repeat
+returns the recorded result. After the row is deleted, `prompt_closed` does not prove that an
+earlier call with the same key wrote nothing.
+
+**Retention.** A row stays while its prompt is open, then 7 days after the close. `closed_at` is
+set by an hourly sweep that sees the prompt closed (so it can be up to one hour late; retention
+only grows). The sweep closes every row whose prompt is not open, also a row inserted just after
+its prompt closed. A prompt id never opens again, so a closed prompt stays closed. A refused row is closed at once. A hub start closes every row of an earlier run (a
+restart closes every prompt). The Telegram plugin repeats a key at most 6 days after its intake, so
+its repeats always find the row.
+
+**Race.** The hub checks the binding against the last status event it processed. It cannot prove
+that the agent is still at the prompt at the write: a change can be on its way. Rex has no atomic
+write-if-state.
+
+**The request queue.** Rex delivers requests to the hub one at a time. The writes are Rex server
+calls (each with a 5 s limit), so an answer holds the hub's request queue for at most the time of
+its writes, as `hub.spawn`'s create does. No answer waits for a plugin.

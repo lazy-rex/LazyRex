@@ -1,3 +1,6 @@
+| `{point = 'prompt-answer', mode = 'close', when = 'before-write' or 'before-enter'}` | The open prompt of the next `hub.prompt.answer` closes at that binding check, as a rebind would close it. before-write: the answer is refused with zero bytes. before-enter: the paste is written and Enter is not (`partial`). |
+| `{point = 'prompt-answer', mode = 'refuse', when = 'write' or 'enter', fail_code = code}` | The next answer write (`write`: the keys or the paste; `enter`: the Enter) is not sent and fails with `fail_code` (default `not_found`). |
+| `{point = 'prompt-answer', mode = 'lose-reply' or 'short', when = 'write' or 'enter'}` | The next answer write is sent. lose-reply: its reply is lost (`disconnected`). short: the reply reports one byte fewer than the data. |
 # Testing plugins
 
 A plugin repository contains only Lua: the plugin and its tests. `lazyrex-hub test` runs the
@@ -358,7 +361,7 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 
 | `{point = 'action', action, when = 'before', mode = 'gate', key, plugin}` | A barrier for a caller that retries. From the call that fires it until `fault_release(id)`, every matching call gets code `unavailable` and runs no handler. The hub retries a view operation with that outcome every 500 ms, so the operation passes after the release. A gate that is still closed at the end of the file fails the file. `fault_state` reports `gated`, the number of refused calls. `fault_release` of a gate that has not fired is an error. |
 
-- `nth = n` (action, status-read, start-admission and plugin-create faults) fires on the n-th matching call; the default is 1. Every armed
+- `nth = n` (action, status-read, start-admission, plugin-create and prompt-answer faults) fires on the n-th matching call; the default is 1. Every armed
   fault that matches counts the call, also when another fault fires. An after fault counts only
   calls whose handler succeeded. A call that a closed gate refuses counts for no fault: it does
   not reach the hub.

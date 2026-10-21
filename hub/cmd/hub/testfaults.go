@@ -56,7 +56,8 @@ type testFault struct {
 
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
-	"plugin-create": {"refuse", "lose-answer", "hold-send"}}
+	"plugin-create": {"refuse", "lose-answer", "hold-send"},
+	"prompt-answer": {"close", "refuse", "lose-reply", "short"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
@@ -64,7 +65,8 @@ var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op"
 	"watch-nudge":     {"point", "mode", "key", "plugin"},
 	"status-read":     {"point", "mode", "key", "plugin", "nth"},
 	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"},
-	"plugin-create":   {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
+	"plugin-create":   {"point", "mode", "key", "plugin", "nth", "hold_ms"},
+	"prompt-answer":   {"point", "mode", "when", "fail_code", "plugin", "nth"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -106,7 +108,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after) or plugin-create (refuse, lose-answer, hold-send)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send) or prompt-answer (close, refuse, lose-reply, short)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -118,6 +120,20 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		f.Key, _ = args["key"].(string)
 	case "start-admission", "plugin-create":
 		f.Key, _ = args["key"].(string)
+	case "prompt-answer":
+		f.When, _ = args["when"].(string)
+		f.FailCode, _ = args["fail_code"].(string)
+		f.Plugin = plugin
+		steps := []string{"write", "enter"}
+		if f.Mode == "close" {
+			steps = []string{"before-write", "before-enter"}
+		}
+		if !contains(steps, f.When) {
+			return nil, bad("invalid: mode %s needs when %s", f.Mode, strings.Join(steps, " or "))
+		}
+		if f.FailCode != "" && f.Mode != "refuse" {
+			return nil, bad("invalid: fail_code needs mode refuse")
+		}
 	case "action":
 		f.Action, _ = args["action"].(string)
 		f.When, _ = args["when"].(string)
@@ -376,4 +392,47 @@ func (h *Hub) startFault(plugin, mode string) {
 	}
 	h.ev.emit("fault", map[string]any{"point": f.Point, "mode": f.Mode, "plugin": plugin})
 	h.waitRelease(f)
+}
+
+// promptAnswerFault applies an armed prompt-answer close fault at a binding check (when =
+// before-write or before-enter): the prompt closes there, as a rebind would close it.
+func (h *Hub) promptAnswerFault(when string, p *prompt) {
+	if h.test == nil {
+		return
+	}
+	f := h.takeFault(func(f *testFault) bool { return f.Point == "prompt-answer" && f.Mode == "close" && f.When == when })
+	if f == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.prompts.open[p.Agent] == p {
+		h.closePrompt(p, "gone")
+	}
+}
+
+// promptWriteFaulted is promptWrite with the armed prompt-answer write faults (when = write, the
+// keys or the paste, or enter): refuse writes nothing and fails with fail_code (default
+// not_found); lose-reply writes and then reports a lost reply; short writes and reports one byte
+// fewer.
+func (h *Hub) promptWriteFaulted(ctx context.Context, when string, p *prompt, data string) (int, error) {
+	var f *testFault
+	if h.test != nil {
+		f = h.takeFault(func(f *testFault) bool { return f.Point == "prompt-answer" && f.Mode != "close" && f.When == when })
+	}
+	if f != nil && f.Mode == "refuse" {
+		code := f.FailCode
+		if code == "" {
+			code = "not_found"
+		}
+		return 0, &rex.RexError{Code: code, Message: "injected fault: the write was refused"}
+	}
+	n, err := promptWrite(ctx, h, p.Session, p.Block, data)
+	if f == nil || err != nil {
+		return n, err
+	}
+	if f.Mode == "short" {
+		return n - 1, nil
+	}
+	return n, &rex.RexError{Code: "disconnected", Message: "injected fault: the write reply was lost"}
 }
