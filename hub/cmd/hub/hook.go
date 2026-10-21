@@ -54,6 +54,13 @@ func runHook(args, self []string) int {
 	}
 	if len(args) == 2 && args[0] == "-reporter" {
 		hookReport(args[1]) // returns only when it reports nothing
+		// No report. A command that the reporter ran (rex client ls) can have left a child in the
+		// reporter's group. -reporter is internal: the hook starts it as the leader of a new group, so
+		// the group holds only the reporter and what it started; end that group (this process too).
+		// A reporter that does not lead its group kills nothing.
+		if syscall.Getpgrp() == os.Getpid() {
+			syscall.Kill(0, syscall.SIGKILL)
+		}
 		return 0
 	}
 	if len(args) != 1 || (args[0] != "claude" && args[0] != "codex") {

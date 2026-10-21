@@ -365,31 +365,49 @@ func TestHookInputLimit(t *testing.T) {
 	}
 }
 
-// At the deadline the hook kills the reporter's whole process group, so a child that the reporter
-// (rex) started does not outlive the hook. (Reviewer test; the Python hook killed one process.)
-func TestHookDeadlineLeavesNoChild(t *testing.T) {
-	l := newHookLab(t)
-	pidPath := filepath.Join(l.dir, "sleep.pid")
-	script := "#!/bin/sh\ncase \"$*\" in\n*\"client ls --json\") printf '%s' \"$HOOK_CLIENTS\"; exit 0 ;;\nesac\n" +
-		"sleep 30 &\necho $! > \"$HOOK_SLEEP_PID\"\nwait\n"
-	if err := os.WriteFile(l.env["REX_BIN"], []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	l.env["HOOK_SLEEP_PID"] = pidPath
-	input, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
-	cmd := l.command("codex")
-	cmd.Stdin = bytes.NewReader(input)
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("the child did not start: %v", err)
-	}
-	pid := atoi(t, strings.TrimSpace(string(data)))
-	start := startTime(pid)
-	if start != "" {
-		syscall.Kill(pid, syscall.SIGKILL)
-		t.Fatalf("the hook returned with the reporter's child %d still alive", pid)
+// No process that the reporter started outlives the hook: at the deadline the hook kills the
+// reporter's process group, and a reporter that returns without a report ends its own group.
+// (Reviewer cases; the Python hook killed one pid.)
+func TestHookLeavesNoChild(t *testing.T) {
+	// The fake rex starts `sleep 30`, records its pid and waits: in the report call (the hook's
+	// deadline ends it) or in `client ls` (the reporter's 1.5 s limit ends that call).
+	const child = "sleep 30 &\necho $! > \"$HOOK_SLEEP_PID\"\nwait\n"
+	for _, c := range []struct{ name, script string }{
+		{"deadline", "#!/bin/sh\ncase \"$*\" in\n*\"client ls --json\") printf '%s' \"$HOOK_CLIENTS\"; exit 0 ;;\nesac\n" + child},
+		{"discovery timeout", "#!/bin/sh\n" + child},
+	} {
+		l := newHookLab(t)
+		if err := os.WriteFile(l.env["REX_BIN"], []byte(c.script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		pidPath := filepath.Join(l.dir, "sleep.pid")
+		l.env["HOOK_SLEEP_PID"] = pidPath
+		input, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
+		cmd := l.command("codex")
+		cmd.Stdin = bytes.NewReader(input)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		// Record the child's start time while it is known to be alive, so the check and the
+		// cleanup below act only on that process, never on a later process with the same pid.
+		pid, birth := 0, ""
+		for end := time.Now().Add(time.Second); time.Now().Before(end) && birth == ""; time.Sleep(10 * time.Millisecond) {
+			if b, err := os.ReadFile(pidPath); err == nil && len(bytes.TrimSpace(b)) > 0 {
+				pid = atoi(t, strings.TrimSpace(string(b)))
+				birth = startTime(pid)
+			}
+		}
+		if birth == "" {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatalf("%s: the child did not start", c.name)
+		}
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		if startTime(pid) == birth {
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("%s: the hook returned with the reporter's child %d still alive", c.name, pid)
+		}
 	}
 }
