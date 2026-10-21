@@ -469,8 +469,8 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
 
   ```go
   type pluginCmdOpts struct {
-  	// remote gives the fetch URL of github:<owner>/<repo>. Default: https://github.com/<owner>/<repo>.
-  	remote func(owner, repo string) string
+      // remote gives the fetch URL of github:<owner>/<repo>. Default: https://github.com/<owner>/<repo>.
+      remote func(owner, repo string) string
   }
   func pluginSync(ctx context.Context, cfgPath string, o pluginCmdOpts) error
   func pluginUpdate(ctx context.Context, cfgPath string, args []string, o pluginCmdOpts) error
