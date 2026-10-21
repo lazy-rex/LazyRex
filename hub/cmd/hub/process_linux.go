@@ -12,7 +12,8 @@ import (
 
 // Linux reads /proc. Verified on Linux (reviewer, 2026-10-21, Rex 0.0.1792593189-g3f4a0a, Go 1.27.2
 // linux/amd64, CGO_ENABLED=0): the process and guard unit tests and the plugin lifecycle labs
-// (TestManaged*Lab, TestPlugin*Lab). The full harness suite is untested on Linux.
+// (TestManaged*Lab, TestPlugin*Lab). The full harness (TestHarness) passes on Linux at c6f5c15
+// (reviewer, 2026-10-21, same Rex and Go).
 
 var bootTime struct {
 	once sync.Once
