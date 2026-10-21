@@ -330,6 +330,10 @@ func main() {
 	defer stop()
 	h, err := start(ctx, cfg, fs)
 	if err != nil {
+		if ctx.Err() != nil {
+			log.Print(err) // a signal during the start is a deliberate stop: exit 0
+			return
+		}
 		log.Fatal(err)
 	}
 	h.shutdown = stop

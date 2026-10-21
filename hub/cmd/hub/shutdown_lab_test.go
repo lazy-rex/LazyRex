@@ -93,6 +93,49 @@ func TestHubShutdownExitStatusLab(t *testing.T) {
 	}
 }
 
+// A signal while the hub starts is also a deliberate stop: exit 0. The test pauses its own lab
+// server (SIGSTOP), so the hub waits in start for the Rex connection, then sends SIGTERM to the
+// hub. Lab only: SHUTDOWN_LAB=1.
+func TestHubSignalDuringStartLab(t *testing.T) {
+	if os.Getenv("SHUTDOWN_LAB") != "1" {
+		t.Skip("set SHUTDOWN_LAB=1 to run the shutdown lab test (it starts its own lab server)")
+	}
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "lazyrex-hub")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	lab, err := os.MkdirTemp("/tmp", "rexlab-shutdown-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(lab) })
+	server := startLabServer(t, root, lab)
+	cfg := filepath.Join(tmp, "hub.json")
+	b, _ := json.Marshal(map[string]any{"server": "unix://" + lab + "/rex.sock", "state": filepath.Join(tmp, "state"),
+		"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server.Process.Signal(syscall.SIGSTOP)
+	hub, exit := startShutdownHub(t, bin, cfg, filepath.Join(tmp, "hub.log"))
+	if hubExited(exit, time.Second) {
+		t.Fatalf("the hub exited before the signal:\n%s", readLog(tmp, "hub.log"))
+	}
+	if strings.Contains(readLog(tmp, "hub.log"), "hub_started") {
+		t.Fatal("the hub started although the lab server is paused")
+	}
+	hub.Process.Signal(syscall.SIGTERM)
+	if code := waitHubExit(t, hub, exit); code != 0 {
+		t.Errorf("exit status after SIGTERM during the start: %d, want 0\n%s", code, readLog(tmp, "hub.log"))
+	}
+}
+
 // startLabServer starts lab/server.sh in lab (its own new directory) and waits for its socket. The
 // script execs rex, so the started process is the server; cleanup stops only that process.
 func startLabServer(t *testing.T, root, lab string) *exec.Cmd {
@@ -109,6 +152,7 @@ func startLabServer(t *testing.T, root, lab string) *exec.Cmd {
 	done := make(chan struct{})
 	go func() { cmd.Wait(); logf.Close(); close(done) }()
 	t.Cleanup(func() {
+		cmd.Process.Signal(syscall.SIGCONT) // a test may have paused it
 		cmd.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-done:

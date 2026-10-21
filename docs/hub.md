@@ -442,9 +442,9 @@ The hub process stops in three ways. Each one has its own exit status:
 | `hub.admin.shutdown` (an operator) | 0 |
 | The Rex connection closed (the hub logs `rex connection closed`) | 1 |
 
-A deliberate stop gives 0, and a lost Rex connection gives 1, so a supervisor can restart only after a failure. A configuration or start error before the hub runs gives 1 (`log.Fatal`); a missing `-config` gives 2. Plugins stay in their blocks after each stop; the next hub start recovers them.
+A deliberate stop gives 0, and a lost Rex connection gives 1, so a supervisor can restart only after a failure. A signal while the hub starts (for example while it connects to Rex) is also a deliberate stop: 0. A configuration or start error before the hub runs gives 1 (`log.Fatal`); a missing `-config` gives 2. Plugins stay in their blocks after each stop; the next hub start recovers them.
 
-Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The test starts its own lab server (`lab/server.sh` in a new `/tmp/rexlab-shutdown-*` directory) and stops only that server and its own hubs. It checks a refused argument (the hub keeps running), the reply `{"stopping": true}` and exit 0, SIGTERM and exit 0, and exit 1 after the lab server stops. Observed on Rex 0.0.1792158932-g88fd41 (macOS, 2026-10-21): pass, 8 runs in a row. The unit test `TestAdminShutdownDispatch` checks the refusals and that only the reply path starts the stop.
+Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The test starts its own lab server (`lab/server.sh` in a new `/tmp/rexlab-shutdown-*` directory) and stops only that server and its own hubs. It checks a refused argument (the hub keeps running), the reply `{"stopping": true}` and exit 0, SIGTERM and exit 0, and exit 1 after the lab server stops. `TestHubSignalDuringStartLab` pauses its lab server (SIGSTOP), so the hub waits in its start for the Rex connection, and checks exit 0 after SIGTERM (before the fix: 1, "terminated signal received"). Observed on Rex 0.0.1792158932-g88fd41 (macOS, 2026-10-21): pass, 8 runs in a row. The unit test `TestAdminShutdownDispatch` checks the refusals and that only the reply path starts the stop.
 
 ## Spawn directories and path locks
 
