@@ -10,7 +10,9 @@ import (
 	"sync"
 )
 
-// Linux reads /proc (untested on Linux: build-checked only until a Linux lab runs).
+// Linux reads /proc. Verified on Linux (reviewer, 2026-10-21, Rex 0.0.1792593189-g3f4a0a, Go 1.27.2
+// linux/amd64, CGO_ENABLED=0): the process and guard unit tests and the plugin lifecycle labs
+// (TestManaged*Lab, TestPlugin*Lab). The full harness suite is untested on Linux.
 
 var bootTime struct {
 	once sync.Once
