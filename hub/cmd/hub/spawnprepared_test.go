@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -130,5 +131,78 @@ func TestSpawnNotCreatedLab(t *testing.T) {
 	fresh, err := h.spawnWorker(ctx, p, map[string]any{"for": "user", "profile": "probe", "key": "fresh"})
 	if err != nil || fresh.(map[string]any)["status"] != "open" || sent != 1 {
 		t.Fatalf("fresh: %v %v, %d sent", fresh, err, sent)
+	}
+	// The failure write fails too: the call returns an error, not a failed result that is not
+	// stored. The replay reads pending until resolveNext stores the failure.
+	allowSending, allowFailed := rejectSending(t, h), rejectFailed(t, h)
+	lost, err := h.spawnWorker(ctx, p, map[string]any{"for": "user", "profile": "probe", "key": "lost"})
+	var unrec *spawnUnrecorded
+	if !errors.As(err, &unrec) || lost != nil || sent != 1 {
+		t.Fatalf("lost: %v %v, %d sent", lost, err, sent)
+	}
+	allowFailed()
+	allowSending()
+	if pending, err := h.spawnWorker(ctx, p, map[string]any{"for": "user", "profile": "probe", "key": "lost"}); err != nil || pending.(map[string]any)["status"] != "pending" || sent != 1 {
+		t.Fatalf("lost replay: %v %v, %d sent", pending, err, sent)
+	}
+	if _, err := h.resolveNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if failed, err := h.spawnWorker(ctx, p, map[string]any{"for": "user", "profile": "probe", "key": "lost"}); err != nil || failed.(map[string]any)["status"] != "failed" || sent != 1 {
+		t.Fatalf("lost after recovery: %v %v, %d sent", failed, err, sent)
+	}
+}
+
+// rejectFailed makes the failure write fail in the database too.
+func rejectFailed(t *testing.T, h *Hub) func() {
+	t.Helper()
+	if _, err := h.db.Exec(`CREATE TRIGGER reject_failed BEFORE UPDATE OF status ON spawns WHEN NEW.status = 'failed'
+ BEGIN SELECT RAISE(FAIL, 'test: failed refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		if _, err := h.db.Exec(`DROP TRIGGER reject_failed`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// When the sending transition and the failure write both fail, markSending reports an error
+// (spawnUnrecorded) and claims no failure: the row stays prepared and reads as pending. When the
+// database takes writes again, resolveNext stores the failure as not created.
+func TestMarkSendingUnrecorded(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	insertSpawn(t, h, "u", "prepared", 0)
+	allowSending, allowFailed := rejectSending(t, h), rejectFailed(t, h)
+	u := &spawnRow{ID: "u", Status: "prepared"}
+	err := h.markSending(ctx, u)
+	var unrec *spawnUnrecorded
+	if !errors.As(err, &unrec) || u.Status != "prepared" {
+		t.Fatalf("markSending: %v, status %s", err, u.Status)
+	}
+	if st, _ := spawnState(t, h, "u"); st != "prepared" {
+		t.Fatalf("stored: %s", st)
+	}
+	if s, err := h.spawnByID(ctx, "u"); err != nil || s.result()["status"] != "pending" {
+		t.Fatalf("replay: %v %v", s, err)
+	}
+	// The database still refuses: resolveNext reports the error and keeps the row to retry.
+	if _, err := h.resolveNext(ctx); err == nil {
+		t.Fatal("resolveNext: no error while the write fails")
+	}
+	allowFailed()
+	allowSending()
+	if _, err := h.resolveNext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st, why := spawnState(t, h, "u"); st != "failed" || !strings.HasPrefix(why, "not_created: ") {
+		t.Fatalf("recovered: %s %q", st, why)
+	}
+	if s, err := h.spawnByID(ctx, "u"); err != nil || s.result()["status"] != "failed" {
+		t.Fatalf("replay after recovery: %v %v", s, err)
+	}
+	if len(h.unsentSpawns) != 0 {
+		t.Fatalf("unsent left: %v", h.unsentSpawns)
 	}
 }

@@ -342,6 +342,9 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 		blocks[i] = map[string]any{"flavor": "com.superlogical.terminal.shell", "label": "lazyrex-spawn:" + s.ID, "options": opts}
 	}
 	if err := h.markSending(ctx, rows...); err != nil {
+		if u := (*spawnUnrecorded)(nil); errors.As(err, &u) {
+			return nil, err
+		}
 		return h.windowResult(ctx, key, string(idsJSON)) // nothing was sent: every leaf failed (not_created)
 	}
 	next := 0

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -271,6 +272,28 @@ func TestSpawnWindowLab(t *testing.T) {
 		}
 		if blocks, _ := h.blocksIn(ctx, target); len(blocks) != 0 {
 			t.Fatalf("refused: %d panes", len(blocks))
+		}
+		// The failure write fails too: an error, not a failed result that is not stored. The
+		// replay reads pending until resolveNext stores the failures.
+		allowSending, allowFailed := rejectSending(t, h), rejectFailed(t, h)
+		args := map[string]any{"for": "user", "key": "lost", "session": target, "layout": layout}
+		raw, _ := json.Marshal(args)
+		var m map[string]any
+		json.Unmarshal(raw, &m)
+		var unrec *spawnUnrecorded
+		if out, err := h.spawnWindow(ctx, p, m); !errors.As(err, &unrec) || out != nil || calls != 0 {
+			t.Fatalf("lost: %v %v, %d calls", out, err, calls)
+		}
+		allowFailed()
+		allowSending()
+		if out := call(t, h, p, args); out["status"] != "pending" || calls != 0 {
+			t.Fatalf("lost replay: %#v, %d calls", out, calls)
+		}
+		if _, err := h.resolveNext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if out := call(t, h, p, args); out["status"] != "failed" || calls != 0 {
+			t.Fatalf("lost after recovery: %#v, %d calls", out, calls)
 		}
 	})
 

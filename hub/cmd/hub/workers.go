@@ -579,6 +579,9 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	}
 	h.spawnAdmitted(s, prof, name)
 	if err := h.markSending(ctx, s); err != nil {
+		if u := (*spawnUnrecorded)(nil); errors.As(err, &u) {
+			return nil, err
+		}
 		return s.result(), nil // nothing was sent: the spawn failed (not_created)
 	}
 	argv := spawnArgv(s, prof, resolved)
@@ -816,10 +819,54 @@ func (h *Hub) markSending(ctx context.Context, rows ...*spawnRow) error {
 	// A request context that ended must not leave the rows prepared until the next hub.
 	fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	why := spawnNotCreated + ": " + err.Error()
+	var lost error
 	for _, s := range rows {
-		h.failSpawn(fctx, s, spawnNotCreated+": "+err.Error())
+		if ferr := h.failSpawn(fctx, s, why); ferr != nil && !errors.Is(ferr, errSpawnMoved) {
+			// The row stays prepared and holds its quota and cwd lock: resolveNext stores the
+			// failure when the database takes it.
+			h.mu.Lock()
+			if h.unsentSpawns == nil {
+				h.unsentSpawns = map[string]string{}
+			}
+			h.unsentSpawns[s.ID] = why
+			h.mu.Unlock()
+			lost = ferr
+		}
+	}
+	if lost != nil {
+		h.kickSpawns()
+		return &spawnUnrecorded{err: err, lost: lost}
 	}
 	return err
+}
+
+// spawnUnrecorded is the error of markSending when the hub sent nothing and could not store the
+// failure either. The caller returns it: a failed result would not be durable, and a replay of the
+// key reads the stored row (pending until resolveNext stores the failure).
+type spawnUnrecorded struct{ err, lost error }
+
+func (e *spawnUnrecorded) Error() string {
+	return fmt.Sprintf("%s: %v; the hub could not store the failure (%v) and stores it later", spawnNotCreated, e.err, e.lost)
+}
+
+// retryUnsent stores the failures that markSending could not store.
+func (h *Hub) retryUnsent(ctx context.Context) error {
+	h.mu.Lock()
+	unsent := make(map[string]string, len(h.unsentSpawns))
+	for id, why := range h.unsentSpawns {
+		unsent[id] = why
+	}
+	h.mu.Unlock()
+	for id, why := range unsent {
+		if err := h.failSpawn(ctx, &spawnRow{ID: id}, why); err != nil && !errors.Is(err, errSpawnMoved) {
+			return err
+		}
+		h.mu.Lock()
+		delete(h.unsentSpawns, id)
+		h.mu.Unlock()
+	}
+	return nil
 }
 
 func (h *Hub) setSending(ctx context.Context, rows []*spawnRow) error {
@@ -878,12 +925,25 @@ func (h *Hub) failUnsentSpawns(ctx context.Context) error {
 	return nil
 }
 
-func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) {
+// errSpawnMoved: failSpawn found the row no longer prepared or sending, so it changed nothing.
+var errSpawnMoved = errors.New("the spawn is no longer pending")
+
+// failSpawn stores a failure. It changes s, emits the event and reports the change only after the
+// update is stored.
+func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) error {
 	// The agent ID stays retired: join refuses an agent whose spawn failed.
-	h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status IN ('prepared', 'sending')`, why, s.ID)
+	res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status IN ('prepared', 'sending')`, why, s.ID)
+	if err != nil {
+		log.Printf("spawn %s: store the failure: %v", s.ID, err)
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errSpawnMoved
+	}
 	s.Status, s.Error = "failed", why
 	h.ev.emit("spawn_failed", map[string]any{"spawn_id": s.ID, "error": why})
 	h.changed("workers")
+	return nil
 }
 
 // resolveSpawns reports spawns whose Rex request had no known outcome, for example after a hub
@@ -933,6 +993,9 @@ func (h *Hub) resolveOnce(ctx context.Context) error {
 // resolveNext runs one pass. It returns when a pending spawn leaves its first-request window
 // (zero: no such spawn), so the caller can wake for it without polling.
 func (h *Hub) resolveNext(ctx context.Context) (next time.Time, err error) {
+	if err := h.retryUnsent(ctx); err != nil {
+		return time.Time{}, err
+	}
 	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('sending', 'open')`)
 	if err != nil {
 		return time.Time{}, err

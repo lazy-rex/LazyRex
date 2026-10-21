@@ -193,6 +193,10 @@ type Hub struct {
 	titleRenames map[string]bool // sessions with a pending identityRenamesSoon
 	ui           *uiState
 	vs           *viewSvc
+
+	// unsentSpawns: spawn ID -> the not_created reason that markSending could not store (h.mu).
+	// resolveNext stores it later.
+	unsentSpawns map[string]string
 }
 
 func isRealServer(s string) bool {
