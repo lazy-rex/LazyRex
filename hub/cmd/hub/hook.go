@@ -48,18 +48,15 @@ func hookMain(args []string) int {
 // runHook runs the hook (args: kind) or the reporter (args: -reporter kind). self is the command
 // that runs this function again (the binary and its subcommand).
 func runHook(args, self []string) int {
+	if !inRexPane() {
+		return 0
+	}
 	if len(args) == 2 && args[0] == "-reporter" {
 		hookReport(args[1]) // returns only when it reports nothing
 		return 0
 	}
 	if len(args) != 1 || (args[0] != "claude" && args[0] != "codex") {
 		return 0
-	}
-	// Never let Rex choose the user's default server for a hook outside a Rex pane.
-	for _, k := range []string{"REX_SERVER", "REX_SESSION", "REX_BLOCK"} {
-		if os.Getenv(k) == "" {
-			return 0
-		}
 	}
 	cmd := exec.Command(self[0], append(append([]string(nil), self[1:]...), "-reporter", args[0])...)
 	cmd.Stdin = os.Stdin // an *os.File: the reporter gets the descriptor; this process never reads it
@@ -168,4 +165,15 @@ func hookReport(kind string) {
 		}
 	}
 	syscall.Exec(rex, argv, os.Environ())
+}
+
+// inRexPane gates both the hook and the reporter (which the CLI can also run): never let Rex
+// choose the user's default server for a hook outside a Rex pane.
+func inRexPane() bool {
+	for _, k := range []string{"REX_SERVER", "REX_SESSION", "REX_BLOCK"} {
+		if os.Getenv(k) == "" {
+			return false
+		}
+	}
+	return true
 }

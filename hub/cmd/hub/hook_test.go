@@ -311,3 +311,25 @@ func atoi(t *testing.T, s string) int {
 	}
 	return n
 }
+
+// The reporter mode is reachable through the CLI (`lazyrex-hub hook -reporter codex`). Without the
+// Rex variables it must not call Rex either: Rex would choose a server.
+func TestHookReporterModeKeepsTheServerGate(t *testing.T) {
+	for _, missing := range []string{"REX_SERVER", "REX_SESSION", "REX_BLOCK"} {
+		l := newHookLab(t)
+		delete(l.env, missing)
+		input, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
+		cmd := exec.Command(os.Args[0], append(helperSelf(), "-reporter", "codex")[1:]...)
+		for k, v := range l.env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		cmd.Env = append(cmd.Env, "HOOK_CAPTURE="+l.capture)
+		cmd.Stdin = bytes.NewReader(input)
+		if err := cmd.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if c := l.read(); c != nil {
+			t.Fatalf("without %s the reporter called Rex: %q", missing, c)
+		}
+	}
+}
