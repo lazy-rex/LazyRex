@@ -31,6 +31,16 @@ func sameManaged(a, b *configEntry) bool {
 	return a.Source == b.Source && maps.Equal(a.Args, b.Args) && slices.Equal(a.WatchRoots, b.WatchRoots)
 }
 
+// updateManaged gives the entry o of a changed managed id every parsed field of m, and keeps its
+// bound name. The resolution fields (cand, err, seen) are m's zero values: resolveLocked sets them
+// again under the same entriesMu section. A copy of the whole entry keeps a later parsed field
+// (for example a GitHub source's owner, repo, subdir and ref) from going stale.
+func updateManaged(o, m *configEntry) {
+	name := o.name
+	*o = *m
+	o.name = name
+}
+
 // setKeptLocked gives a record whose entry was removed the kept state: retained while its child
 // lives, else refused. h.mu must be held.
 func (h *Hub) setKeptLocked(pl *Plugin) {
@@ -93,7 +103,7 @@ func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any,
 		case sameManaged(o, m):
 			next = append(next, o)
 		default:
-			o.Source, o.Args, o.WatchRoots, o.dir, o.github = m.Source, m.Args, m.WatchRoots, m.dir, m.github
+			updateManaged(o, m)
 			next, starts, changed = append(next, o), append(starts, o), append(changed, o.managed)
 		}
 	}
