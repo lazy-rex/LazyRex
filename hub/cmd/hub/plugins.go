@@ -968,10 +968,13 @@ func (h *Hub) adminTarget(action string, args map[string]any) (*Plugin, error) {
 			return nil, bad("give plugin, or (hub.admin.start only) source")
 		}
 		h.entriesMu.Lock()
+		// The first entry with the source: config entries come first, and a config entry owns its
+		// source over a managed duplicate (section 13), which is refused.
 		var e *configEntry
 		for _, x := range h.entries {
 			if x.Source == source {
 				e = x
+				break
 			}
 		}
 		if e != nil && e.name == "" {

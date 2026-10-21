@@ -175,3 +175,31 @@ func TestManagedPluginsList(t *testing.T) {
 		t.Errorf("refused %s", r)
 	}
 }
+
+// hub.admin.start {source} with one exact source in the config and in the managed file selects
+// the config entry, which owns the source; the managed duplicate is refused (reviewer,
+// hub-review-2e2-findings-1).
+func TestAdminStartSourcePrefersConfigEntry(t *testing.T) {
+	dir := t.TempDir()
+	plugDir(t, dir, "a", `{"name":"a","main":"a.lua"}`, "a.lua")
+	abs := filepath.Join(dir, "a")
+	writeManaged(t, dir, `{"plugins":[{"id":"dup","source":"`+abs+`"}]}`)
+	c, err := writeConfig(t, dir, `[{"source":"`+abs+`"}]`)
+	if err != nil || c.managedErr != nil {
+		t.Fatal(err, c.managedErr)
+	}
+	h, _ := workerTestHub(t)
+	h.cfg = c
+	h.entries = c.entries
+	h.plugins = map[string]*Plugin{}
+	h.entriesMu.Lock()
+	h.resolveLocked()
+	h.entriesMu.Unlock()
+	if c.entries[1].err == nil {
+		t.Fatal("the managed duplicate is not refused")
+	}
+	pl, err := h.adminTarget("hub.admin.start", map[string]any{"source": abs})
+	if err != nil || pl == nil || pl.Name != "a" || pl.entry != c.entries[0] {
+		t.Errorf("adminTarget: %v, %v", pl, err)
+	}
+}
