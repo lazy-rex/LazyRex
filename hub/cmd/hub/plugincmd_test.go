@@ -686,3 +686,34 @@ func TestRelativeState(t *testing.T) {
 		t.Fatalf("the cache is not under the relative state: %v", err)
 	}
 }
+
+// A repair of ref_kind takes the kind from a full ref form (refs/heads/..., refs/tags/...), with no
+// ls-remote: the ref may be gone while the pinned commit is still available by ID. Only a bare name
+// needs ls-remote.
+func TestSyncRepairKindFromRefForm(t *testing.T) {
+	for _, c := range []struct{ ref, kind, del string }{
+		{"refs/heads/main", "branch", "branch -D main"},
+		{"refs/tags/v1", "tag", "tag -d v1"},
+	} {
+		env := newCmdEnv(t)
+		r := env.repo("lazy-rex", "Messaging", "messaging")
+		r.git("tag", "v1")
+		src := "github:lazy-rex/Messaging@" + c.ref
+		cfg := env.config(src)
+		if err := env.sync(cfg); err != nil {
+			t.Fatal(err)
+		}
+		good := env.lock().Plugins[src]
+		e := *good
+		e.RefKind = ""
+		env.writeLockRaw(&pluginLock{Version: 1, Plugins: map[string]*lockEntry{src: &e}})
+		r.git("checkout", "-q", "-b", "saved")
+		r.git(strings.Fields(c.del)...)
+		if err := env.sync(cfg); err != nil {
+			t.Fatalf("%s: %v", c.ref, err)
+		}
+		if got := env.lock().Plugins[src]; got.RefKind != c.kind || got.Commit != good.Commit {
+			t.Fatalf("%s: %+v", c.ref, got)
+		}
+	}
+}

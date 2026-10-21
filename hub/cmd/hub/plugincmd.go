@@ -260,8 +260,12 @@ func syncEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRo
 	if why := le.trust(r); why != "" {
 		return nil, "", untrustedCommit(cfg.path, e.Source, why)
 	}
-	kind := le.RefKind
-	if !contains(refKinds(r.Ref), kind) {
+	kind, kinds := le.RefKind, refKinds(r.Ref)
+	switch {
+	case contains(kinds, kind):
+	case len(kinds) == 1:
+		kind = kinds[0] // the ref form gives the kind: no ls-remote, so a deleted ref does not matter
+	default:
 		// A bare name is a branch or a tag; ls-remote tells which. The commit stays the locked one.
 		k, err := withTmp(tmpRoot, func(tmp string) (string, error) {
 			res, err := resolveRef(ctx, tmp, o.url(r), r.Ref)
