@@ -18,7 +18,7 @@ Built on main:
   spawns in `startOrder`. `hub.plugins` reports `source` and `dir` for each running plugin, and a
   `refused` list. The harness lab config has local source entries only.
 
-On the branch `plugins/step2d` (in review), step 2d part 1:
+Step 2d part 1:
 
 - One start path, `startPlugin` (`plugins.go`), for hub start recovery, `hub.admin.start`, a crash
   respawn and a restart after a session loss. Its order is the one of section 7, "Lifecycle".
@@ -55,9 +55,24 @@ On the branch `plugins/step2d` (in review), step 2d part 1:
   when the last resolution refused it. `plugins` and `refused` keep their shape. `kept` lists each
   kept record: `name`, `source`, `state`, `error`, `dir`.
 
-Not built: the rest of step 2 (2d part 2: the `waiting` state and the wake rule; 2e: managed
-plugins) and step 3 (the lock, the cache, the commands). Until part 2, hub start spawns a dependent
-without waiting for its dependencies to register, as before.
+On the branch `plugins/step2d2` (in review), step 2d part 2:
+
+- The state `waiting` (`startOrWait`, `plugins.go`). After the start check and the retire, a
+  plugin whose dependency has no accepted `hub.register` for its current instance waits. A
+  dependency counts as registered when it has a config entry, is not retained, has a client from
+  `hub.register` and a live child. An unresolved spawn intent gives no client, so the dependent
+  waits. Waiting makes no spawn intent and changes no recorded ownership. The event
+  `plugin_waiting {plugin, waiting}` comes when the names change.
+- The wake rule (`waitLoop`): an accepted `hub.register`, a `hub.admin.start` or `hub.admin.stop`
+  of any plugin, and a refusal wake the loop. It runs the start path again for each waiting plugin,
+  in config order. A wake during a scan makes one more scan. A stop of a waiting plugin ends the
+  wait. A stop, a refusal and a spawn clear the names.
+- Hub start: a dependency spawns first; its dependent waits and spawns after the dependency
+  registers.
+- `hub.admin.start` of a plugin that must wait gives `{"desired": "running", "state": "waiting",
+  "waiting": [names]}`. `hub.plugins` entries in state `waiting` add `waiting`.
+
+Not built: step 2e (managed plugins) and step 3 (the lock, the cache, the commands).
 
 ## Terms
 

@@ -310,9 +310,11 @@ would. The call returns when a new hub process is ready: every plugin is registe
 face lists its exports. It returns the new `hub.test.status` (with `pid`).
 
 `hub.test.status` gives each plugin record `registered`, `client_id`, `exports`, `face`, `state`
-(running, stopped, refused or retained), `error` (the refused start), `instance_id`, `block_id` and
-`child_pid`. A hub start (also a restart) fails at once when a plugin is refused or retained: the
-error names the plugin and its error.
+(running, stopped, waiting, refused or retained), `error` (the refused start), `waiting` (the
+dependencies that are not registered), `instance_id`, `block_id` and `child_pid`. A hub start (also
+a restart) fails at once when a plugin is refused or retained: the error names the plugin and its
+error. A waiting plugin is not ready yet: the harness waits, and its timeout text names the
+dependencies.
 
 The test-only config key `test_hold_recovery: true` holds plugin recovery at hub start until
 `hub.test.recover`, at most 60 s. A Go lab test uses it to call an action before recovery reaches
