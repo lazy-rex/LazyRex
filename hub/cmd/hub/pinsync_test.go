@@ -689,3 +689,68 @@ func TestPullMain(t *testing.T) {
 		t.Errorf("an empty document: exit %d: %s", code, errb.String())
 	}
 }
+
+// A failed write of the result lines fails the pull, with the plugin pull prefix. The lock and
+// the base are already written, so the text claims no unchanged lock (codex-23's probe).
+func TestPullOutputFailure(t *testing.T) {
+	a, b := machines(t)
+	a.repo("lazy-rex", "Messaging", "messaging")
+	cfgA := a.config(srcM)
+	if err := a.sync(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	cfgB := b.config(b.local("loc", "loc"))
+	p := filepath.Join(t.TempDir(), "pins.json")
+	if err := os.WriteFile(p, []byte(a.mustExport(cfgA)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := pluginPull(context.Background(), cfgB, p, nil, nil, b.opts, failWriter{})
+	if err == nil || err.Error() != "plugin pull: the lock and the base are written, but the result lines are not: disk full" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// A pull that only removes an orphaned lock entry changes the lock. A base write failure then
+// says that the lock changed (codex-23's probe).
+func TestPullBaseFailureAfterOrphanRemoval(t *testing.T) {
+	a, b := machines(t)
+	a.repo("lazy-rex", "Messaging", "messaging")
+	cfgA, cfgB := a.config(srcM), b.config(srcM)
+	if err := a.sync(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.sync(cfgB); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.mustExport(cfgA)
+	cfgB = b.config(b.local("loc", "loc"))
+	before := string(b.lockBytes())
+	id, _ := readPullID(filepath.Join(a.dir, "hub.lock.json"))
+	t.Cleanup(func() { pullWritePeers = writePeers })
+	pullWritePeers = func(string, *peerBase) error { return errors.New("disk full") }
+	_, _, err := b.pull(cfgB, doc, nil, nil)
+	if string(b.lockBytes()) == before {
+		t.Fatal("the pull did not remove the orphaned entry")
+	}
+	if want := "plugin pull: the lock changed, but the base of " + id + " did not: disk full"; err == nil || err.Error() != want {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// A base write failure of a pull that changes nothing in the lock says so.
+func TestPullBaseFailureLockUnchanged(t *testing.T) {
+	a, b := machines(t)
+	a.repo("lazy-rex", "Messaging", "messaging")
+	cfgA, cfgB := a.config(srcM), b.config(srcM)
+	a.sync(cfgA)
+	b.sync(cfgB)
+	doc := a.mustExport(cfgA)
+	before := string(b.lockBytes())
+	id, _ := readPullID(filepath.Join(a.dir, "hub.lock.json"))
+	t.Cleanup(func() { pullWritePeers = writePeers })
+	pullWritePeers = func(string, *peerBase) error { return errors.New("disk full") }
+	_, _, err := b.pull(cfgB, doc, nil, nil)
+	if want := "plugin pull: the base of " + id + ": disk full; the lock is unchanged"; err == nil || err.Error() != want || string(b.lockBytes()) != before {
+		t.Fatalf("got %v", err)
+	}
+}

@@ -365,7 +365,8 @@ digest. A source name can name a private repository.
   "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "commit": "", "digest": ""}]}
 ```
 
-- The entries are sorted by source. The same pins give the same bytes. The document has no path
+- The entries are sorted by source. The same pull identity (`hub`) and the same pins give the same
+  bytes; two locks with the same pins give different documents. The document has no path
   and no cache token. An empty document has `"entries": []`.
 - The reader is strict. Another version gives `pin document version N is not supported by this
   hub`. Unknown fields and a source that is there twice are refused.
@@ -418,12 +419,21 @@ and its base stays.
   the config must be installed.
 - Any fetch, digest or graph failure writes nothing: the lock and the base stay byte-unchanged.
   Published cache entries stay, as after a failed update.
-- The lock is written first, then the base. If the base write fails: `the pins changed, but the
-  base of <id> did not: the next pull can report conflicts for <sources>`. Nothing is rolled back.
+- The new lock has the GitHub entries of the config only. As for sync, pull removes an orphaned
+  lock entry (section 13); the output has no line for it.
+- The lock is written first (only when its bytes change), then the base. Nothing is rolled back.
+  If the base write fails, the text tells whether the lock changed:
+  - taken pins: `the pins changed, but the base of <id> did not: the next pull can report
+    conflicts for <sources>`;
+  - only a removed orphan: `the lock changed, but the base of <id> did not`;
+  - no change: `the base of <id>: ...; the lock is unchanged`.
+
   After a crash between the two writes, the next pull is `unchanged` while the peer has the same
   pin, and a conflict when the peer or the local pin moved.
 - Output: one line for each source, `<outcome>\t<source>\tlocal <commit|->\tpeer <commit>`. A
-  remaining conflict gives exit 1, after the other sources applied.
+  remaining conflict gives exit 1, after the other sources applied. The lines come after both
+  writes. If they cannot be written: `the lock and the base are written, but the result lines are
+  not`.
 
 ## 7. Start, states and dependencies
 
@@ -716,6 +726,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | pull: each merge case, -take and -keep, a document from this lock, a malformed base | the outcome lines and the base; refused before any fetch | U |
 | pull: a fetch, digest or graph failure | lock and base byte-unchanged | U |
 | pull: a base write failure, then the same peer, a moved peer, a local update | the text; unchanged; conflict; conflict | U |
+| pull: a base write failure with no lock change, and after only an orphan removal; a failed write of the result lines | the text for each case | U |
 | pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |

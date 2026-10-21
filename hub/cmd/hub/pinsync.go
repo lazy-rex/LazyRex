@@ -455,14 +455,17 @@ func (p *pullPlan) conflicts() bool {
 }
 
 // write writes one line for each result: <outcome>\t<source>\tlocal <commit|->\tpeer <commit>.
-func (p *pullPlan) write(w io.Writer) {
+func (p *pullPlan) write(w io.Writer) error {
 	for _, r := range p.results {
 		l := r.Local.Commit
 		if l == "" {
 			l = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\tlocal %s\tpeer %s\n", r.Outcome, r.Source, l, r.Peer.Commit)
+		if _, err := fmt.Fprintf(w, "%s\t%s\tlocal %s\tpeer %s\n", r.Outcome, r.Source, l, r.Peer.Commit); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // pullWritePeers writes the base file after the lock. Tests replace it to make the base write fail
@@ -577,23 +580,32 @@ func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []strin
 	if err != nil {
 		return false, fail(err)
 	}
+	// changed: the lock bytes differ. Taken pins change them, and so does a removed orphaned entry.
+	changed := false
 	if cur, err := os.ReadFile(cfg.lock); err != nil || !bytes.Equal(cur, nb) {
+		changed = true
 		if err := writeLock(cfg.lock, next); err != nil {
 			return false, fail(err)
 		}
 	}
 	peers.Peers[doc.Hub] = plan.base
 	if err := pullWritePeers(cfg.lock, peers); err != nil {
-		var changed []string
-		for src := range plan.take {
-			changed = append(changed, src)
-		}
-		sort.Strings(changed)
-		if len(changed) == 0 {
+		if !changed {
 			return false, fail(fmt.Errorf("the base of %s: %w", doc.Hub, err))
 		}
-		return false, fmt.Errorf("plugin pull: the pins changed, but the base of %s did not: the next pull can report conflicts for %s: %w", doc.Hub, strings.Join(changed, ", "), err)
+		var taken []string
+		for src := range plan.take {
+			taken = append(taken, src)
+		}
+		if len(taken) == 0 {
+			return false, fmt.Errorf("plugin pull: the lock changed, but the base of %s did not: %w", doc.Hub, err)
+		}
+		sort.Strings(taken)
+		return false, fmt.Errorf("plugin pull: the pins changed, but the base of %s did not: the next pull can report conflicts for %s: %w", doc.Hub, strings.Join(taken, ", "), err)
 	}
-	plan.write(w)
+	// The lock and the base are written, so an output error claims no unchanged lock.
+	if err := plan.write(w); err != nil {
+		return false, fmt.Errorf("plugin pull: the lock and the base are written, but the result lines are not: %w", err)
+	}
 	return plan.conflicts(), nil
 }
