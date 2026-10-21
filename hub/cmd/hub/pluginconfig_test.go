@@ -218,12 +218,14 @@ func TestPluginsListStates(t *testing.T) {
 		{index: 3, Source: "s3", name: "run", seen: "run", err: boom},
 		{index: 4, Source: "s4", name: "kept", seen: "kept", err: boom},
 		{index: 5, Source: "s5", name: "off", seen: "off"},
+		{index: 6, Source: "s6", name: "dep", seen: "dep"},
 	}
 	h.entries = es
 	h.plugins = map[string]*Plugin{
 		"run":  {Name: "run", entry: es[2], Desired: "running", run: pluginRun{Name: "run", Dir: "/d/run"}},
 		"kept": {Name: "kept", entry: es[3], Desired: "running", state: "retained", refusal: "plugin kept: old", run: pluginRun{Name: "kept", Dir: "/d/kept"}},
 		"off":  {Name: "off", entry: es[4], Desired: "stopped"},
+		"dep":  {Name: "dep", entry: es[5], Desired: "running", state: "waiting", waiting: []string{"run", "off"}},
 	}
 	out, err := h.pluginsList(context.Background())
 	if err != nil {
@@ -254,6 +256,7 @@ func TestPluginsListStates(t *testing.T) {
 		`{"candidate":{"error":"plugin x: boom"},"dir":"/d/run","entry":3,"name":"run","source":"s3","state":"running"}`,
 		`{"candidate":{"error":"plugin x: boom"},"dir":"/d/kept","entry":4,"error":"plugin kept: old","name":"kept","source":"s4","state":"retained"}`,
 		`{"entry":5,"name":"off","source":"s5","state":"stopped"}`,
+		`{"entry":6,"name":"dep","source":"s6","state":"waiting","waiting":["run","off"]}`,
 	}
 	for i, e := range got.Entries {
 		if b, _ := json.Marshal(e); i >= len(wantEntries) || string(b) != wantEntries[i] {
@@ -312,5 +315,25 @@ func TestPluginEntriesGuard(t *testing.T) {
 	}
 	if dup.name != "" || dup.err == nil || dup.err.Error() != "plugin s: the name is held by an instance from source same; stop s first" {
 		t.Errorf("the other source: %q %v", dup.name, dup.err)
+	}
+}
+
+// A dependency counts as registered (section 7, "States") only with an entry, not retained, with a
+// client from hub.register and a live child. An unresolved spawn intent gives no client.
+func TestPluginRegisteredLocked(t *testing.T) {
+	pid := os.Getpid()
+	start := startTime(pid)
+	e := &configEntry{index: 1, Source: "s"}
+	h := &Hub{plugins: map[string]*Plugin{
+		"ok":       {Name: "ok", entry: e, ClientID: "c1", ChildPID: pid, ChildStart: start},
+		"kept":     {Name: "kept", ClientID: "c2", ChildPID: pid, ChildStart: start},
+		"retained": {Name: "retained", entry: e, state: "retained", ClientID: "c3", ChildPID: pid, ChildStart: start},
+		"intent":   {Name: "intent", entry: e, InstanceID: "intent-1-x", SessionID: "s1"},
+		"dead":     {Name: "dead", entry: e, ClientID: "c4", ChildPID: pid, ChildStart: start + "x"},
+	}}
+	for name, want := range map[string]bool{"ok": true, "kept": false, "retained": false, "intent": false, "dead": false, "absent": false} {
+		if got := h.registeredLocked(name); got != want {
+			t.Errorf("%s: registered %v; want %v", name, got, want)
+		}
 	}
 }

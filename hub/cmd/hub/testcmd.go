@@ -747,6 +747,7 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 				Registered bool     `json:"registered"`
 				State      string   `json:"state"`
 				Error      string   `json:"error"`
+				Waiting    []string `json:"waiting"`
 				Exports    []string `json:"exports"`
 				Face       []string `json:"face"`
 			} `json:"plugins"`
@@ -757,7 +758,9 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 			if p.State == "refused" || p.State == "retained" {
 				return fmt.Errorf("plugin %s is %s: %s (see %s)", name, p.State, p.Error, filepath.Join(l.dir, "hub.log"))
 			}
-			if !p.Registered {
+			if p.State == "waiting" {
+				ready, last = false, "plugin "+name+" waits for "+strings.Join(p.Waiting, ", ")+" to register"
+			} else if !p.Registered {
 				ready, last = false, "plugin "+name+" is not registered"
 			}
 		}

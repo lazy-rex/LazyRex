@@ -1297,6 +1297,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			if pl.state != "" {
 				errText = pl.refusal
 			}
+			if pl.state == "waiting" {
+				item["waiting"] = pl.waiting
+			}
 			if pl.run.Name != "" {
 				item["dir"] = pl.run.Dir
 			}

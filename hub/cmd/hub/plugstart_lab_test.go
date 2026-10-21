@@ -18,20 +18,35 @@ import (
 // Each test starts its own lab server and a -test hub with plugins from temporary source
 // directories. Lab only: HARNESS_LAB=1.
 
-// startFixture is a plugin that registers, and ends its process with status 1 on fix.exit.
+// startFixture is a plugin that registers, and ends its process with status 1 on fix.exit. With
+// the entry arg gate=1 it sets its label first and registers only on fix.register: a test decides
+// when the register comes.
 const startFixture = `local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 local name = %q
-rex.call('client.keymap', {actions = {{name = 'fix.exit', kind = 'client', title = 'Exit', args = {type = 'object'}}}})
+local function register()
+  local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.register', args = {plugin = name, instance_id = instance_id, exports = {}}, timeout_ms = 10000})
+  if err then print('register: ' .. tostring(err)) end
+end
+rex.call('client.keymap', {actions = {
+  {name = 'fix.exit', kind = 'client', title = 'Exit', args = {type = 'object'}},
+  {name = 'fix.register', kind = 'client', title = 'Register', args = {type = 'object'}}}})
 rex.on('client_perform_requested', function(ctx, ev)
   if ev.action == 'fix.exit' then
     rex.call('client.reply', {call_id = ev.call_id, result = {}})
     rex.stop(1)
+  elseif ev.action == 'fix.register' then
+    rex.call('client.reply', {call_id = ev.call_id, result = {}})
+    rex.after(0, register)
+    return
   end
   rex.call('client.reply', {call_id = ev.call_id, error = {code = 'not_supported', message = 'no such action'}})
 end)
-local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.register', args = {plugin = name, instance_id = instance_id, exports = {}}, timeout_ms = 10000})
-if err then print('register: ' .. tostring(err)) end
+if tostring(rex.args.gate) == '1' then
+  rex.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
+  return
+end
+register()
 rex.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
 `
 

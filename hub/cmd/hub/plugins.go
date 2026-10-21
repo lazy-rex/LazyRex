@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"sort"
 	"time"
 
@@ -56,6 +57,7 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	pl.ClientID, pl.Exports = p.Requester.ClientID, exports
 	go h.saveCommands(context.Background(), name, cmds) // go: register holds h.mu
 	h.kickAgentKeymap()
+	h.kickWaiting() // a dependent can wait for this plugin
 	h.ev.emit("plugin_registered", map[string]any{"plugin": name, "instance_id": instance, "client_id": pl.ClientID})
 	h.kickViews(name, true) // views rendered while the plugin was away hold a stale tree
 	if h.watches != nil {
@@ -357,12 +359,22 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 //  1. Resolve the spawn intents. An unresolved one stops the start (code unresolved_intent).
 //  2. Resolve every entry and check the graph. A refused entry keeps its recorded instance.
 //  3. Only if step 2 passed: retire the recorded instance.
-//  4. Spawn.
+//  4. Spawn, or enter state waiting when a dependency is not registered (startOrWait).
 func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 	pl.attempted = true
 	h.mu.Lock()
 	err := h.loadPluginRow(ctx, pl)
+	before := pl.waiting
 	h.mu.Unlock()
+	defer func() {
+		// Observers see each change of the waiting state or of its dependency names.
+		h.mu.Lock()
+		changed := !slices.Equal(before, pl.waiting)
+		h.mu.Unlock()
+		if changed {
+			go h.changed("plugins")
+		}
+	}()
 	if err != nil {
 		return err
 	}
@@ -391,7 +403,98 @@ func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
 		}
 	}
-	return h.spawn(ctx, pl, cand)
+	return h.startOrWait(ctx, pl, cand)
+}
+
+// registeredLocked reports whether the plugin name has an accepted hub.register for its current
+// instance: a record with an entry, not retained, with a client and a live child. An unresolved
+// spawn intent gives no client. h.mu must be held.
+func (h *Hub) registeredLocked(name string) bool {
+	d := h.plugins[name]
+	return d != nil && d.entry != nil && d.state != "retained" && d.ClientID != "" && alive(d.ChildPID, d.ChildStart)
+}
+
+// startOrWait spawns from cand when each dependency is registered. Otherwise pl enters state
+// waiting with the names, and a wake (kickWaiting) runs the whole start path again. The check and
+// the state change share one h.mu section, and hub.register sets the client under h.mu before it
+// kicks, so a register between them is not lost. Waiting creates no spawn intent. A dependency that
+// stops after the check does not change this start.
+func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, cand *pluginRun) error {
+	h.mu.Lock()
+	var missing []string
+	for _, d := range cand.Depends {
+		if !h.registeredLocked(d) {
+			missing = append(missing, d)
+		}
+	}
+	changed := !slices.Equal(missing, pl.waiting)
+	pl.waiting = missing
+	pl.state = ""
+	if missing != nil {
+		pl.state = "waiting"
+	}
+	h.mu.Unlock()
+	if missing == nil {
+		return h.spawn(ctx, pl, cand)
+	}
+	if changed {
+		h.ev.emit("plugin_waiting", map[string]any{"plugin": pl.Name, "waiting": missing})
+	}
+	return nil
+}
+
+// waitLoop starts the waiting plugins again on each kick (the wake rule, section 7): a register,
+// a hub.admin.start or hub.admin.stop of any plugin, a refusal. A kick during a scan stays pending,
+// so the loop scans again: a later entry can register after the scan passed it, and a refusal can
+// refuse an earlier entry.
+func (h *Hub) waitLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.waitKick:
+		}
+		h.wakeWaiting(ctx)
+	}
+}
+
+// wakeWaiting runs the start path once for each plugin in state waiting, in config order.
+func (h *Hub) wakeWaiting(ctx context.Context) {
+	names := h.pluginNames()
+	var waiting []*Plugin
+	h.mu.Lock()
+	for _, n := range names {
+		if pl := h.plugins[n]; pl != nil && pl.state == "waiting" {
+			waiting = append(waiting, pl)
+		}
+	}
+	h.mu.Unlock()
+	for _, pl := range waiting {
+		if ctx.Err() != nil {
+			return
+		}
+		pl.lifecycle.Lock()
+		h.mu.Lock()
+		still := pl.state == "waiting" && pl.Desired == "running" // a stop or a start can come first
+		h.mu.Unlock()
+		if still {
+			if err := h.startPlugin(ctx, pl); err != nil {
+				log.Printf("plugin %s: wake: %v", pl.Name, err)
+			}
+		}
+		pl.lifecycle.Unlock()
+	}
+}
+
+// kickWaiting wakes waitLoop. Repeated kicks coalesce. It never blocks, so a caller can hold h.mu.
+func (h *Hub) kickWaiting() {
+	if h.waitKick == nil {
+		return
+	}
+	select {
+	case h.waitKick <- struct{}{}:
+	default:
+	}
 }
 
 // keptError is the error of a kept record: no config entry gives its name now.
@@ -416,6 +519,7 @@ func (h *Hub) recoverKept(ctx context.Context, pl *Plugin) error {
 		pl.state = "retained"
 	}
 	h.ev.emit("plugin_refused", map[string]any{"plugin": pl.Name, "state": pl.state, "error": pl.refusal})
+	h.kickWaiting()
 	if ierr != nil {
 		return ierr
 	}
@@ -431,9 +535,12 @@ func (h *Hub) checkStart(pl *Plugin) (*pluginRun, error) {
 	cand, err := pl.entry.cand, pl.entry.err
 	h.entriesMu.Unlock()
 	h.mu.Lock()
-	pl.state, pl.refusal = "", ""
+	pl.refusal = ""
+	if pl.state != "waiting" {
+		pl.state = "" // a waiting plugin stays waiting until startOrWait compares the names
+	}
 	if err != nil {
-		pl.state, pl.refusal = "refused", err.Error()
+		pl.state, pl.refusal, pl.waiting = "refused", err.Error(), nil
 		if pl.BlockID != "" && pl.ChildPID > 0 && alive(pl.ChildPID, pl.ChildStart) {
 			pl.state = "retained"
 		}
@@ -442,6 +549,7 @@ func (h *Hub) checkStart(pl *Plugin) (*pluginRun, error) {
 	h.mu.Unlock()
 	if err != nil {
 		h.ev.emit("plugin_refused", map[string]any{"plugin": pl.Name, "state": state, "error": err.Error()})
+		h.kickWaiting() // a dependent that waits for pl is refused now
 		go h.changed("plugins")
 		return nil, refuse("refused", "%v", err)
 	}
@@ -717,7 +825,7 @@ func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	h.mu.Lock()
 	block := pl.BlockID
 	pl.clearInstance()
-	pl.Desired, pl.state, pl.refusal = "stopped", "", ""
+	pl.Desired, pl.state, pl.refusal, pl.waiting = "stopped", "", "", nil
 	h.savePlugin(ctx, pl)
 	h.dropKept(pl) // a stopped kept record owns nothing more
 	h.mu.Unlock()
@@ -855,6 +963,7 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		}
 		pl.lifecycle.Lock()
 		defer pl.lifecycle.Unlock()
+		defer h.kickWaiting() // the wake rule: a start or a stop of any plugin
 		// Read the persisted instance under the lifecycle lock before any decision: an action may come
 		// before recovery reaches this record.
 		h.mu.Lock()
@@ -896,6 +1005,11 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			if err := h.startPlugin(ctx, pl); err != nil {
 				return nil, err
 			}
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if pl.state == "waiting" {
+			return map[string]any{"desired": "running", "state": "waiting", "waiting": pl.waiting}, nil
 		}
 		return map[string]any{"desired": "running"}, nil
 	case "hub.admin.rebind":

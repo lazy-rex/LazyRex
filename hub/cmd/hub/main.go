@@ -99,9 +99,11 @@ type Plugin struct {
 	ClientID   string   // set by an accepted hub.register
 	Exports    []string // action names agents may call through the MCP shim
 	// state is "" (running or stopped, from Desired), refused (the last start check refused the
-	// entry) or retained (refused, and the recorded instance still lives; it may not register).
+	// entry), retained (refused, and the recorded instance still lives; it may not register) or
+	// waiting (the check passed, and a dependency is not registered: waitLoop starts it again).
 	state     string
 	refusal   string     // the error of the refused start (state refused or retained)
+	waiting   []string   // the dependencies that are not registered (state waiting)
 	attempted bool       // a start attempt (startPlugin) ran in this hub process: recovery skips the record
 	lifecycle sync.Mutex // serializes replace, start and stop
 }
@@ -127,6 +129,7 @@ type Hub struct {
 	slots          slotState     // side slot locks (panels.go)
 	noticeKick     chan struct{} // wakes noticeLoop (kickNotices)
 	spawnKick      chan struct{} // wakes resolveSpawns (kickSpawns)
+	waitKick       chan struct{} // wakes waitLoop (kickWaiting)
 	profileStamp   string        // profile files as last checked (checkProfiles)
 	profileChecked bool
 	cfg            Config
@@ -344,7 +347,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if err := json.Unmarshal(r.Welcome, &welcome); err != nil || welcome.Client.ID == "" {
 		return nil, fmt.Errorf("welcome has no client id: %s", r.Welcome)
 	}
-	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock,
+	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock,
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
 	for _, a := range cfg.Agents {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
@@ -419,6 +422,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 
 func (h *Hub) run(ctx context.Context) {
 	go h.recoverPlugins(ctx)
+	go h.waitLoop(ctx)
 	go h.noticeLoop(ctx)
 	h.kickNotices() // notices pending from before the start
 	for {
