@@ -78,13 +78,16 @@ Step 3 Part A is on main (08dbb89): the lock (`pluginlock.go`), the cache and `l
 (`plugincache.go`), refs and fetch (`pluginfetch.go`), and `lazyrex-hub plugin sync|update|status`
 (`plugincmd.go`), with subdir sources and managed entries.
 
-On the branch `plugins/step3a-partb` (in review), step 3 Part B: `resolveEntries` resolves a
+Step 3 Part B is on main (ddc3e1b): `resolveEntries` resolves a
 GitHub source from its cache entry, with one lock snapshot for each resolution. A run records its
 commit, and `hub.plugins` reports `commit` and the candidate fields (section 7). The lab test
 `TestPluginCacheStartLab` starts a GitHub plugin from its read-only cache entry, updates it, and
 reloads.
 
 `hub.admin.replace` (section 14) is on main (74190de).
+
+Pin sync step 1 (section 6a): `lazyrex-hub plugin export` and `lazyrex-hub plugin pull -file`
+(`pinsync.go`). Step 2 (hub to hub) is not designed in detail.
 
 ## Terms
 
@@ -314,6 +317,10 @@ The commands are CLI only. A hub action must answer fast, because the hub has on
   named entries), fetch, and rewrite the lock.
 - `lazyrex-hub plugin status -config <cfg>`: the source, ref, locked commit and cache state (ok,
   missing, changed) of each entry, and the changed entries that no lock references.
+- `lazyrex-hub plugin export -config <cfg>`: write the pin document of the lock to stdout (section
+  6a).
+- `lazyrex-hub plugin pull -config <cfg> -file <path> [-take <source>]... [-keep <source>]...`:
+  merge a pin document into the lock (section 6a).
 
 **All or nothing.** A command writes the lock only after every fetch and check passes (temp file,
 fsync, rename). A failure leaves the old lock. Entries that the command published stay on disk;
@@ -332,6 +339,91 @@ A second command fails at once: `another plugin command runs (pid N)`. No hub co
 takes a flock. (The plugin manager design adds a hub writer that takes both flocks; then N can be
 the hub's pid.) A rename replaces the lock, and cache entries are immutable, so a hub start reads
 the old lock or the new lock, never a mix.
+
+## 6a. Pin sync
+
+The machines of the user select the same pins (commit and digest) for the GitHub sources that
+their configs share. Pull changes only the selected pins in the local lock. A running instance
+keeps its run commit: `hub.plugins.reload` or a start attempt shows the new candidate, and a stop
+and a start apply it (section 7). The local lock format does not change.
+
+Each machine fetches each commit from GitHub itself. No cache entry moves between machines. The
+digest shows that two machines have the same tree. Observed for one tree
+(`github:lazy-rex/LazyRex/plugins/lazyrex@ddc3e1b12def77eb5f23779e1528148fd8a7dbef`, hub
+a711415): macOS 27.0.1 arm64 with git 2.54.0 and umask 022, and Linux 6.8.0 x86_64 with git
+2.43.0 and umask 0002, gave the same digest, the same 275 files and the same 5 executable files.
+
+Step 1 moves the pins in a file: the user carries it by git, a synced folder or scp. Step 2 (a hub
+action and `pull -host <label>` over Rex hosts) needs its own plan. Its action has the visibility
+of `hub.plugins`: any client that can call the hub reads each entry's exact source, commit and
+digest. A source name can name a private repository.
+
+**The pin document.**
+
+```json
+{"version": 1, "hub": "<32 lowercase hex>", "entries": [{"source": "<exact source>",
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "commit": "", "digest": ""}]}
+```
+
+- The entries are sorted by source. The same pins give the same bytes. The document has no path
+  and no cache token. An empty document has `"entries": []`.
+- The reader is strict. Another version gives `pin document version N is not supported by this
+  hub`. Unknown fields and a source that is there twice are refused.
+- Each entry must agree with its source: owner, repo, subdir and ref equal the parsed source;
+  `ref_kind` is a kind that the ref form allows (section 5); the commit is 40 lowercase hex and
+  equals a commit ref; name and digest have the lock forms. One bad entry refuses the whole
+  document, before any fetch.
+
+**The sidecars.** They live beside the lock, and belong to the lock file: two configs that name
+one lock share them.
+
+- `<lock>.id`: the pull identity of the lock, the `hub` of the documents it exports. The first
+  export makes it (a new file, fsync). A malformed file: `<path> is not valid: ...; remove it to
+  make a new pull identity (peers then have no base for this lock)`.
+- `<lock>.peers.json`: `{"version": 1, "peers": {"<id>": {"<source>": {"commit", "digest"}}}}`,
+  the merge base: for each peer identity, the pins of the last pull from it. A malformed file
+  refuses the pull before any fetch: `<path> is not valid: ...; repair it, or remove it (the next
+  pull then reports each differing key as a conflict)`.
+
+**Export.** Under both flocks, export reads the lock and the managed file as one snapshot. It
+exports each GitHub entry of the config and of the managed file, and only when each one passes
+`lockedDir`: a machine never exports a pin that it cannot run itself. Otherwise it fails with that
+entry's text, writes nothing and makes no pull identity. An orphaned lock entry and a local source
+are not exported.
+
+**The merge.** For each GitHub source of the local config or managed file that the document has
+(base = the base of the document's `hub`; equal = the same commit and digest):
+
+- not installed: taken;
+- local equals peer: unchanged, and the base advances;
+- local equals base: taken, and the base advances;
+- peer equals base: kept;
+- otherwise (both changed, or no base and they differ): a conflict. The local pin stays, and the
+  base does not advance.
+
+`-take <source>` resolves a conflict with the peer pin (the base advances). `-keep <source>`
+keeps the local pin and advances the base, so the same document gives `kept` next time. A flag on a
+source without a conflict, or one source in both flags, refuses the pull before any fetch. A
+source that only the document has is `ignored`. A source that only the config has is not changed,
+and its base stays.
+
+**Pull.** Pull selects imported commits. It does not resolve a ref.
+
+- A document whose `hub` is this lock's own identity is refused.
+- Each taken pin is fetched by its commit from the repository of the local source. A full ref form
+  gives the kind; for a short ref, the imported `ref_kind` decides. The name comes from the fetched
+  manifest. The digest must equal the document: `plugin <name>: the tree of <commit> differs from
+  the pin document`.
+- Then the graph check of the complete new lock (section 6). As for update, each GitHub entry of
+  the config must be installed.
+- Any fetch, digest or graph failure writes nothing: the lock and the base stay byte-unchanged.
+  Published cache entries stay, as after a failed update.
+- The lock is written first, then the base. If the base write fails: `the pins changed, but the
+  base of <id> did not: the next pull can report conflicts for <sources>`. Nothing is rolled back.
+  After a crash between the two writes, the next pull is `unchanged` while the peer has the same
+  pin, and a conflict when the peer or the local pin moved.
+- Output: one line for each source, `<outcome>\t<source>\tlocal <commit|->\tpeer <commit>`. A
+  remaining conflict gives exit 1, after the other sources applied.
 
 ## 7. Start, states and dependencies
 
@@ -619,6 +711,12 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A synced GitHub source (also a subdir source), with local entries and dependencies across both kinds | resolves from the read-only cache entry; the run has the locked commit | U |
 | A lock that does not parse; a lock that cannot be read (a directory, no permission) | each GitHub entry refused with the exact text; local entries resolve | U |
 | `plugin update`, then a new resolution | the run keeps its commit, also after a save and a load; the candidate has the new commit and dir | U, L |
+| A pin document: each malformed form; an empty document round trip | refused before any fetch; `"entries": []` | U |
+| export: each GitHub entry passes; one fails; a static refusal; a malformed lock | the document; nothing written and no identity | U |
+| pull: each merge case, -take and -keep, a document from this lock, a malformed base | the outcome lines and the base; refused before any fetch | U |
+| pull: a fetch, digest or graph failure | lock and base byte-unchanged | U |
+| pull: a base write failure, then the same peer, a moved peer, a local update | the text; unchanged; conflict; conflict | U |
+| pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
 | sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
