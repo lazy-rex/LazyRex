@@ -212,6 +212,12 @@ func removeTree(dir string) {
 	os.RemoveAll(dir)
 }
 
+// cacheStateError is a lockedDir error about the cache entry: state is "missing" or "changed" (the
+// states of plugin status). The text is the final text of section 8.
+type cacheStateError struct{ state, text string }
+
+func (e *cacheStateError) Error() string { return e.text }
+
 // lockedDir checks the lock entry of the GitHub entry e and its cache entry, without git and
 // without the network: the key lookup, the agreement check (section 3), the cache entry, the
 // digest (section 4) and the manifest name. It returns the absolute cache directory and the
@@ -235,9 +241,9 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
 	}
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", "", fmt.Errorf("plugin %s: the cache has no entry for commit %s: run lazyrex-hub plugin sync -config %s", le.Name, le.Commit, cfgPath)
+		return "", "", &cacheStateError{"missing", fmt.Sprintf("plugin %s: the cache has no entry for commit %s: run lazyrex-hub plugin sync -config %s", le.Name, le.Commit, cfgPath)}
 	}
-	changed := fmt.Errorf("plugin %s: the cache entry for commit %s changed (digest mismatch): run lazyrex-hub plugin sync -config %s", le.Name, le.Commit, cfgPath)
+	changed := &cacheStateError{"changed", fmt.Sprintf("plugin %s: the cache entry for commit %s changed (digest mismatch): run lazyrex-hub plugin sync -config %s", le.Name, le.Commit, cfgPath)}
 	if err != nil {
 		return "", "", fmt.Errorf("plugin %s: cannot read the cache entry %s: %w", le.Name, dir, err)
 	}
