@@ -775,6 +775,7 @@ func (h *Hub) openSpawn(ctx context.Context, s *spawnRow, window, block string) 
 		h.mu.Lock()
 		if a := h.agents[s.Agent]; a != nil {
 			a.Session, a.BlockID = s.Session, block
+			h.syncPrompts()
 		}
 		h.mu.Unlock()
 	}

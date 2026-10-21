@@ -1379,3 +1379,34 @@ agent can change plugin settings through the plugin manager; it must not be able
 the user's identity or the pane prompts. The grant belongs to the entry: the hub checks it for the
 current registered instance of that entry (the caller's `client_id` is the plugin's registered
 client), not for a name in a request.
+
+### Prompts
+
+An open prompt is an agent's configured program status record (the same record that notices use)
+in state `blocked`, for a live binding. The hub keeps prompts in memory (`hub/cmd/hub/prompts.go`).
+
+- A prompt opens when the record becomes `blocked`. A blocked record without `kind` and `msg`
+  (Codex 0.163.0) is a prompt too.
+- A blocked report with the same `kind`, `msg`, `app` and `effective_app` keeps the prompt. A
+  change of any of them closes it (reason `replaced`) and opens a new one. The hub compares the full
+  `msg` (by its SHA-256), so a change after the 8 KiB cut also replaces the prompt.
+- A prompt closes when the state is not `blocked` (reason `state`), when the record is removed or
+  its state is unknown (`removed`), or when the binding changes or the process exits (`gone`).
+- Each prompt has a `prompt_id` (64 random bits, hex) and a `generation` (a counter per agent).
+- A hub restart closes every prompt: ids and generations are not stored.
+- `msg` is cut to 8 KiB on a UTF-8 boundary, with `msg_truncated: true`.
+- `rev` increases at each open and close. It is the order of prompt changes within one
+  `hub_generation` (the hub run generation that `hub.register` returns).
+
+**Limit.** The hub sees only status reports. Two different prompts with the same `kind`, `msg` and
+`app`, with no report of another state between them, get one `prompt_id`. For Codex, which sends
+no `kind` and no `msg`, this happens for two approvals in a row without a state report between
+them. The hub cannot detect it.
+
+**`kind` does not tell how the agent reads input** (rex-protocol.md, "Blocked records of real
+agents"). The hub never chooses the input form from `kind`.
+
+`hub.prompts` (plugins with the `prompts` grant) returns `{hub_generation, rev, prompts}`. Each
+prompt has `prompt_id`, `generation`, `agent`, `session_id`, `block_id`, `kind`, `msg`,
+`msg_truncated`, `app` and `opened_at`. The hub reads the list and `rev` under one lock, so `rev`
+describes exactly that list. `hub.agents` gives `block_id` for each live agent.

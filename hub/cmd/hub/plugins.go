@@ -1141,7 +1141,7 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		}
 		// Read the pane's current status as join does: a status reported before the rebind sends
 		// no new event, and without it the agent never counts as ready for a notice.
-		state := h.recordState(ctx, sess, block, a.StatusRecord)
+		rec := h.recordState(ctx, sess, block, a.StatusRecord)
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		for _, other := range h.agents {
@@ -1150,7 +1150,8 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			}
 		}
 		a.Session, a.BlockID, a.ChildPID, a.ChildStart, a.ClientID = sess, block, child, startTime(child), ""
-		a.setState(state)
+		a.setRecord(rec)
+		h.syncPrompts()
 		a.delivered = map[string]int64{}
 		if err := h.saveBinding(ctx, id, sess, block, child, a.ChildStart); err != nil {
 			return nil, err

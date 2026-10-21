@@ -583,7 +583,8 @@ func (h *Hub) identitySync(ctx context.Context) error {
 	}
 	for id, a := range next {
 		if old := h.idents[id]; old != nil && old.BlockID == a.BlockID && old.ChildPID == a.ChildPID && old.StatusRecord == a.StatusRecord {
-			a.State, a.delivered, a.ClientID = old.State, old.delivered, old.ClientID
+			a.State, a.Record = old.State, old.Record
+			a.delivered, a.ClientID = old.delivered, old.ClientID
 			continue
 		}
 		if l := legacy[id]; l != nil {
@@ -597,10 +598,11 @@ func (h *Hub) identitySync(ctx context.Context) error {
 	}
 	h.mu.Unlock()
 	for _, a := range fresh {
-		a.setState(h.recordState(ctx, a.Session, a.BlockID, a.StatusRecord))
+		a.setRecord(h.recordState(ctx, a.Session, a.BlockID, a.StatusRecord))
 	}
 	h.mu.Lock()
 	h.idents, h.aliases = next, aliases
+	h.syncPrompts()
 	h.mu.Unlock()
 	return nil
 }
@@ -667,6 +669,7 @@ func (h *Hub) agentsList(args map[string]any) any {
 		e := map[string]any{"id": a.ID, "name": a.Name, "joined": a.live(), "ready": a.ready(), "legacy": id != "user", "session_id": a.Session}
 		if a.live() {
 			e["activity"] = a.State
+			e["block_id"] = a.BlockID
 		}
 		if a.Profile != "" {
 			e["profile"] = a.Profile
@@ -691,6 +694,7 @@ func (h *Hub) agentsList(args map[string]any) any {
 			"joined": a.IdState == "current" && a.live(), "ready": a.IdState == "current" && a.ready(), "aliases": h.aliasesOf(a.ID), "session_id": a.Session}
 		if a.IdState == "current" && a.live() {
 			e["activity"] = a.State // the agent's program status: idle, working, done, …; "" when unknown
+			e["block_id"] = a.BlockID
 		}
 		list = append(list, e)
 	}

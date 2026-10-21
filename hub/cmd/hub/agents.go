@@ -162,35 +162,35 @@ var errNoRecord = errors.New("no program status record")
 // only on a connection attached to that session (observed on Rex 0.0.1792158932-g88fd41, lab:
 // "conflict: stream is not attached to session"), so it attaches a session other than the work
 // session first. The attach also brings that session's program_status events.
-func (h *Hub) readStatus(ctx context.Context, sess, blockID, record string) (string, error) {
+func (h *Hub) readStatus(ctx context.Context, sess, blockID, record string) (statusRecord, error) {
 	if sess != h.workSession() {
 		if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
-			return "", err
+			return statusRecord{}, err
 		}
 	}
 	if f := h.statusReadFault(sess, "fail"); f != nil {
-		return "", errors.New("injected fault: the status read failed")
+		return statusRecord{}, errors.New("injected fault: the status read failed")
 	}
 	var status struct {
 		Records []struct {
-			ID    string `json:"id"`
-			State string `json:"state"`
+			ID string `json:"id"`
+			statusRecord
 		} `json:"records"`
 	}
 	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.program_status", sess, blockID, nil, &status); err != nil {
-		return "", err
+		return statusRecord{}, err
 	}
 	for _, r := range status.Records {
 		if r.ID == record {
-			return r.State, nil
+			return r.statusRecord, nil
 		}
 	}
-	return "", errNoRecord
+	return statusRecord{}, errNoRecord
 }
 
 // recordState is readStatus for a join, a rebind or a restore: a failed read is logged and gives
 // the unknown state "". noticeLoop reads the state again when a notice waits (noticeStatus).
-func (h *Hub) recordState(ctx context.Context, sess, blockID, record string) string {
+func (h *Hub) recordState(ctx context.Context, sess, blockID, record string) statusRecord {
 	s, err := h.readStatus(ctx, sess, blockID, record)
 	if err != nil {
 		log.Printf("status of block %s (record %q): %v", blockID, record, err)
@@ -229,10 +229,13 @@ func (h *Hub) loadBindings(ctx context.Context) error {
 			if s := h.bindingSession(a); s != h.workSession() {
 				h.sessionBlocksIn(ctx, s)
 			}
-			a.setState(h.recordState(ctx, h.bindingSession(a), block, a.StatusRecord))
+			a.setRecord(h.recordState(ctx, h.bindingSession(a), block, a.StatusRecord))
 		}
 		log.Printf("agent %s: bound to %s pid %d live=%v state %q", id, block, pid, a.live(), a.State)
 	}
+	h.mu.Lock()
+	h.syncPrompts()
+	h.mu.Unlock()
 	return rows.Err()
 }
 
@@ -307,13 +310,14 @@ func (h *Hub) join(ctx context.Context, p perform, args map[string]any) (any, er
 		a.ClientID = p.Requester.ClientID
 		a.delivered = map[string]int64{}
 		h.mu.Unlock()
-		state := h.recordState(ctx, sess, block, a.StatusRecord)
+		rec := h.recordState(ctx, sess, block, a.StatusRecord)
 		h.mu.Lock()
-		a.setState(state)
+		a.setRecord(rec)
 		h.ev.emit("agent_joined", map[string]any{"agent": id, "block_id": block})
 		h.kickNotices()
 		h.kickSpawns()
 	}
+	h.syncPrompts()
 	return map[string]any{"agent": id, "block_id": block, "generation": revString(h.generation)}, nil
 }
 
@@ -461,7 +465,7 @@ type statusSnap struct {
 // agent now has a known state; false makes noticeLoop retry with backoff (a failed read, a missing
 // record, or a state that changed during the read and is still unknown).
 func (h *Hub) noticeStatus(ctx context.Context, id string, s statusSnap) bool {
-	state, err := h.readStatus(ctx, s.sess, s.block, s.record)
+	rec, err := h.readStatus(ctx, s.sess, s.block, s.record)
 	if f := h.statusReadFault(s.sess, "hold"); f != nil {
 		h.waitRelease(f)
 	}
@@ -477,9 +481,10 @@ func (h *Hub) noticeStatus(ctx context.Context, id string, s statusSnap) bool {
 		h.ev.emit("agent_status_read", map[string]any{"agent": id, "applied": false, "error": err.Error()})
 		return false
 	}
-	cur.setState(state)
-	h.ev.emit("agent_status_read", map[string]any{"agent": id, "applied": true, "state": state})
-	if state == "" {
+	cur.setRecord(rec)
+	h.syncPrompts()
+	h.ev.emit("agent_status_read", map[string]any{"agent": id, "applied": true, "state": rec.State})
+	if rec.State == "" {
 		return false
 	}
 	// The home shows agent readiness. Only a known state wakes noticeLoop again, so an unknown one

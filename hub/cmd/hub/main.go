@@ -73,15 +73,20 @@ type Agent struct {
 	ChildPID               int
 	ChildStart             string
 	State                  string           // latest state of the trusted record; "" when absent or removed
-	stateGen               int              // counts State writes (setState): a status read applies only if none happened during it
+	Record                 statusRecord     // the trusted record's fields (prompts.go); Record.State == State
+	stateGen               int              // counts record writes (setRecord): a status read applies only if none happened during it
 	ClientID               string           // the shim connection that joined last
 	Profile                string           // set for an agent that a spawn created
 	Kind, IdState          string           // an identity (identity.go): its kind and state; "" for a legacy agent
 	delivered              map[string]int64 // namespace -> highest intent revision written for this connection
 }
 
-// setState records a new program status state. h.mu must be held for an agent that the hub lists.
-func (a *Agent) setState(s string) { a.State, a.stateGen = s, a.stateGen+1 }
+// setRecord records a new program status record. h.mu must be held for an agent that the hub
+// lists. The caller then calls h.syncPrompts: a record change can open or close a prompt.
+func (a *Agent) setRecord(r statusRecord) {
+	a.State, a.Record = r.State, r
+	a.stateGen++
+}
 
 func (a *Agent) live() bool { return a.BlockID != "" && alive(a.ChildPID, a.ChildStart) }
 
@@ -148,6 +153,7 @@ type Hub struct {
 	ev             *eventLog
 	faults         *faults
 	generation     int64
+	prompts        promptBook // open prompts (prompts.go); h.mu guards it
 	clientID       string
 	rexBinary      string
 	paletteKick    chan struct{} // wakes paletteLoop (kickPalette)
@@ -258,7 +264,8 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
-	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list"}
+	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
+	"hub.prompts"}
 
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
@@ -603,6 +610,9 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 	switch name {
 	case "child_exited":
 		go h.identityChildExited(ctx, blockID)
+		h.mu.Lock()
+		h.syncPrompts() // a legacy agent's process is gone: its prompt closes
+		h.mu.Unlock()
 		if v, _ := h.viewByBlock(ctx, blockID); v != nil {
 			go h.uiChildExited(ctx, blockID) // a renderer, not a plugin
 			return
@@ -628,11 +638,9 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			go h.changed("workers")
 		}
 		var ev struct {
-			ID     string   `json:"id"`
-			IDs    []string `json:"ids"`
-			Record struct {
-				State string `json:"state"`
-			} `json:"record"`
+			ID     string       `json:"id"`
+			IDs    []string     `json:"ids"`
+			Record statusRecord `json:"record"`
 		}
 		json.Unmarshal(payload, &ev)
 		h.mu.Lock()
@@ -643,12 +651,13 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			}
 			// Only the configured record counts. A removed record is not ready.
 			if name == "program_status_changed" && ev.ID == a.StatusRecord {
-				a.setState(ev.Record.State)
+				a.setRecord(ev.Record)
 			} else if name == "program_status_removed" && contains(ev.IDs, a.StatusRecord) {
-				a.setState("")
+				a.setRecord(statusRecord{})
 			} else {
 				continue
 			}
+			h.syncPrompts()
 			log.Printf("agent %s status %q (record %q)", a.ID, a.State, a.StatusRecord)
 			go h.changed("agents") // the home shows agent readiness; go: h.mu is held
 		}
@@ -858,6 +867,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.grantRevoke(ctx, ns, args)
 	case "hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list":
 		return h.watchAction(ctx, ns, p.Action, args)
+	case "hub.prompts":
+		return h.promptsList(pl)
 	case "hub.ui.tabs":
 		return h.uiTabs(ctx, ns, args)
 	case "hub.ui.invalidate":
