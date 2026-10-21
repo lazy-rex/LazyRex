@@ -1,0 +1,283 @@
+package main
+
+// lazyrex-hub stop|status -config <cfg> [-real-server] (docs/hub.md, "Stop and status"). Both
+// read the config, then look at two things:
+//   - the hub of this config: a connected Rex client labeled lazyrex-hub whose hub.info state is
+//     the config's canonical state;
+//   - the restart wrapper of that state: the holder of the fcntl lock on <state>/restart.lock,
+//     and <state>/restart.json, trusted only when its pid is the holder and that pid has the
+//     start time in the file.
+// stop never sends a signal: a running hub gets hub.admin.shutdown (the admin guard applies), and
+// a wrapper without a hub (starting, backoff) is stopped in its own pane.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Exit statuses of status (stop uses 0, 1, 3 and 4 the same way; 0 also for "not running").
+const (
+	ctlRunning    = 0
+	ctlNotRunning = 1
+	ctlUsage      = 2
+	ctlWrapper    = 3 // a wrapper owns the state, and no hub of it runs (starting, backoff)
+	ctlUnknown    = 4
+)
+
+const ctlStopWait = 10 * time.Second
+
+type ctlView struct {
+	cfg      Config
+	rex      string
+	state    string // canonical; "" when the state directory does not exist
+	own      *hubClient
+	others   []hubClient // hubs of other states on this Rex server
+	rexErr   error       // the Rex server could not be asked
+	holder   int         // the restart.lock holder; 0 when none
+	status   *restartStatus
+	trusted  bool // status belongs to holder
+	ownTwice bool // more than one connected hub reports this state
+}
+
+type hubClient struct {
+	ID    string
+	State string
+	PID   int
+}
+
+func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "", "hub configuration JSON (required)")
+	realServer := fs.Bool("real-server", false, "the config names the user's real Rex server")
+	if err := fs.Parse(args); err != nil || *cfgPath == "" || fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "usage: lazyrex-hub %s -config <cfg> [-real-server]\n", cmd)
+		return ctlUsage
+	}
+	cfg, err := loadConfig(*cfgPath, *realServer)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return ctlUsage
+	}
+	v := ctlLook(cfg)
+	if cmd == "status" {
+		code, text := v.statusText()
+		fmt.Fprintln(stdout, text)
+		return code
+	}
+	return v.stop(stdout)
+}
+
+func ctlLook(cfg Config) *ctlView {
+	v := &ctlView{cfg: cfg}
+	v.rex, v.rexErr = findRex(cfg.Rex)
+	if s, err := canonicalState(cfg.State); err == nil {
+		v.state = s
+	}
+	if v.state != "" {
+		v.holder, v.status, v.trusted = readRestart(v.state)
+	}
+	if v.rexErr == nil {
+		var hubs []hubClient
+		hubs, v.rexErr = v.hubs()
+		for i, h := range hubs {
+			if v.state != "" && h.State == v.state {
+				if v.own != nil {
+					v.ownTwice = true
+				}
+				v.own = &hubs[i]
+			} else {
+				v.others = append(v.others, h)
+			}
+		}
+	}
+	return v
+}
+
+// readRestart reads the restart lock holder and the status file. It never creates the lock file
+// and never takes a lock: F_GETLK asks only.
+func readRestart(state string) (holder int, st *restartStatus, trusted bool) {
+	if f, err := os.Open(filepath.Join(state, "restart.lock")); err == nil {
+		holder = restartLockHolder(f)
+		f.Close() // this process holds no lock on the file, so the close releases nothing
+	}
+	if b, err := os.ReadFile(filepath.Join(state, "restart.json")); err == nil {
+		var s restartStatus
+		if json.Unmarshal(b, &s) == nil && s.Version == 1 {
+			st = &s
+		}
+	}
+	trusted = holder > 0 && st != nil && st.PID == holder && st.Start != "" && startTime(holder) == st.Start
+	return holder, st, trusted
+}
+
+func (v *ctlView) rexCmd(timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, v.rex, append([]string{"-S", v.cfg.Server, "--autostart=false", "--timeout", "3s"}, args...)...)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return out.Bytes(), fmt.Errorf("%v: %s", err, strings.Join(strings.Fields(errb.String()), " "))
+	}
+	return out.Bytes(), nil
+}
+
+// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). A hub that
+// does not answer hub.info (an older hub) is listed with an empty state.
+func (v *ctlView) hubs() ([]hubClient, error) {
+	out, err := v.rexCmd(5*time.Second, "client", "ls", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var listing struct {
+		Clients []struct {
+			ClientID string `json:"client_id"`
+			Info     struct {
+				Label string `json:"label"`
+			} `json:"info"`
+			ConnectionState string `json:"connection_state"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal(out, &listing); err != nil {
+		return nil, fmt.Errorf("rex client ls: %v", err)
+	}
+	var hubs []hubClient
+	for _, c := range listing.Clients {
+		if c.Info.Label != "lazyrex-hub" || c.ConnectionState != "connected" {
+			continue
+		}
+		h := hubClient{ID: c.ClientID}
+		if out, err := v.rexCmd(5*time.Second, "-C", c.ClientID, "do", "hub.info"); err == nil {
+			var info struct {
+				State string `json:"state"`
+				PID   int    `json:"pid"`
+			}
+			if json.Unmarshal(out, &info) == nil {
+				h.State, h.PID = info.State, info.PID
+			}
+		}
+		hubs = append(hubs, h)
+	}
+	return hubs, nil
+}
+
+func (v *ctlView) wrapperText() string {
+	s := v.status
+	switch s.Phase {
+	case "starting":
+		return fmt.Sprintf("starting: the restart wrapper (pid %d) starts the hub (attempt %d)", s.PID, s.Attempt)
+	case "backoff":
+		wait := "soon"
+		if t, err := time.Parse(time.RFC3339, s.NextStart); err == nil {
+			wait = "in " + max(time.Until(t), 0).Round(time.Second).String()
+		}
+		return fmt.Sprintf("backoff: the restart wrapper (pid %d) restarts the hub %s (attempt %d; last exit %s)", s.PID, wait, s.Attempt, s.LastExit)
+	default: // running, or a stale phase: the wrapper holds the lock, and no hub of this state is connected
+		return fmt.Sprintf("starting: the restart wrapper (pid %d) reports %s, but no hub of this state is connected", s.PID, s.Phase)
+	}
+}
+
+func (v *ctlView) othersText() string {
+	var parts []string
+	for _, h := range v.others {
+		if h.State == "" {
+			parts = append(parts, fmt.Sprintf("another hub runs on this Rex server (client %s, state unknown: no hub.info)", h.ID))
+		} else {
+			parts = append(parts, fmt.Sprintf("another hub runs on this Rex server (state %s); not this config's hub", h.State))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// statusText gives the exit status and the text. The first word is the phase.
+func (v *ctlView) statusText() (int, string) {
+	lines := []string{}
+	add := func(s string) {
+		if s != "" {
+			lines = append(lines, s)
+		}
+	}
+	code := ctlNotRunning
+	switch {
+	case v.ownTwice:
+		code = ctlUnknown
+		add(fmt.Sprintf("unknown: more than one connected hub reports the state %s", v.state))
+	case v.own != nil:
+		code = ctlRunning
+		s := fmt.Sprintf("running: hub pid %d (client %s), state %s", v.own.PID, v.own.ID, v.state)
+		if v.trusted {
+			s += fmt.Sprintf("; restart wrapper pid %d", v.status.PID)
+		}
+		add(s)
+	case v.holder > 0 && !v.trusted:
+		code = ctlUnknown
+		add(fmt.Sprintf("unknown: a restart wrapper (pid %d) holds %s; its status file does not match", v.holder, v.state))
+	case v.holder > 0:
+		code = ctlWrapper
+		add(v.wrapperText())
+	default:
+		add("not running")
+		if v.status != nil && v.status.Phase == "gave_up" {
+			add(fmt.Sprintf("the restart wrapper gave up at %s; last exit %s", v.status.Since, v.status.LastExit))
+		}
+	}
+	if v.rexErr != nil {
+		add(fmt.Sprintf("the Rex server %s cannot be asked: %v", v.cfg.Server, v.rexErr))
+	}
+	add(v.othersText())
+	return code, strings.Join(lines, "\n")
+}
+
+// stop stops the hub of this config with hub.admin.shutdown and waits until it is gone (and its
+// wrapper, if one held the lock). It sends no signal.
+func (v *ctlView) stop(stdout io.Writer) int {
+	code, text := v.statusText()
+	if code != ctlRunning {
+		fmt.Fprintln(stdout, text)
+		switch code {
+		case ctlNotRunning:
+			return 0
+		case ctlWrapper:
+			fmt.Fprintln(stdout, "stop it in its pane: Ctrl-C, or close that pane")
+		}
+		return code
+	}
+	if out, err := v.rexCmd(15*time.Second, "-C", v.own.ID, "do", "hub.admin.shutdown"); err != nil {
+		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", err, strings.TrimSpace(string(out)))
+		return 1
+	}
+	wrapped := v.trusted
+	for deadline := time.Now().Add(ctlStopWait); ; time.Sleep(200 * time.Millisecond) {
+		gone := true
+		if hubs, err := v.hubs(); err == nil {
+			for _, h := range hubs {
+				if h.ID == v.own.ID {
+					gone = false
+				}
+			}
+		}
+		if gone && wrapped {
+			if holder, _, _ := readRestart(v.state); holder > 0 {
+				gone = false
+			}
+		}
+		if gone {
+			fmt.Fprintln(stdout, "stopped")
+			return 0
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(stdout, "the hub did not stop within %s\n", ctlStopWait)
+			return 1
+		}
+	}
+}

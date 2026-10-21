@@ -311,6 +311,8 @@ func main() {
 			os.Exit(pluginCmdMain(os.Args[2:], os.Stdout, os.Stderr))
 		case "hook":
 			os.Exit(hookMain(os.Args[2:]))
+		case "stop", "status":
+			os.Exit(ctlMain(os.Args[1], os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 	fs := &faults{}

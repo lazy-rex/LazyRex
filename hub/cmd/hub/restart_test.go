@@ -495,3 +495,60 @@ func TestRestartWithoutAReadyLine(t *testing.T) {
 		t.Fatalf("after a ready: exit %d, %d starts\n%s", code, wr.startCount(), wr.text())
 	}
 }
+
+// status reads a wrapper's status file only when its pid is the lock holder with the same start
+// time: otherwise "unknown" (exit 4). Without a holder, a gave_up file is history after "not
+// running". The Rex server is unreachable here, which status reports and survives.
+func TestStatusTrustsOnlyTheLockHolder(t *testing.T) {
+	wr := newWrapperTest(t, "ready-wait")
+	state := filepath.Join(wr.dir, "state")
+	os.Mkdir(state, 0o700)
+	canon, _ := canonicalState(state)
+	cfg := Config{Server: "unix:///nonexistent/rex.sock", State: state}
+	write := func(s restartStatus) {
+		b, _ := json.Marshal(s)
+		os.WriteFile(filepath.Join(canon, "restart.json"), b, 0o600)
+	}
+
+	write(restartStatus{Version: 1, PID: os.Getpid(), Start: startTime(os.Getpid()), Phase: "gave_up", LastExit: "status 1", Since: "2026-10-21T15:00:00Z"})
+	code, text := ctlLook(cfg).statusText()
+	if code != ctlNotRunning || !strings.HasPrefix(text, "not running\nthe restart wrapper gave up at 2026-10-21T15:00:00Z; last exit status 1") ||
+		!strings.Contains(text, "cannot be asked") {
+		t.Errorf("gave up: %d\n%s", code, text)
+	}
+
+	holder := exec.Command(os.Args[0], "-test.run=^TestFakeHub$")
+	holder.Env = append(os.Environ(), "FAKE_LOCK_STATE="+canon)
+	out, _ := holder.StdoutPipe()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Process.Kill(); holder.Wait() })
+	line := make([]byte, 7)
+	if _, err := out.Read(line); err != nil || string(line) != "locked\n" {
+		t.Fatalf("holder: %q, %v", line, err)
+	}
+	// The file names this test process, not the holder.
+	write(restartStatus{Version: 1, PID: os.Getpid(), Start: startTime(os.Getpid()), Phase: "backoff", Since: "x"})
+	if code, text := ctlLook(cfg).statusText(); code != ctlUnknown || !strings.HasPrefix(text, "unknown: a restart wrapper (pid ") {
+		t.Errorf("another pid: %d\n%s", code, text)
+	}
+	// The holder's pid with another start time.
+	write(restartStatus{Version: 1, PID: holder.Process.Pid, Start: "1", Phase: "backoff", Since: "x"})
+	if code, _ := ctlLook(cfg).statusText(); code != ctlUnknown {
+		t.Errorf("another start time: %d", code)
+	}
+	// The holder's pid and start time: trusted.
+	write(restartStatus{Version: 1, PID: holder.Process.Pid, Start: startTime(holder.Process.Pid), Phase: "backoff", Attempt: 2,
+		LastExit: "status 1", NextStart: time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339), Since: "x"})
+	if code, text := ctlLook(cfg).statusText(); code != ctlWrapper || !strings.HasPrefix(text, "backoff: the restart wrapper (pid ") {
+		t.Errorf("trusted: %d\n%s", code, text)
+	}
+	// A reader never creates the lock file.
+	other := filepath.Join(wr.dir, "fresh")
+	os.Mkdir(other, 0o700)
+	ctlLook(Config{Server: cfg.Server, State: other})
+	if _, err := os.Stat(filepath.Join(other, "restart.lock")); !os.IsNotExist(err) {
+		t.Errorf("status made restart.lock: %v", err)
+	}
+}
