@@ -353,10 +353,11 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'watch-nudge', mode = 'drop', key, plugin}` | The hub does not send the next `hub.changed` nudge of that plugin's watch `key` (any watch if `key` is not given). The repeat schedule continues (docs/hub.md, "Nudges"). |
 | `{point = 'status-read', mode = 'fail', key = session}` | The next read of a pane's program status in that session (any session if `key` is not given) fails after the hub attaches the session. The hub then treats the state as unknown. |
 | `{point = 'status-read', mode = 'hold', key = session}` | The notice loop's next status read of an agent with an unknown state, in that session, waits after the read until `fault_release(id)` (at most 30 s). A test can change the status in between: the older result must not apply. A hold that is still closed at the end of the file fails the file. |
+| `{point = 'start-admission', mode = 'hold-before' or 'hold-after', key = plugin, hold_ms}` | The next start of that plugin (any plugin if `key` is not given) waits until `fault_release(id)`, at most 30 s, or `hold_ms` ms. `hold-before` waits after the lifecycle lock, before the admission; `hold-after` waits after the admission, before the retire and the spawn. Rex gives the hub one request at a time, so a hub request that waits on the held start holds the queue, and the release cannot arrive: such a test uses `hold_ms`. |
 
 | `{point = 'action', action, when = 'before', mode = 'gate', key, plugin}` | A barrier for a caller that retries. From the call that fires it until `fault_release(id)`, every matching call gets code `unavailable` and runs no handler. The hub retries a view operation with that outcome every 500 ms, so the operation passes after the release. A gate that is still closed at the end of the file fails the file. `fault_state` reports `gated`, the number of refused calls. `fault_release` of a gate that has not fired is an error. |
 
-- `nth = n` (action and status-read faults) fires on the n-th matching call; the default is 1. Every armed
+- `nth = n` (action, status-read and start-admission faults) fires on the n-th matching call; the default is 1. Every armed
   fault that matches counts the call, also when another fault fires. An after fault counts only
   calls whose handler succeeded. A call that a closed gate refuses counts for no fault: it does
   not reach the hub.

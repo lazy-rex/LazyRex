@@ -14,6 +14,12 @@ package main
 //   - status-read: a read of a pane's program status (agents.go readStatus; key = the session ID,
 //     "" = any). fail: the read fails. hold: noticeLoop's read of an unknown state waits after the
 //     read until hub.test.fault_release, so a test can change the status in between.
+//   - start-admission: the start path of a plugin (plugins.go startPluginWith; key = the plugin
+//     name, "" = any). hold-before waits after the lifecycle lock, before the admission;
+//     hold-after waits after the admission, before the retire and the spawn. Both wait until
+//     hub.test.fault_release, at most 30 s, or hold_ms ms. A hub request that waits on the held
+//     start (for example on its lifecycle lock) holds the hub's request queue, so the release
+//     cannot arrive: such a test uses hold_ms.
 // nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
 // counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
@@ -21,6 +27,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
@@ -34,18 +41,20 @@ type testFault struct {
 	Key                  string // action: the call's args.key ("" = any)
 	FailCode             string // action, mode fail: the reply's error code (default failed)
 	Nth, seen            int    // fire on the Nth matching call; seen counts the matching calls
+	HoldMS               int    // start-admission: the hold ends by itself after this time (default 30 s)
 	Fired, Released      bool   // Released: a gate is open again
 	Gated                int    // gate: the calls that it refused
 }
 
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"},
-	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}}
+	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
-	"action":      {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"},
-	"watch-nudge": {"point", "mode", "key", "plugin"},
-	"status-read": {"point", "mode", "key", "plugin", "nth"}}
+	"action":          {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"},
+	"watch-nudge":     {"point", "mode", "key", "plugin"},
+	"status-read":     {"point", "mode", "key", "plugin", "nth"},
+	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -63,12 +72,16 @@ func faultableAction(name string) bool {
 func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 	f := &testFault{Nth: 1}
 	for k, v := range args {
-		if k == "nth" {
+		if k == "nth" || k == "hold_ms" {
 			n, ok := v.(float64)
 			if !ok || n < 1 || n != float64(int(n)) {
-				return nil, bad("invalid: nth must be a positive integer")
+				return nil, bad("invalid: %s must be a positive integer", k)
 			}
-			f.Nth = int(n)
+			if k == "nth" {
+				f.Nth = int(n)
+			} else {
+				f.HoldMS = int(n)
+			}
 			continue
 		}
 		if _, ok := v.(string); !ok {
@@ -83,7 +96,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop) or status-read (fail, hold)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold) or start-admission (hold-before, hold-after)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -92,6 +105,8 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		f.Key, _ = args["key"].(string)
 		f.Plugin = plugin
 	case "status-read":
+		f.Key, _ = args["key"].(string)
+	case "start-admission":
 		f.Key, _ = args["key"].(string)
 	case "action":
 		f.Action, _ = args["action"].(string)
@@ -271,7 +286,7 @@ func (h *Hub) testFaultRelease(id float64) (any, error) {
 		if float64(f.ID) != id {
 			continue
 		}
-		if f.Mode != "gate" && f.Mode != "hold" || f.Released {
+		if f.Mode != "gate" && !strings.HasPrefix(f.Mode, "hold") || f.Released {
 			return nil, bad("invalid: fault %d is not a closed gate or hold", f.ID)
 		}
 		if !f.Fired {
@@ -291,9 +306,13 @@ func (h *Hub) statusReadFault(sess, mode string) *testFault {
 	})
 }
 
-// waitRelease holds the caller until hub.test.fault_release opens f, at most 30 s.
+// waitRelease holds the caller until hub.test.fault_release opens f, at most 30 s or f.HoldMS.
 func (h *Hub) waitRelease(f *testFault) {
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	limit := 30 * time.Second
+	if f.HoldMS > 0 {
+		limit = time.Duration(f.HoldMS) * time.Millisecond
+	}
+	for deadline := time.Now().Add(limit); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		h.test.mu.Lock()
 		released := f.Released
 		h.test.mu.Unlock()
@@ -301,4 +320,17 @@ func (h *Hub) waitRelease(f *testFault) {
 			return
 		}
 	}
+}
+
+// startFault holds the start path of plugin at an armed start-admission fault of this mode,
+// until hub.test.fault_release. It does nothing outside test mode.
+func (h *Hub) startFault(plugin, mode string) {
+	f := h.takeFault(func(f *testFault) bool {
+		return f.Point == "start-admission" && f.Mode == mode && (f.Key == "" || f.Key == plugin)
+	})
+	if f == nil {
+		return
+	}
+	h.ev.emit("fault", map[string]any{"point": f.Point, "mode": f.Mode, "plugin": plugin})
+	h.waitRelease(f)
 }

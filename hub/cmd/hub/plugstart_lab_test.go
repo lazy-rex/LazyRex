@@ -20,7 +20,8 @@ import (
 
 // startFixture is a plugin that registers, and ends its process with status 1 on fix.exit. With
 // the entry arg gate=1 it sets its label first and registers only on fix.register: a test decides
-// when the register comes.
+// when the register comes. fix.reload calls hub.plugins.reload as the plugin and replies with
+// {result} or {error}.
 const startFixture = `local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 local name = %q
@@ -30,7 +31,8 @@ local function register()
 end
 rex.call('client.keymap', {actions = {
   {name = 'fix.exit', kind = 'client', title = 'Exit', args = {type = 'object'}},
-  {name = 'fix.register', kind = 'client', title = 'Register', args = {type = 'object'}}}})
+  {name = 'fix.register', kind = 'client', title = 'Register', args = {type = 'object'}},
+  {name = 'fix.reload', kind = 'client', title = 'Reload', args = {type = 'object'}}}})
 rex.on('client_perform_requested', function(ctx, ev)
   if ev.action == 'fix.exit' then
     rex.call('client.reply', {call_id = ev.call_id, result = {}})
@@ -38,6 +40,10 @@ rex.on('client_perform_requested', function(ctx, ev)
   elseif ev.action == 'fix.register' then
     rex.call('client.reply', {call_id = ev.call_id, result = {}})
     rex.after(0, register)
+    return
+  elseif ev.action == 'fix.reload' then
+    local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.plugins.reload', args = {}, timeout_ms = 20000})
+    rex.call('client.reply', {call_id = ev.call_id, result = {result = res and res.result, error = err and (type(err) == 'table' and tostring(err.message) or tostring(err)) or nil}})
     return
   end
   rex.call('client.reply', {call_id = ev.call_id, error = {code = 'not_supported', message = 'no such action'}})
@@ -488,7 +494,7 @@ func TestPluginKeptUnreadableSourceLab(t *testing.T) {
 				t.Errorf("the entry: %v", e)
 			}
 			if k := s.kept("a"); k == nil || k["source"] != "src/a" || k["state"] != "retained" || k["dir"] != filepath.Join(s.src, "a") ||
-				k["error"] != "plugin a: no config entry gives this name now (it ran from source src/a); stop it with hub.admin.stop" {
+				k["error"] != "plugin a: no entry gives this name now (it ran from source src/a); stop it with hub.admin.stop" {
 				t.Errorf("kept: %v", k)
 			}
 			if _, err := s.call("hub.admin.start", map[string]any{"plugin": "a"}); err == nil || !strings.Contains(err.Error(), "has no config entry") {

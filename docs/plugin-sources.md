@@ -657,16 +657,41 @@ with the features pair, on top of step 2.
   `startOrder`.
 - `hub.admin.start {"source": ...}` names a managed entry too.
 
-**Reload (open question, for the step 2 plan).** The approved design (section 7) re-reads the
-manifests and the lock at each start attempt. It does not reload the config entry list: a config
-change needs a hub restart, as today. When the hub reads the managed file again is not decided
-yet. The plugin manager needs a reload while the hub runs. Any reload rule must keep these
-conditions:
+**Reload (built, step 2e part 2).** `hub.plugins.reload` reads the managed file again while the
+hub runs. Config entries do not reload: a config change needs a hub restart, as before.
 
-- A reload keeps `run` (the running-instance metadata) and unresolved spawn intents when an entry
-  changes or disappears.
-- A malformed managed file is never a request to stop running instances or to delete lock
-  entries.
+- Callers: an operator (a process outside agent and plugin panes), or the registered current
+  instance of a plugin that has an entry. The hub checks a plugin caller again after it takes the
+  reload lock. Other callers get code `retained` (a kept instance) or a refusal.
+- A malformed file changes no entry and no instance. The reply is an error that ends with `; the
+  managed entries are unchanged`, and `hub.plugins` reports the file error in `refused`.
+- A valid file, by managed id:
+  - unchanged (the same source, args and watch roots): the entry stays;
+  - changed: the hub updates the entry and keeps its bound name. A running instance runs on.
+    `hub.plugins` reports `"candidate": {"dir"}` while the new dir differs from the run's dir.
+    `hub.admin.stop`, then `hub.admin.start`, runs the new source;
+  - new: the hub adds the entry and starts it;
+  - missing: the record becomes a kept record (2d part 1). Its instance runs on with its
+    registration and exports until `hub.admin.stop`. It gets no notices and never respawns. A new
+    `hub.register` for it is refused (code `retained`). A dependent's next start is refused
+    (`dependency <name> is not configured`).
+- Re-add: an entry with the same name and source adopts a kept record. The re-add start runs the
+  start check first:
+  - a pass with a registered live instance: the instance stays, and its state is clear again;
+  - a pass with no such instance: the hub retires the recorded block and spawns;
+  - a fail: the instance stays refused or retained. The reply reports the error.
+  A re-add does not restart a dependent that a removal refused. `hub.admin.start` starts it.
+- `hub.admin.start` of a retained instance runs the start check again, by the re-add rule.
+- Admission: a start reads its entry and writes its state under one lock section. A reload swaps
+  the entries under the same locks. A start that sees the removal spawns nothing. A start that
+  was admitted before the removal completes, and its instance is kept.
+- Lock order: the reload lock, then a plugin's lifecycle lock, then the entry lock, then the hub
+  lock. Hub start recovery holds the reload lock for its whole run.
+- The reply: `{added, changed, removed, readded, errors}`. `errors` maps a plugin name to the
+  error of its start.
+- Events: `plugins_reloaded {added, changed, removed}` and `plugins_reload_refused {error}`.
+
+A reload keeps `run` and unresolved spawn intents when an entry changes or disappears.
 
 **Commands.** `sync`, `update` and `status` read the config entries and the managed entries.
 `update` accepts a managed `id` as well as a name or a source.

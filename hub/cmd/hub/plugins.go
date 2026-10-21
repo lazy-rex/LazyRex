@@ -78,7 +78,7 @@ func (h *Hub) registerTarget(name, instance string, pid int) (*Plugin, error) {
 		return nil, bad("instance %q is not the current instance of %s", instance, name)
 	}
 	if pl.entry == nil {
-		return nil, refuse("retained", "instance %s of %s is retained: no config entry gives this name now", instance, name)
+		return nil, refuse("retained", "instance %s of %s is retained: no entry gives this name now", instance, name)
 	}
 	if pl.state == "retained" {
 		return nil, refuse("retained", "instance %s of %s is retained after a refused start", instance, name)
@@ -262,6 +262,8 @@ func (h *Hub) pluginNames() []string {
 // first), then the refused entries, so that a refused entry with a live instance is retained. Then it
 // recovers each kept record (recoverKept), which starts nothing.
 func (h *Hub) recoverPlugins(ctx context.Context) {
+	h.reloadMu.Lock() // a reload waits until recovery has visited every record
+	defer h.reloadMu.Unlock()
 	if h.test != nil && h.cfg.TestHoldRecovery {
 		select {
 		case <-h.test.recover:
@@ -361,7 +363,15 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 //  3. Only if step 2 passed: retire the recorded instance.
 //  4. Spawn, or enter state waiting when a dependency is not registered (startOrWait).
 func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
+	return h.startPluginWith(ctx, pl, false)
+}
+
+// startPluginWith is startPlugin. With keepLive (a re-add by reload), a passing check keeps a
+// registered live instance unchanged instead of replacing it: the check always runs first, so a
+// failing candidate stays refused or retained.
+func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) error {
 	pl.attempted = true
+	h.startFault(pl.Name, "hold-before")
 	h.mu.Lock()
 	err := h.loadPluginRow(ctx, pl)
 	before := pl.waiting
@@ -390,9 +400,26 @@ func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 	if pl.Desired != "running" {
 		return nil
 	}
-	cand, err := h.checkStart(pl)
+	e, cand, err := h.checkStart(pl)
+	if err == errKept {
+		return h.recoverKept(ctx, pl) // removed before admission: spawn nothing
+	}
 	if err != nil {
 		return err
+	}
+	h.startFault(pl.Name, "hold-after")
+	if keepLive {
+		h.mu.Lock()
+		live := pl.entry == e && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
+		if live {
+			pl.state, pl.refusal, pl.waiting = "", "", nil // the check passed: ready again
+		}
+		h.mu.Unlock()
+		if live {
+			h.kickWaiting()
+			go h.changed("plugins")
+			return nil
+		}
 	}
 	if pl.BlockID != "" {
 		ok, err := h.retire(ctx, pl)
@@ -403,7 +430,7 @@ func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
 		}
 	}
-	return h.startOrWait(ctx, pl, cand)
+	return h.startOrWait(ctx, pl, e, cand)
 }
 
 // registeredLocked reports whether the plugin name has an accepted hub.register for its current
@@ -418,8 +445,9 @@ func (h *Hub) registeredLocked(name string) bool {
 // waiting with the names, and a wake (kickWaiting) runs the whole start path again. The check and
 // the state change share one h.mu section, and hub.register sets the client under h.mu before it
 // kicks, so a register between them is not lost. Waiting creates no spawn intent. A dependency that
-// stops after the check does not change this start.
-func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, cand *pluginRun) error {
+// stops after the check does not change this start. e is the admitted entry: after a removal
+// (pl.entry != e) the start still completes, but it writes no state, so the kept state stays.
+func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, e *configEntry, cand *pluginRun) error {
 	h.mu.Lock()
 	var missing []string
 	for _, d := range cand.Depends {
@@ -427,11 +455,14 @@ func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, cand *pluginRun) erro
 			missing = append(missing, d)
 		}
 	}
-	changed := !slices.Equal(missing, pl.waiting)
-	pl.waiting = missing
-	pl.state = ""
-	if missing != nil {
-		pl.state = "waiting"
+	member := pl.entry == e
+	changed := member && !slices.Equal(missing, pl.waiting)
+	if member {
+		pl.waiting = missing
+		pl.state = ""
+		if missing != nil {
+			pl.state = "waiting"
+		}
 	}
 	h.mu.Unlock()
 	if missing == nil {
@@ -497,9 +528,9 @@ func (h *Hub) kickWaiting() {
 	}
 }
 
-// keptError is the error of a kept record: no config entry gives its name now.
+// keptError is the error of a kept record: no entry (config or managed) gives its name now.
 func keptError(pl *Plugin) string {
-	return fmt.Sprintf("plugin %s: no config entry gives this name now (it ran from source %s); stop it with hub.admin.stop", pl.Name, pl.source)
+	return fmt.Sprintf("plugin %s: no entry gives this name now (it ran from source %s); stop it with hub.admin.stop", pl.Name, pl.source)
 }
 
 // recoverKept resolves the spawn intents of a kept record and starts nothing (a kept record never
@@ -529,12 +560,20 @@ func (h *Hub) recoverKept(ctx context.Context, pl *Plugin) error {
 // checkStart resolves every entry and returns the candidate of pl's entry. A refused entry gets
 // state refused, or retained when its recorded instance still lives: a refused start never
 // retires (section 7, "Retained instance").
-func (h *Hub) checkStart(pl *Plugin) (*pluginRun, error) {
+func (h *Hub) checkStart(pl *Plugin) (*configEntry, *pluginRun, error) {
+	// Admission: the entry read and the state write share one entriesMu + h.mu section, and a
+	// reload swaps the entries under the same locks. So the start is admitted with entry e, or it
+	// sees the removal (e nil: a kept record).
 	h.entriesMu.Lock()
 	h.resolveLocked()
-	cand, err := pl.entry.cand, pl.entry.err
-	h.entriesMu.Unlock()
 	h.mu.Lock()
+	e := pl.entry
+	if e == nil {
+		h.mu.Unlock()
+		h.entriesMu.Unlock()
+		return nil, nil, errKept
+	}
+	cand, err := e.cand, e.err
 	pl.refusal = ""
 	if pl.state != "waiting" {
 		pl.state = "" // a waiting plugin stays waiting until startOrWait compares the names
@@ -547,14 +586,19 @@ func (h *Hub) checkStart(pl *Plugin) (*pluginRun, error) {
 	}
 	state := pl.state
 	h.mu.Unlock()
+	h.entriesMu.Unlock()
 	if err != nil {
 		h.ev.emit("plugin_refused", map[string]any{"plugin": pl.Name, "state": state, "error": err.Error()})
 		h.kickWaiting() // a dependent that waits for pl is refused now
 		go h.changed("plugins")
-		return nil, refuse("refused", "%v", err)
+		return nil, nil, refuse("refused", "%v", err)
 	}
-	return cand, nil
+	return e, cand, nil
 }
+
+// errKept is checkStart's result for a record whose entry is gone at admission: the start takes
+// the kept path and spawns nothing.
+var errKept = errors.New("the record has no entry")
 
 // unresolvedStop is the error of a stop of a kept record that an unresolved spawn intent keeps
 // (plan v2): the record stays.
@@ -993,16 +1037,19 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			return nil, bad("plugin %s has no config entry: stop it with hub.admin.stop, or start its entry by source", pl.Name)
 		}
 		// A start of a running plugin changes nothing. Any other start takes the one start path: an
-		// unresolved spawn intent stops it (code unresolved_intent). There is no override.
+		// unresolved spawn intent stops it (code unresolved_intent). There is no override. A retained
+		// instance is not running: its start runs the check again, and a pass keeps a registered live
+		// instance (a reload re-add, section 13).
 		h.mu.Lock()
-		running := pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
+		retained := pl.state == "retained"
+		running := pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && !retained
 		if !running {
 			pl.Desired = "running"
 			h.savePlugin(ctx, pl)
 		}
 		h.mu.Unlock()
 		if !running {
-			if err := h.startPlugin(ctx, pl); err != nil {
+			if err := h.startPluginWith(ctx, pl, retained); err != nil {
 				return nil, err
 			}
 		}

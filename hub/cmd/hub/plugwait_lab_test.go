@@ -67,7 +67,8 @@ func (s *startLab) waits(name string, deps ...string) {
 	})
 }
 
-// order returns the "event plugin" pairs of the current hub's event log lines, in emit order.
+// order returns the "event plugin" pairs of the current hub's event log lines, in emit order, and
+// the names of the plugins_* events (they have no plugin).
 func (s *startLab) order() []string {
 	s.t.Helper()
 	gen := s.must("hub.test.status", nil)["generation"]
@@ -83,6 +84,8 @@ func (s *startLab) order() []string {
 		var e map[string]any
 		if json.Unmarshal(sc.Bytes(), &e) == nil && fmt.Sprint(e["generation"]) == fmt.Sprint(gen) && e["plugin"] != nil {
 			out = append(out, fmt.Sprintf("%v %v", e["event"], e["plugin"]))
+		} else if ev, _ := e["event"].(string); fmt.Sprint(e["generation"]) == fmt.Sprint(gen) && strings.HasPrefix(ev, "plugins_") {
+			out = append(out, ev)
 		}
 	}
 	return out

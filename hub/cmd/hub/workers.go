@@ -1272,7 +1272,8 @@ func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, erro
 //   - refused: each config entry in state refused, with its error;
 //   - entries: each config entry with its state (running, stopped, refused or retained), the dir of
 //     its run, its error when refused or retained, and "candidate": {"error"} when its last
-//     resolution refused it.
+//     resolution refused it, or "candidate": {"dir"} when its last resolution passed with another
+//     dir than its run (hub.plugins.reload changed the source).
 //   - kept: each record without an entry (plugins.go loadKept), with its name, source, state, error
 //     and the dir of its run.
 //
@@ -1313,6 +1314,8 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		if e.err != nil {
 			item["candidate"] = map[string]any{"error": e.err.Error()}
+		} else if e.cand != nil && item["dir"] != nil && e.cand.Dir != item["dir"] {
+			item["candidate"] = map[string]any{"dir": e.cand.Dir} // a changed source: the next start runs it
 		}
 		if state == "refused" {
 			r := e.ref()
