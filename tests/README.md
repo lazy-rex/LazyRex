@@ -63,10 +63,10 @@ candidate restricts the group alternative to group recipients.
 
 ## Conversation identity adapter
 
-Run the hook boundary tests without Rex:
+Run the hook boundary tests without Rex, in `hub/`:
 
 ```sh
-python3 spikes/03-ui-framework/tests/session-start.py
+go test ./cmd/hub -run Hook
 ```
 
 The adapter test is a Go lab test. Start an isolated server with `lab/server.sh /tmp/rexlab-<team>-<you>` (with no hub). Then run, in `hub/`:
@@ -85,9 +85,11 @@ MCP_LAB_SOCKET=/tmp/rexlab-<team>-<you>/rex.sock go test ./cmd/mcp -run TestShim
 - A rejected identity report does not stop legacy dispatch in stage 1.
 
 Observed on Rex 0.0.1792158932-g88fd41: the adapter test passes (Go port, 2026-10-19).
-The eight hook tests pass. They check explicit server selection, JSON arguments,
-prompt recovery, irrelevant input, missing commands, missing hubs, ambiguous hubs, lost hub clients, and deadlines.
-These tests do not verify the hub's identity state or lifecycle ordering.
+The hook tests (`hub/cmd/hub/hook_test.go`) check explicit server selection, JSON arguments,
+prompt recovery, irrelevant input, missing commands, missing hubs, ambiguous hubs, lost hub clients, and deadlines
+(a hung `client ls` and a hung report call). They also check that the reporter starts before the input is read
+(an older hook whose input comes late keeps the older reporter) and that the reporter's parent is the hook process.
+These tests do not verify the hub's identity state.
 
 
 ### Combined hub and adapter
@@ -96,7 +98,7 @@ Start the candidate hub in an isolated lab with a static `claude` agent.
 Run the transport test with the candidate adapter:
 
 ```sh
-REX_SERVER=unix:///tmp/identity-lab/rex.sock MCP_BIN=/absolute/path/to/mcp node spikes/03-ui-framework/tests/identity-transport.mjs
+REX_SERVER=unix:///tmp/identity-lab/rex.sock MCP_BIN=/absolute/path/to/mcp HUB_BIN=/absolute/path/to/lazyrex-hub node tests/identity-transport.mjs
 ```
 
 The test creates its own pane and rebinds the lab's static `claude` agent.

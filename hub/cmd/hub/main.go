@@ -284,6 +284,8 @@ func main() {
 			os.Exit(testAgentMain(os.Args[2:]))
 		case "plugin":
 			os.Exit(pluginCmdMain(os.Args[2:], os.Stdout, os.Stderr))
+		case "hook":
+			os.Exit(hookMain(os.Args[2:]))
 		}
 	}
 	fs := &faults{}
