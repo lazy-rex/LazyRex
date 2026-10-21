@@ -1267,15 +1267,35 @@ func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, erro
 	return map[string]any{"agent": id, "status": "navigating"}, nil
 }
 
+// candidateChange gives the "candidate" object of a passing entry with a run (section 7): "commit"
+// when the candidate commit differs from the run commit, and "dir" when the candidate dir differs
+// from the run dir. It gives nil when there is no candidate or neither field differs.
+func candidateChange(cand, run *pluginRun) map[string]any {
+	if cand == nil {
+		return nil
+	}
+	c := map[string]any{}
+	if cand.Commit != run.Commit {
+		c["commit"] = cand.Commit
+	}
+	if cand.Dir != run.Dir {
+		c["dir"] = cand.Dir
+	}
+	if len(c) == 0 {
+		return nil
+	}
+	return c
+}
+
 // pluginsList reports (docs/plugin-sources.md, section 7):
 //   - plugins: each registered plugin and its declared tabs, for navigation;
 //   - refused: each config entry in state refused, with its error;
-//   - entries: each config entry with its state (running, stopped, refused or retained), the dir of
-//     its run, its error when refused or retained, and "candidate": {"error"} when its last
-//     resolution refused it, or "candidate": {"dir"} when its last resolution passed with another
-//     dir than its run (hub.plugins.reload changed the source).
+//   - entries: each config entry with its state (running, stopped, refused or retained), the dir
+//     and the commit of its run, its error when refused or retained, and "candidate": {"error"}
+//     when its last resolution refused it, or the candidate fields that differ from the run
+//     (candidateChange; for example hub.plugins.reload changed the source, or an update the commit).
 //   - kept: each record without an entry (plugins.go loadKept), with its name, source, state, error
-//     and the dir of its run.
+//     and the dir and the commit of its run.
 //
 // An entry that no manifest named has name null.
 func (h *Hub) pluginsList(ctx context.Context) (any, error) {
@@ -1303,6 +1323,12 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			}
 			if pl.run.Name != "" {
 				item["dir"] = pl.run.Dir
+				if pl.run.Commit != "" {
+					item["commit"] = pl.run.Commit
+				}
+				if c := candidateChange(e.cand, &pl.run); c != nil {
+					item["candidate"] = c
+				}
 			}
 			if pl.ClientID != "" {
 				running = append(running, pl.run)
@@ -1314,8 +1340,6 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		if e.err != nil {
 			item["candidate"] = map[string]any{"error": e.err.Error()}
-		} else if e.cand != nil && item["dir"] != nil && e.cand.Dir != item["dir"] {
-			item["candidate"] = map[string]any{"dir": e.cand.Dir} // a changed source: the next start runs it
 		}
 		if state == "refused" {
 			r := e.ref()
@@ -1331,7 +1355,11 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 	kept := []any{}
 	for _, pl := range h.plugins {
 		if pl.entry == nil {
-			kept = append(kept, map[string]any{"name": pl.Name, "source": pl.source, "state": pl.reportedState(), "error": pl.refusal, "dir": pl.run.Dir})
+			k := map[string]any{"name": pl.Name, "source": pl.source, "state": pl.reportedState(), "error": pl.refusal, "dir": pl.run.Dir}
+			if pl.run.Commit != "" {
+				k["commit"] = pl.run.Commit
+			}
+			kept = append(kept, k)
 		}
 	}
 	sort.Slice(kept, func(i, j int) bool { return kept[i].(map[string]any)["name"].(string) < kept[j].(map[string]any)["name"].(string) })

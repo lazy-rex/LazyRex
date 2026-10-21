@@ -76,8 +76,12 @@ Step 2e part 1 (managed entries, section 13) is on main (51d27c4).
 
 Step 3 Part A is on main (08dbb89): the lock (`pluginlock.go`), the cache and `lockedDir`
 (`plugincache.go`), refs and fetch (`pluginfetch.go`), and `lazyrex-hub plugin sync|update|status`
-(`plugincmd.go`), with subdir sources and managed entries. Not built: step 3 Part B (the hub
-side: `resolveEntries` for a GitHub source, `run.commit`, the lab test).
+(`plugincmd.go`), with subdir sources and managed entries.
+
+On the branch `plugins/step3a-partb` (in review), step 3 Part B: `resolveEntries` resolves a
+GitHub source from its cache entry, with one lock snapshot for each resolution. A run records its
+commit, and `hub.plugins` reports `commit` and the candidate fields (section 7). Not built yet: the
+lab test of a start from a read-only cache entry.
 
 ## Terms
 
@@ -385,8 +389,15 @@ are a malformed config, so a source names one entry. A hub restart works too.
   register. Notices use `run.notice`. Readiness is the registration of `run`.
 - `candidate`: the last resolution attempt, `{commit, dir}` or `{error}`. A resolution never
   writes into `run`. Only a spawn copies the candidate to `run`.
-- `hub.plugins` reports state and commit from `run`, and `"candidate": {commit, error}` when the
-  candidate is refused or names another commit. It also reports `source` and `dir`.
+- `hub.plugins` reports state, `dir` and `commit` from `run` (`commit` only for a GitHub source),
+  and `source`. A kept record also reports `dir` and `commit` of its run. The `"candidate"` object:
+  - A refused candidate: `{"error"}` only.
+  - A passing candidate of an entry with a run: `"commit"` when the candidate commit differs from
+    the run commit, and `"dir"` when the candidate dir differs from the run dir. Each field is
+    independent. A local source can report only `"dir"`.
+  - No `"candidate"` key when neither field differs, or when the entry has no run.
+- `hub.plugins` reports the last resolution. It reads no lock file. After `plugin update`, a
+  resolution (for example `hub.plugins.reload` or a start attempt) gives the new candidate.
 
 Example: P runs C1. An update locks C2, and C2 fails its graph check. The hub keeps `run` = C1.
 `hub.admin.start` on a running plugin changes nothing (as today). To apply an update, run
@@ -494,7 +505,7 @@ Both parts are in package `main` of `hub/cmd/hub`.
   that lands second rebases.
 - **Part B: the hub side.** Part B owns `resolveEntries` for a GitHub source: it replaces the
   "not installed" refusal with the calls below. It adds the commit to `pluginRun` and to
-  `hub.plugins` (`run.commit`, `"candidate": {commit}`, section 7), and adds the lab test of a
+  `hub.plugins` (`commit` and the `"candidate"` fields, section 7), and adds the lab test of a
   start from a read-only cache entry.
 
 **The interface.** Part A gives these functions. Part B calls them and no other Part A code.
@@ -523,7 +534,8 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
   error and does not name `sync`). Part B uses the text as the entry error unchanged.
 - Part B calls `readLock` once in each resolution (each start attempt re-reads the lock, section
   7), and `lockedDir` once for each GitHub entry, with that one snapshot. `lockedDir` never reads
-  the lock file again. Neither function writes a lock file or a cache entry.
+  the lock file again. Neither function writes a lock file or a cache entry. When no entry is a
+  GitHub source, the resolution reads no lock file.
 - A missing lock file gives an empty lock: each GitHub entry is "not installed" (section 8).
 - A `readLock` error refuses every GitHub entry. The hub start does not fail (section 1: only a
   malformed config fails the start), and local entries resolve as usual. The graph rules refuse a
@@ -591,6 +603,10 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A hub restart with a refused candidate | the old process lives (pid and start time); its block stays; the row is retained; a dependent waits, or is refused when its check refuses | L |
 | `hub.register` with a retained instance ID | code `retained` | U |
 | A GitHub source without a lock entry | refused, "not installed" | U |
+| A synced GitHub source (also a subdir source), with local entries and dependencies across both kinds | resolves from the read-only cache entry; the run has the locked commit | U |
+| A lock that does not parse; a lock that cannot be read (a directory, no permission) | each GitHub entry refused with the exact text; local entries resolve | U |
+| `plugin update`, then a new resolution | the run keeps its commit, also after a save and a load; the candidate has the new commit and dir | U, L |
+| `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
 | sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
 | sync fails on the second of two plugins | the lock is unchanged; no referenced dir changed | U |
 | update moves a branch; the ref moves during the fetch | a new commit in the lock; refused, the lock is unchanged | U |

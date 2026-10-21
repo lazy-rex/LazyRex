@@ -23,8 +23,9 @@ import (
 // "Run and candidate"). Notice is "" when the manifest has none (code no_notice).
 type pluginRun struct {
 	Name    string            `json:"name"`
-	Source  string            `json:"source"` // the exact source string
-	Dir     string            `json:"dir"`    // the plugin directory
+	Source  string            `json:"source"`           // the exact source string
+	Dir     string            `json:"dir"`              // the plugin directory
+	Commit  string            `json:"commit,omitempty"` // a GitHub source: the locked commit; "" for a local source
 	Path    string            `json:"path"`
 	Events  string            `json:"events,omitempty"`
 	Notice  string            `json:"notice,omitempty"`
@@ -279,14 +280,36 @@ func guard(kept []keptName, e *configEntry, name string) error {
 	return nil
 }
 
+// lockSnapshot is the lock as one resolution reads it: readLock once, for every GitHub entry.
+type lockSnapshot struct {
+	cfgPath string      // the config, as the texts name it
+	state   string      // the hub state directory
+	lock    *pluginLock // nil when err is set
+	err     error       // the readLock error: it refuses every GitHub entry, and no local entry
+}
+
+// readLockSnapshot reads the lock of cfg for one resolution of entries. It reads no file when no
+// entry is a GitHub source.
+func readLockSnapshot(cfg *Config, entries []*configEntry) lockSnapshot {
+	snap := lockSnapshot{cfgPath: cfg.path, state: cfg.State, lock: &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{}}}
+	for _, e := range entries {
+		if e.github {
+			snap.lock, snap.err = readLock(lockPath(cfg.path, cfg.Lock))
+			break
+		}
+	}
+	return snap
+}
+
 // resolveEntries resolves every entry again: each start attempt rebuilds the whole graph (section
-// 7, "The graph"). It reads each local manifest and applies the name, ownership (guard) and graph
-// rules. It records each entry's candidate or error, and binds each name that one entry gives
-// without a conflict. A bound name stays bound. It returns the named entries: the ones that passed
-// in start order (dependencies first), then the refused ones in config order. cfgPath names the
-// config in the "not installed" text. kept are the records without an entry. The caller holds
-// Hub.entriesMu, or owns the entries.
-func resolveEntries(cfgPath string, entries []*configEntry, kept []keptName) []*configEntry {
+// 7, "The graph"). It reads each manifest (a GitHub entry: in its cache entry) and applies the
+// name, ownership (guard) and graph rules. It records each entry's candidate or error, and binds
+// each name that one entry gives without a conflict. A bound name stays bound. It returns the named entries: the ones that passed
+// in start order (dependencies first), then the refused ones in config order. snap is the lock of
+// this resolution: a GitHub entry resolves from its cache entry (lockedDir). kept are the records
+// without an entry. It reads files and writes only the entry fields; it reads no lock file. The
+// caller holds Hub.entriesMu, or owns the entries.
+func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) []*configEntry {
 	src := make([]*sourceEntry, len(entries))
 	runs := make([]*pluginRun, len(entries))
 	for i, e := range entries {
@@ -299,11 +322,19 @@ func resolveEntries(cfgPath string, entries []*configEntry, kept []keptName) []*
 			s.Err = e.static
 			continue
 		}
+		dir, commit := e.dir, ""
 		if e.github {
-			s.Err = fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
-			continue
+			if snap.err != nil {
+				s.Err = fmt.Errorf("plugin %s: %w", e.Source, snap.err)
+				continue
+			}
+			var err error
+			if dir, commit, err = lockedDir(snap.cfgPath, snap.state, snap.lock, e); err != nil {
+				s.Err = err
+				continue
+			}
 		}
-		m, main, err := readPluginManifest(e.dir)
+		m, main, err := readPluginManifest(dir)
 		if err == nil {
 			e.seen = m.Name
 		}
@@ -324,7 +355,7 @@ func resolveEntries(cfgPath string, entries []*configEntry, kept []keptName) []*
 			// A name in use is a duplicate name: checkGraph refuses every entry with it. The owner
 			// keeps the binding (uses below), and its running instance continues.
 			s.Name, s.Depends = m.Name, m.Depends
-			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: e.dir, Path: main, Events: m.Events, Notice: m.Notice,
+			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Path: main, Events: m.Events, Notice: m.Notice,
 				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots}
 		}
 	}

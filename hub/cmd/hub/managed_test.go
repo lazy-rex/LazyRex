@@ -113,7 +113,7 @@ func TestManagedEntries(t *testing.T) {
 	if strings.Join(ids, ",") != "entry 1,managed:b,managed:again,managed:c" {
 		t.Errorf("entries %v", ids)
 	}
-	order := resolveEntries(p, c.entries, nil)
+	order := resolveEntries(noLock(p), c.entries, nil)
 	// managed:again names <dir>/a, and the config entry names <dir>/cfg/a: two sources. Both
 	// manifests give the name a, so both entries are refused, and b (depends on a) with them.
 	dup := "entries 1 and managed:again have the same name a"
@@ -139,7 +139,7 @@ func TestManagedEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolveEntries(p, c.entries, nil)
+	resolveEntries(noLock(p), c.entries, nil)
 	if c.entries[0].err != nil || c.entries[0].name != "a" {
 		t.Errorf("the config entry: %v, name %q", c.entries[0].err, c.entries[0].name)
 	}
