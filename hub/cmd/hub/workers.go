@@ -1291,7 +1291,7 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		if e.err != nil {
 			errText = e.err.Error()
 		}
-		item := map[string]any{"entry": e.index, "source": e.Source}
+		item := e.ref()
 		if pl := h.plugins[e.name]; e.name != "" && pl != nil {
 			name, state = e.name, pl.reportedState()
 			if pl.state != "" {
@@ -1315,9 +1315,15 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			item["candidate"] = map[string]any{"error": e.err.Error()}
 		}
 		if state == "refused" {
-			refused = append(refused, map[string]any{"entry": e.index, "source": e.Source, "name": name, "state": state, "error": errText})
+			r := e.ref()
+			r["name"], r["state"], r["error"] = name, state, errText
+			refused = append(refused, r)
 		}
 		entries = append(entries, item)
+	}
+	if h.managedErr != nil {
+		// The file once, not each entry: a malformed file gives no entries (section 13).
+		refused = append(refused, map[string]any{"managed_file": h.cfg.managedPath, "error": h.managedErr.Error()})
 	}
 	kept := []any{}
 	for _, pl := range h.plugins {

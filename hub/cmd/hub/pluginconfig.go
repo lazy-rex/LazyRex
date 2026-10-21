@@ -7,7 +7,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -39,9 +43,11 @@ type configEntry struct {
 	// worktrees_root. The hub's own keys (pluginArgReserved) are refused.
 	Args       map[string]string `json:"args"`
 	WatchRoots []string          `json:"watch_roots"`
-	index      int               // 1-based, as the error texts count
+	index      int               // 1-based, as the error texts count; 0 for a managed entry
+	managed    string            // the managed id (section 13); "" for a config entry
 	dir        string            // a local source: the absolute directory
 	github     bool
+	static     error // a refusal that no resolution changes (a managed source that the config also names)
 	// name binds at the first resolution that gives it without a conflict, and stays for the life
 	// of the hub process. "" until then.
 	name string
@@ -82,19 +88,127 @@ func parseEntries(cfgDir string, raws []json.RawMessage) ([]*configEntry, error)
 			return nil, fmt.Errorf("entries %d and %d have the same source %s", j, n, e.Source)
 		}
 		first[e.Source] = n
-		for k := range e.Args {
-			if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
-				return nil, fmt.Errorf("plugin entry %d: arg %q is not allowed", n, k)
-			}
-		}
-		for _, r := range e.WatchRoots {
-			if !filepath.IsAbs(r) || filepath.Clean(r) != r {
-				return nil, fmt.Errorf("plugin entry %d: watch root %q must be absolute and clean", n, r)
-			}
+		if err := e.checkFields(); err != nil {
+			return nil, fmt.Errorf("plugin entry %d: %w", n, err)
 		}
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// checkFields checks the args and the watch roots of an entry (config or managed).
+func (e *configEntry) checkFields() error {
+	for k := range e.Args {
+		if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
+			return fmt.Errorf("arg %q is not allowed", k)
+		}
+	}
+	for _, r := range e.WatchRoots {
+		if !filepath.IsAbs(r) || filepath.Clean(r) != r {
+			return fmt.Errorf("watch root %q must be absolute and clean", r)
+		}
+	}
+	return nil
+}
+
+// identity is the entry's identity in texts: "entry N" for a config entry, "managed:<id>" for a
+// managed entry (section 13).
+func (e *configEntry) identity() string {
+	if e.managed != "" {
+		return "managed:" + e.managed
+	}
+	return fmt.Sprintf("entry %d", e.index)
+}
+
+// managedFileLimit bounds the read of the managed file. The file lists entries of about 200 bytes,
+// so 1 MiB is far above any real list.
+const managedFileLimit = 1 << 20
+
+var managedID = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+// parseManaged reads the managed file (section 13): the plugin manager's entries. A missing file
+// is an empty list. Any other problem makes the whole file malformed: the caller refuses every
+// managed entry and keeps the config entries.
+func parseManaged(path string) ([]*configEntry, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, managedFileLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > managedFileLimit {
+		return nil, fmt.Errorf("the file is over the %d-byte limit", managedFileLimit)
+	}
+	var file struct {
+		Plugins []struct {
+			ID         string            `json:"id"`
+			Source     string            `json:"source"`
+			Args       map[string]string `json:"args"`
+			WatchRoots []string          `json:"watch_roots"`
+		} `json:"plugins"`
+	}
+	if err := decodeManifest("the file", b, &file); err != nil {
+		return nil, err
+	}
+	var out []*configEntry
+	ids, sources := map[string]bool{}, map[string]bool{}
+	for i, p := range file.Plugins {
+		n := i + 1
+		if !managedID.MatchString(p.ID) {
+			return nil, fmt.Errorf("plugin %d: id %q must match [a-z0-9_-]{1,64}", n, p.ID)
+		}
+		if ids[p.ID] {
+			return nil, fmt.Errorf("managed:%s: the id is used twice", p.ID)
+		}
+		e := &configEntry{Source: p.Source, Args: p.Args, WatchRoots: p.WatchRoots, managed: p.ID}
+		if !strings.HasPrefix(p.Source, "github:") && !filepath.IsAbs(p.Source) {
+			return nil, fmt.Errorf("managed:%s: source %q must be an absolute directory or github:<owner>/<repo>@<ref>", p.ID, p.Source)
+		}
+		if err := e.checkSource(""); err != nil {
+			return nil, fmt.Errorf("managed:%s: %w", p.ID, err)
+		}
+		if sources[p.Source] {
+			return nil, fmt.Errorf("managed:%s: the source %s is used twice", p.ID, p.Source)
+		}
+		if err := e.checkFields(); err != nil {
+			return nil, fmt.Errorf("managed:%s: %w", p.ID, err)
+		}
+		ids[p.ID], sources[p.Source] = true, true
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// sameSource reports whether two entries name one source: the same directory for local sources,
+// the same string for GitHub sources.
+func sameSource(a, b *configEntry) bool {
+	if a.github || b.github {
+		return a.Source == b.Source
+	}
+	return a.dir == b.dir
+}
+
+// addManaged appends the managed entries to the config entries. A managed entry whose source a
+// config entry also names is refused at each resolution (static); the config entry is checked as
+// usual.
+func addManaged(config, managed []*configEntry) []*configEntry {
+	out := append([]*configEntry{}, config...)
+	for _, m := range managed {
+		for _, c := range config {
+			if sameSource(m, c) {
+				m.static = fmt.Errorf("%s: the source %s is also in the config", m.identity(), m.Source)
+				break
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // checkSource checks the source string and resolves a local directory. The ref of a GitHub source
@@ -157,7 +271,14 @@ func resolveEntries(cfgPath string, entries []*configEntry, kept []keptName) []*
 	runs := make([]*pluginRun, len(entries))
 	for i, e := range entries {
 		s := &sourceEntry{Index: e.index, Source: e.Source, Name: e.name}
+		if e.managed != "" {
+			s.Label = e.identity()
+		}
 		src[i] = s
+		if e.static != nil {
+			s.Err = e.static
+			continue
+		}
 		if e.github {
 			s.Err = fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
 			continue
@@ -218,4 +339,13 @@ func resolveEntries(cfgPath string, entries []*configEntry, kept []keptName) []*
 		}
 	}
 	return out
+}
+
+// ref is the identity part of an entry's hub.plugins item: {"entry": N} for a config entry,
+// {"managed": "<id>"} for a managed entry, with the exact source.
+func (e *configEntry) ref() map[string]any {
+	if e.managed != "" {
+		return map[string]any{"managed": e.managed, "source": e.Source}
+	}
+	return map[string]any{"entry": e.index, "source": e.Source}
 }

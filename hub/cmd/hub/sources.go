@@ -172,6 +172,7 @@ func pluginMain(dir, main string) (string, error) {
 // is the reason the entry is refused; checkGraph adds graph reasons.
 type sourceEntry struct {
 	Index   int
+	Label   string // the identity in texts when it is not the index (managed:<id>)
 	Source  string
 	Name    string
 	Depends []string
@@ -208,6 +209,9 @@ func checkGraph(entries []*sourceEntry) {
 		idx := make([]string, len(list))
 		for i, e := range list {
 			idx[i] = fmt.Sprint(e.Index)
+			if e.Label != "" {
+				idx[i] = e.Label
+			}
 		}
 		for _, e := range list {
 			if e.Err == nil {

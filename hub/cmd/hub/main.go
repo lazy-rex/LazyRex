@@ -52,8 +52,13 @@ type Config struct {
 	// Entries are the config field plugins (pluginconfig.go). loadConfig checks them into entries,
 	// in config order. The hub resolves the entries at each start attempt (resolveEntries).
 	Entries []json.RawMessage `json:"plugins"`
-	entries []*configEntry
-	path    string // the config file, as given
+	// ManagedPlugins is the managed file of the plugin manager (docs/plugin-sources.md, section 13),
+	// relative to the config directory. Default: <state>/plugins.json.
+	ManagedPlugins string `json:"managed_plugins"`
+	entries        []*configEntry // the config entries, then the managed entries
+	managedPath    string         // the resolved managed file
+	managedErr     error          // the managed file is malformed: no managed entry
+	path           string         // the config file, as given
 }
 
 type Agent struct {
@@ -161,6 +166,7 @@ type Hub struct {
 	// fields that a resolution changes. Lock order: a plugin's lifecycle, then entriesMu, then mu.
 	entriesMu    sync.Mutex
 	entries      []*configEntry
+	managedErr   error // the managed file is malformed (h.entriesMu): hub.plugins reports it once
 	selfClosed   map[string]bool // blocks the hub closed itself; their removal is not a user stop
 	titleRenames map[string]bool // sessions with a pending identityRenamesSoon
 	ui           *uiState
@@ -206,7 +212,20 @@ func loadConfig(path string, realServer bool) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
-	c.entries, c.path = entries, path
+	c.managedPath = filepath.Join(c.State, "plugins.json")
+	if c.ManagedPlugins != "" {
+		c.managedPath = c.ManagedPlugins
+		if !filepath.IsAbs(c.managedPath) {
+			c.managedPath = filepath.Join(filepath.Dir(abs), c.managedPath)
+		}
+	}
+	managed, err := parseManaged(c.managedPath)
+	if err != nil {
+		// A defect of the manager must not stop the plugins that the user configured (section 13).
+		c.managedErr = fmt.Errorf("managed plugin file %s: %w", c.managedPath, err)
+		managed = nil
+	}
+	c.entries, c.path = addManaged(entries, managed), path
 	if c.View != "" {
 		if c.View, err = filepath.Abs(c.View); err != nil {
 			return c, err
@@ -353,7 +372,10 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
 		h.agentOrder = append(h.agentOrder, a.ID)
 	}
-	h.entries = cfg.entries
+	h.entries, h.managedErr = cfg.entries, cfg.managedErr
+	if h.managedErr != nil {
+		log.Printf("%v: every managed entry is refused", h.managedErr)
+	}
 	if err := h.loadKept(ctx); err != nil {
 		return nil, err
 	}
@@ -361,7 +383,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	h.resolveLocked() // binds the names and makes their records
 	for _, e := range h.entries {
 		if e.err != nil {
-			log.Printf("plugin entry %d (%s): refused: %v", e.index, e.Source, e.err)
+			log.Printf("plugin %s (%s): refused: %v", e.identity(), e.Source, e.err)
 		}
 	}
 	h.entriesMu.Unlock()
