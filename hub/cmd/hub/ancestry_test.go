@@ -82,3 +82,39 @@ func TestCallerInManagedPaneOutcomes(t *testing.T) {
 		t.Errorf("pid 43: %v, %v", in, err)
 	}
 }
+
+// A walk is complete only when it reaches pid 1. A caller without a pid (a missing or zero
+// Rex-attested pid decodes to 0), a negative pid, and a chain that ends at parent 0 are
+// incomplete walks: the guards refuse them, before any change (reviewer,
+// hub-review-ancestry-zero-blocker).
+func TestAncestryRequiresPIDOne(t *testing.T) {
+	parents := map[int]int{40: 0, 50: 1}
+	read := func(pid int) (procRecord, error) { return procRecord{ppid: parents[pid]}, nil }
+	for pid, want := range map[int]string{0: "the caller has no process id", -1: "the caller has no process id", 40: "process 40 has parent 0: the walk does not reach pid 1"} {
+		if _, err := ancestryOf(read, pid); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("pid %d: %v, want %q", pid, err, want)
+		}
+	}
+	if chain, err := ancestryOf(read, 50); err != nil || len(chain) != 1 {
+		t.Errorf("pid 50: %v, %v", chain, err)
+	}
+
+	h, _ := workerTestHub(t)
+	dir := t.TempDir()
+	h.cfg.managedPath = filepath.Join(dir, "plugins.json")
+	writeManaged(t, dir, `{"plugins":[`)
+	h.agents, h.plugins = map[string]*Agent{}, map[string]*Plugin{"p": {Name: "p", Desired: "running"}}
+	h.procRead = read
+	for _, principal := range []string{`{}`, `{"pid":0}`, `{"pid":40}`} {
+		for _, action := range []string{"hub.admin.stop", "hub.plugins.reload"} {
+			var p perform
+			json.Unmarshal([]byte(fmt.Sprintf(`{"action":%q,"args":{"plugin":"p"},"requester":{"client_id":"c9","principal":%s}}`, action, principal)), &p)
+			if _, err := h.dispatch(context.Background(), p); err == nil || !strings.Contains(err.Error(), "cannot check the caller's process ancestry") {
+				t.Errorf("%s from %s: %v", action, principal, err)
+			}
+		}
+	}
+	if h.managedErr != nil || h.plugins["p"] == nil || h.plugins["p"].Desired != "running" {
+		t.Errorf("a refused call changed the hub")
+	}
+}

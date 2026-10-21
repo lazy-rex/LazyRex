@@ -71,12 +71,16 @@ func startTime(pid int) string {
 	return s
 }
 
-// ancestryOf returns pid and its ancestors, nearest first, until pid 1. An error means the walk is
-// incomplete: a read failed, a process in the chain ended, or the walk passed 64 processes. The
-// pids read before the error are still returned: a match among them is a real match.
+// ancestryOf returns pid and its ancestors, nearest first, until pid 1. Only a walk that reaches
+// pid 1 is complete. An error means the walk is incomplete: no caller pid (0 or less), a read
+// failed, a process in the chain ended, a parent of 0 or less, or the walk passed 64 processes.
+// The pids read before the error are still returned: a match among them is a real match.
 func ancestryOf(read func(int) (procRecord, error), pid int) ([]int, error) {
+	if pid <= 0 {
+		return nil, errors.New("the caller has no process id") // a missing Rex-attested pid decodes to 0
+	}
 	var chain []int
-	for seen := 0; pid > 1; seen++ {
+	for seen := 0; pid != 1; seen++ {
 		if seen == 64 {
 			return chain, errors.New("the walk passed 64 processes")
 		}
@@ -84,6 +88,9 @@ func ancestryOf(read func(int) (procRecord, error), pid int) ([]int, error) {
 		r, err := read(pid)
 		if err != nil {
 			return chain, fmt.Errorf("process %d: %w", pid, err)
+		}
+		if r.ppid <= 0 {
+			return chain, fmt.Errorf("process %d has parent %d: the walk does not reach pid 1", pid, r.ppid)
 		}
 		pid = r.ppid
 	}
