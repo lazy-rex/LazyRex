@@ -1263,6 +1263,10 @@ a short tick and a stored `last_run`, not a hub schedule.
 `hub.digest {texts}` gives the SHA-256 of each text, for a plugin that cannot hash in Lua. A Lua
 plugin cannot send a body over 64 KiB in one request. So it digests each chunk, then the joined
 chunk digests (at most 7 x 64 bytes). One rule covers every body; a small body is one chunk.
+A chunk boundary must not split a UTF-8 sequence. Lua `string.sub` counts bytes, so a cut inside
+a multibyte character makes two chunks that are not valid UTF-8, and Rex replaces their bytes
+(below): the digest no longer matches the body. Move the cut back to the start of the character
+(a byte that is not `10xxxxxx`).
 
 - Caller: the registered current instance of a configured plugin. Other callers get code
   `forbidden`. No state, no grant.
