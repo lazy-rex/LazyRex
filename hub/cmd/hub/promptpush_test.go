@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -207,4 +209,60 @@ func setStatus(h *Hub, a *Agent, r statusRecord) {
 	defer h.mu.Unlock()
 	a.setRecord(r)
 	h.syncPrompts()
+}
+
+// senderLoops counts the running prompt sender goroutines.
+func senderLoops() int {
+	b := make([]byte, 1<<20)
+	n := runtime.Stack(b, true)
+	return strings.Count(string(b[:n]), "(*Hub).promptSendLoop(")
+}
+
+// A new registration stops the idle sender of the old one; a registration that ends (an exit or
+// a lost grant) stops its idle sender at the next plugins change. Found in review: 20 idle
+// registrations left 20 loops.
+func TestPromptSenderLifecycle(t *testing.T) {
+	h, _ := promptHub(t)
+	var failing atomic.Bool
+	f := &fakePush{answer: func(context.Context, int, string) error {
+		if failing.Load() {
+			return errors.New("lost")
+		}
+		return nil
+	}}
+	f.install(t)
+	promptPushBackoff = []time.Duration{time.Hour} // before any sender reads it
+	before := senderLoops()
+	var pl *Plugin
+	for i := 0; i < 20; i++ {
+		pl = registerTG(h, fmt.Sprint("i", i), fmt.Sprint("c", i))
+		time.Sleep(10 * time.Millisecond) // the sender goes idle before the next registration
+	}
+	waitPush(t, "one sender loop after 20 registrations", func() bool { return senderLoops()-before == 1 })
+
+	// An exit: the registration ends, and the sender waits idle.
+	h.mu.Lock()
+	pl.ClientID = ""
+	h.mu.Unlock()
+	h.reapPromptSenders()
+	waitPush(t, "no sender loop after the exit", func() bool { return senderLoops() == before })
+
+	// A lost grant (a kept record has no entry), with the sender in a retry wait.
+	failing.Store(true)
+	sent := f.count()
+	pl = registerTG(h, "i-last", "c-last")
+	h.mu.Lock()
+	h.markPromptDirty("alice")
+	h.mu.Unlock()
+	waitPush(t, "a failed call", func() bool { return f.count() > sent })
+	h.mu.Lock()
+	pl.entry = nil
+	h.mu.Unlock()
+	h.reapPromptSenders()
+	waitPush(t, "no sender loop after the grant loss", func() bool { return senderLoops() == before })
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.promptSenders) != 0 {
+		t.Fatalf("senders %v remain", h.promptSenders)
+	}
 }

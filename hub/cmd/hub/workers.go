@@ -1409,6 +1409,9 @@ func (h *Hub) changed(what ...string) {
 		if w == "agents" || w == "plugins" { // readiness or a plugin's registration changed
 			h.kickNotices()
 		}
+		if w == "plugins" {
+			h.reapPromptSenders() // a registration that ended stops its prompt sender
+		}
 	}
 	h.mu.Lock()
 	var targets []*Plugin

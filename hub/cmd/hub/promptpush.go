@@ -18,6 +18,8 @@ type promptSender struct {
 	plugin, instance, client string
 	dirty                    map[string]bool // agents whose state the plugin may not have
 	kick                     chan struct{}
+	done                     chan struct{}   // closed when the sender ends: it wakes an idle or retry wait
+	backoff                  []time.Duration // promptPushBackoff when the sender started
 }
 
 // promptPushBackoff is the retry delay after the n-th failed call in a row.
@@ -29,19 +31,48 @@ var promptPush = func(ctx context.Context, h *Hub, client string, args map[strin
 }
 
 // startPromptSender starts the sender of a new registration. The sender of an earlier
-// registration ends after its outstanding call. h.mu must be held.
+// registration stops: at once when it waits, else after its outstanding call. h.mu must be held.
 func (h *Hub) startPromptSender(pl *Plugin) {
 	if h.promptSenders == nil {
 		h.promptSenders = map[string]*promptSender{}
 	}
-	s := &promptSender{plugin: pl.Name, instance: pl.InstanceID, client: pl.ClientID, dirty: map[string]bool{}, kick: make(chan struct{}, 1)}
+	s := &promptSender{plugin: pl.Name, instance: pl.InstanceID, client: pl.ClientID, dirty: map[string]bool{}, kick: make(chan struct{}, 1), done: make(chan struct{}), backoff: promptPushBackoff}
 	// Every agent that had a prompt in this hub run: the plugin may hold a stale state for it.
 	for agent := range h.prompts.agentRev {
 		s.dirty[agent] = true
 	}
+	if old := h.promptSenders[pl.Name]; old != nil {
+		h.stopPromptSender(old)
+	}
 	h.promptSenders[pl.Name] = s
 	s.kick <- struct{}{}
 	go h.promptSendLoop(s)
+}
+
+// stopPromptSender ends s: it leaves the map, and its loop returns at once from a wait, or after
+// its outstanding call. h.mu must be held.
+func (h *Hub) stopPromptSender(s *promptSender) {
+	if h.promptSenders[s.plugin] == s {
+		delete(h.promptSenders, s.plugin)
+	}
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
+}
+
+// reapPromptSenders stops each sender whose registration ended (an exit, a stop, a new spawn, or
+// a lost grant). changed("plugins") calls it, so an idle sender does not wait for the next prompt
+// change to see that it is stale.
+func (h *Hub) reapPromptSenders() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.promptSenders {
+		if !h.promptSenderCurrent(s) {
+			h.stopPromptSender(s)
+		}
+	}
 }
 
 // markPromptDirty marks an agent dirty for every sender. h.mu must be held.
@@ -81,17 +112,23 @@ func (h *Hub) promptSendLoop(s *promptSender) {
 	var retry <-chan time.Time
 	for {
 		if retry != nil {
-			<-retry // a change during the backoff only marks its agent dirty
+			select { // a change during the backoff only marks its agent dirty
+			case <-retry:
+			case <-s.done:
+				return
+			}
 		} else {
-			<-s.kick
+			select {
+			case <-s.kick:
+			case <-s.done:
+				return
+			}
 		}
 		retry = nil
 		for {
 			h.mu.Lock()
 			if !h.promptSenderCurrent(s) {
-				if h.promptSenders[s.plugin] == s {
-					delete(h.promptSenders, s.plugin) // the registration ended: no sender
-				}
+				h.stopPromptSender(s) // the registration ended: no sender
 				h.mu.Unlock()
 				return
 			}
@@ -120,9 +157,9 @@ func (h *Hub) promptSendLoop(s *promptSender) {
 			h.mu.Lock()
 			s.dirty[agent] = true
 			h.mu.Unlock()
-			d := promptPushBackoff[len(promptPushBackoff)-1]
-			if failures < len(promptPushBackoff) {
-				d = promptPushBackoff[failures]
+			d := s.backoff[len(s.backoff)-1]
+			if failures < len(s.backoff) {
+				d = s.backoff[failures]
 			}
 			failures++
 			retry = time.After(d)
