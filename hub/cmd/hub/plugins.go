@@ -195,7 +195,7 @@ func (h *Hub) resolveLocked() []*configEntry {
 	}
 	h.mu.Unlock()
 	sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
-	order := resolveEntries(h.cfg.path, h.entries, kept)
+	order := resolveEntries(readLockSnapshot(&h.cfg, h.entries), h.entries, kept)
 	h.mu.Lock()
 	for _, e := range h.entries {
 		if e.name == "" {

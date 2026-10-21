@@ -63,7 +63,7 @@ func TestPluginEntriesResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	order := resolveEntries(c.path, c.entries, nil)
+	order := resolveEntries(noLock(c.path), c.entries, nil)
 	var names []string
 	for _, e := range order {
 		names = append(names, e.name)
@@ -117,13 +117,13 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b, late := c.entries[0], c.entries[1], c.entries[2]
-	resolveEntries(c.path, c.entries, nil)
+	resolveEntries(noLock(c.path), c.entries, nil)
 	if a.name != "a" || b.name != "b" || late.name != "" || late.err == nil {
 		t.Fatalf("first: %q %q %q %v", a.name, b.name, late.name, late.err)
 	}
 	// The late entry gets a manifest with the name a: both entries are refused; a keeps its name.
 	plugDir(t, dir, "late", `{"name":"a","main":"l.lua"}`, "l.lua")
-	resolveEntries(c.path, c.entries, nil)
+	resolveEntries(noLock(c.path), c.entries, nil)
 	if late.name != "" || late.err == nil || late.err.Error() != "entries 1 and 3 have the same name a" {
 		t.Errorf("late: %q %v", late.name, late.err)
 	}
@@ -135,7 +135,7 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	}
 	// a's manifest changes its name.
 	plugDir(t, dir, "a", `{"name":"a2","main":"a.lua"}`, "a.lua")
-	order := resolveEntries(c.path, c.entries, nil)
+	order := resolveEntries(noLock(c.path), c.entries, nil)
 	if a.name != "a" || a.cand != nil || a.err == nil || a.err.Error() != "plugin a: the manifest name changed from a to a2; restart the hub" {
 		t.Errorf("renamed: %q %v", a.name, a.err)
 	}
@@ -151,7 +151,7 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	// A repair: the late entry loses its manifest, and a has the old name again: a passes.
 	os.Remove(filepath.Join(dir, "late", "lazyrex.json"))
 	plugDir(t, dir, "a", `{"name":"a","main":"a.lua","notice":"Now with a notice."}`, "a.lua")
-	resolveEntries(c.path, c.entries, nil)
+	resolveEntries(noLock(c.path), c.entries, nil)
 	if a.err != nil || a.cand == nil || a.cand.Notice != "Now with a notice." || b.err != nil {
 		t.Errorf("repaired: %v %v", a.err, b.err)
 	}
@@ -285,7 +285,7 @@ func TestPluginEntriesGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := []keptName{{Name: "a", Source: "gone"}, {Name: "x", Source: "renamed"}, {Name: "s", Source: "same"}, {Name: "l", Source: ""}}
-	resolveEntries(c.path, c.entries, kept)
+	resolveEntries(noLock(c.path), c.entries, kept)
 	want := []struct{ name, err string }{
 		{"", "plugin y: source renamed still has an instance of plugin x; stop x first"},
 		{"", "plugin a: the name is held by an instance from source gone; stop a first"},
@@ -308,7 +308,7 @@ func TestPluginEntriesGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolveEntries(c2.path, c2.entries, []keptName{{Name: "s", Source: "same"}})
+	resolveEntries(noLock(c2.path), c2.entries, []keptName{{Name: "s", Source: "same"}})
 	same, dup := c2.entries[0], c2.entries[1]
 	if same.name != "" || same.err == nil || same.err.Error() != "entries 1 and 2 have the same name s" {
 		t.Errorf("the owner's source: %q %v", same.name, same.err)
