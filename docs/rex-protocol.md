@@ -193,6 +193,12 @@ From the API reference, plus a lab test on Rex 0.0.1792088193-g7a93ec.
 - The `client.reply` error is `{code, message}` only: the input schema has `additionalProperties:
   false` (`rex api describe client.reply`, Rex 0.0.1792158932-g88fd41, 2026-10-20). So a hub error
   carries its details in the message text, not in extra fields.
+- Observed on Rex 0.0.1792158932-g88fd41 (lab, `TestDigestLab` in hub/cmd/hub/digest_lab_test.go, 2026-10-21): a
+  Lua string that is not UTF-8 does not reach the receiver unchanged. Rex replaces each byte that
+  is not part of a valid UTF-8 sequence with U+FFFD (EF BF BD). A Lua plugin sent `a\255b` to
+  another Lua plugin with `client.perform`; the receiver got the bytes `61 ef bf bd 62`. A lone
+  `\195` arrived as `ef bf bd`. No error. So a body that an agent or a plugin sends through Rex is
+  valid UTF-8 when it arrives, and its original bytes are lost.
 - `rex -C <label> do <action> k=v` calls `client.perform` from the CLI. `client.set_label` sets `info.label` in `rex client ls` (the top-level `label` stays null).
 - So Rex can carry hub RPC itself: an agent or a plugin calls the hub's actions, and Rex tells the hub who called. **Not yet tested from a control client that can reply** (a Node or Go client). See the next section for the Lua result.
 

@@ -1256,3 +1256,24 @@ that pauses longer than `settle_ms` gives `created`, then `changed`.
 
 A plugin can use `rex.every` and `rex.after` (rex-protocol.md, "Plugin timers"). A daily job uses
 a short tick and a stored `last_run`, not a hub schedule.
+
+## Digests (hub.digest)
+
+`hub.digest {texts}` gives the SHA-256 of each text, for a plugin that cannot hash in Lua. A Lua
+plugin cannot send a body over 64 KiB in one request. So it digests each chunk, then the joined
+chunk digests (at most 7 x 64 bytes). One rule covers every body; a small body is one chunk.
+
+- Caller: the registered current instance of a configured plugin. Other callers get code
+  `forbidden`. No state, no grant.
+- Input: `texts`, a list of 1 to 16 strings. An empty string is a valid text. A missing field, an
+  empty list, more than 16 items, an item that is not a string, or another field: code
+  `invalid_input`.
+- Limits: each text at most 65536 bytes, all texts at most 262144 bytes (UTF-8). Over a limit:
+  code `too_large`, for example `texts[3] is 70000 bytes, over the 65536-byte limit` or `the
+  texts are 300000 bytes, over the 262144-byte limit`.
+- Output: `{digests}`, in the same order. Each digest is the lowercase hex SHA-256 of the text's
+  UTF-8 bytes (64 characters).
+- Bytes that are not UTF-8 (observed on Rex 0.0.1792158932-g88fd41, `TestDigestLab`): Rex
+  replaces each such byte with U+FFFD before the hub gets the text. The hub digests the replaced
+  text: `a\255b` from Lua gives the digest of `a` U+FFFD `b`. A plugin that digests a body before
+  it sends it gets the same value only for valid UTF-8 (rex-protocol.md, "Client RPC").
