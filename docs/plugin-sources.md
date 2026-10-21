@@ -202,8 +202,8 @@ lazyrex-hub plugin sync`.
   - A repair publishes a new entry and points the lock at it.
   - A running instance keeps its directory.
   - A changed entry stays on disk. `plugin status` lists each entry that the lock does not
-    reference as "unreferenced (no recorded digest)": without a lock entry there is no digest to
-    compare, and a running instance or another config on the same state can still use it.
+    reference with the text `unreferenced (no recorded digest; a running instance or another
+    config can use it)`. Without a lock entry there is no digest to compare.
 - **Publication** (observed on macOS 27.0.1, APFS; Linux: not tested). A rename of a 0555
   directory into another parent fails with EACCES, because the move must update the directory's
   `..`. A rename in the same parent works. So the command extracts the tree into a stage beside
@@ -275,9 +275,10 @@ exactly, or nothing:
 
 - Regular files and executable files only. A symlink or a submodule anywhere in the repository
   refuses the source, also outside the subdir.
-- `.gitattributes` `export-ignore` and `export-subst` refuse the source: they make the archive
-  differ from the tree (a missing file, or changed content). Remove these attributes from the
-  plugin repository.
+- The fetch refuses an archive that differs from the tree. `.gitattributes` `export-ignore` and
+  `export-subst` cause that refusal when they take effect: `export-ignore` on a file that is in the
+  tree removes it, and `export-subst` on a file with a `$Format:...$` marker changes its content.
+  An attribute that changes nothing (no matching file, no marker) does not refuse the source.
 - With a subdir, `<subdir>/lazyrex.json` must be in the commit. `main` must be inside the subdir.
   The whole commit is in the cache entry, so a plugin can read files outside its subdir at run time.
 - The cache entry is read-only (files 0444 or 0555). A plugin writes its data elsewhere, for
