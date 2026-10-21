@@ -223,6 +223,7 @@ func testViewMain(argv []string) int {
 	var mu sync.Mutex
 	var hub, attachment string
 	announced := "0"
+	changes := 0 // view.changed notifications of all attachments (testview.status)
 	// subscribed: the current attachment has a subscription. The watcher attaches again while it is
 	// false, also on the same hub. held, holdExpired, failures: test evidence (testview.status).
 	var subscribed, held bool
@@ -310,6 +311,7 @@ func testViewMain(argv []string) int {
 			switch p.Action {
 			case "view.changed":
 				mu.Lock()
+				changes++
 				if r, _ := args["revision"].(string); r != "" {
 					announced = r
 				}
@@ -343,7 +345,7 @@ func testViewMain(argv []string) int {
 			a := announced
 			mu.Unlock()
 			mu.Lock()
-			st := map[string]any{"view_id": *viewID, "plugin": fs.Arg(0), "route": fs.Arg(1), "announced": a, "pid": os.Getpid(),
+			st := map[string]any{"view_id": *viewID, "plugin": fs.Arg(0), "route": fs.Arg(1), "announced": a, "changes": changes, "pid": os.Getpid(),
 				"subscribed": subscribed, "held": held, "hold_expired": holdExpired, "subscribe_failures": failures}
 			mu.Unlock()
 			c.reply(p.CallID, st, nil)

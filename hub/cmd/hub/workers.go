@@ -1610,8 +1610,8 @@ func (h *Hub) changed(what ...string) {
 	for _, p := range targets {
 		for _, w := range what {
 			h.deliverChanged(p.client, p.name, w) // coalesced (changed.go)
+			h.markChanged(p.name, w)
 		}
-		h.kickViews(p.name, true)
 	}
 }
 

@@ -35,7 +35,7 @@ const testReplyLimit = 48 << 10
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
-	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
+	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
 
 type testState struct {
 	mu           sync.Mutex
@@ -52,6 +52,7 @@ type testState struct {
 	calls        map[string][]testCall               // plugin -> its last hub service calls (testcalls.go)
 	callsDropped map[string]int64                    // plugin -> the highest seq of a call that the bound dropped
 	callSeq      int64                               // the seq of the last recorded call, for any plugin
+	renders      map[string]*renderCount             // view_id -> its render counts (renderdeps.go)
 }
 
 type injection struct {
@@ -102,7 +103,7 @@ type renderedTree struct {
 func newTestState() *testState {
 	return &testState{batches: map[string]int{}, invalidate: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
 		trees: map[string]*renderedTree{}, apps: map[string]*testFakeApp{}, recover: make(chan struct{}),
-		calls: map[string][]testCall{}, callsDropped: map[string]int64{}}
+		calls: map[string][]testCall{}, callsDropped: map[string]int64{}, renders: map[string]*renderCount{}}
 }
 
 // checkLabProof is the positive proof that -test points at a lab server that a harness (or
@@ -190,6 +191,11 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		return h.testAppCalls(args)
 	case "hub.test.calls":
 		return h.testCalls(args)
+	case "hub.test.renders":
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		return h.testRenders(plugin), nil
 	case "hub.test.app.close":
 		return h.testAppClose(args)
 	case "hub.test.store":
@@ -914,7 +920,7 @@ func (h *Hub) testRender(ctx context.Context, args map[string]any) (any, error) 
 	h.test.renderReq[view]++
 	gen := h.test.renderReq[view]
 	h.test.mu.Unlock()
-	h.kickViews(plugin, true)
+	h.markView(plugin, view, causeTest)
 	return map[string]any{"generation": gen}, nil
 }
 

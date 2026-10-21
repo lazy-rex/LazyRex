@@ -294,6 +294,14 @@ function H.calls(action, opts)
   if list == nil or list == rex.json.null then list = {} end
   return list, out
 end
+-- renders returns the render counts of each view of the plugin (hub.test.renders): {view_id,
+-- route, attempts, ok, failed, transient, causes = {commit, invalidate, ...}, declared}, in view_id
+-- order. declared is the declaration that the view has now ({prefixes, changes}), nil for none.
+function H.renders(plugin)
+  local v = hub('hub.test.renders', {plugin = plugin or A.plugin}).views
+  if v == nil or v == rex.json.null then return {} end
+  return v
+end
 function H.advance_rev(at) return hub('hub.test.rev', {at = tostring(at)}).rev end
 
 function H.tabs(plugin)

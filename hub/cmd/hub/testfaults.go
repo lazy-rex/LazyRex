@@ -31,6 +31,10 @@ package main
 //     hold waits after prompt_sending is stored, before the write, until hub.test.fault_release (at
 //     most 30 s, or hold_ms ms): a test can stop the hub there. lose-answer writes the prompt, then
 //     reports a lost answer.
+//   - view-render: a render result of a view of the plugin (viewsvc.go renderViews; key = the
+//     route, "" = any). hold: the worker waits after the plugin answered view.render, before it
+//     uses the result, until hub.test.fault_release (at most 30 s, or hold_ms ms). The worker is
+//     not the request queue, so the release can arrive.
 // nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
 // counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
@@ -53,7 +57,7 @@ type testFault struct {
 	Key                  string // action: the call's args.key ("" = any)
 	FailCode             string // action, mode fail: the reply's error code (default failed)
 	Nth, seen            int    // fire on the Nth matching call; seen counts the matching calls
-	HoldMS               int    // start-admission, plugin-create: the hold ends by itself after this time (default 30 s)
+	HoldMS               int    // start-admission, plugin-create, view-render: the hold ends by itself after this time (default 30 s)
 	Fired, Released      bool   // Released: a gate is open again
 	Gated                int    // gate: the calls that it refused
 }
@@ -61,7 +65,7 @@ type testFault struct {
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
 	"plugin-create": {"refuse", "lose-answer", "hold-send"}, "resume-prompt": {"hold", "lose-answer"},
-	"prompt-answer": {"close", "refuse", "lose-reply", "short"}}
+	"prompt-answer": {"close", "refuse", "lose-reply", "short"}, "view-render": {"hold"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
@@ -71,7 +75,8 @@ var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op"
 	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"},
 	"plugin-create":   {"point", "mode", "key", "plugin", "nth", "hold_ms"},
 	"prompt-answer":   {"point", "mode", "when", "fail_code", "plugin", "nth"},
-	"resume-prompt":   {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
+	"resume-prompt":   {"point", "mode", "key", "plugin", "nth", "hold_ms"},
+	"view-render":     {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -113,7 +118,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send), prompt-answer (close, refuse, lose-reply, short) or resume-prompt (hold, lose-answer)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send), prompt-answer (close, refuse, lose-reply, short), resume-prompt (hold, lose-answer) or view-render (hold)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -139,6 +144,9 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		if f.FailCode != "" && f.Mode != "refuse" {
 			return nil, bad("invalid: fail_code needs mode refuse")
 		}
+	case "view-render":
+		f.Key, _ = args["key"].(string)
+		f.Plugin = plugin
 	case "action":
 		f.Action, _ = args["action"].(string)
 		f.When, _ = args["when"].(string)

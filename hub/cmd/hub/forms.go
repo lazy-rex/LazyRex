@@ -845,9 +845,10 @@ func formEffectID(plugin, key string) string {
 func (h *Hub) notifyView(plugin, viewID string) {
 	h.vs.mu.Lock()
 	h.vs.notify[viewID] = true
+	h.vs.stateLocked(plugin, viewID).dirty |= causeOperation
 	h.vs.dirty[plugin] = true
 	h.vs.mu.Unlock()
-	h.kickViews(plugin, false)
+	h.kickViews(plugin, 0)
 }
 
 // formsSweep runs at start. A form whose pane request had an unknown outcome is looked up by

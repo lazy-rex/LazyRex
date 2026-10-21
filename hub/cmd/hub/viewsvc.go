@@ -39,13 +39,17 @@ type snapshot struct {
 
 type viewSvc struct {
 	mu      sync.Mutex
-	rev     int64                        // view revision counter for this hub generation
-	snaps   map[string]*snapshot         // view_id -> current snapshot
-	dirty   map[string]bool              // plugin -> views need a render
-	notify  map[string]bool              // view_id -> send view.changed after the next render, even if unchanged
-	workers map[string]chan struct{}     // plugin -> kick channel
-	seen    map[string]map[string]string // plugin -> route -> reason the user looked at it, not yet sent
-	history map[string]*historyFetch     // view_id + "\x00" + before -> a page fetch (viewHistory)
+	rev     int64                            // view revision counter for this hub generation
+	snaps   map[string]*snapshot             // view_id -> current snapshot
+	dirty   map[string]bool                  // plugin -> a render pass is needed
+	views   map[string]map[string]*viewState // plugin -> view_id -> render state (renderdeps.go)
+	all     map[string]renderCause           // plugin -> causes for every open view
+	loose   map[string]renderCause           // plugin -> commit and changed causes for a view that has no state yet
+	epoch   map[string]int64                 // plugin -> registrations; a result of an older epoch installs nothing
+	notify  map[string]bool                  // view_id -> send view.changed after the next render, even if unchanged
+	workers map[string]chan struct{}         // plugin -> kick channel
+	seen    map[string]map[string]string     // plugin -> route -> reason the user looked at it, not yet sent
+	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
 }
 
 // historyFetch is one view.history call that runs outside the hub's request queue.
@@ -58,7 +62,8 @@ type historyFetch struct {
 
 func (h *Hub) viewsStart(ctx context.Context) error {
 	h.vs = &viewSvc{snaps: map[string]*snapshot{}, dirty: map[string]bool{}, notify: map[string]bool{}, workers: map[string]chan struct{}{}, seen: map[string]map[string]string{},
-		history: map[string]*historyFetch{}}
+		history: map[string]*historyFetch{}, views: map[string]map[string]*viewState{}, all: map[string]renderCause{}, loose: map[string]renderCause{},
+		epoch: map[string]int64{}}
 	if _, err := h.db.ExecContext(ctx, viewOpsSchema); err != nil {
 		return err
 	}
@@ -81,15 +86,19 @@ func (h *Hub) viewsStart(ctx context.Context) error {
 	for rows.Next() {
 		var p string
 		rows.Scan(&p)
-		h.kickViews(p, false)
+		h.kickViews(p, 0)
 	}
 	return rows.Err()
 }
 
-// kickViews wakes the plugin's view worker. With dirty, every open view is rendered again.
-func (h *Hub) kickViews(plugin string, dirty bool) {
+// kickViews wakes the plugin's view worker. A cause renders every open view of the plugin again,
+// whatever its declaration; 0 only wakes the worker (operations and effects). markView,
+// markCommit and markChanged (renderdeps.go) mark fewer views.
+func (h *Hub) kickViews(plugin string, cause renderCause) {
 	h.vs.mu.Lock()
-	if dirty {
+	if cause != 0 {
+		h.vs.initLocked()
+		h.vs.all[plugin] |= cause
 		h.vs.dirty[plugin] = true
 	}
 	ch, ok := h.vs.workers[plugin]
@@ -173,7 +182,7 @@ func (h *Hub) markSeen(plugin, route, reason string) {
 		h.vs.seen[plugin][route] = reason
 	}
 	h.vs.mu.Unlock()
-	h.kickViews(plugin, false)
+	h.kickViews(plugin, 0)
 }
 
 // --- Handler side: fast, no plugin calls ---
@@ -210,7 +219,7 @@ func (h *Hub) snapshotOf(v *boundView) map[string]any {
 	s := h.vs.snaps[v.ID]
 	h.vs.mu.Unlock()
 	if s == nil {
-		h.kickViews(v.Plugin, true)
+		h.markView(v.Plugin, v.ID, causeSnapshot)
 		s = &snapshot{rev: 0, tree: loadingTree()}
 	}
 	var status any // null: no status (the renderer clears it)
@@ -344,7 +353,7 @@ func (h *Hub) viewAdmit(ctx context.Context, kind string, p perform, args map[st
 			v.Plugin, viewUser, key, v.ID, kind, fingerprint, string(b)); err != nil {
 			return nil, err
 		}
-		h.kickViews(v.Plugin, false)
+		h.kickViews(v.Plugin, 0)
 	default:
 		return nil, err
 	}
@@ -405,7 +414,7 @@ func (h *Hub) viewEffectRetry(ctx context.Context, p perform, args map[string]an
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, bad("invalid_state: operation %q of this view has no failed effects", key)
 	}
-	h.kickViews(v.Plugin, false)
+	h.kickViews(v.Plugin, 0)
 	return h.opState(ctx, v.Plugin, key)
 }
 
@@ -553,6 +562,7 @@ func (h *Hub) runOps(ctx context.Context, plugin string) bool {
 		// The renderer learns about completion through view.changed, even when the tree is unchanged.
 		h.vs.mu.Lock()
 		h.vs.notify[o.view] = true
+		h.vs.stateLocked(plugin, o.view).dirty |= causeOperation
 		h.vs.dirty[plugin] = true
 		h.vs.mu.Unlock()
 		if effect != "" && h.applyEffects(ctx, plugin, o.key, o.view, result) {
@@ -590,16 +600,51 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 	}
 	rows.Close()
 	printers := h.transcriptTargets(ctx, plugin)
+	// The causes for every view, and for a view that has no state yet, are taken once for the pass.
+	// The state of a view that is not open and attached now is deleted (renderdeps.go).
+	h.vs.mu.Lock()
+	all, loose := h.vs.all[plugin], h.vs.loose[plugin]
+	delete(h.vs.all, plugin)
+	delete(h.vs.loose, plugin)
+	open := map[string]bool{}
 	for _, t := range targets {
+		open[t.id] = true
+	}
+	for id, st := range h.vs.views[plugin] {
+		if !open[id] && !st.inFlight {
+			delete(h.vs.views[plugin], id)
+		}
+	}
+	h.vs.mu.Unlock()
+	for _, t := range targets {
+		h.vs.mu.Lock()
+		_, known := h.vs.views[plugin][t.id]
+		st := h.vs.stateLocked(plugin, t.id)
+		causes := all | st.dirty
+		if !known {
+			causes |= loose
+		}
+		if causes == 0 {
+			h.vs.mu.Unlock()
+			continue // nothing that this view depends on changed
+		}
+		st.dirty, st.inFlight = 0, true
+		epoch := h.vs.epoch[plugin]
+		h.vs.mu.Unlock()
 		var out struct {
-			Tree map[string]any `json:"tree"`
+			Tree map[string]any  `json:"tree"`
+			Deps json.RawMessage `json:"deps"`
 		}
 		gen := h.testRenderStart(t.id) // test mode: the requested render that this one covers
+		h.testRenderAttempt(plugin, t.id, t.route, causes)
 		err := h.callPlugin(ctx, plugin, "view.render", viewArgs(t.id, t.route, t.context), &out)
+		h.testRenderHold(plugin, t.route) // test mode: a view-render fault holds the result here
 		if _, definite := definiteFailure(err); err != nil && !definite {
 			// The plugin is not there yet or did not answer. Keep the current tree; plugin
 			// registration renders again.
 			log.Printf("views %s: render %s: %v (transient)", plugin, t.route, err)
+			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "")
+			h.testRenderOutcome(t.id, "transient")
 			h.testRenderDone(t.id, gen, false, "transient: "+err.Error()+" (the hub kept the previous tree)", 0, nil)
 			continue
 		}
@@ -635,6 +680,16 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		if renderErr == "" {
 			h.parityLog(plugin, t.route, out.Tree)
 			h.testRecordTree(plugin, t.route, out.Tree)
+			deps, derr := parseDeps(out.Deps)
+			errText := ""
+			if derr != nil {
+				errText = derr.Error()
+			}
+			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, errText)
+			h.testRenderOutcome(t.id, "ok")
+		} else {
+			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "")
+			h.testRenderOutcome(t.id, "failed")
 		}
 		tree, _ := json.Marshal(out.Tree)
 		h.vs.mu.Lock()

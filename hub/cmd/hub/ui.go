@@ -310,6 +310,7 @@ func (h *Hub) loadTabs(ctx context.Context, plugin string) ([]tab, error) {
 
 // closeViewRow closes a view's row. A paired view's transcript closes with it (pair.go).
 func (h *Hub) closeViewRow(ctx context.Context, id, by string) {
+	h.forgetView(id)
 	h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = ?, client_id = '', attachment = '' WHERE view_id = ?`, by, id)
 	h.closeTranscript(ctx, id)
 }
@@ -406,6 +407,18 @@ func (h *Hub) appSession(ctx context.Context, key, label string) (string, error)
 // forgetSession records that a session is gone. Its views close; the tabs stay declared.
 func (h *Hub) forgetSession(ctx context.Context, sess, reason string) {
 	h.db.ExecContext(ctx, `DELETE FROM ui_sessions WHERE session_id = ?`, sess)
+	var ids []string
+	if rows, err := h.db.QueryContext(ctx, `SELECT view_id FROM views WHERE session_id = ? AND status != 'closed'`, sess); err == nil {
+		for rows.Next() {
+			var id string
+			rows.Scan(&id)
+			ids = append(ids, id)
+		}
+		rows.Close()
+	}
+	for _, id := range ids {
+		h.forgetView(id)
+	}
 	h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = 'session', client_id = '', attachment = ''
 		WHERE session_id = ? AND status != 'closed'`, sess)
 	h.ui.mu.Lock()
@@ -1140,6 +1153,7 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 		if _, err := h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = 'user-view' WHERE view_id = ?`, v.ID); err != nil {
 			return nil, err
 		}
+		h.forgetView(v.ID)
 		h.ev.emit("form_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "by": "user", "panel": true})
 		go func() {
 			time.Sleep(300 * time.Millisecond) // the renderer answers, then exits
@@ -1166,6 +1180,7 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	h.forgetView(v.ID)
 	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": tabKey, "by": "user", "from": "view"})
 	// The renderer exits after the answer; its pane is closed here. If this fails, the pane stays
 	// with no child: the user closes it, and its close changes nothing (the row is closed).
@@ -1354,7 +1369,7 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 	}
 	h.kickUI(plugin)
 	if statusChanged {
-		h.kickViews(plugin, true) // the snapshots carry the declared status
+		h.kickViews(plugin, causeStatus) // the snapshots carry the declared status
 	}
 	return map[string]any{"tabs": len(tabs)}, nil
 }
@@ -1482,7 +1497,10 @@ func (h *Hub) navigateCommit(ctx context.Context, plugin, key string, seq int64)
 	}
 	h.ev.emit("navigation_committed", map[string]any{"plugin": plugin, "tab": key, "seq": seq})
 	h.kickUI(plugin)
-	h.kickViews(plugin, true) // a transcript that comes back changes the effective layout
+	// A transcript that comes back changes the effective layout of the views of this tab only.
+	if _, err := h.markViews(ctx, plugin, causeLayout, `tab = ?`, key); err != nil {
+		h.kickViews(plugin, causeLayout)
+	}
 	return map[string]any{"status": "accepted"}, nil
 }
 
@@ -1599,7 +1617,7 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 	}
 	h.ev.emit("view_attached", map[string]any{"view_id": id, "client_id": p.Requester.ClientID})
 	h.composerAttached(ctx, v.Plugin, id, p.Requester.ClientID, attachment) // the user closed the pair meanwhile
-	h.kickViews(v.Plugin, true)                                             // render the first snapshot for this attachment
+	h.markView(v.Plugin, id, causeAttach)                                   // render the first snapshot for this attachment
 	h.kickUI(v.Plugin)                                                      // a legacy view's new attachment can now be asked to retire
 	out := map[string]any{"view_id": id, "plugin": v.Plugin, "route": v.Route, "user": viewUser,
 		"hub_generation": revString(h.generation), "attachment": attachment}
