@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -87,4 +88,13 @@ func signalReady(fd int, state string) error {
 		return fmt.Errorf("ready fd: wrote %d of %d bytes", n, len(line))
 	}
 	return nil
+}
+
+// catchSIGPIPE runs at the top of main under the wrapper. There stdout and stderr are a pipe to
+// the wrapper, and a wrapper that is gone must not kill the hub: a write then fails with EPIPE and
+// the line is lost. SIGPIPE is caught (Notify), not ignored, so children of the hub (git, rex)
+// start with the default action; an ignored signal would stay ignored across exec. The channel is
+// never read; a dropped signal is fine.
+func catchSIGPIPE() {
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 }

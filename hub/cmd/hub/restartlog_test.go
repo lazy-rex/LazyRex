@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -383,4 +384,37 @@ func waitLog(t *testing.T, ok func() bool) {
 		}
 	}
 	t.Fatal("the condition did not hold within 10 s")
+}
+
+// TestSigpipeHelper is a child of TestHubChildrenKeepTheDefaultSIGPIPE, not a test. It sets up
+// SIGPIPE as main does under the wrapper (or ignores it, for the control), then runs a shell
+// pipeline whose writer dies by SIGPIPE (status 141) only with the default action. A Go child
+// cannot show it: the Go runtime installs its own SIGPIPE handler at its start.
+func TestSigpipeHelper(t *testing.T) {
+	switch os.Getenv("SIGPIPE_HELPER") {
+	case "":
+		t.Skip("a helper process")
+	case "parent", "parent-ignore":
+		if os.Getenv("SIGPIPE_HELPER") == "parent" {
+			catchSIGPIPE()
+		} else {
+			signal.Ignore(syscall.SIGPIPE)
+		}
+		out, _ := exec.Command("/bin/sh", "-c", `(yes; echo "yes-status=$?" >&2) | head -n 1 >/dev/null`).CombinedOutput()
+		os.Stdout.Write(out)
+		os.Exit(0)
+	}
+}
+
+// Under the wrapper the hub catches SIGPIPE; a child of the hub starts with the default action.
+// The control (signal.Ignore) shows that the check sees an inherited ignore.
+func TestHubChildrenKeepTheDefaultSIGPIPE(t *testing.T) {
+	for mode, want := range map[string]string{"parent": "yes-status=141", "parent-ignore": "yes-status=1"} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSigpipeHelper$")
+		cmd.Env = append(os.Environ(), "SIGPIPE_HELPER="+mode, "GORACE=atexit_sleep_ms=0")
+		out, err := cmd.Output()
+		if err != nil || !strings.Contains(string(out), want) {
+			t.Errorf("%s: %q, %v; want %s", mode, out, err, want)
+		}
+	}
 }

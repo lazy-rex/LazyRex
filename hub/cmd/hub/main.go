@@ -290,9 +290,7 @@ func main() {
 	// The restart wrapper's variables (restartenv.go): read and unset first, before any exec.
 	renv, renvErr := takeRestartEnv()
 	if renv.readyFD >= 0 {
-		// Under the wrapper, stdout and stderr are a pipe to it. A wrapper that is gone must not kill
-		// the hub with SIGPIPE: a write then fails with EPIPE and the line is lost.
-		signal.Ignore(syscall.SIGPIPE)
+		catchSIGPIPE() // restartenv.go
 	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
