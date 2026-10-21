@@ -293,3 +293,119 @@ func TestExportWriteError(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// commitOf and digestOfCommit give the commit and the digest of a one-letter test pin.
+func digestOfCommit(c string) string { return "sha256:" + strings.Repeat(c[:1], 64) }
+
+func commitOf(c string) string { return strings.Repeat(c, 40) }
+
+// Each merge case gives its outcome and its new base (section "Pin sync", the merge).
+func TestMergePins(t *testing.T) {
+	const src = "github:o/r@main"
+	for _, tc := range []struct {
+		name              string
+		local, base, peer string
+		take, keep        bool
+		outcome, newBase  string // newBase "" = no base value after the merge
+		fetch             bool
+	}{
+		{"equal", "a", "", "a", false, false, pullUnchanged, "a", false},
+		{"equal, old base", "b", "a", "b", false, false, pullUnchanged, "b", false},
+		{"not installed", "", "", "b", false, false, pullTaken, "b", true},
+		{"only the peer moved", "a", "a", "b", false, false, pullTaken, "b", true},
+		{"only local moved", "b", "a", "a", false, false, pullKept, "a", false},
+		{"both moved", "b", "a", "c", false, false, pullConflict, "a", false},
+		{"no base, differ", "a", "", "b", false, false, pullConflict, "", false},
+		{"both moved, -take", "b", "a", "c", true, false, pullResolvedTake, "c", true},
+		{"both moved, -keep", "b", "a", "c", false, true, pullResolvedKeep, "c", false},
+		{"no base, -keep", "a", "", "b", false, true, pullResolvedKeep, "b", false},
+		{"after -keep: the same document again", "a", "b", "b", false, false, pullKept, "b", false},
+		{"crash after the lock: the same peer", "b", "a", "b", false, false, pullUnchanged, "b", false},
+		{"crash after the lock: the peer moved", "b", "a", "c", false, false, pullConflict, "a", false},
+	} {
+		lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{}}
+		if tc.local != "" {
+			lock.Plugins[src] = &lockEntry{lockPin: lockPin{Commit: commitOf(tc.local), Digest: digestOfCommit(tc.local)}}
+		}
+		var base map[string]basePin
+		if tc.base != "" {
+			base = map[string]basePin{src: {commitOf(tc.base), digestOfCommit(tc.base)}}
+		}
+		p := testPin()
+		p.Commit, p.Digest = commitOf(tc.peer), digestOfCommit(tc.peer)
+		var take, keep []string
+		if tc.take {
+			take = []string{src}
+		}
+		if tc.keep {
+			keep = []string{src}
+		}
+		plan, err := mergePins([]string{src}, lock, base, &pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{p}}, take, keep)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if got := plan.results[0].Outcome; got != tc.outcome {
+			t.Errorf("%s: outcome %s, want %s", tc.name, got, tc.outcome)
+		}
+		if _, ok := plan.take[src]; ok != tc.fetch {
+			t.Errorf("%s: fetch %v", tc.name, ok)
+		}
+		got, ok := plan.base[src]
+		switch {
+		case tc.newBase == "" && ok:
+			t.Errorf("%s: a base %s", tc.name, got.Commit)
+		case tc.newBase != "" && got.Commit != commitOf(tc.newBase):
+			t.Errorf("%s: base %s, want %s", tc.name, got.Commit, commitOf(tc.newBase))
+		}
+		if plan.conflicts() != (tc.outcome == pullConflict) {
+			t.Errorf("%s: conflicts() %v", tc.name, plan.conflicts())
+		}
+	}
+}
+
+// The scope of a merge: a source that only the document has is ignored; a source that only the
+// config has is unchanged, and its base value stays. The output lines are sorted by source.
+func TestMergePinsScope(t *testing.T) {
+	a, b := testPin(), testPin()
+	a.Source, a.Repo = "github:o/a@main", "a"
+	b.Source, b.Repo = "github:o/b@main", "b"
+	lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{
+		a.Source:          {lockPin: a.lockPin},
+		"github:o/c@main": {lockPin: lockPin{Commit: commitOf("c"), Digest: digestOfCommit("c")}},
+	}}
+	old := map[string]basePin{"github:o/c@main": {commitOf("d"), digestOfCommit("d")}}
+	plan, err := mergePins([]string{a.Source, "github:o/c@main"}, lock, old, &pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{b, a}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	plan.write(&out)
+	want := "unchanged\tgithub:o/a@main\tlocal " + pinCommit + "\tpeer " + pinCommit + "\n" +
+		"ignored\tgithub:o/b@main\tlocal -\tpeer " + pinCommit + "\n"
+	if out.String() != want {
+		t.Errorf("output:\n%s\nwant:\n%s", out.String(), want)
+	}
+	if plan.base["github:o/c@main"].Commit != commitOf("d") || len(plan.take) != 0 {
+		t.Errorf("base %v take %v", plan.base, plan.take)
+	}
+}
+
+// -take and -keep must name a conflict, and never the same source.
+func TestMergePinsFlags(t *testing.T) {
+	p := testPin()
+	lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{p.Source: {lockPin: p.lockPin}}}
+	doc := &pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{p}}
+	for _, tc := range []struct {
+		take, keep []string
+		want       string
+	}{
+		{[]string{p.Source}, []string{p.Source}, p.Source + " is in both -take and -keep"},
+		{[]string{p.Source}, nil, "-take " + p.Source + ": the source has no conflict"},
+		{nil, []string{"github:o/x@main"}, "-keep github:o/x@main: the source has no conflict"},
+	} {
+		if _, err := mergePins([]string{p.Source}, lock, nil, doc, tc.take, tc.keep); err == nil || err.Error() != tc.want {
+			t.Errorf("%v %v: %v, want %s", tc.take, tc.keep, err, tc.want)
+		}
+	}
+}

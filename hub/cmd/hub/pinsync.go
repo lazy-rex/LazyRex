@@ -343,3 +343,122 @@ func pluginExport(cfgPath string, w io.Writer) error {
 	}
 	return nil
 }
+
+// The outcomes of a pull for one key (section "Pin sync", the merge).
+const (
+	pullUnchanged    = "unchanged"     // local equals peer; the base advances
+	pullTaken        = "taken"         // the peer pin replaces the local pin
+	pullKept         = "kept"          // only local changed since the base
+	pullConflict     = "conflict"      // both changed; local stays, the base stays
+	pullResolvedTake = "resolved-take" // a conflict that -take resolved: taken
+	pullResolvedKeep = "resolved-keep" // a conflict that -keep resolved: kept, the base advances
+	pullIgnored      = "ignored"       // the document has a source that this config does not have
+)
+
+// pullResult is the outcome for one source, with the local pin ("" when not installed) and the
+// peer pin.
+type pullResult struct {
+	Source, Outcome string
+	Local, Peer     basePin
+}
+
+// pullPlan is what a merge decides, before any fetch: one result for each source, the imported
+// pins to fetch, and the base of the peer after a successful pull.
+type pullPlan struct {
+	results []pullResult
+	take    map[string]pinEntry
+	base    map[string]basePin
+}
+
+// mergePins merges the document doc into the lock for the GitHub sources keys of this config and
+// managed file. base is the base of doc.Hub (nil when there is none). take and keep are the
+// -take and -keep sources; each must name a conflict. It reads no file and runs no git.
+func mergePins(keys []string, lock *pluginLock, base map[string]basePin, doc *pinDoc, take, keep []string) (*pullPlan, error) {
+	takeSet, keepSet := map[string]bool{}, map[string]bool{}
+	for _, s := range take {
+		takeSet[s] = true
+	}
+	for _, s := range keep {
+		if takeSet[s] {
+			return nil, fmt.Errorf("%s is in both -take and -keep", s)
+		}
+		keepSet[s] = true
+	}
+	local := map[string]bool{}
+	for _, k := range keys {
+		local[k] = true
+	}
+	plan := &pullPlan{take: map[string]pinEntry{}, base: map[string]basePin{}}
+	for k, v := range base {
+		plan.base[k] = v
+	}
+	resolved := map[string]bool{}
+	for _, p := range doc.Entries {
+		r := pullResult{Source: p.Source, Peer: basePin{p.Commit, p.Digest}}
+		if !local[p.Source] {
+			r.Outcome = pullIgnored
+			plan.results = append(plan.results, r)
+			continue
+		}
+		le := lock.Plugins[p.Source]
+		b, hasBase := base[p.Source]
+		if le != nil {
+			r.Local = basePin{le.Commit, le.Digest}
+		}
+		switch {
+		case le == nil:
+			r.Outcome = pullTaken
+		case r.Local == r.Peer:
+			r.Outcome = pullUnchanged
+		case hasBase && r.Local == b:
+			r.Outcome = pullTaken
+		case hasBase && r.Peer == b:
+			r.Outcome = pullKept
+		case takeSet[p.Source]:
+			r.Outcome = pullResolvedTake
+		case keepSet[p.Source]:
+			r.Outcome = pullResolvedKeep
+		default:
+			r.Outcome = pullConflict
+		}
+		switch r.Outcome {
+		case pullTaken, pullResolvedTake:
+			plan.take[p.Source] = p
+			plan.base[p.Source] = r.Peer
+		case pullUnchanged, pullResolvedKeep:
+			plan.base[p.Source] = r.Peer
+		}
+		if r.Outcome == pullResolvedTake || r.Outcome == pullResolvedKeep {
+			resolved[p.Source] = true
+		}
+		plan.results = append(plan.results, r)
+	}
+	for _, flagged := range []struct {
+		name string
+		set  []string
+	}{{"-take", take}, {"-keep", keep}} {
+		for _, s := range flagged.set {
+			if !resolved[s] {
+				return nil, fmt.Errorf("%s %s: the source has no conflict", flagged.name, s)
+			}
+		}
+	}
+	sort.Slice(plan.results, func(i, j int) bool { return plan.results[i].Source < plan.results[j].Source })
+	return plan, nil
+}
+
+// conflicts reports whether a conflict remains.
+func (p *pullPlan) conflicts() bool {
+	return slices.ContainsFunc(p.results, func(r pullResult) bool { return r.Outcome == pullConflict })
+}
+
+// write writes one line for each result: <outcome>\t<source>\tlocal <commit|->\tpeer <commit>.
+func (p *pullPlan) write(w io.Writer) {
+	for _, r := range p.results {
+		l := r.Local.Commit
+		if l == "" {
+			l = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\tlocal %s\tpeer %s\n", r.Outcome, r.Source, l, r.Peer.Commit)
+	}
+}
