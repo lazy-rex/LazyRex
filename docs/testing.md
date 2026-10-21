@@ -1,3 +1,4 @@
+| `test.prompts` | The plugins that get the `prompts` grant (hub config `plugins[].prompts`, docs/hub.md "Agent prompts and acting as the user"): the plugin under test, a `test.plugins` entry or `lazyrex`. |
 | `{point = 'prompt-answer', mode = 'close', when = 'before-write' or 'before-enter'}` | The open prompt of the next `hub.prompt.answer` closes at that binding check, as a rebind would close it. before-write: the answer is refused with zero bytes. before-enter: the paste is written and Enter is not (`partial`). |
 | `{point = 'prompt-answer', mode = 'refuse', when = 'write' or 'enter', fail_code = code}` | The next answer write (`write`: the keys or the paste; `enter`: the Enter) is not sent and fails with `fail_code` (default `not_found`). |
 | `{point = 'prompt-answer', mode = 'lose-reply' or 'short', when = 'write' or 'enter'}` | The next answer write is sent. lose-reply: its reply is lost (`disconnected`). short: the reply reports one byte fewer than the data. |
@@ -174,7 +175,8 @@ Methods:
 | `a:hub(action, args)` | To the hub. |
 | `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
 | `a:title(text)` | Sets the terminal title of the agent's pane (OSC 2), as an agent CLI does. |
-| `a:program_status(state)` | Reports the root program status record of the agent's pane (OSC 7501), for example `idle`, `working` or `blocked`, as an agent CLI does. The hub reads it for notice readiness (`tests/harness/tests/notice_ready.lua`). |
+| `a:program_status(state, opts)` | Reports the root program status record of the agent's pane (OSC 7501), for example `idle`, `working` or `blocked`, as an agent CLI does. `opts` may add `kind`, `app` and `msg` (plain text; the report carries it as base64), as Claude Code reports a prompt. The hub reads it for notice readiness (`tests/harness/tests/notice_ready.lua`) and for prompts (`tests/prompts`). |
+| `a:input(reset)` | The bytes written to the agent's pane since the capture started. The first call starts the capture: the pane's terminal goes to raw mode without echo, so a key without Enter arrives too. `reset = true` clears the captured bytes after the read. |
 | `a:exit()` | Ends the agent process, as the user quits an agent CLI. The agent cannot be used again. |
 | `a:report{kind, conversation_id, source, block}` | `hub.identity.report` from a new process in the pane, like an agent hook. `block` is an optional hint (the hub ignores a wrong one). |
 | `a:report_async(key, r, delay_ms)`, `a:report_result(key)` | Start a report process that waits `delay_ms` before it reports, and return when the process has started and two clock ticks have passed (a Linux start time has a 10 ms resolution); then wait for its outcome (`{result}` or `{error = {code, message}}`). The process start time is older than a report started after it (the stale-report order). |

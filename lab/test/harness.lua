@@ -414,8 +414,16 @@ end
 -- title sets the terminal title of the agent's pane (OSC 2), as an agent CLI does.
 function Agent:title(text) return perform(self.client, 'agent.title', {title = text}) end
 -- program_status reports the root program status record (OSC 7501, Rex Program Status Protocol)
--- with this state, for example idle, working or blocked.
-function Agent:program_status(state) return perform(self.client, 'agent.program_status', {state = state}) end
+-- with this state, for example idle, working or blocked. opts: kind, app and msg (plain text), as
+-- an agent CLI reports a prompt.
+function Agent:program_status(state, opts)
+  local args = {state = state}
+  for k, v in pairs(opts or {}) do args[k] = v end
+  return perform(self.client, 'agent.program_status', args)
+end
+-- input returns the bytes written to this pane since the first input call (the first call starts
+-- the capture: raw mode, no echo). reset = true clears the captured bytes after the read.
+function Agent:input(reset) return perform(self.client, 'agent.input', {reset = reset or false}).data end
 -- exit ends the agent process, as the user quits an agent CLI. The agent cannot be used again.
 function Agent:exit()
   perform(self.client, 'agent.exit', {})

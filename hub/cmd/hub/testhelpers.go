@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -458,7 +459,7 @@ func testAgentMain(argv []string) int {
 	log.SetPrefix("testagent " + *id + " ")
 	ctx := context.Background()
 	var actions []map[string]any
-	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.program_status", "agent.exit"} {
+	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.program_status", "agent.input", "agent.exit"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testagent:"+*id, actions)
@@ -469,6 +470,7 @@ func testAgentMain(argv []string) int {
 	var mu sync.Mutex
 	joined, joinErr := *join == "", ""
 	reports := map[string]*asyncReport{} // async key -> outcome (nil: running)
+	var input *strings.Builder           // agent.input: the captured pane input (nil: not capturing)
 	if *join != "" {
 		go func() {
 			for i := 0; i < 100; i++ {
@@ -535,9 +537,30 @@ func testAgentMain(argv []string) int {
 			_, err := fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", title)
 			c.reply(p.CallID, map[string]any{}, err)
 		case "agent.program_status": // the root program status record (OSC 7501), as an agent CLI reports it
-			state, _ := args["state"].(string)
-			_, err := fmt.Fprintf(os.Stdout, "\x1b]7501;state=%s\x1b\\", state)
+			// Optional kind, app and msg (base64 in the report), as Claude Code reports a prompt.
+			report := "state=" + fmt.Sprint(args["state"])
+			for _, k := range []string{"kind", "app"} {
+				if v, _ := args[k].(string); v != "" {
+					report += ":" + k + "=" + v
+				}
+			}
+			if v, _ := args["msg"].(string); v != "" {
+				report += ":msg=" + base64.StdEncoding.EncodeToString([]byte(v))
+			}
+			_, err := fmt.Fprintf(os.Stdout, "\x1b]7501;%s\x1b\\", report)
 			c.reply(p.CallID, map[string]any{}, err)
+		case "agent.input": // the bytes written to this pane since the capture started (or reset)
+			mu.Lock()
+			if input == nil {
+				input = &strings.Builder{}
+				go captureInput(&mu, input)
+			}
+			data := input.String()
+			if reset, _ := args["reset"].(bool); reset {
+				input.Reset()
+			}
+			mu.Unlock()
+			c.reply(p.CallID, map[string]any{"data": data}, nil)
 		case "agent.exit": // the agent process exits, as an agent CLI does when the user quits it
 			c.reply(p.CallID, map[string]any{}, nil)
 			go func() { time.Sleep(200 * time.Millisecond); os.Exit(0) }()
@@ -671,4 +694,24 @@ func testAgentReport(argv []string) int {
 	}
 	os.Stdout.Write(raw)
 	return 0
+}
+
+// captureInput puts the pane's terminal in raw mode without echo, so every byte reaches stdin as
+// written (a key without Enter too), and appends stdin to buf.
+func captureInput(mu *sync.Mutex, buf *strings.Builder) {
+	stty := exec.Command("stty", "raw", "-echo")
+	stty.Stdin = os.Stdin
+	if err := stty.Run(); err != nil {
+		log.Printf("agent.input: stty: %v", err)
+	}
+	b := make([]byte, 4096)
+	for {
+		n, err := os.Stdin.Read(b)
+		mu.Lock()
+		buf.Write(b[:n])
+		mu.Unlock()
+		if err != nil {
+			return
+		}
+	}
 }

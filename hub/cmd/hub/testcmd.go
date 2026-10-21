@@ -58,6 +58,8 @@ type manifest struct {
 		// WatchRoots are plugin watch roots (hub config plugins[].watch_roots), keyed by plugin name.
 		// Paths with ${LAB}; the harness creates each one before the hub starts.
 		WatchRoots map[string][]string `json:"watch_roots"`
+		// Prompts names the plugins that get the prompts grant (hub config plugins[].prompts).
+		Prompts []string `json:"prompts"`
 		// Profiles is a profile file (relative to the manifest dir) that the harness copies to
 		// LAB/profiles.json, the hub's profile file.
 		Profiles string `json:"profiles"`
@@ -666,10 +668,11 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		Source     string            `json:"source"`
 		Args       map[string]string `json:"args,omitempty"`
 		WatchRoots []string          `json:"watch_roots,omitempty"`
+		Prompts    bool              `json:"prompts,omitempty"`
 	}
 	plugins := []plug{}
 	add := func(dir, name string) {
-		plugins = append(plugins, plug{Source: dir, Args: l.args[name], WatchRoots: l.watchRoots[name]})
+		plugins = append(plugins, plug{Source: dir, Args: l.args[name], WatchRoots: l.watchRoots[name], Prompts: contains(o.m.Test.Prompts, name)})
 	}
 	if o.home != nil { // the home plugin: every real hub config loads it
 		add(o.home.dir, "lazyrex")

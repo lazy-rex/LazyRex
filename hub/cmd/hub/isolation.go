@@ -232,6 +232,11 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 			}
 		}
 	}
+	for _, name := range m.Test.Prompts {
+		if !names[name] {
+			return fmt.Errorf("test.prompts: %q is not the plugin, lazyrex or a test.plugins entry", name)
+		}
+	}
 	if p := m.Test.Profiles; p != "" {
 		if filepath.IsAbs(p) || strings.Contains(p, "${") {
 			return fmt.Errorf("test.profiles %q must be relative to the manifest dir", p)
