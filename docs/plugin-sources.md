@@ -446,10 +446,20 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
   <field>`, with the `sync` or `update` text by the trusted-commit rule), no cache entry, and a
   changed cache entry (`digest mismatch`). Part B uses the text as the entry error unchanged.
 - Part B calls `readLock` once in each resolution (each start attempt re-reads the lock, section
-  7), and `lockedDir` once for each GitHub entry. A `readLock` error refuses every GitHub entry
-  with the text `plugin <source>: the lock file <path> cannot be read: <error>; run lazyrex-hub
-  plugin sync -config <cfg>`. The hub start does not fail (section 1: only a malformed config
-  fails the start).
+  7), and `lockedDir` once for each GitHub entry, with that one snapshot. `lockedDir` never reads
+  the lock file again. Neither function writes a lock file or a cache entry.
+- A missing lock file gives an empty lock: each GitHub entry is "not installed" (section 8).
+- A `readLock` error refuses every GitHub entry. The hub start does not fail (section 1: only a
+  malformed config fails the start), and local entries resolve as usual. The graph rules refuse a
+  local dependent of a refused GitHub entry. The ownership and retained-instance rules apply. The
+  text depends on the error:
+  - The file does not parse, or has another version: `plugin <source>: the lock file <path> is
+    not valid: <error>; repair the file or restore it from a backup`. Such a lock gives no
+    trustworthy pins, so the text does not name `sync`. `sync` and `update` refuse it too, and
+    never replace it: a lock that does not decode is never taken as an empty lock.
+  - A filesystem error (for example, no read permission): `plugin <source>: cannot read the lock
+    file <path>: <error>`.
+  - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
 - After `lockedDir`, Part B reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
 - No hub code takes a flock (section 6). The hub reads the lock with one read. The commands
@@ -467,7 +477,11 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
   ```
 
   The Part B lab test calls `pluginSync` in the test process to make the lock and the cache. Then
-  it starts the hub binary, which reads them.
+  it starts the hub binary, which reads them. The remote option exists only in these functions:
+  no CLI flag, config field or environment variable sets it.
+- The arguments of `update` (`name|source`, and a managed ID in section 13) are open: a managed ID
+  can equal the name of another plugin. Step 2e defines that rule. Part A does not build the
+  argument selector before that rule is approved.
 - A change of these signatures or of the error texts needs the agreement of both parts and of
   their reviewers.
 
