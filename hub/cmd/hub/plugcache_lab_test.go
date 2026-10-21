@@ -11,7 +11,8 @@ import (
 )
 
 // cacheFixture is startFixture with its name from the sibling module name.lua: the plugin reads a
-// file beside its main in the cache entry. rex do puts the script directory first in package.path.
+// file beside its main in the cache entry. rex do puts the script directory first in package.path
+// (observed on a lab server, Rex 0.0.1792158932-g88fd41).
 var cacheFixture = strings.Replace(fmt.Sprintf(startFixture, "gh"), `local name = "gh"`, `local name = require('name')`, 1)
 
 // A hub runs a GitHub plugin from its read-only cache entry (section 12). An update and a reload
