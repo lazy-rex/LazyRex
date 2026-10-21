@@ -22,6 +22,8 @@ It produces no model context. The command has a three-second deadline.
 Build the binary (`hub/` module: `go build -o ~/.lazyrex/bin/lazyrex-hub ./cmd/hub`).
 Add the entries below to the existing lists. Preserve the other hooks.
 JSON does not expand `~`: replace `/ABSOLUTE/HOME` with the absolute path of your home directory.
+The path is quoted, so a home directory with a space works when the agent runs the command through a shell.
+Claude Code documents that it does. For Codex this is untested.
 These are the exact entries; `lazyrex-hub setup` and a switch of existing hooks use the same text.
 
 Codex (`~/.codex/hooks.json`), one entry in `hooks.SessionStart`:
@@ -31,7 +33,7 @@ Codex (`~/.codex/hooks.json`), one entry in `hooks.SessionStart`:
   "hooks": [
     {
       "type": "command",
-      "command": "/ABSOLUTE/HOME/.lazyrex/bin/lazyrex-hub hook codex",
+      "command": "\"/ABSOLUTE/HOME/.lazyrex/bin/lazyrex-hub\" hook codex",
       "timeout": 5
     }
   ]
@@ -49,7 +51,7 @@ Claude Code (`~/.claude/settings.json`), one entry in `hooks.SessionStart` and t
   "hooks": [
     {
       "type": "command",
-      "command": "/ABSOLUTE/HOME/.lazyrex/bin/lazyrex-hub hook claude",
+      "command": "\"/ABSOLUTE/HOME/.lazyrex/bin/lazyrex-hub\" hook claude",
       "timeout": 5
     }
   ]
