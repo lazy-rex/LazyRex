@@ -84,6 +84,8 @@ commit, and `hub.plugins` reports `commit` and the candidate fields (section 7).
 `TestPluginCacheStartLab` starts a GitHub plugin from its read-only cache entry, updates it, and
 reloads.
 
+On the branch `hub/replace` (in review): `hub.admin.replace` (section 14).
+
 ## Terms
 
 - **Source**: where a plugin comes from. A local directory, or a GitHub repository at a ref.
@@ -758,7 +760,73 @@ How step 2 applies the decision:
   script: not tested.
 - The constant lives with the manifest loader, so the manager and the hub use one value.
 
-## 14. Not in this design
+## 14. Replace (`hub.admin.replace`)
+
+Status: on the branch `hub/replace` (in review). The contract (r1) has the hub reviewer's
+approval, with corrections that are applied here.
+
+`hub.admin.replace {"plugin": "<name>", "expect_instance": "<instance id>"}` replaces the running
+instance of an entry-backed plugin with a new instance from its current candidate. It is an admin
+action: the guard of the other admin actions applies (an operator only). Use it after
+`lazyrex-hub plugin update`, or after a local source changed. `expect_instance` is the
+`instance_id` that `hub.plugins` reports. A replay, or a race with another change, then cannot
+replace another instance.
+
+Arguments: both fields are required and nonempty, and other fields are refused (`invalid`).
+
+Locks: `reloadMu`, then the plugin's lifecycle lock, then `entriesMu` only to resolve. A reload
+cannot swap the entries during a replace, so the candidate and the entry membership stay stable
+from the check to the spawn. A crash respawn, the waiting wake, a stop and a block close take the
+lifecycle lock, so they come before or after the whole replace.
+
+The order. The first failure ends the replace with its code:
+
+1. Load the plugins row.
+2. Resolve the spawn intents (section 7). An unresolved intent: `unresolved_intent`. The
+   reconciliation can adopt a found block or abandon an intent before a later refusal.
+3. The desired state is `running`, else `stopped`.
+4. An owned live instance, else `no_instance`. The owned instance is the recorded instance while
+   it has a block, else the instance of an open spawn intent.
+5. The owned instance is `expect_instance`, else `instance_changed`. The text names the owned
+   instance.
+6. The record has an entry, else `refused` (a kept record: stop it with `hub.admin.stop`).
+7. The candidate check (`validateCandidate`): a resolution, with no write of state, refusal,
+   waiting, client, exports, run or ownership. A refused candidate: `refused`, "<error>; the
+   running instance <id> is unchanged". The old instance stays registered and ready; a running
+   dependent is not changed. A new start of a dependent can still be refused by the graph rule.
+8. Each dependency of the candidate is registered, else `dependency_not_ready`.
+9. Retire the old instance (`retire`). An error, or a block that holds a process that the hub
+   cannot verify: `retire_failed`, "nothing was spawned". A block that is gone from its live
+   session: the plugin is stopped (as a native close), code `stopped`.
+10. Spawn from the candidate (`spawn`).
+
+Until step 9 begins, a refusal retires nothing and spawns nothing. After step 9 begins, the old
+instance can be gone or partly stopped.
+
+The spawn outcome:
+
+- Success: Rex returned a block ID, and the hub read its child pid. The event
+  `plugin_replaced {plugin, previous_instance, instance_id, run: {source, dir, commit}}`, and the
+  reply has the same fields (`commit` only for a GitHub source). Success means that this request
+  created the reported instance. It does not mean that the instance registered or works.
+- A known failure, with nothing created: `spawn_failed`. The text names the stage: no work
+  session, the spawn intent was not recorded, or Rex refused the new block. The old instance is
+  retired, and the plugin has no instance; start it with `hub.admin.start`.
+- An unknown outcome (a timeout, a disconnect, no block ID, or a failed read of the child pid):
+  `spawn_unknown`. The intent stays open, and `hub.plugins` reports it. Do not retry: a later
+  replace gets `unresolved_intent` while the intent is unresolved, so no second instance can
+  start. When the reconciliation finds the block, it adopts it, and a replace with the old
+  `expect_instance` gets `instance_changed`.
+
+`hub.plugins` entries with a record add `instance_id` (the owned instance, or ""),
+`instance_pending` (true when the owned instance is only an open intent), `desired` and
+`registered`.
+
+Tests: `replace_test.go` (the arguments, the local spawn stages) and `replace_lab_test.go` (a
+replace and its replay, Stop before and after, a refused candidate, `dependency_not_ready`, the
+spawn outcomes with the `plugin-create` faults, `retire_failed`, and a reload after a replace).
+
+## 15. Not in this design
 
 - The lock can replace the release clones: a release is `plugin update <name>` and a plugin
   restart; a rollback is a lock entry with an older commit. This needs a user decision.

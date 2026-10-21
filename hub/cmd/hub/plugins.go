@@ -735,15 +735,28 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	return true, nil
 }
 
-// spawn starts a new instance from the candidate cand, which becomes its run.
+// spawnError is a spawn failure and its stage (session, intent, create, child). known: no
+// instance runs, because no request went to Rex or Rex refused it; the intent is closed. Otherwise
+// the outcome is unknown, and the intent stays open for resolveIntents.
+type spawnError struct {
+	stage string
+	known bool
+	err   error
+}
+
+func (e *spawnError) Error() string { return e.err.Error() }
+func (e *spawnError) Unwrap() error { return e.err }
+
+// spawn starts a new instance from the candidate cand, which becomes its run. A failure is a
+// *spawnError.
 func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 	sess := h.workSession()
 	if sess == "" {
-		return fmt.Errorf("spawn %s: the LazyRex session is gone; the next UI pass creates it", pl.Name)
+		return &spawnError{stage: "session", known: true, err: fmt.Errorf("spawn %s: the LazyRex session is gone; the next UI pass creates it", pl.Name)}
 	}
 	instance := newInstanceID(pl.Name, h.generation)
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO spawn_intents (instance_id, plugin, status, session_id) VALUES (?, ?, 'prepared', ?)`, instance, pl.Name, sess); err != nil {
-		return err
+		return &spawnError{stage: "intent", known: true, err: err}
 	}
 	h.mu.Lock()
 	pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source = instance, sess, "", *cand, cand.Source
@@ -756,7 +769,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 		exitNow()
 	}
 	if _, err := h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'sending' WHERE instance_id = ?`, instance); err != nil {
-		return err
+		return &spawnError{stage: "intent", known: true, err: err} // nothing was sent; the intent stays prepared
 	}
 	command := []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", run.Path, "-s", sess,
 		"hub_client_id=" + h.clientID, "instance_id=" + instance}
@@ -793,21 +806,22 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := h.rex.Call(cctx, "session.new_block", req, &out); err != nil {
+	if err := h.createBlock(cctx, pl.Name, req, &out); err != nil {
 		var re *rex.RexError
 		if errors.As(err, &re) && re.Code != "disconnected" {
 			// Rex answered with an error: the block was not created.
 			h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'abandoned' WHERE instance_id = ?`, instance)
+			return &spawnError{stage: "create", known: true, err: fmt.Errorf("spawn %s: %w", pl.Name, err)}
 		}
 		// Otherwise the outcome is unknown and the intent stays 'sending'.
-		return fmt.Errorf("spawn %s: %w", pl.Name, err)
+		return &spawnError{stage: "create", err: fmt.Errorf("spawn %s: %w", pl.Name, err)}
 	}
 	if out.BlockID == "" {
-		return fmt.Errorf("spawn %s: no block id", pl.Name)
+		return &spawnError{stage: "create", err: fmt.Errorf("spawn %s: no block id", pl.Name)}
 	}
 	pid, err := h.childPIDIn(ctx, sess, out.BlockID)
 	if err != nil {
-		return err
+		return &spawnError{stage: "child", err: err} // the block exists; its child is not verified
 	}
 	h.mu.Lock()
 	pl.BlockID, pl.ChildPID, pl.ChildStart = out.BlockID, pid, startTime(pid)
@@ -1003,6 +1017,8 @@ func (h *Hub) adminTarget(action string, args map[string]any) (*Plugin, error) {
 
 func (h *Hub) adminAction(ctx context.Context, action string, args map[string]any) (any, error) {
 	switch action {
+	case "hub.admin.replace":
+		return h.adminReplace(ctx, args)
 	case "hub.admin.start", "hub.admin.stop":
 		pl, err := h.adminTarget(action, args)
 		if err != nil {

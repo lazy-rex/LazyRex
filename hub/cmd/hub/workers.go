@@ -1337,6 +1337,10 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			if pl.ClientID != "" {
 				running = append(running, pl.run)
 			}
+			// The owned instance (hub.admin.replace takes it as expect_instance): "" when none.
+			id, pending := h.ownedInstance(pl)
+			item["instance_id"], item["instance_pending"] = id, pending
+			item["desired"], item["registered"] = pl.Desired, h.registeredLocked(e.name)
 		}
 		item["name"], item["state"] = name, state
 		if state == "refused" || state == "retained" {

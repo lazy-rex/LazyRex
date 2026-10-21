@@ -253,10 +253,10 @@ func TestPluginsListStates(t *testing.T) {
 	wantEntries := []string{
 		`{"candidate":{"error":"plugin source s1: no lazyrex.json"},"entry":1,"error":"plugin source s1: no lazyrex.json","name":null,"source":"s1","state":"refused"}`,
 		`{"candidate":{"error":"entries 2 and 3 have the same name dup"},"entry":2,"error":"entries 2 and 3 have the same name dup","name":"dup","source":"s2","state":"refused"}`,
-		`{"candidate":{"error":"plugin x: boom"},"dir":"/d/run","entry":3,"name":"run","source":"s3","state":"running"}`,
-		`{"candidate":{"error":"plugin x: boom"},"dir":"/d/kept","entry":4,"error":"plugin kept: old","name":"kept","source":"s4","state":"retained"}`,
-		`{"entry":5,"name":"off","source":"s5","state":"stopped"}`,
-		`{"entry":6,"name":"dep","source":"s6","state":"waiting","waiting":["run","off"]}`,
+		`{"candidate":{"error":"plugin x: boom"},"desired":"running","dir":"/d/run","entry":3,"instance_id":"","instance_pending":false,"name":"run","registered":false,"source":"s3","state":"running"}`,
+		`{"candidate":{"error":"plugin x: boom"},"desired":"running","dir":"/d/kept","entry":4,"error":"plugin kept: old","instance_id":"","instance_pending":false,"name":"kept","registered":false,"source":"s4","state":"retained"}`,
+		`{"desired":"stopped","entry":5,"instance_id":"","instance_pending":false,"name":"off","registered":false,"source":"s5","state":"stopped"}`,
+		`{"desired":"running","entry":6,"instance_id":"","instance_pending":false,"name":"dep","registered":false,"source":"s6","state":"waiting","waiting":["run","off"]}`,
 	}
 	for i, e := range got.Entries {
 		if b, _ := json.Marshal(e); i >= len(wantEntries) || string(b) != wantEntries[i] {

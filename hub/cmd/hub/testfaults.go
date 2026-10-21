@@ -1,7 +1,7 @@
 package main
 
 // Test-mode faults (docs/testing.md, "Faults"). A test arms a fault with hub.test.fault; it fires
-// once. Four points:
+// once. Six points:
 //   - spawn-create: the Rex request that creates a hub.spawn worker's pane (lose-answer, drop,
 //     refuse; op = the spawn key).
 //   - action: a hub action that a registered plugin calls (when = before | after,
@@ -20,6 +20,13 @@ package main
 //     hub.test.fault_release, at most 30 s, or hold_ms ms. A hub request that waits on the held
 //     start (for example on its lifecycle lock) holds the hub's request queue, so the release
 //     cannot arrive: such a test uses hold_ms.
+//   - plugin-create: the Rex request that creates a plugin instance's block (plugins.go spawn;
+//     key = the plugin name, "" = any). refuse: Rex refuses, nothing is created (a known outcome).
+//     lose-answer: the request goes to Rex, then the answer is lost (an unknown outcome; the
+//     intent stays open). lose-answer fires only when Rex answers yes. hold-send: the spawn gets
+//     an unknown outcome at once, and the hub sends the request only after
+//     hub.test.fault_release (at most 30 s, or hold_ms ms): the block appears later, so an intent
+//     stays unresolved until the release.
 // nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
 // counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
@@ -27,6 +34,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -41,20 +49,22 @@ type testFault struct {
 	Key                  string // action: the call's args.key ("" = any)
 	FailCode             string // action, mode fail: the reply's error code (default failed)
 	Nth, seen            int    // fire on the Nth matching call; seen counts the matching calls
-	HoldMS               int    // start-admission: the hold ends by itself after this time (default 30 s)
+	HoldMS               int    // start-admission, plugin-create: the hold ends by itself after this time (default 30 s)
 	Fired, Released      bool   // Released: a gate is open again
 	Gated                int    // gate: the calls that it refused
 }
 
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse"}, "action": {"fail", "lose-reply", "gate"},
-	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"}}
+	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
+	"plugin-create": {"refuse", "lose-answer", "hold-send"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
 	"action":          {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"},
 	"watch-nudge":     {"point", "mode", "key", "plugin"},
 	"status-read":     {"point", "mode", "key", "plugin", "nth"},
-	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
+	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"},
+	"plugin-create":   {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -96,7 +106,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold) or start-admission (hold-before, hold-after)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after) or plugin-create (refuse, lose-answer, hold-send)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -106,7 +116,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		f.Plugin = plugin
 	case "status-read":
 		f.Key, _ = args["key"].(string)
-	case "start-admission":
+	case "start-admission", "plugin-create":
 		f.Key, _ = args["key"].(string)
 	case "action":
 		f.Action, _ = args["action"].(string)
@@ -223,6 +233,39 @@ func (h *Hub) spawnCreateFaulted(ctx context.Context, key, method string, req ma
 		return &rex.RexError{Code: "disconnected", Message: "injected fault: the create was not sent"}
 	}
 	return &rex.RexError{Code: "refused", Message: "injected fault: Rex refused the create"}
+}
+
+// createBlock sends the create request of a plugin instance's block, or applies an armed
+// plugin-create fault. lose-answer is an after fault, as in spawnCreateFaulted.
+func (h *Hub) createBlock(ctx context.Context, plugin string, req map[string]any, out any) error {
+	match := func(mode string) func(*testFault) bool {
+		return func(f *testFault) bool {
+			return f.Point == "plugin-create" && (mode == "" || f.Mode == mode) && (f.Key == "" || f.Key == plugin)
+		}
+	}
+	if h.peekFault(match("lose-answer")) {
+		if err := h.rex.Call(ctx, "session.new_block", req, out); err != nil {
+			return err
+		}
+		if h.takeFault(match("lose-answer")) == nil {
+			return nil
+		}
+		return &rex.RexError{Code: "disconnected", Message: "injected fault: the create answer was lost"}
+	}
+	if h.takeFault(match("refuse")) != nil {
+		return &rex.RexError{Code: "refused", Message: "injected fault: Rex refused the create"}
+	}
+	if f := h.takeFault(match("hold-send")); f != nil {
+		go func() {
+			h.waitRelease(f)
+			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			err := h.rex.Call(cctx, "session.new_block", req, nil)
+			h.ev.emit("fault_sent", map[string]any{"point": f.Point, "mode": f.Mode, "plugin": plugin, "error": fmt.Sprint(err)})
+		}()
+		return &rex.RexError{Code: "disconnected", Message: "injected fault: the create is held"}
+	}
+	return h.rex.Call(ctx, "session.new_block", req, out)
 }
 
 func faultReply(f *testFault) error {
