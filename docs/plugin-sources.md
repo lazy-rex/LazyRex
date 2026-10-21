@@ -88,6 +88,7 @@ Not built: step 2e (managed plugins) and step 3 (the lock, the cache, the comman
 ```json
 {"source": "<dir>", "args": {}, "watch_roots": []}
 {"source": "github:<owner>/<repo>@<ref>", "args": {}}
+{"source": "github:<owner>/<repo>/<subdir>@<ref>", "args": {}}
 ```
 
 - `args`: extra `key=value` arguments of `rex do` (`rex.args` in the plugin). Keys match
@@ -98,6 +99,13 @@ Not built: step 2e (managed plugins) and step 3 (the lock, the cache, the comman
 - A source that starts with `github:` is a GitHub source. Any other source is a local directory.
 - A local path is absolute or relative to the directory of the config file. `~` is refused.
 - `<owner>` matches `[A-Za-z0-9-]+`. `<repo>` matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
+- `<subdir>` is optional (the coordinator, 2026-10-21): the plugin directory inside the repository, in
+  the form of a Go module path, for example `github:lazy-rex/LazyRex/plugins/lazyrex@main`. It is one or
+  more segments separated by `/`. Each segment matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
+  No segment is empty, and there is no leading or trailing `/`. Owner, repo and subdir never
+  contain `@`, so the first `@` ends the path and the ref is the rest. (A ref can contain `#`, so a
+  `@ref#subdir` form would be ambiguous.) Text: `source <s>: subdir <d> must be a relative path of
+  names (A-Z, a-z, 0-9, ., _, -)`.
 - `<ref>` is required. See section 5 for its forms.
 - The fields `name`, `path`, `events` and `notice` are refused in an entry. There is no
   compatibility path. Example text: `plugin entry 2: "path" is removed: use "source" (a directory
@@ -141,18 +149,21 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
 
 ```json
 {"version": 1, "plugins": {"<exact source string>": {
-  "name": "", "owner": "", "repo": "", "ref": "", "ref_kind": "branch|tag|commit",
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "branch|tag|commit",
   "commit": "<40 hex>", "digest": "sha256:<hex>", "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
 ```
 
 - The key is the source string exactly as the config writes it. A changed source string (for
   example `@main` to `@v2`) is a new key: `sync` installs it. It is not an update of the old key.
 - `dir` is relative to `<state>/plugins`.
+- `subdir` is the subdir of the source, or "" without one. A version 1 lock entry without the
+  field decodes as "": the version stays 1. The same repository at two subdirs gives two keys and
+  two cache entries.
 
 **Agreement check.** The hub checks a lock entry before it uses it:
 
 - the key equals the config source;
-- `owner`, `repo` and `ref` equal the parsed source;
+- `owner`, `repo`, `subdir` and `ref` equal the parsed source;
 - `ref_kind` matches the ref form;
 - `commit` is 40 lowercase hex, and equals the ref when the ref is a commit;
 - `dir` is `<owner>/<repo>/<commit>.<token>` under `github/`;
@@ -177,6 +188,10 @@ lazyrex-hub plugin sync`.
 
 - An entry path is `<state>/plugins/github/<owner>/<repo>/<commit>.<token>/`, where `<token>` is
   16 random hex. The lock entry records the path.
+- The entry is the whole commit tree, also for a source with a subdir. The digest covers the whole
+  entry. The plugin directory is `<entry>/<subdir>` (the entry itself without a subdir). The main
+  file rule (main inside the plugin directory) applies to that directory. A plugin can read other
+  files of the commit at run time: the entry never changes.
 - Published permissions: files 0444, executable files 0555, directories 0555.
 - **A published entry never moves.** No command renames, deletes or writes a published entry.
   - A repair publishes a new entry and points the lock at it.
@@ -208,6 +223,7 @@ is a name, not a commit. `git check-ref-format` validates `refs/heads/<name>` an
   both a branch and a tag: write refs/heads/foo or refs/tags/foo`.
 - An annotated tag resolves to its `^{}` commit.
 - A 40-hex ref is not resolved.
+- No line matches: `github:o/r@<ref>: ref <ref> is not found`.
 
 **Fetch** into `<state>/plugins/.tmp/<random>/` (`git init -q --bare`, then `git fetch -q --depth 1`):
 
@@ -222,7 +238,10 @@ is a name, not a commit. `git check-ref-format` validates `refs/heads/<name>` an
    160000 is refused (`submodules are not supported: <path>`).
 5. `git archive --format=tar <commit>`. The hub extracts it with `archive/tar`. The tar entries
    must match `ls-tree` exactly: the same paths, no absolute path, no `..`.
-6. Read and check the manifest, compute the digest, set the permissions.
+6. With a subdir: it must be a directory of the tree with a `lazyrex.json`. Else:
+   `github:<o>/<r>/<d>@<ref>: <d> is not a plugin directory at commit <c>; the lock is unchanged`.
+   Then read and check the manifest of the plugin directory, compute the digest, set the
+   permissions.
 7. Publish with one rename to the new, unique entry path.
 
 An unavailable locked commit: `github:o/r@<ref>: commit <c> is not available: <git error>; the lock
@@ -437,6 +456,11 @@ Both parts are in package `main` of `hub/cmd/hub`.
   the `lock` field in `main.go` and the `plugin` case in `main`. It reads the config with
   `parseEntries` and the manifests with `readPluginManifest`, and does not change them. It reads
   config entries only. When step 2e is on main, Part A adds the managed entries (section 13).
+- **Shared files that Part A may change for the subdir form** (section 1): in `pluginconfig.go`,
+  the `githubSource` pattern and the GitHub branch of `checkSource`, and new unexported fields of
+  `configEntry` for the parsed parts (for example `owner`, `repo`, `subdir`, `ref`). No other code in
+  that file. Step 2e also changes `pluginconfig.go`; the two changes do not overlap, and the part
+  that lands second rebases.
 - **Part B: the hub side.** Part B owns `resolveEntries` for a GitHub source: it replaces the
   "not installed" refusal with the calls below. It adds the commit to `pluginRun` and to
   `hub.plugins` (`run.commit`, `"candidate": {commit}`, section 7), and adds the lab test of a
@@ -445,21 +469,27 @@ Both parts are in package `main` of `hub/cmd/hub`.
 **The interface.** Part A gives these functions. Part B calls them and no other Part A code.
 
 ```go
+// lockPath gives the lock file: the config field lock relative to the config directory, or the
+// section 1 default. It reads no file.
+func lockPath(cfgPath, field string) string
+
 // readLock reads the lock file. A missing file gives an empty lock and no error. A file that
 // does not parse, or has another version, gives an error.
 func readLock(path string) (*pluginLock, error)
 
 // lockedDir checks the lock entry of the GitHub entry e and its cache entry, without git and
 // without the network: the key lookup, the agreement check (section 3), the cache entry, the
-// manifest name and the digest (section 4). It returns the absolute cache directory and the
-// locked commit. It only reads files.
+// manifest name and the digest (section 4). It returns the absolute plugin directory (the cache
+// entry, or <entry>/<subdir> for a source with a subdir) and the locked commit. It only reads files.
 func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir, commit string, err error)
 ```
 
 - The error of `lockedDir` is a final text of section 3 or 8, with the `-config <cfgPath>` of
   its command: no lock entry (`is not installed`), an agreement mismatch (`does not match:
   <field>`, with the `sync` or `update` text by the trusted-commit rule), no cache entry, and a
-  changed cache entry (`digest mismatch`). Part B uses the text as the entry error unchanged.
+  changed cache entry (`digest mismatch`), and a cache entry that cannot be read (`plugin <name>:
+  cannot read the cache entry <absolute dir>: <error>`; a file system error names the path and the
+  error and does not name `sync`). Part B uses the text as the entry error unchanged.
 - Part B calls `readLock` once in each resolution (each start attempt re-reads the lock, section
   7), and `lockedDir` once for each GitHub entry, with that one snapshot. `lockedDir` never reads
   the lock file again. Neither function writes a lock file or a cache entry.
@@ -486,17 +516,25 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
   type pluginCmdOpts struct {
       // remote gives the fetch URL of github:<owner>/<repo>. Default: https://github.com/<owner>/<repo>.
       remote func(owner, repo string) string
+      // afterResolve, when set, runs after a ref is resolved and before the fetch (a test of a ref
+      // that moves during the fetch). Production code never sets it.
+      afterResolve func(source string)
   }
   func pluginSync(ctx context.Context, cfgPath string, o pluginCmdOpts) error
   func pluginUpdate(ctx context.Context, cfgPath string, args []string, o pluginCmdOpts) error
   ```
 
   The Part B lab test calls `pluginSync` in the test process to make the lock and the cache. Then
-  it starts the hub binary, which reads them. The remote option exists only in these functions:
-  no CLI flag, config field or environment variable sets it.
-- The arguments of `update` (`name|source`, and a managed ID in section 13) are open: a managed ID
-  can equal the name of another plugin. Step 2e defines that rule. Part A does not build the
-  argument selector before that rule is approved.
+  it starts the hub binary, which reads them. The remote option and the afterResolve hook exist
+  only in these functions: no CLI flag, config field or environment variable sets them.
+- The arguments of `update` (step 2e rule, approved 2026-10-21): an argument selects entries by
+  three keys: the plugin name, the exact source string, and `managed:<id>`. An argument that
+  starts with `managed:` selects only by managed id; it never matches a name or a source. (A local
+  config source literally named `managed:...` is selected by its plugin name.) The selector counts
+  distinct entries: one entry that matches by name and by source counts once. It must select
+  exactly one entry. Zero: `plugin update: no entry has the name, source or identity <arg>`. Two or
+  more: `plugin update: <arg> selects <identities>; write managed:<id> or the exact source`, with
+  the identities `entry N` and `managed:<id>`.
 - A change of these signatures or of the error texts needs the agreement of both parts and of
   their reviewers.
 
