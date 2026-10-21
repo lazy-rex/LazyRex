@@ -41,6 +41,13 @@ func TestManagedFileMalformed(t *testing.T) {
 		`{"plugins":[{"id":"x","source":"` + abs + `","args":{"plugin_session":"s"}}]}`: `managed:x: arg "plugin_session" is not allowed`,
 		`{"plugins":[{"id":"x","source":"` + abs + `","watch_roots":["r"]}]}`:          `managed:x: watch root "r" must be absolute and clean`,
 		`{"plugins":[]} {}`: `data after the manifest object`,
+		// A removal needs an explicit list: a root that is not the object, or no plugins array, is
+		// malformed (reviewer, hub-review-2e1-null-blocker).
+		`null`:                `the file must be an object with a plugins array`,
+		`{}`:                  `the file must be an object with a plugins array`,
+		`{"plugins":null}`:    `the file must be an object with a plugins array`,
+		`[]`:                  `cannot unmarshal array`,
+		`{"plugins":{}}`:      `cannot unmarshal object`,
 	}
 	for body, want := range bad {
 		writeManaged(t, dir, body)

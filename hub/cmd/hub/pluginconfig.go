@@ -146,7 +146,9 @@ func parseManaged(path string) ([]*configEntry, error) {
 		return nil, fmt.Errorf("the file is over the %d-byte limit", managedFileLimit)
 	}
 	var file struct {
-		Plugins []struct {
+		// A pointer: a root of null, {} or {"plugins": null} leaves it nil. Such a file is malformed,
+		// never an empty list, so it cannot remove the managed entries.
+		Plugins *[]struct {
 			ID         string            `json:"id"`
 			Source     string            `json:"source"`
 			Args       map[string]string `json:"args"`
@@ -156,9 +158,12 @@ func parseManaged(path string) ([]*configEntry, error) {
 	if err := decodeManifest("the file", b, &file); err != nil {
 		return nil, err
 	}
+	if file.Plugins == nil {
+		return nil, errors.New("the file must be an object with a plugins array: {\"plugins\": [...]}")
+	}
 	var out []*configEntry
 	ids, sources := map[string]bool{}, map[string]bool{}
-	for i, p := range file.Plugins {
+	for i, p := range *file.Plugins {
 		n := i + 1
 		if !managedID.MatchString(p.ID) {
 			return nil, fmt.Errorf("plugin %d: id %q must match [a-z0-9_-]{1,64}", n, p.ID)
