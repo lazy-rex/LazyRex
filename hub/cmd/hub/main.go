@@ -870,6 +870,9 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return nil, bad("only a registered plugin instance may call %s", p.Action)
 	}
 	ns := pl.Name
+	if h.test != nil {
+		h.testRecordCall(ns, pl.InstanceID, p.Action, p.Args)
+	}
 	switch p.Action {
 	case "hub.grant.create":
 		return h.grantCreate(ctx, p, ns, args)

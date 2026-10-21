@@ -275,6 +275,17 @@ function H.batches(plugin) return hub('hub.test.stats', {plugin = plugin or A.pl
 -- invalidates counts the plugin's hub.ui.invalidate calls. A count that stays the same over an
 -- interval proves only that the plugin made no such call in that interval.
 function H.invalidates(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).invalidates end
+-- calls returns the plugin's recorded hub service calls of action ({seq, action, instance_id,
+-- args}, oldest first), and the full reply {calls, next, dropped}. opts: after (a seq; only later
+-- calls), plugin (default: the plugin under test). A test that proves "never" checks that dropped
+-- is false: the hub keeps the last 1000 calls of each plugin.
+function H.calls(action, opts)
+  opts = opts or {}
+  local out = hub('hub.test.calls', {plugin = opts.plugin or A.plugin, action = action, after = opts.after or 0})
+  local list = out.calls
+  if list == nil or list == rex.json.null then list = {} end
+  return list, out
+end
 function H.advance_rev(at) return hub('hub.test.rev', {at = tostring(at)}).rev end
 
 function H.tabs(plugin)
