@@ -41,7 +41,12 @@ func TestPluginCacheStartLab(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return filepath.Join(c.State, "plugins", filepath.FromSlash(lock.Plugins[src].Dir))
+		// The canonical state (absolute, symlinks resolved): the path that the hub uses and reports.
+		state, err := canonicalState(c.State)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Join(state, "plugins", filepath.FromSlash(lock.Plugins[src].Dir))
 	}
 	firstDir := cacheDir()
 	if fi, err := os.Stat(firstDir); err != nil || fi.Mode().Perm() != 0o555 {
