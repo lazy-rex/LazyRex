@@ -72,7 +72,12 @@ On the branch `plugins/step2d2` (in review), step 2d part 2:
 - `hub.admin.start` of a plugin that must wait gives `{"desired": "running", "state": "waiting",
   "waiting": [names]}`. `hub.plugins` entries in state `waiting` add `waiting`.
 
-Not built: step 2e (managed plugins) and step 3 (the lock, the cache, the commands).
+Step 2e part 1 (managed entries, section 13) is on main (51d27c4).
+
+Step 3 Part A is on main (08dbb89): the lock (`pluginlock.go`), the cache and `lockedDir`
+(`plugincache.go`), refs and fetch (`pluginfetch.go`), and `lazyrex-hub plugin sync|update|status`
+(`plugincmd.go`), with subdir sources and managed entries. Not built: step 3 Part B (the hub
+side: `resolveEntries` for a GitHub source, `run.commit`, the lab test).
 
 ## Terms
 
@@ -196,7 +201,16 @@ lazyrex-hub plugin sync`.
 - **A published entry never moves.** No command renames, deletes or writes a published entry.
   - A repair publishes a new entry and points the lock at it.
   - A running instance keeps its directory.
-  - A changed entry stays on disk. `plugin status` lists it as "changed, unreferenced".
+  - A changed entry stays on disk. `plugin status` lists each entry that the lock does not
+    reference as "unreferenced (no recorded digest)": without a lock entry there is no digest to
+    compare, and a running instance or another config on the same state can still use it.
+- **Publication** (observed on macOS 27.0.1, APFS; Linux: not tested). A rename of a 0555
+  directory into another parent fails with EACCES, because the move must update the directory's
+  `..`. A rename in the same parent works. So the command extracts the tree into a stage beside
+  the final path, `github/<owner>/<repo>/.stage-<token>/`, sets every published mode (the stage
+  root last), and renames the stage to `<commit>.<token>` in the same parent. Nothing writes the
+  entry after the rename. A failure before the rename removes the stage. Names that start with
+  `.` are stages, not entries.
 - There is no prune. A running plugin can `dofile` a sibling file later (Tunnels does), so the hub
   must not delete an entry that is in use.
 - **Digest**: sha256 over the lines `<path>\0<x|->\0<size>\0<sha256 hex of content>\n`, sorted by
@@ -225,7 +239,8 @@ is a name, not a commit. `git check-ref-format` validates `refs/heads/<name>` an
 - A 40-hex ref is not resolved.
 - No line matches: `github:o/r@<ref>: ref <ref> is not found`.
 
-**Fetch** into `<state>/plugins/.tmp/<random>/` (`git init -q --bare`, then `git fetch -q --depth 1`):
+**Fetch** into a bare repository in `<state>/plugins/.tmp/<random>/` (`git init -q --bare`, then
+`git fetch -q --depth 1`). The tree is extracted into the stage of section 4, "Publication":
 
 1. Fetch a branch or tag by its exact ref. Fetch a commit (a 40-hex ref, or a sync of a locked
    commit) by its ID.
@@ -237,12 +252,14 @@ is a name, not a commit. `git check-ref-format` validates `refs/heads/<name>` an
    file. Mode 120000 is refused (`plugin trees with symlinks are not supported: <path>`). Mode
    160000 is refused (`submodules are not supported: <path>`).
 5. `git archive --format=tar <commit>`. The hub extracts it with `archive/tar`. The tar entries
-   must match `ls-tree` exactly: the same paths, no absolute path, no `..`.
+   must match `ls-tree` exactly: the same paths, no absolute path, no `..`. Each file's content
+   must hash to its `ls-tree` blob ID (`blob <size>\0<content>`, SHA-1), so the published tree is
+   the commit's tree. Text: `the archive of <c> does not match its tree: <path>: <reason>`.
 6. With a subdir: it must be a directory of the tree with a `lazyrex.json`. Else:
    `github:<o>/<r>/<d>@<ref>: <d> is not a plugin directory at commit <c>; the lock is unchanged`.
    Then read and check the manifest of the plugin directory, compute the digest, set the
    permissions.
-7. Publish with one rename to the new, unique entry path.
+7. Publish with one rename of the stage to the new, unique entry path, in the same parent.
 
 An unavailable locked commit: `github:o/r@<ref>: commit <c> is not available: <git error>; the lock
 is unchanged`.
@@ -252,6 +269,19 @@ Observed by the implementer only (2026-10-20, git 2.54.0, public lazy-rex/LazyRe
 `upload-pack: not our ref`. Not independently verified. Not observed: a private repository, and a
 commit that is no longer reachable (after a force push). Unit tests use a local bare repository
 (`file://`) and say that they do not prove GitHub behavior.
+
+**For plugin authors: what a GitHub source can contain.** The fetch publishes the commit's tree
+exactly, or nothing:
+
+- Regular files and executable files only. A symlink or a submodule anywhere in the repository
+  refuses the source, also outside the subdir.
+- `.gitattributes` `export-ignore` and `export-subst` refuse the source: they make the archive
+  differ from the tree (a missing file, or changed content). Remove these attributes from the
+  plugin repository.
+- With a subdir, `<subdir>/lazyrex.json` must be in the commit. `main` must be inside the subdir.
+  The whole commit is in the cache entry, so a plugin can read files outside its subdir at run time.
+- The cache entry is read-only (files 0444 or 0555). A plugin writes its data elsewhere, for
+  example in the hub store.
 
 ## 6. Commands
 
