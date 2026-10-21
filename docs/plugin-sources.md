@@ -323,8 +323,12 @@ The commands are CLI only. A hub action must answer fast, because the hub has on
   merge a pin document into the lock (section 6a).
 
 **All or nothing.** A command writes the lock only after every fetch and check passes (temp file,
-fsync, rename). A failure leaves the old lock. Entries that the command published stay on disk;
-nothing references them. So a failed command never changes a directory that a lock references.
+fsync, rename, directory fsync). A failure before the rename leaves the old lock. Entries that the
+command published stay on disk; nothing references them. So a failed command never changes a
+directory that a lock references. A failure of the directory fsync comes after the rename: readers
+see the new lock, but a crash can still undo it. The command then fails with `<lock> is replaced,
+but the sync of its directory failed (a crash can undo the change): ...`, never claims an
+unchanged lock, and rolls nothing back. The same rule holds for the base file of pull (section 6a).
 
 **Graph check.** Before it writes the lock, the command checks the new dependency graph. Example
 refusal: `plugin update: worktrees at <c> depends on profiles, which is not configured; the lock is
@@ -419,10 +423,13 @@ and its base stays.
   the config must be installed.
 - Any fetch, digest or graph failure writes nothing: the lock and the base stay byte-unchanged.
   Published cache entries stay, as after a failed update.
-- The new lock has the GitHub entries of the config only. As for sync, pull removes an orphaned
-  lock entry (section 13); the output has no line for it.
+- The new lock has the GitHub entries of the config only. As for sync and update, pull removes an
+  orphaned lock entry (section 13); the output has no line for it.
 - The lock is written first (only when its bytes change), then the base. Nothing is rolled back.
-  If the base write fails, the text tells whether the lock changed:
+  A directory fsync failure after the rename of the lock (section 6) stops the pull with `<lock>
+  is replaced, ...; the base of <id> is not written`: the state of a crash between the two
+  writes. One after the rename of the base gives `<base> is replaced, ...`.
+  If the base write fails before its rename, the text tells whether the lock changed:
   - taken pins: `the pins changed, but the base of <id> did not: the next pull can report
     conflicts for <sources>`;
   - only a removed orphan: `the lock changed, but the base of <id> did not`;
@@ -727,6 +734,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | pull: a fetch, digest or graph failure | lock and base byte-unchanged | U |
 | pull: a base write failure, then the same peer, a moved peer, a local update | the text; unchanged; conflict; conflict | U |
 | pull: a base write failure with no lock change, and after only an orphan removal; a failed write of the result lines | the text for each case | U |
+| A directory fsync failure after the rename: the lock of sync and update; the lock and the base of pull, then the next pull | the new bytes in place; the "is replaced" text, no unchanged claim; the next pull unchanged | U |
 | pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |

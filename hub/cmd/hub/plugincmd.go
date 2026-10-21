@@ -283,6 +283,10 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 		return nil // no lock file, and nothing to pin
 	}
 	if err := writeLock(cfg.lock, next); err != nil {
+		var re *replacedError
+		if errors.As(err, &re) {
+			return fmt.Errorf("plugin %s: %w", cmd, err)
+		}
 		return fail(err)
 	}
 	for _, src := range dropped {

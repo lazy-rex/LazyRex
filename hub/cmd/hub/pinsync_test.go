@@ -754,3 +754,86 @@ func TestPullBaseFailureLockUnchanged(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// failSyncDir makes call n (from 1) of replaceSyncDir fail, after the rename.
+func failSyncDir(t *testing.T, n int) {
+	t.Helper()
+	calls := 0
+	t.Cleanup(func() { replaceSyncDir = syncDir })
+	replaceSyncDir = func(dir string) error {
+		calls++
+		if calls == n {
+			return errors.New("disk full")
+		}
+		return syncDir(dir)
+	}
+}
+
+// A directory sync failure after the rename: the new lock is in place, and sync and update say so.
+// They claim no unchanged lock and roll nothing back.
+func TestLockPublishedSyncFailure(t *testing.T) {
+	env := newCmdEnv(t)
+	r := env.repo("lazy-rex", "Messaging", "messaging")
+	cfg := env.config(srcM)
+	lock := filepath.Join(env.dir, "hub.lock.json")
+	want := func(cmd string) string {
+		return "plugin " + cmd + ": " + lock + " is replaced, but the sync of its directory failed (a crash can undo the change): disk full"
+	}
+	failSyncDir(t, 1)
+	if err := env.sync(cfg); err == nil || err.Error() != want("sync") {
+		t.Fatalf("sync: %v", err)
+	}
+	if le := env.lock().Plugins[srcM]; le == nil || le.Commit != strings.TrimSpace(r.git("rev-parse", "HEAD")) {
+		t.Fatal("the lock does not have the synced entry")
+	}
+	c2 := r.commit(map[string]string{"main.lua": "return 2\n"})
+	failSyncDir(t, 1)
+	if err := env.update(cfg); err == nil || err.Error() != want("update") {
+		t.Fatalf("update: %v", err)
+	}
+	if env.lock().Plugins[srcM].Commit != c2 {
+		t.Fatal("the lock does not have the updated commit")
+	}
+}
+
+// Pull: a directory sync failure after the rename of the lock stops the pull before the base; one
+// after the rename of the base reports the base as replaced. The next pull is unchanged in both.
+func TestPullPublishedSyncFailure(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		call int
+	}{{"lock", 1}, {"base", 2}} {
+		t.Run(c.name, func(t *testing.T) {
+			a, b := machines(t)
+			a.repo("lazy-rex", "Messaging", "messaging")
+			cfgA, cfgB := a.config(srcM), b.config(srcM)
+			if err := a.sync(cfgA); err != nil {
+				t.Fatal(err)
+			}
+			doc := a.mustExport(cfgA)
+			id, _ := readPullID(filepath.Join(a.dir, "hub.lock.json"))
+			lock := filepath.Join(b.dir, "hub.lock.json")
+			want := "plugin pull: " + lock + " is replaced, but the sync of its directory failed (a crash can undo the change): disk full; the base of " + id + " is not written"
+			if c.name == "base" {
+				want = "plugin pull: " + peersPath(lock) + " is replaced, but the sync of its directory failed (a crash can undo the change): disk full"
+			}
+			failSyncDir(t, c.call)
+			_, _, err := b.pull(cfgB, doc, nil, nil)
+			if err == nil || err.Error() != want {
+				t.Fatalf("got %v", err)
+			}
+			if b.lock().Plugins[srcM] == nil || b.lock().Plugins[srcM].Commit != a.lock().Plugins[srcM].Commit {
+				t.Fatal("the lock does not have the pulled pin")
+			}
+			peers, err := readPeers(lock)
+			if err != nil || (c.name == "base") != (peers.Peers[id] != nil) {
+				t.Fatalf("the base: %v %v", peers, err)
+			}
+			replaceSyncDir = syncDir
+			out, conflict, err := b.pull(cfgB, doc, nil, nil)
+			if err != nil || conflict || !strings.HasPrefix(out, "unchanged\t"+srcM+"\t") {
+				t.Fatalf("the next pull: %q %v %v", out, conflict, err)
+			}
+		})
+	}
+}

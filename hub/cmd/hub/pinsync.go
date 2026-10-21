@@ -286,8 +286,27 @@ func replaceFile(path string, b []byte) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	return syncDir(dir)
+	if err := replaceSyncDir(dir); err != nil {
+		return &replacedError{path: path, err: err}
+	}
+	return nil
 }
+
+// replacedError is a replaceFile failure after the rename: readers see the new bytes, but a crash
+// can still undo the change. A caller never reports the file as unchanged, and rolls nothing back.
+type replacedError struct {
+	path string
+	err  error
+}
+
+func (e *replacedError) Error() string {
+	return e.path + " is replaced, but the sync of its directory failed (a crash can undo the change): " + e.err.Error()
+}
+
+func (e *replacedError) Unwrap() error { return e.err }
+
+// replaceSyncDir makes the rename of replaceFile durable. Tests replace it to fail after the rename.
+var replaceSyncDir = syncDir
 
 // syncDir makes a directory entry change durable.
 func syncDir(dir string) error {
@@ -585,11 +604,21 @@ func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []strin
 	if cur, err := os.ReadFile(cfg.lock); err != nil || !bytes.Equal(cur, nb) {
 		changed = true
 		if err := writeLock(cfg.lock, next); err != nil {
+			var re *replacedError
+			if errors.As(err, &re) {
+				// The state of a crash between the two writes (section 6a): the next pull is
+				// unchanged while the peer has the same pins.
+				return false, fmt.Errorf("plugin pull: %w; the base of %s is not written", err, doc.Hub)
+			}
 			return false, fail(err)
 		}
 	}
 	peers.Peers[doc.Hub] = plan.base
 	if err := pullWritePeers(cfg.lock, peers); err != nil {
+		var re *replacedError
+		if errors.As(err, &re) {
+			return false, fmt.Errorf("plugin pull: %w", err)
+		}
 		if !changed {
 			return false, fail(fmt.Errorf("the base of %s: %w", doc.Hub, err))
 		}
