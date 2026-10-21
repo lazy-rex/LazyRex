@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
@@ -156,6 +157,7 @@ type Hub struct {
 	test           *testState    // test mode (-test, testmode.go); nil otherwise
 	// shutdown cancels main's signal context, as SIGTERM does (hub.admin.shutdown). nil: no stop.
 	shutdown func()
+	calls    *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
 
 	mu           sync.Mutex
 	identMu      sync.Mutex // serializes identity reports (identity.go)
@@ -392,7 +394,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if err := json.Unmarshal(r.Welcome, &welcome); err != nil || welcome.Client.ID == "" {
 		return nil, fmt.Errorf("welcome has no client id: %s", r.Welcome)
 	}
-	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock,
+	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
 	for _, a := range cfg.Agents {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
@@ -625,6 +627,7 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 }
 
 func (h *Hub) answer(ctx context.Context, p perform) {
+	t0 := time.Now()
 	result, err := h.dispatchFaulted(ctx, p)
 	reply := map[string]any{"call_id": p.CallID}
 	if err != nil {
@@ -644,7 +647,7 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 	if replyErr != nil {
 		log.Printf("reply %s %s: %v", p.Action, p.CallID, replyErr)
 	}
-	log.Printf("%s from %s pid %d -> %v", p.Action, p.Requester.ClientID, p.Requester.Principal.PID, err)
+	h.calls.record(p.Action, p.Requester.ClientID, p.Requester.Principal.PID, err, replyErr, time.Since(t0)) // calllog.go
 	h.afterReply(p.Action, err, replyErr)
 }
 

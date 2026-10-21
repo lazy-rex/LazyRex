@@ -446,6 +446,18 @@ A deliberate stop gives 0, and a lost Rex connection gives 1, so a supervisor ca
 
 Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The test starts its own lab server (`lab/server.sh` in a new `/tmp/rexlab-shutdown-*` directory) and stops only that server and its own hubs. It checks a refused argument (the hub keeps running), the reply `{"stopping": true}` and exit 0, SIGTERM and exit 0, and exit 1 after the lab server stops. `TestHubSignalDuringStartLab` pauses its lab server (SIGSTOP), so the hub waits in its start for the Rex connection, and checks exit 0 after SIGTERM (before the fix: 1, "terminated signal received"). Observed on Rex 0.0.1792158932-g88fd41 (macOS, 2026-10-21): pass, 8 runs in a row. The unit test `TestAdminShutdownDispatch` checks the refusals and that only the reply path starts the stop.
 
+## Process log
+
+The hub writes one line for each answered call (`Hub.answer`, `hub/cmd/hub/calllog.go`): `<action> from <client> pid <pid> -> <error or <nil>> in <ms>`. One exception: a fast, successful routine read gets no line.
+
+- The routine reads are `hub.store.get` and `hub.store.scan`. The live Messaging plugin makes tens of thousands of them a minute, and a line for each made the log grow by about 1 GB.
+- A routine read keeps its line when it fails, when its reply was not delivered, or when it takes 250 ms or longer.
+- Every other action keeps its line, also an action that is added later. A call that changes state for another party (admin, register, spawn, acting as the user) needs its line.
+- The hub counts the skipped calls. The first call one minute or more after the count started writes one summary line before its own line, then the count starts again: `routine calls without a line since 15:00:00: hub.store.get 3 (max 12.0ms), hub.store.scan 1 (max 40.0ms)`. A minute without skipped calls writes no summary. No goroutine writes the summary, so a quiet hub can hold a count until its next call.
+- `events.jsonl` does not change: the hub events stay in that file.
+
+Tests: `TestCallLogKeepsEveryLineButFastRoutineReads` (the 250 ms boundary included), `TestCallLogSummary`.
+
 ## Spawn directories and path locks
 
 Status: lab (Claude, Rex 1203, 2026-10-16). Contract agreed with Codex for the worktrees plugin.
