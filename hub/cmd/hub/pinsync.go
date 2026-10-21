@@ -10,6 +10,8 @@ package main
 //   - <lock>.peers.json: for each peer identity, the pins of the last pull (the merge base).
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -461,4 +463,137 @@ func (p *pullPlan) write(w io.Writer) {
 		}
 		fmt.Fprintf(w, "%s\t%s\tlocal %s\tpeer %s\n", r.Outcome, r.Source, l, r.Peer.Commit)
 	}
+}
+
+// pullWritePeers writes the base file after the lock. Tests replace it to make the base write fail
+// after the lock write (also the state after a crash between the two writes).
+var pullWritePeers = writePeers
+
+// pluginPull is lazyrex-hub plugin pull: it merges the pin document at docPath into the lock (the
+// merge: mergePins), fetches each taken pin by its commit, checks its digest against the document,
+// and checks the complete new graph (checkNewGraph). Any fetch, digest or graph failure writes
+// nothing. Then it writes the lock, and after it the base of the peer. It prints one line for each
+// result to w. conflict is true when a conflict remains after the other keys applied.
+func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []string, o pluginCmdOpts, w io.Writer) (conflict bool, err error) {
+	fail := func(err error) error { return fmt.Errorf("plugin pull: %w; the lock is unchanged", err) }
+	b, err := os.ReadFile(docPath)
+	if err != nil {
+		return false, fail(err)
+	}
+	doc, err := decodePinDoc(b)
+	if err != nil {
+		return false, fail(fmt.Errorf("pin document %s: %w", docPath, err))
+	}
+	cfg, err := readPluginCmdConfig(cfgPath)
+	if err != nil {
+		return false, fmt.Errorf("plugin pull: %w", err)
+	}
+	release, err := lockCommands(cfg.state, cfg.lock)
+	if err != nil {
+		return false, fmt.Errorf("plugin pull: %w", err)
+	}
+	defer release()
+	old, err := cfg.loadSnapshot()
+	var inv *lockInvalidError
+	var rerr *lockReadError
+	switch {
+	case errors.As(err, &inv), errors.As(err, &rerr):
+		return false, fmt.Errorf("plugin pull: %w", err) // never taken as an empty lock (runPluginCmd)
+	case err != nil:
+		return false, fail(err)
+	}
+	var keys []string
+	for _, e := range cfg.entries {
+		if e.static != nil {
+			return false, fail(e.static)
+		}
+		if e.github {
+			keys = append(keys, e.Source)
+		}
+	}
+	own, err := readPullID(cfg.lock)
+	if err != nil {
+		return false, fail(err)
+	}
+	if doc.Hub == own {
+		return false, fail(fmt.Errorf("pin document %s comes from this lock", docPath))
+	}
+	peers, err := readPeers(cfg.lock)
+	if err != nil {
+		return false, fail(err)
+	}
+	plan, err := mergePins(keys, old, peers.Peers[doc.Hub], doc, take, keep)
+	if err != nil {
+		return false, fail(err)
+	}
+	tmpRoot := filepath.Join(cfg.state, "plugins", ".tmp")
+	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
+		return false, fail(err)
+	}
+
+	// The new lock: every GitHub entry keeps its lock entry, except the taken pins.
+	next := &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{}}
+	var failed []error
+	for _, e := range cfg.entries {
+		if !e.github {
+			continue
+		}
+		p, ok := plan.take[e.Source]
+		if !ok {
+			if le := old.Plugins[e.Source]; le != nil {
+				next.Plugins[e.Source] = le
+			}
+			continue
+		}
+		r := e.githubRef()
+		kind := p.RefKind // a short ref is a branch or a tag: the imported kind decides
+		if k := refKinds(r.Ref); len(k) == 1 {
+			kind = k[0]
+		}
+		if err := checkRef(ctx, tmpRoot, r.Ref); err != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", e.Source, err))
+			continue
+		}
+		got, err := fetchAt(ctx, cfg, o, tmpRoot, r, p.Commit, p.Commit, kind, true)
+		switch {
+		case err != nil:
+			failed = append(failed, fmt.Errorf("%s: %w", e.Source, err))
+		case got.Digest != p.Digest:
+			failed = append(failed, fmt.Errorf("plugin %s: the tree of %s differs from the pin document", got.Name, p.Commit))
+		default:
+			next.Plugins[e.Source] = got
+		}
+	}
+	if len(failed) == 0 {
+		if err := checkNewGraph(cfg, next); err != nil {
+			failed = append(failed, err)
+		}
+	}
+	if len(failed) > 0 {
+		return false, fail(errors.Join(failed...))
+	}
+
+	nb, err := encodeLock(next)
+	if err != nil {
+		return false, fail(err)
+	}
+	if cur, err := os.ReadFile(cfg.lock); err != nil || !bytes.Equal(cur, nb) {
+		if err := writeLock(cfg.lock, next); err != nil {
+			return false, fail(err)
+		}
+	}
+	peers.Peers[doc.Hub] = plan.base
+	if err := pullWritePeers(cfg.lock, peers); err != nil {
+		var changed []string
+		for src := range plan.take {
+			changed = append(changed, src)
+		}
+		sort.Strings(changed)
+		if len(changed) == 0 {
+			return false, fail(fmt.Errorf("the base of %s: %w", doc.Hub, err))
+		}
+		return false, fmt.Errorf("plugin pull: the pins changed, but the base of %s did not: the next pull can report conflicts for %s: %w", doc.Hub, strings.Join(changed, ", "), err)
+	}
+	plan.write(w)
+	return plan.conflicts(), nil
 }

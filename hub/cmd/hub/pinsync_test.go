@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -407,5 +408,284 @@ func TestMergePinsFlags(t *testing.T) {
 		if _, err := mergePins([]string{p.Source}, lock, nil, doc, tc.take, tc.keep); err == nil || err.Error() != tc.want {
 			t.Errorf("%v %v: %v, want %s", tc.take, tc.keep, err, tc.want)
 		}
+	}
+}
+
+// machines gives two command environments that share the repositories: two machines of the user.
+func machines(t *testing.T) (a, b *cmdEnv) {
+	a, b = newCmdEnv(t), newCmdEnv(t)
+	b.repos = a.repos
+	return a, b
+}
+
+// pull writes the document doc into a file and runs plugin pull on cfg.
+func (env *cmdEnv) pull(cfg, doc string, take, keep []string) (string, bool, error) {
+	env.t.Helper()
+	p := filepath.Join(env.t.TempDir(), "pins.json")
+	if err := os.WriteFile(p, []byte(doc), 0o600); err != nil {
+		env.t.Fatal(err)
+	}
+	var out bytes.Buffer
+	conflict, err := pluginPull(context.Background(), cfg, p, take, keep, env.opts, &out)
+	return out.String(), conflict, err
+}
+
+func (env *cmdEnv) mustExport(cfg string) string {
+	env.t.Helper()
+	doc, err := env.export(cfg)
+	if err != nil {
+		env.t.Fatal(err)
+	}
+	return doc
+}
+
+// files gives the bytes of the lock and of the base file, to show that a pull wrote nothing.
+func (env *cmdEnv) files() string {
+	l := env.lockBytes()
+	b, _ := os.ReadFile(filepath.Join(env.dir, "hub.lock.json.peers.json"))
+	return string(l) + "\x00" + string(b)
+}
+
+// A pull with no base and equal pins is unchanged and sets the base; a later move of the peer is
+// taken: the lock gets the commit (with its cache entry and the imported ref_kind of the short
+// ref), and the same document again is unchanged.
+func TestPullTakes(t *testing.T) {
+	a, b := machines(t)
+	r := a.repo("lazy-rex", "Messaging", "messaging")
+	cfgA, cfgB := a.config(srcM), b.config(srcM)
+	if err := a.sync(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.sync(cfgB); err != nil {
+		t.Fatal(err)
+	}
+	c1 := r.git("rev-parse", "HEAD")
+	out, conflict, err := b.pull(cfgB, a.mustExport(cfgA), nil, nil)
+	if err != nil || conflict || out != "unchanged\t"+srcM+"\tlocal "+c1+"\tpeer "+c1+"\n" {
+		t.Fatalf("the first pull: %q %v %v", out, conflict, err)
+	}
+	c2 := r.commit(map[string]string{"main.lua": "return 2\n"})
+	if err := a.update(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.mustExport(cfgA)
+	out, conflict, err = b.pull(cfgB, doc, nil, nil)
+	if err != nil || conflict || out != "taken\t"+srcM+"\tlocal "+c1+"\tpeer "+c2+"\n" {
+		t.Fatalf("the second pull: %q %v %v", out, conflict, err)
+	}
+	la, lb := a.lock().Plugins[srcM], b.lock().Plugins[srcM]
+	if lb.lockPin != la.lockPin || lb.RefKind != "branch" {
+		t.Errorf("the pin: %+v, want %+v", lb.lockPin, la.lockPin)
+	}
+	e := githubEntry(t, srcM)
+	if _, commit, err := lockedDir(cfgB, b.state, b.lock(), e); err != nil || commit != c2 {
+		t.Errorf("lockedDir on b: %s %v", commit, err)
+	}
+	before := b.files()
+	if out, _, err := b.pull(cfgB, doc, nil, nil); err != nil || !strings.HasPrefix(out, "unchanged\t") || b.files() != before {
+		t.Errorf("the same document again: %q %v", out, err)
+	}
+}
+
+// Two machines that moved apart with no base: a conflict, the lock and base unchanged, exit
+// conflict. -keep resolves it (the base advances, so the next pull is kept); -take on a new
+// conflict takes the peer pin.
+func TestPullConflict(t *testing.T) {
+	a, b := machines(t)
+	r := a.repo("lazy-rex", "Messaging", "messaging")
+	cfgA, cfgB := a.config(srcM), b.config(srcM)
+	if err := b.sync(cfgB); err != nil {
+		t.Fatal(err)
+	}
+	c1 := r.git("rev-parse", "HEAD")
+	c2 := r.commit(map[string]string{"main.lua": "return 2\n"})
+	if err := a.sync(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	doc := a.mustExport(cfgA)
+	before := b.lockBytes()
+	out, conflict, err := b.pull(cfgB, doc, nil, nil)
+	if err != nil || !conflict || out != "conflict\t"+srcM+"\tlocal "+c1+"\tpeer "+c2+"\n" || string(b.lockBytes()) != string(before) {
+		t.Fatalf("the conflict: %q %v %v", out, conflict, err)
+	}
+	out, conflict, err = b.pull(cfgB, doc, nil, []string{srcM})
+	if err != nil || conflict || !strings.HasPrefix(out, "resolved-keep\t") || b.lock().Plugins[srcM].Commit != c1 {
+		t.Fatalf("-keep: %q %v %v", out, conflict, err)
+	}
+	if out, _, err := b.pull(cfgB, doc, nil, nil); err != nil || !strings.HasPrefix(out, "kept\t") {
+		t.Errorf("after -keep: %q %v", out, err)
+	}
+	if _, _, err := b.pull(cfgB, doc, []string{srcM}, nil); err == nil || !strings.Contains(err.Error(), "-take "+srcM+": the source has no conflict") {
+		t.Errorf("-take without a conflict: %v", err)
+	}
+	c3 := r.commit(map[string]string{"main.lua": "return 3\n"})
+	if err := a.update(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.update(cfgB); err != nil {
+		t.Fatal(err)
+	}
+	r.commit(map[string]string{"main.lua": "return 4\n"})
+	if err := a.update(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	c4 := a.lock().Plugins[srcM].Commit
+	out, conflict, err = b.pull(cfgB, a.mustExport(cfgA), []string{srcM}, nil)
+	if err != nil || conflict || out != "resolved-take\t"+srcM+"\tlocal "+c3+"\tpeer "+c4+"\n" || b.lock().Plugins[srcM].Commit != c4 {
+		t.Fatalf("-take: %q %v %v", out, conflict, err)
+	}
+}
+
+// A fetch failure, a digest mismatch and a graph failure write nothing: the lock and the base stay
+// byte-unchanged.
+func TestPullAllOrNothing(t *testing.T) {
+	a, b := machines(t)
+	r := a.repo("lazy-rex", "Messaging", "messaging")
+	cfgB := b.config(srcM) // not installed on b: each pull takes the pin
+	// c has a local plugin nope, so its update to a commit that depends on nope passes.
+	c := newCmdEnv(t)
+	c.repos = a.repos
+	cfgC := c.config(srcM, c.local("nope", "nope"))
+	r.commit(map[string]string{"lazyrex.json": manifestJSON("messaging", "nope")})
+	if err := c.sync(cfgC); err != nil {
+		t.Fatal(err)
+	}
+	graphDoc := c.mustExport(cfgC)
+	d, _ := decodePinDoc([]byte(graphDoc))
+	digestDoc := strings.Replace(graphDoc, d.Entries[0].Digest, pinDigest, 1)
+	missing := strings.Repeat("e", 40)
+	fetchDoc := strings.Replace(graphDoc, d.Entries[0].Commit, missing, 1)
+	before := b.files()
+	for doc, want := range map[string]string{
+		graphDoc:  "plugin messaging: dependency nope is not configured",
+		digestDoc: "plugin messaging: the tree of " + d.Entries[0].Commit + " differs from the pin document",
+		fetchDoc:  srcM + ": ",
+	} {
+		_, _, err := b.pull(cfgB, doc, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.HasSuffix(err.Error(), "; the lock is unchanged") {
+			t.Errorf("got %v, want %q", err, want)
+		}
+		if b.files() != before {
+			t.Errorf("%q: a file changed", want)
+		}
+	}
+}
+
+// A base write that fails after the lock write: the text names the changed pins; the next pull
+// with the same peer is unchanged and advances the base; a moved peer, or a local update between
+// the two pulls, gives a conflict.
+func TestPullBaseWriteFails(t *testing.T) {
+	for _, next := range []string{"same peer", "peer moved", "local update"} {
+		t.Run(next, func(t *testing.T) {
+			a, b := machines(t)
+			r := a.repo("lazy-rex", "Messaging", "messaging")
+			cfgA, cfgB := a.config(srcM), b.config(srcM)
+			a.sync(cfgA)
+			b.sync(cfgB)
+			if _, _, err := b.pull(cfgB, a.mustExport(cfgA), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			c2 := r.commit(map[string]string{"main.lua": "return 2\n"})
+			a.update(cfgA)
+			doc := a.mustExport(cfgA)
+			id, _ := readPullID(filepath.Join(a.dir, "hub.lock.json"))
+			pullWritePeers = func(string, *peerBase) error { return errors.New("disk full") }
+			_, _, err := b.pull(cfgB, doc, nil, nil)
+			pullWritePeers = writePeers
+			want := "plugin pull: the pins changed, but the base of " + id + " did not: the next pull can report conflicts for " + srcM + ": disk full"
+			if err == nil || err.Error() != want || b.lock().Plugins[srcM].Commit != c2 {
+				t.Fatalf("got %v", err)
+			}
+			wantOut := "unchanged"
+			switch next {
+			case "peer moved":
+				r.commit(map[string]string{"main.lua": "return 3\n"})
+				a.update(cfgA)
+				doc, wantOut = a.mustExport(cfgA), "conflict"
+			case "local update":
+				r.commit(map[string]string{"main.lua": "return 3\n"})
+				b.update(cfgB)
+				wantOut = "conflict"
+			}
+			out, _, err := b.pull(cfgB, doc, nil, nil)
+			if err != nil || !strings.HasPrefix(out, wantOut+"\t") {
+				t.Errorf("the next pull: %q %v, want %s", out, err, wantOut)
+			}
+		})
+	}
+}
+
+// The checks before any fetch: a malformed document, a document from this lock, a malformed base
+// file, and -take with -keep on one source. No git runs.
+func TestPullRefusedBeforeFetch(t *testing.T) {
+	a := newCmdEnv(t)
+	a.repo("lazy-rex", "Messaging", "messaging")
+	cfg := a.config(srcM)
+	if err := a.sync(cfg); err != nil {
+		t.Fatal(err)
+	}
+	own := a.mustExport(cfg)
+	d, _ := decodePinDoc([]byte(own))
+	d.Hub = strings.Repeat("f", 32)
+	ob, _ := encodePinDoc(d)
+	other := string(ob)
+	a.opts.remote = func(owner, repo string) string { t.Fatal("a git call"); return "" }
+	lockFile := filepath.Join(a.dir, "hub.lock.json")
+	for _, tc := range []struct {
+		doc, want string
+		prep      func()
+		take      []string
+		keep      []string
+	}{
+		{doc: `{"version":2}`, want: "pin document "},
+		{doc: own, want: "comes from this lock"},
+		{doc: other, want: lockFile + ".peers.json is not valid", prep: func() { os.WriteFile(lockFile+".peers.json", []byte("{"), 0o600) }},
+		{doc: other, want: srcM + " is in both -take and -keep", prep: func() { os.Remove(lockFile + ".peers.json") }, take: []string{srcM}, keep: []string{srcM}},
+	} {
+		if tc.prep != nil {
+			tc.prep()
+		}
+		before := a.lockBytes()
+		if _, _, err := a.pull(cfg, tc.doc, tc.take, tc.keep); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("got %v, want %q", err, tc.want)
+		}
+		if string(a.lockBytes()) != string(before) {
+			t.Errorf("%q: the lock changed", tc.want)
+		}
+	}
+}
+
+// Two configs that name one lock share its pull identity; a document from one is refused by the
+// other. Two configs on one state with their own locks have their own identities.
+func TestPullSharedLock(t *testing.T) {
+	env := newCmdEnv(t)
+	cfg := env.config(env.local("loc", "loc"))
+	b, _ := os.ReadFile(cfg)
+	shared := filepath.Join(env.dir, "second.json")
+	own := filepath.Join(env.dir, "third.json")
+	os.WriteFile(shared, []byte(strings.Replace(string(b), `{`, `{"lock":"hub.lock.json",`, 1)), 0o600)
+	os.WriteFile(own, b, 0o600)
+	d1, d2, d3 := env.mustExport(cfg), env.mustExport(shared), env.mustExport(own)
+	h := func(doc string) string { d, _ := decodePinDoc([]byte(doc)); return d.Hub }
+	if h(d1) != h(d2) || h(d1) == h(d3) {
+		t.Errorf("ids %s %s %s", h(d1), h(d2), h(d3))
+	}
+	if _, _, err := env.pull(shared, d1, nil, nil); err == nil || !strings.Contains(err.Error(), "comes from this lock") {
+		t.Errorf("a document of the shared lock: %v", err)
+	}
+}
+
+// plugin pull through pluginCmdMain: exit 1 on a conflict; no -file is a usage error.
+func TestPullMain(t *testing.T) {
+	env := newCmdEnv(t)
+	cfg := env.config(env.local("loc", "loc"))
+	var out, errb bytes.Buffer
+	if code := pluginCmdMain([]string{"pull", "-config", cfg}, &out, &errb); code != 2 {
+		t.Errorf("no -file: exit %d", code)
+	}
+	p := filepath.Join(t.TempDir(), "pins.json")
+	os.WriteFile(p, []byte(`{"version":1,"hub":"`+pinHub+`","entries":[]}`), 0o600)
+	if code := pluginCmdMain([]string{"pull", "-config", cfg, "-file", p}, &out, &errb); code != 0 {
+		t.Errorf("an empty document: exit %d: %s", code, errb.String())
 	}
 }

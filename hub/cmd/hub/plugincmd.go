@@ -589,11 +589,12 @@ func cacheEntries(state string) []string {
 	return out
 }
 
-// pluginCmdMain runs lazyrex-hub plugin <sync|update|status|export> -config <cfg> [args]. Exit 0:
-// done; 1: the command failed (or status found an entry that is not ok); 2: a usage error.
+// pluginCmdMain runs lazyrex-hub plugin <sync|update|status|export|pull> -config <cfg> [args]. Exit
+// 0: done; 1: the command failed (or status found an entry that is not ok, or pull left a
+// conflict); 2: a usage error.
 func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: lazyrex-hub plugin sync|update|status|export -config <cfg> [update: name|source ...]")
+		fmt.Fprintln(stderr, "usage: lazyrex-hub plugin sync|update|status|export|pull -config <cfg> [update: name|source ...] [pull: -file <path> [-take <source>]... [-keep <source>]...]")
 		return 2
 	}
 	if len(args) == 0 {
@@ -603,13 +604,20 @@ func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("plugin "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "hub configuration JSON (required)")
-	if cmd != "sync" && cmd != "update" && cmd != "status" && cmd != "export" {
+	var docPath string
+	var take, keep sourceList
+	if cmd == "pull" {
+		fs.StringVar(&docPath, "file", "", "the pin document (required)")
+		fs.Var(&take, "take", "take the peer pin of a conflicting source (repeatable)")
+		fs.Var(&keep, "keep", "keep the local pin of a conflicting source (repeatable)")
+	}
+	if cmd != "sync" && cmd != "update" && cmd != "status" && cmd != "export" && cmd != "pull" {
 		return usage()
 	}
 	if err := fs.Parse(args[1:]); err != nil || *cfgPath == "" {
 		return usage()
 	}
-	if cmd != "update" && fs.NArg() > 0 {
+	if cmd != "update" && fs.NArg() > 0 || cmd == "pull" && docPath == "" {
 		return usage()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -618,6 +626,12 @@ func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	switch cmd {
 	case "export":
 		err = pluginExport(*cfgPath, stdout)
+	case "pull":
+		var conflict bool
+		conflict, err = pluginPull(ctx, *cfgPath, docPath, take, keep, pluginCmdOpts{}, stdout)
+		if err == nil && conflict {
+			return 1
+		}
 	case "status":
 		var ok bool
 		ok, err = runPluginStatus(*cfgPath, stdout)
@@ -633,3 +647,9 @@ func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	}
 	return 0
 }
+
+// sourceList is a repeatable source flag.
+type sourceList []string
+
+func (l *sourceList) String() string     { return strings.Join(*l, ",") }
+func (l *sourceList) Set(s string) error { *l = append(*l, s); return nil }
