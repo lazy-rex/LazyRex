@@ -1269,7 +1269,8 @@ func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, erro
 
 // candidateChange gives the "candidate" object of a passing entry with a run (section 7): "commit"
 // when the candidate commit differs from the run commit, and "dir" when the candidate dir differs
-// from the run dir. It gives nil when there is no candidate or neither field differs.
+// from the run dir. A local candidate of a GitHub run has the commit null. It gives nil when there
+// is no candidate or neither field differs.
 func candidateChange(cand, run *pluginRun) map[string]any {
 	if cand == nil {
 		return nil
@@ -1277,6 +1278,9 @@ func candidateChange(cand, run *pluginRun) map[string]any {
 	c := map[string]any{}
 	if cand.Commit != run.Commit {
 		c["commit"] = cand.Commit
+		if cand.Commit == "" {
+			c["commit"] = nil // a local candidate: no commit
+		}
 	}
 	if cand.Dir != run.Dir {
 		c["dir"] = cand.Dir

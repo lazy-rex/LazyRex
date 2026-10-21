@@ -394,7 +394,8 @@ are a malformed config, so a source names one entry. A hub restart works too.
   - A refused candidate: `{"error"}` only.
   - A passing candidate of an entry with a run: `"commit"` when the candidate commit differs from
     the run commit, and `"dir"` when the candidate dir differs from the run dir. Each field is
-    independent. A local source can report only `"dir"`.
+    independent. When run and candidate are both local, only `"dir"` can differ. A change between
+    a GitHub and a local source reports `"commit"`, with `null` for a local candidate.
   - No `"candidate"` key when neither field differs, or when the entry has no run.
 - `hub.plugins` reports the last resolution. It reads no lock file. After `plugin update`, a
   resolution (for example `hub.plugins.reload` or a start attempt) gives the new candidate.
@@ -607,6 +608,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A lock that does not parse; a lock that cannot be read (a directory, no permission) | each GitHub entry refused with the exact text; local entries resolve | U |
 | `plugin update`, then a new resolution | the run keeps its commit, also after a save and a load; the candidate has the new commit and dir | U, L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
+| A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
 | sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
 | sync fails on the second of two plugins | the lock is unchanged; no referenced dir changed | U |
 | update moves a branch; the ref moves during the fetch | a new commit in the lock; refused, the lock is unchanged | U |

@@ -133,8 +133,10 @@ func TestResolveLockFileErrors(t *testing.T) {
 			t.Errorf("%s: the local entry: %v", what, c.entries[1].err)
 		}
 	}
+	os.WriteFile(lockFile, []byte(`{"version":1,"plugins":{`), 0o600)
+	check("malformed JSON", "the lock file "+lockFile+" is not valid: unexpected EOF; repair the file or restore it from a backup")
 	os.WriteFile(lockFile, []byte(`{"version":2,"plugins":{}}`), 0o600)
-	check("malformed", "the lock file "+lockFile+" is not valid: version 2 is not supported (this hub reads version 1); repair the file or restore it from a backup")
+	check("another version", "the lock file "+lockFile+" is not valid: version 2 is not supported (this hub reads version 1); repair the file or restore it from a backup")
 	os.Remove(lockFile)
 	if err := os.Mkdir(lockFile, 0o700); err != nil {
 		t.Fatal(err)
@@ -303,6 +305,37 @@ func TestPluginsListCommit(t *testing.T) {
 	}
 	if b, _ := json.Marshal(got.Kept); string(b) != `[{"commit":"ck","dir":"/dk","error":"","name":"k","source":"sk","state":"running"}]` {
 		t.Errorf("kept %s", b)
+	}
+}
+
+// A change between a GitHub and a local source (hub.plugins.reload of a managed entry) reports
+// the commit, with null for a local candidate. The top-level commit is the run's (section 7).
+func TestPluginsListKindChange(t *testing.T) {
+	h, _ := workerTestHub(t)
+	es := []*configEntry{
+		{index: 1, Source: "/local/a", name: "a", seen: "a", cand: &pluginRun{Name: "a", Dir: "/local/a"}},
+		{index: 2, Source: "/local/b", name: "b", seen: "b", cand: &pluginRun{Name: "b", Commit: "c2", Dir: "/cache/b"}},
+	}
+	h.entries = es
+	h.plugins = map[string]*Plugin{
+		"a": {Name: "a", entry: es[0], Desired: "stopped", run: pluginRun{Name: "a", Commit: "c1", Dir: "/cache/a"}},
+		"b": {Name: "b", entry: es[1], Desired: "stopped", run: pluginRun{Name: "b", Dir: "/local/b"}},
+	}
+	out, err := h.pluginsList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	var got struct{ Entries []map[string]any }
+	json.Unmarshal(b, &got)
+	want := []string{
+		`{"candidate":{"commit":null,"dir":"/local/a"},"commit":"c1","dir":"/cache/a","entry":1,"name":"a","source":"/local/a","state":"stopped"}`,
+		`{"candidate":{"commit":"c2","dir":"/cache/b"},"dir":"/local/b","entry":2,"name":"b","source":"/local/b","state":"stopped"}`,
+	}
+	for i, e := range got.Entries {
+		if b, _ := json.Marshal(e); string(b) != want[i] {
+			t.Errorf("entry %d: %s\nwant %s", i+1, b, want[i])
+		}
 	}
 }
 
