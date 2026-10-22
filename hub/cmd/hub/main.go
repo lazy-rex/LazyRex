@@ -411,6 +411,11 @@ func main() {
 		}
 		os.Exit(restartMain(ctx, cfg, restartArgs(os.Args[1:])))
 	}
+	if renv.expectState == "" { // not a wrapper's child: a wrapper that owns this state refuses it
+		if err := refuseBesideAWrapper(cfg.State); err != nil {
+			log.Fatal(err)
+		}
+	}
 	log.Print(sdkLogLine(cfg.SDK)) // here, after the -restart branch: the hub process logs it, not its wrapper
 	h, err := start(ctx, cfg, fs)
 	if err != nil {

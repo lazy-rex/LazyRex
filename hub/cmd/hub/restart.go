@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -257,6 +258,30 @@ func takeRestartLock(state string) (*os.File, error) {
 		return nil, fmt.Errorf("restart lock %s: %w", path, err)
 	}
 	return f, nil
+}
+
+// refuseBesideAWrapper refuses a hub start that no restart wrapper made while a wrapper owns
+// the state (docs/hub.md, "Ownership"): in the wrapper's backoff wait or exec gap, such a hub would
+// take the state from it. It only asks (F_GETLK on a read-only fd of this process). A wrapper
+// that takes the lock after this check still meets hub.lock, which never lets two hubs run.
+func refuseBesideAWrapper(state string) error {
+	path := filepath.Join(state, "restart.lock")
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("restart lock %s: %w", path, err)
+	}
+	defer f.Close() // this process holds no lock on the file, so the close releases nothing
+	pid, err := lockHolder(f)
+	if err != nil {
+		return fmt.Errorf("restart lock %s: %w", path, err)
+	}
+	if pid > 0 {
+		return fmt.Errorf("a restart wrapper owns %s (pid %d); use lazyrex-hub restart or stop", state, pid)
+	}
+	return nil
 }
 
 // restartLockHolder returns the pid that holds a write lock on f, or 0 (no lock, or a failed read).

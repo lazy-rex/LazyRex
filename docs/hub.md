@@ -734,6 +734,7 @@ Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The 
 1. Before it starts a child, the wrapper reads the config with the hub's own `loadConfig`. That function reads the config and the managed file; it opens no store, no Rex connection and no plugin.
 2. The wrapper makes the state directory (0700) and takes its canonical form: absolute, symlinks resolved. A state path with a newline is refused (exit 1) before the directory is made, and again after the resolution: the ready line cannot carry it.
 3. The wrapper takes an fcntl write lock on `<state>/restart.lock` without waiting, and holds it for its life. If another process holds the lock, the wrapper starts no hub, prints `another restart wrapper owns <state> (pid N)` and exits 1. The pid is printed only when the system names the holder. Another error (for example a permission error) is printed as it is.
+4. A hub that the wrapper did not start (no `LAZYREX_EXPECT_STATE`) refuses to start while another process holds `<state>/restart.lock`: `a restart wrapper owns <state> (pid N); use lazyrex-hub restart or stop`, exit 1, before `hub.lock`. Without it, a hub started by hand in the wrapper's backoff wait or exec gap would take the state from the wrapper. The check only asks (F_GETLK). A race remains: a wrapper can take the lock just after the check. Then `hub.lock` decides, so two hubs never run. Test: `TestHubRefusesToStartBesideAWrapper`.
 
 **Paths.** At its start, before the lock, the wrapper finds two paths of its executable (`wrapperPaths`):
 

@@ -170,3 +170,52 @@ func TestSignalReadyReportsAFailedWrite(t *testing.T) {
 		t.Errorf("no fd: %v", err)
 	}
 }
+
+// A hub that no wrapper started refuses to start while a restart wrapper owns the state (in the
+// wrapper's backoff wait or exec gap it would take the state). It makes no hub.lock. A wrapper's
+// own child (LAZYREX_EXPECT_STATE) is not refused, and with no wrapper the start goes on (here it
+// fails later, at the missing Rex server).
+func TestHubRefusesToStartBesideAWrapper(t *testing.T) {
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "lazyrex-hub")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	state, _ := canonicalState(t.TempDir())
+	cfg := filepath.Join(tmp, "hub.json")
+	b, _ := json.Marshal(map[string]any{"server": "unix:///nonexistent/rex.sock", "state": state,
+		"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
+	os.WriteFile(cfg, b, 0o600)
+	run := func(env ...string) (string, int) {
+		cmd := exec.Command(bin, "-config", cfg)
+		cmd.Env = append(os.Environ(), env...)
+		out, _ := cmd.CombinedOutput()
+		return string(out), cmd.ProcessState.ExitCode()
+	}
+	if out, _ := run(); strings.Contains(out, "restart wrapper owns") {
+		t.Errorf("no wrapper: refused\n%s", out)
+	}
+	os.Remove(filepath.Join(state, "hub.lock"))
+	holder := exec.Command(os.Args[0], "-test.run=^TestFakeHub$")
+	holder.Env = append(os.Environ(), "FAKE_HUB_PLAN=lock", "FAKE_LOCK_STATE="+state)
+	pipe, _ := holder.StdoutPipe()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Process.Kill(); holder.Wait() })
+	line := make([]byte, 7)
+	if _, err := pipe.Read(line); err != nil || string(line) != "locked\n" {
+		t.Fatalf("holder: %q, %v", line, err)
+	}
+	out, code := run()
+	want := fmt.Sprintf("a restart wrapper owns %s (pid %d); use lazyrex-hub restart or stop", state, holder.Process.Pid)
+	if code != 1 || !strings.Contains(out, want) {
+		t.Errorf("beside a wrapper: exit %d, want 1 and %q\n%s", code, want, out)
+	}
+	if _, err := os.Stat(filepath.Join(state, "hub.lock")); !os.IsNotExist(err) {
+		t.Errorf("the refused hub made hub.lock: %v", err)
+	}
+	if out, _ := run("LAZYREX_EXPECT_STATE=" + state); strings.Contains(out, "restart wrapper owns") {
+		t.Errorf("the wrapper's own child: refused\n%s", out)
+	}
+}
