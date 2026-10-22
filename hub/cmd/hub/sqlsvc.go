@@ -33,6 +33,9 @@ type sqlService struct {
 	dir       string
 	current   func(plugin, client string) bool    // is client the plugin's registered instance?
 	committed func(plugin string, marks []string) // after a commit that changed tables ("*": the schema)
+	// rendered reports a hub.sql.query with a render ID (renderreads.go): the tables that it read, and
+	// ok false when the hub cannot know them (an error other than conflict).
+	rendered func(plugin, client, render string, reads map[string]bool, ok bool)
 	// beforeCommit is a test fault point (testmode.go): an error fails the commit; with after, the
 	// commit happens first and the caller still gets the error (a lost reply).
 	beforeCommit func(plugin string, marks []string, params []any) (err error, after bool)
@@ -60,7 +63,7 @@ type sqlService struct {
 }
 
 func newSQLService(state string, current func(plugin, client string) bool) *sqlService {
-	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, beforeCommit: func(string, []string, []any) (error, bool) { return nil, false },
+	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, rendered: func(string, string, string, map[string]bool, bool) {}, beforeCommit: func(string, []string, []any) (error, bool) { return nil, false },
 		beforeBegin:  func(string) []map[string]any { return nil },
 		admitNotices: func(string, []noticeOp) error { return refuse("no_notice", "the hub has no notice service") },
 		applyNotices: func(string, []outboxRow) error { return nil }, dropReceipts: func(string, int64) error { return nil },
@@ -298,6 +301,7 @@ func newToken() string {
 type sqlCall struct {
 	plugin string
 	client string
+	render string // the render ID of a hub.sql.query (renderArg)
 	args   map[string]any
 }
 
@@ -306,9 +310,11 @@ func (s *sqlService) dispatch(ctx context.Context, action string, c sqlCall) (an
 	if s == nil {
 		return nil, refuse("unavailable", "the hub has no SQL service")
 	}
-	if _, err := renderArg(action, c.args); err != nil {
+	render, err := renderArg(action, c.args)
+	if err != nil {
 		return nil, err
 	}
+	c.render = render
 	p, err := s.open(ctx, c.plugin)
 	if err != nil {
 		return nil, refuse("unavailable", "open the plugin database: %v", err)
@@ -617,14 +623,29 @@ func (s *sqlService) query(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 		return nil, refuse("stale_instance", "the caller is not the plugin's registered instance")
 	}
 	if err := p.lockReader(); err != nil {
+		s.renderedRead(c, nil)
 		return nil, err
 	}
 	defer p.rmu.Unlock()
 	r, err := p.r.run(ctx, q, params, true, sqlReplyBudget)
+	s.renderedRead(c, r) // also before a conflict: that statement ran fully
 	if err != nil {
 		return nil, err
 	}
 	return reply(r)
+}
+
+// renderedRead reports the reads of a query with a render ID. r nil: the statement failed, so the
+// hub cannot know its reads.
+func (s *sqlService) renderedRead(c sqlCall, r *stmtResult) {
+	if c.render == "" {
+		return
+	}
+	if r == nil {
+		s.rendered(c.plugin, c.client, c.render, nil, false)
+		return
+	}
+	s.rendered(c.plugin, c.client, c.render, r.reads, true)
 }
 
 func (s *sqlService) batch(ctx context.Context, p *pluginSQL, c sqlCall) (any, error) {

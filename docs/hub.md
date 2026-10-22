@@ -149,7 +149,46 @@ returns, for any outcome. Then it is closed, and the hub never makes it again.
   read-only token: every other `hub.sql` action refuses an argument `render`, and so does a query
   with `tx` (`refused`, "a render cannot write"). See docs/sql.md section 9.
 - A plugin that does not know the field ignores it: the view.render arguments allow extra fields.
-- The hub does not yet use the reads of a render (hub 4.2 work, docs/sql.md section 9).
+- The hub records the tables that each tokened query of the render reads (SQL read tracking,
+  below).
+
+### SQL read tracking (opt-in for each render)
+
+A `view.render` reply can add `"refresh"` beside `tree` (renderreads.go). It is not part of the
+tree, and the renderer never sees it.
+
+- Absent, null or `"writes"`: every SQL commit of the plugin renders the view again (the default,
+  and the behavior before read tracking).
+- `"reads"`: this render opts in. The hub gives the view the tables that the render read, if the
+  render succeeded, stayed tracked, and read at least one table. Then a SQL commit renders the
+  view again only when it changed one of those tables, or the schema. In every other case the
+  view keeps the default.
+- Any other value counts as absent. The hub logs it once for each plugin and value (at most 64
+  lines in all), and the render does not fail: a newer SDK can send a value that an older hub does
+  not know.
+- Each render states it again. The hub keeps no opt-in state: a new registration, a hub restart
+  or a plugin rollback returns the view to the default.
+
+A render is tracked when the hub knows each table that it read. It is untracked when, while it is
+open, the plugin makes any hub call that is not a `hub.sql.query` with the open render ID of the
+same plugin instance (for example a query without `render`, a closed or unknown ID, another
+plugin's ID, `hub.store.get`, `hub.store.scan`, `hub.store.ops_scan`, `hub.agents`). Each such
+call makes every open render of the plugin untracked; the views of renders that ended keep their
+tables. A new hub action counts as such a call unless it is a `hub.sql.query` with `render`. A
+render is also untracked after a query with its ID fails with an error other than `conflict`
+(the hub cannot know the tables), and after it reads a `sqlite_` table other than
+`sqlite_schema` (`sqlite_sequence` and `sqlite_stat1` change without a mark).
+
+Marks and races (the rules of "Render dependencies" apply):
+
+- A SQL commit marks a view in flight, whatever tables its render then gives, so the view renders
+  again after it. A schema change marks every view of the plugin.
+- A new registration clears every table set of the plugin; a render from before it installs
+  nothing. A closed view loses its set. A failed or transient render clears the set.
+- The table set and the store `deps` are separate inputs: the set filters SQL commits only, and
+  `deps.prefixes` filters store commits only. The other triggers do not use the set.
+- `hub.test.renders` shows `sql_tracked` (true when the view has a table set) for each view. It
+  shows no table names.
 
 ### Version 1 view tree
 

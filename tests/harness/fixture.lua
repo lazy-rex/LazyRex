@@ -246,6 +246,24 @@ local function view(action, args)
       return {tree = {title = 'Deps', nodes = {{id = 'lazy', type = 'widget', text = tostring(get('data/' .. dname)),
         action = {name = 'poke', label = 'Poke', enabled = true, user_only = 'changes nothing'}}}}, deps = spec}
     end
+    -- /lazy/reads-<x> (render_reads.lua): the SQL row reads_spec(<x>) gives the refresh value of the
+    -- reply and the mode of the data read: 'tokened' (the query carries args.render), 'untokened'
+    -- (no render), 'store' (a tokened query, then a hub.store.get). The text counts the rows of
+    -- the table reads_<x>.
+    local rname = args.route:match('^/lazy/reads%-(%w+)$')
+    if rname then
+      local function query(sql, tokened)
+        local a = {sql = sql, params = {rname}}
+        if tokened then a.render = args.render end
+        return hub('hub.sql.query', a).rows[1]
+      end
+      local spec = query('SELECT refresh, mode FROM reads_spec WHERE name = ?', true) or {}
+      local refresh, mode = spec[1], spec[2]
+      local n = query('SELECT count(*) FROM reads_' .. rname .. ' WHERE ? IS NOT NULL', mode ~= 'untokened')
+      if mode == 'store' then get('reads/' .. rname) end
+      return {tree = {title = 'Reads', nodes = {{id = 'lazy', type = 'widget', text = tostring(n and n[1])}}},
+        refresh = type(refresh) == 'string' and refresh or nil}
+    end
     if args.route:match('^/lazy/') then return {tree = {title = 'Lazy', nodes = {{id = 'lazy', type = 'widget', text = args.route}}}} end
     return {tree = {title = 'Unknown', nodes = {{id = 'unknown', type = 'error', text = 'no route ' .. tostring(args.route)}}}}
   elseif action == 'view.action' then

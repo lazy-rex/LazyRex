@@ -79,14 +79,14 @@ func TestRenderFinishedLifetime(t *testing.T) {
 	st.inFlight = true
 	epoch := h.vs.epoch["p"]
 	h.vs.mu.Unlock()
-	h.renderFinished("p", "v", "/r", st, epoch, d, true, "")
+	h.renderFinished("p", "v", "/r", st, epoch, d, true, "", nil)
 	if st.deps != d || st.inFlight {
 		t.Fatalf("a good result: %+v", st)
 	}
 
 	st.inFlight = true
 	h.clearDeclarations("p")
-	h.renderFinished("p", "v", "/r", st, epoch, &viewDeps{prefixes: []string{"old/"}}, true, "")
+	h.renderFinished("p", "v", "/r", st, epoch, &viewDeps{prefixes: []string{"old/"}}, true, "", nil)
 	if st.deps != nil {
 		t.Errorf("an old instance's result after a registration installed %+v", st.deps)
 	}
@@ -96,7 +96,7 @@ func TestRenderFinishedLifetime(t *testing.T) {
 	st.inFlight = true
 	h.vs.mu.Unlock()
 	h.forgetView("v")
-	h.renderFinished("p", "v", "/r", st, epoch, d, true, "")
+	h.renderFinished("p", "v", "/r", st, epoch, d, true, "", nil)
 	if _, ok := h.vs.views["p"]["v"]; ok {
 		t.Error("a result after a close made the view's state again")
 	}
@@ -106,7 +106,7 @@ func TestRenderFinishedLifetime(t *testing.T) {
 	st.inFlight, st.deps = true, d
 	h.vs.mu.Unlock()
 	h.markCommit("p", []string{"z/1"}) // in flight: marked without the filter
-	h.renderFinished("p", "w", "/r", st, epoch, nil, false, "")
+	h.renderFinished("p", "w", "/r", st, epoch, nil, false, "", nil)
 	if st.deps != nil || st.dirty&causeCommit == 0 || !h.vs.dirty["p"] {
 		t.Errorf("a failed render with a commit during it: %+v, pass %v", st, h.vs.dirty["p"])
 	}

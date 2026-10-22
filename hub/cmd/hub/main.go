@@ -475,7 +475,8 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
 	h.sql = newSQLService(cfg.State, h.currentClient)
-	h.sql.committed = func(plugin string, marks []string) { h.kickViews(plugin, causeCommit) } // every view: render deps know no SQL table
+	h.sql.committed = h.markSQL // the views that read a changed table, and every view without a table set
+	h.sql.rendered = h.renderRead
 	h.sql.admitNotices = h.admitSQLNotices
 	h.sql.applyNotices = func(plugin string, rows []outboxRow) error {
 		return h.db.applySQLNotices(context.Background(), plugin, rows)
@@ -815,6 +816,11 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	}
 	if args == nil {
 		args = map[string]any{}
+	}
+	// A hub call of a plugin while one of its renders is open can make the render untracked
+	// (renderreads.go).
+	if pl := h.pluginByClient(p.Requester.ClientID); pl != nil {
+		h.renderCall(pl.Name, p.Requester.ClientID, p.Action, args)
 	}
 	pid := p.Requester.Principal.PID
 	if strings.HasPrefix(p.Action, "hub.test.") {

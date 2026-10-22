@@ -57,8 +57,9 @@ type viewDeps struct {
 type viewState struct {
 	dirty    renderCause // the causes of the next render
 	inFlight bool
-	deps     *viewDeps // nil: no declaration
-	depsErr  string    // the last malformed declaration (view_deps_invalid is emitted when it changes)
+	deps     *viewDeps       // nil: no declaration
+	depsErr  string          // the last malformed declaration (view_deps_invalid is emitted when it changes)
+	tables   map[string]bool // the tables that the last good, opted-in, tracked render read; nil: every SQL commit marks the view (renderreads.go)
 }
 
 // initLocked makes the maps of the render state (a test can build a viewSvc without them).
@@ -141,7 +142,7 @@ func (h *Hub) clearDeclarations(plugin string) {
 	h.vs.initLocked()
 	h.vs.epoch[plugin]++
 	for _, st := range h.vs.views[plugin] {
-		st.deps, st.depsErr = nil, ""
+		st.deps, st.depsErr, st.tables = nil, "", nil
 	}
 	h.vs.mu.Unlock()
 }
@@ -276,7 +277,7 @@ func (h *Hub) markViews(ctx context.Context, plugin string, cause renderCause, w
 // closed (its state is gone or new) or a plugin that registered again (a newer epoch) gets
 // nothing from this result: its state stays as the newer event left it. Causes that came during
 // the render stay in st.dirty, and give one more pass.
-func (h *Hub) renderFinished(plugin, id, route string, st *viewState, epoch int64, deps *viewDeps, ok bool, errText string) {
+func (h *Hub) renderFinished(plugin, id, route string, st *viewState, epoch int64, deps *viewDeps, ok bool, errText string, tables map[string]bool) {
 	emit := false
 	h.vs.mu.Lock()
 	st.inFlight = false
@@ -286,6 +287,7 @@ func (h *Hub) renderFinished(plugin, id, route string, st *viewState, epoch int6
 		} else {
 			st.deps = nil
 		}
+		st.tables = tables
 		emit = errText != "" && errText != st.depsErr
 		st.depsErr = errText
 	}
@@ -314,6 +316,9 @@ type renderCount struct {
 	Causes    map[string]int `json:"causes"`
 	// Declared is the declaration that the view has now, {prefixes, changes}; absent for none.
 	Declared any `json:"declared,omitempty"`
+	// SQLTracked: the view has a table set from an opted-in, tracked render (renderreads.go). No
+	// table names: they are the plugin's storage.
+	SQLTracked bool `json:"sql_tracked"`
 }
 
 // testRenderAttempt counts a view.render call and its causes.
@@ -362,9 +367,10 @@ func (h *Hub) testRenderOutcome(id, outcome string) {
 // testRenders handles hub.test.renders {plugin}: the counts of each view of the plugin, in
 // view_id order.
 func (h *Hub) testRenders(plugin string) any {
-	declared := map[string]any{}
+	declared, tracked := map[string]any{}, map[string]bool{}
 	h.vs.mu.Lock()
 	for id, st := range h.vs.views[plugin] {
+		tracked[id] = st.tables != nil
 		if st.deps != nil {
 			declared[id] = map[string]any{"prefixes": st.deps.prefixes, "changes": st.deps.changes}
 		}
@@ -378,6 +384,7 @@ func (h *Hub) testRenders(plugin string) any {
 			cc := *c
 			cc.Causes = maps.Clone(c.Causes)
 			cc.Declared = declared[c.ViewID]
+			cc.SQLTracked = tracked[c.ViewID]
 			out = append(out, &cc)
 		}
 	}

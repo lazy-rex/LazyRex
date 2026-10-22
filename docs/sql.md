@@ -173,7 +173,12 @@ authorized at CREATE.
   null), and `hub.sql.query` with `tx` and `render`, fail with `refused` ("a render cannot write").
   The refusal comes before the hub opens the database, so it changes nothing, and an open
   transaction stays usable.
-- Not yet: read tracking (the views that read a changed table render again, not every view).
+- Built: read tracking, opt-in for each render (docs/hub.md, "SQL read tracking"). A query with an
+  open render ID adds the tables that it read to the render: the authorizer READ actions, also
+  through SQL views, joins, subqueries, CTEs and `count(*)` (observed with modernc.org/sqlite
+  v1.61.0, renderreads_test.go). A `conflict` (`expect_rows`) adds its reads: the statement ran
+  fully. A view that opted in renders again only after a commit that changed a table that it read
+  (the write candidates when `total_changes()` moved), or after DDL.
 
 ## 11. Rollback: hub.admin.sql_return (built)
 

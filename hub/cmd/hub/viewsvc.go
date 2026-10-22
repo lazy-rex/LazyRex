@@ -51,6 +51,7 @@ type viewSvc struct {
 	seen    map[string]map[string]string     // plugin -> route -> reason the user looked at it, not yet sent
 	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
 	renders map[string]*openRender           // render ID -> a view.render call that has not returned (renderreads.go)
+	logged  map[string]bool                  // plugin + "\x00" + value: an unknown refresh value already logged (renderreads.go)
 }
 
 // historyFetch is one view.history call that runs outside the hub's request queue.
@@ -654,8 +655,9 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		epoch := h.vs.epoch[plugin]
 		h.vs.mu.Unlock()
 		var out struct {
-			Tree map[string]any  `json:"tree"`
-			Deps json.RawMessage `json:"deps"`
+			Tree    map[string]any  `json:"tree"`
+			Deps    json.RawMessage `json:"deps"`
+			Refresh json.RawMessage `json:"refresh"` // "reads": this render opts in to SQL read tracking (renderreads.go)
 		}
 		gen := h.testRenderStart(t.id) // test mode: the requested render that this one covers
 		h.testRenderAttempt(plugin, t.id, t.route, causes)
@@ -668,13 +670,13 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		} else {
 			err = h.callPlugin(ctx, plugin, "view.render", args, &out)
 		}
-		h.closeRenderID(rid)
+		rec := h.closeRenderID(rid)
 		h.testRenderHold(plugin, t.route) // test mode: a view-render fault holds the result here
 		if _, definite := definiteFailure(err); err != nil && !definite {
 			// The plugin is not there yet or did not answer. Keep the current tree; plugin
 			// registration renders again.
 			log.Printf("views %s: render %s: %v (transient)", plugin, t.route, err)
-			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "")
+			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil)
 			h.testRenderOutcome(t.id, "transient")
 			h.testRenderDone(t.id, gen, false, "transient: "+err.Error()+" (the hub kept the previous tree)", 0, nil)
 			continue
@@ -716,10 +718,10 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 			if derr != nil {
 				errText = derr.Error()
 			}
-			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, errText)
+			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, errText, h.renderTables(plugin, rec, out.Refresh))
 			h.testRenderOutcome(t.id, "ok")
 		} else {
-			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "")
+			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil)
 			h.testRenderOutcome(t.id, "failed")
 		}
 		tree, _ := json.Marshal(out.Tree)
