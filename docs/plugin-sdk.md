@@ -158,11 +158,6 @@ Use these only when a plain form cannot do the job. If one plugin needs more, us
   takes any text. `on_submit` compares it with the current state.
 - `tx = false`, `store = false`: as for actions.
 - An `app.fail` in `intro`, `after` or `instead` also shows its message in place of the form.
-- State fixed when the form opened: `open = function(ctx)` runs once for each new view (`ctx.view_id`),
-  in its own transaction, before the first render. It can write, for example a row keyed by
-  `ctx.view_id`; the render then reads it. After a plugin restart `open` runs again, so its write
-  must be safe to repeat (for example `INSERT ... ON CONFLICT DO NOTHING`). An error in `open`
-  fails the render.
 
 ## v0: the advanced surface
 
@@ -173,7 +168,7 @@ errors and the transaction rules above.
 |---|---|
 | `app.fail(code, message)` | An error with a code (`conflict`, `not_found`, `refused`, ...). `error('text')` gives code `failed`. |
 | `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. |
-| `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `open(ctx)` runs once per new view before it, in a transaction (as for forms); `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
+| `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
 | `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or `hub.changed`, `view.seen`), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
