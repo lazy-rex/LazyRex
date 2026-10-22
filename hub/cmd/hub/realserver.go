@@ -45,8 +45,10 @@ func macRealServer(s string) bool {
 //   - The macOS path of the default server is real, with no question to Rex.
 //   - Rex names its default endpoint (server status, without REX_SERVER and -S). The same
 //     endpoint after normalization is real.
-//   - Otherwise, if s answers, its instance_id must differ from the default server's. If s does
-//     not answer, it is another path with no server: not real.
+//   - A default answer without an instance_id or an endpoint is real.
+//   - Otherwise, if s answers, its instance_id must differ from the default server's. If the rex
+//     call for s fails, s is another path with no server: not real. An answer that is not status
+//     JSON is real.
 //   - No default server runs ("rex server is not running"): a server that answers is another one.
 //     Any other failure of the default query is real.
 //
@@ -64,14 +66,15 @@ func isRealServer(s string) bool {
 		_, err := rexStatus(s)
 		return err != nil
 	}
-	if def.Endpoint != "" && sameEndpoint(def.Endpoint, s) {
-		return true
+	if def.InstanceID == "" || def.Endpoint == "" || sameEndpoint(def.Endpoint, s) {
+		return true // a default answer without its identity proves nothing (Codex review of a87d0ee)
 	}
 	cfg, err := rexStatus(s)
 	if err != nil {
-		return false
+		var ce *rexCLIError
+		return !errors.As(err, &ce) // only a failed rex call is an absent server; bad JSON is uncertain
 	}
-	return def.InstanceID == "" || cfg.InstanceID == "" || cfg.InstanceID == def.InstanceID
+	return cfg.InstanceID == "" || cfg.InstanceID == def.InstanceID
 }
 
 type rexServerStatus struct {

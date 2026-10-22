@@ -57,6 +57,11 @@ func TestIsRealServer(t *testing.T) {
 		{"no default server, a lab that does not answer", "unix:///tmp/rexlab-x/rex.sock", "down", "", true},
 		{"the default query fails", "unix:///tmp/rexlab-x/rex.sock", "fail", `{"instance_id":"i-lab"}`, true},
 		{"a default answer without an instance", "unix:///tmp/rexlab-x/rex.sock", `{"endpoint":"` + linux + `"}`, `{"instance_id":""}`, true},
+		// Codex review of a87d0ee: an empty default answer proves nothing, also when the config
+		// server does not answer; a config answer that is not JSON is not an absent server.
+		{"an empty default answer, a server that does not answer", linux, `{}`, "", true},
+		{"a default without an instance, a server that does not answer", "unix:///tmp/rexlab-x/rex.sock", `{"endpoint":"` + linux + `"}`, "", true},
+		{"a config answer that is not JSON", "unix:///tmp/rexlab-x/rex.sock", def, `not json`, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

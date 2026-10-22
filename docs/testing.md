@@ -477,9 +477,9 @@ default server (`rex --autostart=false server status --json`, without `REX_SERVE
 - it is the macOS path of the default server (no question to Rex);
 - it is the default endpoint, after the path is cleaned, unescaped and its links resolved;
 - it answers with the `instance_id` of the default server;
-- or the answer is uncertain: the default server answers with no `instance_id`, the default query
-  fails with an error other than "rex server is not running", or no default server runs and the
-  config server does not answer.
+- or the answer is uncertain: the default server answers with no `instance_id` or no endpoint, the
+  default query fails with an error other than "rex server is not running", an answer is not status
+  JSON, or no default server runs and the config server does not answer.
 
 A config server that does not answer while the default server answers at another path is not the
 real server. On Linux the real server is at another path than on macOS; before this check, the hub
