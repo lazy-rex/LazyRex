@@ -156,6 +156,9 @@ func parseSet(b []byte) (*relSetFile, error) {
 	if err := d.Decode(&raw); err != nil {
 		return nil, relFail("the set file: %v", err)
 	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, relFail("the set file has more data after its JSON object")
+	}
 	if len(raw.Plugins) == 0 {
 		return nil, relFail("the set file names no plugin")
 	}

@@ -200,3 +200,86 @@ func TestReleaseSnapKeyTables(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// TestReleaseSnapReviewFindings: the review of 360f6e3 (codex-26). A column or a user_version that
+// a passing check saw cannot go later; an index, trigger or view cannot go or change; a JSON null is
+// no key value; a user table named sqliteX is read.
+func TestReleaseSnapReviewFindings(t *testing.T) {
+	keys := map[string][]string{"clock": {"one"}}
+	none := &relSetEntry{}
+	run := func(t *testing.T, p, h *sql.DB, ref *relSnap, sqlText, want string) {
+		t.Helper()
+		if _, err := p.Exec(sqlText); err != nil {
+			t.Fatal(err)
+		}
+		cur := mustSnap(t, p, h, keys)
+		_, err := checkSnap(ref, cur, none, sqlPredicate(p))
+		if want == "" && err != nil {
+			t.Fatalf("%s: %v", sqlText, err)
+		}
+		if want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
+			t.Fatalf("%s: got %v; want %q", sqlText, err, want)
+		}
+	}
+	t.Run("added column dropped", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema, "")
+		ref := mustSnap(t, p, h, keys)
+		run(t, p, h, ref, "ALTER TABLE drafts ADD COLUMN extra TEXT DEFAULT 'd'", "")
+		run(t, p, h, ref, "UPDATE drafts SET extra = 'e'", "no changes entry")
+		p.Exec("UPDATE drafts SET extra = 'd'")
+		run(t, p, h, ref, "ALTER TABLE drafts DROP COLUMN extra", "column drafts.extra is gone")
+	})
+	t.Run("version back", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema, "")
+		ref := mustSnap(t, p, h, keys)
+		run(t, p, h, ref, "PRAGMA user_version = 3", "")
+		run(t, p, h, ref, "PRAGMA user_version = 2", "went down from 3 to 2")
+	})
+	t.Run("index", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema+"CREATE INDEX drafts_dir ON drafts (dir);", "")
+		ref := mustSnap(t, p, h, keys)
+		if ref.Objects["index drafts_dir"] == "" {
+			t.Fatalf("objects %v", ref.Objects)
+		}
+		run(t, p, h, ref, "DROP INDEX drafts_dir", "index drafts_dir is gone")
+		p.Exec("CREATE INDEX drafts_dir ON drafts (dir_rev)")
+		run(t, p, h, ref, "SELECT 1", "index drafts_dir changed")
+	})
+	t.Run("new index then dropped", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema, "")
+		ref := mustSnap(t, p, h, keys)
+		run(t, p, h, ref, "CREATE INDEX drafts_rev ON drafts (dir_rev)", "")
+		run(t, p, h, ref, "DROP INDEX drafts_rev", "index drafts_rev is gone")
+	})
+	t.Run("trigger and view", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema+"CREATE VIEW dv AS SELECT view_id FROM drafts; CREATE TRIGGER dt AFTER INSERT ON drafts BEGIN SELECT 1; END;", "")
+		ref := mustSnap(t, p, h, keys)
+		run(t, p, h, ref, "DROP TRIGGER dt", "trigger dt is gone")
+		p.Exec("CREATE TRIGGER dt AFTER INSERT ON drafts BEGIN SELECT 1; END;")
+		run(t, p, h, ref, "DROP VIEW dv", "view dv is gone")
+	})
+	t.Run("hub objects ignored", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema+"CREATE INDEX lazyrex_ops_k ON lazyrex_ops (key);", "")
+		ref := mustSnap(t, p, h, keys)
+		run(t, p, h, ref, "DROP INDEX lazyrex_ops_k", "")
+	})
+	t.Run("null key", func(t *testing.T) {
+		p, h := snapDBs(t, `CREATE TABLE x (a TEXT PRIMARY KEY, v TEXT); INSERT INTO x VALUES ('', '1');`, "")
+		ref := mustSnap(t, p, h, nil)
+		p.Exec("UPDATE x SET v = '2'")
+		cur := mustSnap(t, p, h, nil)
+		var e relSetEntry
+		json.Unmarshal([]byte(`{"changes":[{"table":"x","key":{"a":null},"column":"v","expect":"2"}]}`), &e)
+		if _, err := checkSnap(ref, cur, &e, sqlPredicate(p)); err == nil || !strings.Contains(err.Error(), "cannot be null") {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("sqliteX table", func(t *testing.T) {
+		p, h := snapDBs(t, `CREATE TABLE sqliteXdata (a TEXT PRIMARY KEY); INSERT INTO sqliteXdata VALUES ('k');`, "")
+		ref := mustSnap(t, p, h, nil)
+		if ref.Tables["sqliteXdata"] == nil {
+			t.Fatalf("tables %v", ref.Tables)
+		}
+		run(t, p, h, ref, "DELETE FROM sqliteXdata", "lost the row")
+	})
+}

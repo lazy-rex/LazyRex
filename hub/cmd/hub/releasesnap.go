@@ -91,7 +91,8 @@ type relSnapTable struct {
 // relSnap is one snapshot of a plugin's data.
 type relSnap struct {
 	UserVersion int64                    `json:"user_version"`
-	Tables      map[string]*relSnapTable `json:"tables"` // the SQL tables; "hub:records" and "hub:ops" for the store
+	Objects     map[string]string        `json:"objects"` // "<type> <name>": its sql (indexes, triggers, views; not the hub's)
+	Tables      map[string]*relSnapTable `json:"tables"`  // the SQL tables; "hub:records" and "hub:ops" for the store
 	added       map[string]int           // reference only: the rows that allowed inserts added, by table
 }
 
@@ -203,7 +204,7 @@ func snapPluginDB(db *sql.DB, keys map[string][]string, s *relSnap) error {
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&s.UserVersion); err != nil {
 		return err
 	}
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND lower(name) NOT LIKE 'lazyrex\_%' ESCAPE '\' ORDER BY name`)
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' AND lower(name) NOT LIKE 'lazyrex\_%' ESCAPE '\' ORDER BY name`)
 	if err != nil {
 		return err
 	}
@@ -218,6 +219,24 @@ func snapPluginDB(db *sql.DB, keys map[string][]string, s *relSnap) error {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return err
+	}
+	s.Objects = map[string]string{}
+	obj, err := db.Query(`SELECT type, name, sql FROM sqlite_master WHERE type IN ('index', 'trigger', 'view') AND sql IS NOT NULL
+		AND name NOT LIKE 'sqlite\_%' ESCAPE '\' AND lower(tbl_name) NOT LIKE 'lazyrex\_%' ESCAPE '\'`)
+	if err != nil {
+		return err
+	}
+	for obj.Next() {
+		var typ, name, text string
+		if err := obj.Scan(&typ, &name, &text); err != nil {
+			obj.Close()
+			return err
+		}
+		s.Objects[typ+" "+name] = text
+	}
+	obj.Close()
+	if err := obj.Err(); err != nil {
 		return err
 	}
 	for _, n := range names {
@@ -333,6 +352,15 @@ func checkSnap(ref, cur *relSnap, e *relSetEntry, eval func(expr string, old, ne
 			}
 		}
 	}
+	for name, text := range ref.Objects {
+		now, ok := cur.Objects[name]
+		if !ok {
+			return nil, relFail("the schema object %s is gone", name)
+		}
+		if now != text {
+			return nil, relFail("the schema object %s changed from %q to %q", name, text, now)
+		}
+	}
 	cnames := make([]string, 0, len(cur.Tables))
 	for n := range cur.Tables {
 		cnames = append(cnames, n)
@@ -361,13 +389,33 @@ func checkSnap(ref, cur *relSnap, e *relSetEntry, eval func(expr string, old, ne
 			d.Inserted = append(d.Inserted, n+" "+k)
 		}
 	}
-	// The check passed: the new rows join the reference with their first values.
+	// The check passed. The reference learns the new state: a higher user_version, new schema
+	// objects, new columns (with the current values of the reference rows) and new rows (with their
+	// first values). So a later drop of any of them fails.
+	ref.UserVersion = cur.UserVersion
+	for name, text := range cur.Objects {
+		if _, ok := ref.Objects[name]; !ok {
+			if ref.Objects == nil {
+				ref.Objects = map[string]string{}
+			}
+			ref.Objects[name] = text
+		}
+	}
 	for _, n := range cnames {
 		ct := cur.Tables[n]
 		rt := ref.Tables[n]
 		if rt == nil {
-			rt = &relSnapTable{Columns: ct.Columns, Key: ct.Key, Rows: map[string][]relCell{}}
+			rt = &relSnapTable{Columns: slices.Clone(ct.Columns), Key: ct.Key, Rows: map[string][]relCell{}}
 			ref.Tables[n] = rt
+		}
+		for ci, c := range ct.Columns {
+			if slices.Contains(rt.Columns, c) {
+				continue
+			}
+			rt.Columns = append(rt.Columns, c)
+			for k, row := range rt.Rows {
+				rt.Rows[k] = append(row, ct.Rows[k][ci])
+			}
 		}
 		for k, row := range ct.Rows {
 			if rt.Rows[k] == nil {
@@ -463,6 +511,9 @@ func changeKey(t *relSnapTable, key map[string]json.RawMessage) (string, error) 
 
 // cellOfJSON is the cell of a JSON key value: a string is text, an integer number is an integer.
 func cellOfJSON(raw json.RawMessage) (relCell, error) {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return relCell{}, fmt.Errorf("a key value cannot be null")
+	}
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		return relCell{T: 't', V: s}, nil

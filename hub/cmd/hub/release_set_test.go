@@ -199,6 +199,9 @@ func TestReleaseSetRefused(t *testing.T) {
 			}
 		})
 	}
+	if _, err := parseSet(append(setBytes(seal(t, setEntry("profiles"))), []byte(`{"plugins":[]}`)...)); err == nil || !strings.Contains(err.Error(), "more data") {
+		t.Fatalf("trailing data: %v", err)
+	}
 	if _, err := parseSet([]byte(`{"plugins":[]}`)); err == nil || !strings.Contains(err.Error(), "names no plugin") {
 		t.Fatalf("empty set: %v", err)
 	}
