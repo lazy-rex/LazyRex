@@ -552,9 +552,10 @@ function M.plugin(name)
     if not ok then print('lazyrex: ' .. label .. ' failed: ' .. normalize(err).message) end
   end
   -- app.on(event, fn): a Rex event (fn(ev, ctx): ctx is the Rex event context, with block_id and
-  -- session_id) or the hub calls hub.changed and view.seen (fn(args)).
+  -- session_id) or the hub calls hub.changed, hub.prompt and view.seen (fn(args)). An error in a hub
+  -- call listener reaches the hub as the error reply (the hub then calls again).
   function app.on(event, fn, opts)
-    if event == 'hub.changed' or event == 'view.seen' then
+    if event == 'hub.changed' or event == 'hub.prompt' or event == 'view.seen' then
       listeners[event] = listeners[event] or {}
       table.insert(listeners[event], {fn = fn, opts = opts or {}})
       return
@@ -844,8 +845,8 @@ function M.plugin(name)
       return call_action(actions[ev.action], identify(p.pid), a)
     end
     if not from_hub then fail('refused', 'Only the hub calls ' .. tostring(ev.action)) end
-    if ev.action == 'hub.changed' then
-      for _, l in ipairs(listeners['hub.changed'] or {}) do run({tx = l.opts.tx ~= false}, l.fn, a) end
+    if ev.action == 'hub.changed' or (ev.action == 'hub.prompt' and listeners['hub.prompt']) then
+      for _, l in ipairs(listeners[ev.action] or {}) do run({tx = l.opts.tx ~= false}, l.fn, a) end
       return {}
     end
     if a.user ~= 'user' then fail('refused', 'Unknown user') end
@@ -891,6 +892,8 @@ function M.plugin(name)
       keymap[#keymap + 1] = {name = n, kind = 'client', title = n, args = {type = 'object', additionalProperties = true}}
     end
     for _, n in ipairs({'view.render', 'view.action', 'view.seen', 'view.draft.save', 'view.send', 'view.history', 'hub.changed'}) do hub_call(n) end
+    -- hub.prompt: only a plugin that listens (the hub sends it to a plugin with the prompts grant).
+    if listeners['hub.prompt'] then hub_call('hub.prompt') end
     -- Each view.* handler name of an app.view (for example view.open, view.rename).
     for _, v in ipairs(views) do
       local names = {}
@@ -914,7 +917,8 @@ function M.plugin(name)
     local reg = {plugin = name, instance_id = app.instance_id}
     if #exports > 0 then reg.exports = exports end
     if #commands > 0 then reg.commands = commands end
-    hub('hub.register', reg)
+    -- app.registration: the hub.register reply (for example its generation), before the start functions.
+    app.registration = hub('hub.register', reg)
     rex.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
     migrate()
     for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end

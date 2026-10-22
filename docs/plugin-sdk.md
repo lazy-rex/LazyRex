@@ -170,13 +170,14 @@ errors and the transaction rules above.
 | `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. |
 | `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
-| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or `hub.changed`, `view.seen`), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
+| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
 | `app.notice(agent, pending)` | Wake an agent at the commit. |
 | `app.refresh()` | Render the open views again, for state outside SQL. |
 | `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
 | `app.args`, `app.dir` | The plugin arguments; the plugin directory. |
+| `app.registration` | The `hub.register` reply (for example `generation`). It is set before the start functions run. |
 
 Action options: `title`, `description`, `user_only`, `tx = false` (each SQL call alone),
 `store = false` (no saved reply: the plugin keeps its own operations table), `fingerprint`.

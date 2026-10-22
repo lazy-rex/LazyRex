@@ -903,3 +903,26 @@ end, {id = 'picks'})]])
   expect(r.error, show(r)).to_be(nil)
   expect(r.result, 'the list retry replays').to_equal({chose = 'a'})
 end)
+
+test('app.on hub.prompt: the hub calls it in a frame; an error reaches the hub; app.registration has the hub.register reply', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE prompts (id INTEGER PRIMARY KEY, agent TEXT NOT NULL, rev TEXT NOT NULL)'}
+seen = {}
+app.start(function() seen.generation = app.registration and app.registration.generation end, {after_register = true})
+app.on('hub.prompt', function(args)
+  if args.agent == 'bad' then error('cannot apply') end
+  app.db.exec('INSERT INTO prompts (agent, rev) VALUES (?, ?)', args.agent, tostring(args.rev))
+end)
+app.action('p.seen', {}, function() return {generation = seen.generation, rows = #app.db.query('SELECT id FROM prompts')} end, {store = false})]],
+    {hub = {['hub.register'] = function() return {generation = '42'} end}})
+  expect(find(s.keymap, function(k) return k.name == 'hub.prompt' end) ~= nil, 'the keymap lists hub.prompt').to_be(true)
+  local r = s:call('hub.prompt', {hub_generation = '42', rev = 3, agent = 'alice', prompt = {null = true}})
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result).to_equal({})
+  local bad = s:call('hub.prompt', {hub_generation = '42', rev = 4, agent = 'bad'})
+  expect(bad.error and bad.error.message, 'the error reaches the hub').to_be('cannot apply')
+  expect(s:call('hub.prompt', {agent = 'alice', rev = 5}, 7).error.code, 'only the hub calls it').to_be('refused')
+  expect(s:agent('p.seen', {}).result).to_equal({generation = '42', rows = 1})
+  local plain = plugin([[app.action('p.x', {}, function() return {} end)]])
+  expect(find(plain.keymap, function(k) return k.name == 'hub.prompt' end), 'no listener, no keymap entry').to_be(nil)
+end)
