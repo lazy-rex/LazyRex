@@ -253,7 +253,7 @@ Methods:
 
 | Method | Path |
 | --- | --- |
-| `a:call(action, args)` | Through the agent face (`rex -C lazyrex`, the MCP path) to the plugin. |
+| `a:call(action, args)` | Through the agent face (`rex -C lazyrex`, the MCP path) to the plugin. The caller's timeout is 10 s, so a "timed out" from `a:call` can be the caller's own, not the hub's. |
 | `a:call_raw(action, json)` | `call` with the arguments as JSON text, for an empty array: Rex Lua encodes `{}` as an object. |
 | `a:direct(action, args)` | To the plugin client itself. |
 | `a:hub(action, args)` | To the hub. |
