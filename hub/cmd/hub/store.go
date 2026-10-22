@@ -577,14 +577,19 @@ func (db *DB) recordNotice(ctx context.Context, n pendingNotice, c noticeConv, a
 }
 
 // noticeDue decides a pending notice for conversation c. mem is the revision that the hub wrote
-// to the agent's current connection (memory only). due: write the nudge; repeat: it is the one
-// repeat, after renudge with no read and no new revision. wake: when to look again (zero: no need).
-func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge time.Duration) (due, repeat bool, wake time.Time) {
+// to the agent's current connection, and memRepeated whether this hub run wrote its repeat (memory
+// only: they hold when a store write of the delivery failed). due: write the nudge; repeat: it is
+// the one repeat, after renudge with no read and no new revision. wake: when to look again (zero:
+// no need). A read ends the nudge of its revision, also before the first write: the agent read.
+func noticeDue(n pendingNotice, c noticeConv, mem int64, memRepeated bool, now time.Time, renudge time.Duration) (due, repeat bool, wake time.Time) {
+	if n.read {
+		return false, false, time.Time{}
+	}
 	stored := n.delivRev >= n.intentRev && n.delivConv == c
 	if n.intentRev > mem && !stored {
 		return true, false, time.Time{}
 	}
-	if !stored || n.delivRev != n.intentRev || n.repeated || n.read {
+	if !stored || n.delivRev != n.intentRev || n.repeated || memRepeated {
 		return false, false, time.Time{}
 	}
 	at := time.UnixMilli(n.delivAt).Add(renudge)

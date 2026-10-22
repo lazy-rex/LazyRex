@@ -378,6 +378,9 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		wait time.Duration
 	}
 	tries := map[string]*try{}
+	// repeated: the revision of each notice row whose repeat this hub run wrote (ns, agent). It
+	// holds when the store write of the repeat failed, so a failure never gives a second repeat.
+	repeated := map[[2]string]int64{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -412,7 +415,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				if a == nil || pl == nil || pl.entry == nil || pl.run.Notice == "" {
 					return false
 				}
-				due, rep, wake := noticeDue(n, noticeConv{a.BlockID, a.ChildPID, a.ChildStart}, a.delivered[n.ns], time.Now(), renudge)
+				due, rep, wake := noticeDue(n, noticeConv{a.BlockID, a.ChildPID, a.ChildStart}, a.delivered[n.ns], repeated[[2]string{n.ns, n.agent}] == n.intentRev, time.Now(), renudge)
 				if !wake.IsZero() {
 					arm(time.Until(wake))
 				}
@@ -489,7 +492,9 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			if err := h.db.recordNotice(ctx, n, conv, time.Now(), repeat); err != nil {
 				log.Printf("notice to %s: record: %v", n.agent, err)
 			}
-			if !repeat {
+			if repeat {
+				repeated[[2]string{n.ns, n.agent}] = n.intentRev
+			} else {
 				arm(renudge) // the wake of the one repeat; no other event may come (Codex review of 8169791)
 			}
 			fields := map[string]any{"agent": n.agent, "plugin": n.ns, "intent_rev": revString(n.intentRev)}

@@ -119,9 +119,13 @@ func TestNoticeDue(t *testing.T) {
 		{"no read for 30 minutes", sent(5, after, conv, false), 0, true, true, 0},
 		{"repeated already", sent(5, 2*after, conv, true), 0, false, false, 0},
 		{"read since the nudge", func() pendingNotice { n := sent(5, 2*after, conv, false); n.read = true; return n }(), 0, false, false, 0},
+		// Codex review of 8169791: a read before the first write ends that nudge; a repeat that this
+		// hub run wrote (its store write failed) is not written again.
+		{"read before the first write", pendingNotice{intentRev: 5, read: true}, 0, false, false, 0},
+		{"repeated in memory only", sent(5, 2*after, conv, false), 0, false, false, 0},
 	}
 	for _, c := range cases {
-		due, repeat, wake := noticeDue(c.n, conv, c.mem, now, after)
+		due, repeat, wake := noticeDue(c.n, conv, c.mem, c.name == "repeated in memory only", now, after)
 		var wantWake time.Time
 		if c.wakeIn != 0 {
 			wantWake = now.Add(c.wakeIn)
