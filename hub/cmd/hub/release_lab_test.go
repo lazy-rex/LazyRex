@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,29 +25,10 @@ const (
 )
 
 func TestReleaseRehearseLab(t *testing.T) {
-	if os.Getenv("RELEASE_LAB") != "1" {
-		t.Skip("set RELEASE_LAB=1 to run the release lab test (GitHub, a lab Rex server, minutes)")
-	}
-	bin := filepath.Join(t.TempDir(), "lazyrex-hub")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	f := t.TempDir()
-	run := filepath.Join(f, "run")
-	labFixture(t, f, bin)
-
+	bin, f, run := labStart(t)
 	lab := filepath.Join("/tmp", fmt.Sprintf("rexlab-release-t%d", os.Getpid()))
-	logp := filepath.Join(f, "rehearse.log")
-	logf, err := os.Create(logp)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := exec.Command(bin, "release", "rehearse", "-run", run, "-lab", lab)
-	c.Stdout, c.Stderr = io.MultiWriter(logf, os.Stderr), io.MultiWriter(logf, os.Stderr)
-	err = c.Run()
-	logf.Close()
-	if err != nil {
-		t.Fatalf("rehearse: %v (log %s; the lab %s is kept)", err, logp, lab)
+	if out, err := labRehearse(t, bin, f, run, lab, nil); err != nil {
+		t.Fatalf("rehearse: %v (log %s; the lab %s is kept)", err, out, lab)
 	}
 	if _, err := os.Stat(lab); err == nil {
 		t.Errorf("the lab %s is still there after a pass", lab)
@@ -66,6 +49,99 @@ func TestReleaseRehearseLab(t *testing.T) {
 	if err := r.checkRehearsal(bin); err != nil {
 		t.Errorf("the record does not pass the gate: %v", err)
 	}
+}
+
+// A-l2 and R8: a live input that changes during the rehearsal fails it after the phases. There is
+// no record, the lab stays as evidence, and no lab process runs. The test deletes the lab only
+// when every check passes.
+func TestReleaseRehearseLabFailure(t *testing.T) {
+	bin, f, run := labStart(t)
+	lab := filepath.Join("/tmp", fmt.Sprintf("rexlab-release-t%df", os.Getpid()))
+	managed := filepath.Join(f, "state", "plugins.json")
+	changed := false
+	logp, err := labRehearse(t, bin, f, run, lab, func(line string) {
+		if !changed && strings.Contains(line, "phase forward") {
+			changed = true
+			if err := os.WriteFile(managed, append(mustReadFile(managed), '\n'), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	if err == nil {
+		t.Fatalf("the rehearsal passed with a changed live input (log %s)", logp)
+	}
+	log := string(mustReadFile(logp))
+	for _, want := range []string{"a live input changed during the rehearsal", "live-managed", "FAILED; the lab is kept"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("the log %s has no %q", logp, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(run, relRehearsalFile)); err == nil {
+		t.Error("a failed rehearsal wrote a record")
+	}
+	for _, p := range []string{"log", "run", "hub"} {
+		if _, err := os.Stat(filepath.Join(lab, p)); err != nil {
+			t.Errorf("the kept lab has no %s: %v", p, err)
+		}
+	}
+	out, err := exec.Command("ps", "-axww", "-o", "pid=,command=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, lab+"/") || strings.HasSuffix(line, lab) {
+			t.Errorf("a lab process still runs: %s", line)
+		}
+	}
+	if !t.Failed() {
+		if p := removeLab(lab); len(p) > 0 {
+			t.Error(p)
+		}
+	}
+}
+
+// labStart builds the tool and writes the fixture. It skips without RELEASE_LAB=1.
+func labStart(t *testing.T) (bin, f, run string) {
+	if os.Getenv("RELEASE_LAB") != "1" {
+		t.Skip("set RELEASE_LAB=1 to run the release lab test (GitHub, a lab Rex server, minutes)")
+	}
+	bin = filepath.Join(t.TempDir(), "lazyrex-hub")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	f = t.TempDir()
+	labFixture(t, f, bin)
+	return bin, f, filepath.Join(f, "run")
+}
+
+// labRehearse runs release rehearse on the fixture run. Its output goes to f/rehearse.log and to
+// stderr; onLine (if set) sees each line while the rehearsal runs. It returns the log path.
+func labRehearse(t *testing.T, bin, f, run, lab string, onLine func(string)) (string, error) {
+	logp := filepath.Join(f, "rehearse.log")
+	logf, err := os.Create(logp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logf.Close()
+	pr, pw := io.Pipe()
+	c := exec.Command(bin, "release", "rehearse", "-run", run, "-lab", lab)
+	c.Stdout, c.Stderr = pw, pw
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(pr)
+		for sc.Scan() {
+			fmt.Fprintln(io.MultiWriter(logf, os.Stderr), sc.Text())
+			if onLine != nil {
+				onLine(sc.Text())
+			}
+		}
+		io.Copy(io.Discard, pr)
+	}()
+	err = c.Run()
+	pw.Close()
+	<-done
+	return logp, err
 }
 
 // labFixture writes the "live" fixture into f and freezes it into f/run.
