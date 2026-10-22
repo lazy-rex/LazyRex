@@ -32,7 +32,8 @@ func runText(r *pluginRun) string {
 
 // matches reports whether the run r is the expected run.
 func (x *expectRun) matches(r *pluginRun) bool {
-	return r != nil && r.Source == x.Source && r.Commit == x.Commit && r.Digest == x.Digest
+	// A local run has the digest of its snapshot, and a local expect_run has none.
+	return r != nil && r.Source == x.Source && r.Commit == x.Commit && (x.Commit == "" || r.Digest == x.Digest)
 }
 
 // parseExpectRun reads the optional "expect_run" field: nil when it is absent. A GitHub source
@@ -127,6 +128,10 @@ func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *e
 		h.kickWaiting()
 		go h.changed("plugins")
 		return nil
+	}
+	cand, err := h.publishLocal(e, cand)
+	if err != nil {
+		return h.refuseStart(pl, err)
 	}
 	if pl.BlockID != "" {
 		ok, err := h.retire(ctx, pl)
