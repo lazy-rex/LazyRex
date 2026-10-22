@@ -1710,11 +1710,13 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// viewCommand is the renderer's argv. On an approved real-server run the renderer must accept
-// the real socket, so it gets -real-server too.
+// viewCommand is the renderer's argv. -server is the hub's own endpoint (hub.json, as loaded): a
+// Linux pane has no REX_SERVER, and the renderer never guesses one. On an approved real-server run
+// the renderer must accept the real socket, so it gets -real-server too. The renderer argv is an
+// interface between two binaries of one release: an older renderer refuses -server.
 // flags go before the plugin and route (for example -transcript, pair.go).
 func (h *Hub) viewCommand(id, plugin, route string, flags ...string) []string {
-	cmd := []string{h.cfg.View, "-view-id", id}
+	cmd := []string{h.cfg.View, "-view-id", id, "-server", h.cfg.Server}
 	if h.cfg.Real {
 		cmd = append(cmd, "-real-server")
 	}

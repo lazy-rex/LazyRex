@@ -9,11 +9,14 @@ import (
 func TestViewCommandPassesRealServerOnlyOnRealRuns(t *testing.T) {
 	h := &Hub{}
 	h.cfg.View = "/bin/view"
-	if got := h.viewCommand("v1", "messaging", "/"); !reflect.DeepEqual(got, []string{"/bin/view", "-view-id", "v1", "messaging", "/"}) {
+	// The hub passes its own endpoint, as loaded from hub.json: a Linux pane has no REX_SERVER, and
+	// the renderer never guesses one (codex-24's review of 598b8e5).
+	h.cfg.Server = "unix:///tmp/rexlab-ui/rex.sock"
+	if got := h.viewCommand("v1", "messaging", "/"); !reflect.DeepEqual(got, []string{"/bin/view", "-view-id", "v1", "-server", h.cfg.Server, "messaging", "/"}) {
 		t.Fatalf("lab argv: %v", got)
 	}
 	h.cfg.Real = true
-	if got := h.viewCommand("v1", "messaging", "/"); !reflect.DeepEqual(got, []string{"/bin/view", "-view-id", "v1", "-real-server", "messaging", "/"}) {
+	if got := h.viewCommand("v1", "messaging", "/"); !reflect.DeepEqual(got, []string{"/bin/view", "-view-id", "v1", "-server", h.cfg.Server, "-real-server", "messaging", "/"}) {
 		t.Fatalf("real argv: %v", got)
 	}
 }

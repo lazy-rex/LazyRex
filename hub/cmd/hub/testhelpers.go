@@ -35,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lazy-rex/LazyRex/hub/internal/rexreal"
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
@@ -192,6 +193,9 @@ var anyArgs = map[string]any{"type": "object"}
 func testViewMain(argv []string) int {
 	fs := flag.NewFlagSet("testview", flag.ContinueOnError)
 	viewID := fs.String("view-id", "", "view ID (from the hub)")
+	// The hub passes its endpoint as the renderer does (viewCommand); the lab pane's REX_SERVER must
+	// be the same server.
+	server := fs.String("server", "", "the hub's Rex server; it must equal REX_SERVER")
 	fs.Bool("transcript", false, "transcript role (pair.go); the test renderer takes the composer role only")
 	real := fs.Bool("real-server", false, "refused")
 	hold := fs.String("hold", "", "a file; while it names this route, the renderer waits before each subscribe (lab tests)")
@@ -200,6 +204,10 @@ func testViewMain(argv []string) int {
 	}
 	if *real || *viewID == "" || fs.NArg() != 2 {
 		fmt.Fprintln(os.Stderr, "usage: lazyrex-hub testview -view-id <id> <plugin> <route> (lab only)")
+		return 2
+	}
+	if *server != "" && !rexreal.SameEndpoint(*server, os.Getenv("REX_SERVER")) {
+		fmt.Fprintf(os.Stderr, "testview: -server %s is not REX_SERVER %s\n", *server, os.Getenv("REX_SERVER"))
 		return 2
 	}
 	log.SetPrefix("testview " + *viewID + " ")

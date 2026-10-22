@@ -12,15 +12,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lazy-rex/LazyRex/hub/internal/rexreal"
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 func main() {
 	viewID := flag.String("view-id", "", "view ID from the hub")
 	exitAfter := flag.Duration("exit-after", 0, "exit after this time (lab crash test)")
+	// The hub passes its endpoint as to the renderer (viewCommand); it must be the pane's REX_SERVER.
+	server := flag.String("server", "", "the hub's Rex server; it must equal REX_SERVER")
 	flag.Parse()
 	if *viewID == "" || flag.NArg() != 2 {
 		log.Fatal("usage: stubview -view-id <id> <plugin> <route>")
+	}
+	if *server != "" && !rexreal.SameEndpoint(*server, os.Getenv("REX_SERVER")) {
+		log.Fatalf("-server %s is not REX_SERVER %s", *server, os.Getenv("REX_SERVER"))
 	}
 	ctx := context.Background()
 	socket, err := rex.SocketPath(os.Getenv("REX_SERVER"))
