@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -417,5 +418,51 @@ func TestLabKeeperKilledRun(t *testing.T) {
 				syscall.Kill(-pg, syscall.SIGKILL)
 			}
 		}
+	}
+}
+
+// The real binary in the keeper role runs no hub code (the hub lead's condition on main.go): with a
+// wrong first control line it exits 125, and the hub of its arguments never ran (no state
+// directory, no log).
+func TestLabKeeperMainRunsNoHub(t *testing.T) {
+	bin, _ := harnessBinary(t)
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	cfg := filepath.Join(dir, "hub.json")
+	b, _ := json.Marshal(map[string]any{"server": "unix://" + filepath.Join(dir, "none.sock"), "state": state,
+		"agents": []any{map[string]any{"id": "user", "name": "User"}}, "plugins": []any{}}) // a hub run would make state
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cr, cw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, rw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rr.Close()
+	cmd := exec.Command(bin, "-config", cfg)
+	cmd.Env = append(os.Environ(), labKeeperEnv+"=1")
+	cmd.ExtraFiles = []*os.File{cr, rw}
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cr.Close()
+	rw.Close()
+	cw.WriteString("go\n")
+	cw.Close()
+	err = cmd.Wait()
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != keeperNoStart {
+		t.Fatalf("status %v, want exit %d; output %q", err, keeperNoStart, out.String())
+	}
+	if _, err := os.Stat(state); err == nil {
+		t.Error("the hub made its state directory")
+	}
+	if out.Len() > 0 {
+		t.Errorf("output %q", out.String())
 	}
 }

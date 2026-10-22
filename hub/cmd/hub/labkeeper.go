@@ -51,7 +51,9 @@ const (
 	keeperStartFailed = 126
 )
 
-// labKeeper runs the keeper role and exits. Its arguments are the command's argv.
+// labKeeper runs the keeper role and never returns: runKeeper returns only an exit status, and its
+// escalation blocks until the group SIGKILL ends the process. main calls it first, so no hub code
+// runs in a keeper. Its arguments are the command's argv.
 func labKeeper() {
 	os.Exit(runKeeper(os.NewFile(3, "control"), os.NewFile(4, "report"), os.Args[1:], keeperGrace(os.Getenv(labKeeperGraceEnv))))
 }
