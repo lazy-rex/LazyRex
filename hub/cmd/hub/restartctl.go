@@ -297,7 +297,7 @@ func (v *ctlView) stop(stdout io.Writer) int {
 		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", err, strings.TrimSpace(string(out)))
 		return 1
 	}
-	wrapped := v.trusted
+	wrapped := v.holder > 0 // a holder whose status file does not match still owns the state
 	// Only a successful listing without the client shows that the hub is gone.
 	var seenErr error // the last look, when it failed
 	for ; ; time.Sleep(200 * time.Millisecond) {
@@ -305,8 +305,11 @@ func (v *ctlView) stop(stdout io.Writer) int {
 		gone := err == nil && !slices.Contains(ids, v.own.ID)
 		seenErr = err
 		if gone && wrapped {
-			if holder, _, _, _ := readRestart(v.state); holder > 0 {
+			if holder, _, _, err := readRestart(v.state); holder > 0 || err != nil {
 				gone = false
+				if err != nil {
+					seenErr = err
+				}
 			}
 		}
 		if gone {

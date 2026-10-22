@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,4 +70,34 @@ func TestStopNeedsASeenExit(t *testing.T) {
 	stop("the shutdown hangs", ctlFakeRex(t, "exec sleep 30", "exit 1"))
 	// The hub is still listed.
 	stop("the hub stays", ctlFakeRex(t, "exit 0", `echo '{"clients":[{"client_id":"h1","info":{"label":"lazyrex-hub"},"connection_state":"connected"}]}'`))
+}
+
+// stop waits for every holder of the restart lock, also one whose status file does not match.
+func TestStopWaitsForTheLockHolder(t *testing.T) {
+	defer func(d time.Duration) { ctlStopWait = d }(ctlStopWait)
+	ctlStopWait = 2 * time.Second
+	state, _ := canonicalState(t.TempDir())
+	holder := exec.Command(os.Args[0], "-test.run=^TestFakeHub$")
+	holder.Env = append(os.Environ(), "FAKE_HUB_PLAN=lock", "FAKE_LOCK_STATE="+state)
+	out, _ := holder.StdoutPipe()
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { holder.Process.Kill(); holder.Wait() })
+	line := make([]byte, 7)
+	if _, err := out.Read(line); err != nil || string(line) != "locked\n" {
+		t.Fatalf("holder: %q, %v", line, err)
+	}
+	// No status file: the holder is not trusted, but it holds the state.
+	v := &ctlView{rex: ctlFakeRex(t, "exit 0", `echo '{"clients":[]}'`), state: state,
+		own: &hubClient{ID: "h1", PID: 1}, holder: holder.Process.Pid}
+	var buf bytes.Buffer
+	if code := v.stop(&buf); code != 1 || strings.Contains(buf.String(), "stopped") {
+		t.Errorf("a holder that stays: exit %d\n%s", code, buf.String())
+	}
+	time.AfterFunc(300*time.Millisecond, func() { holder.Process.Kill() })
+	buf.Reset()
+	if code := v.stop(&buf); code != 0 || !strings.Contains(buf.String(), "stopped") {
+		t.Errorf("a holder that exits: exit %d\n%s", code, buf.String())
+	}
 }
