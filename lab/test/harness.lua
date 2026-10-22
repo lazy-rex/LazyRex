@@ -49,6 +49,11 @@ local function measure(method, payload)
 end
 
 local function perform(client, action, args, timeout_ms)
+  -- A missing client would reach Rex as "" and fail there without the caller's place.
+  if type(client) ~= 'string' or client == '' then
+    error(setmetatable({code = 'bad_client', message = string.format('%s: the client ID is %q, not a client ID\n%s',
+      tostring(action), tostring(client), debug.traceback())}, Err), 0)
+  end
   local payload = {client_id = client, action = action, args = args or {}, timeout_ms = timeout_ms or 10000}
   measure('client.perform', payload)
   local res, err = rex.call('client.perform', payload)
@@ -57,20 +62,54 @@ local function perform(client, action, args, timeout_ms)
 end
 H.perform = perform
 
+-- H.rex_call is the Rex call of resolve. A harness test replaces it with a fake Rex.
+H.rex_call = function(method, payload) return rex.call(method, payload) end
+
+-- H.diag writes a diagnostic line to the runner log (stdout lines without "LRT " go there).
+H.diag = function(text) io.write('harness: ', (text:gsub('\n', ' ')), '\n') end
+
+local function is_client_id(id) return type(id) == 'string' and id:sub(1, 7) == 'client:' and #id > 7 end
+
+-- resolve gives the one connected client with this label, or nil. A candidate counts only when its
+-- ID is a client ID and client.inspect answers for that same ID, connected. Every other candidate
+-- is logged with the raw target.resolve answer and the inspect answer or error (a refusal can come
+-- back as an error or be raised): it is the evidence for a View with an empty client (the Worktrees
+-- flake, 2026-10-22). Only a well-formed client that inspect reports disconnected is skipped
+-- without a line: a client that closed.
 local function resolve(label)
-  local res, err = rex.call('target.resolve', {kinds = {'client'}, queries = {label}})
+  local res, err = H.rex_call('target.resolve', {kinds = {'client'}, queries = {label}})
   if err or not res or not res.results or not res.results[1] then return nil end
   local r = res.results[1]
   local cands = r.status == 'resolved' and {r.target} or (r.candidates or {})
   local connected = {}
   for _, c in ipairs(cands) do
-    local ins = rex.call('client.inspect', {client_id = c.client_id})
-    if ins and ins.client and ins.client.connection_state == 'connected' then connected[#connected + 1] = c.client_id end
+    -- The answer goes into a table: this pcall gives only its first result back.
+    local got = {}
+    local ok, raised = pcall(function() got.ins, got.err = H.rex_call('client.inspect', {client_id = c.client_id}) end)
+    local ins, ierr = got.ins, got.err
+    if not ok then ins, ierr = nil, raised end
+    local cl = type(ins) == 'table' and ins.client or nil
+    if is_client_id(c.client_id) and cl and cl.client_id == c.client_id then
+      if cl.connection_state == 'connected' then connected[#connected + 1] = c.client_id end
+    else
+      local answer = ierr ~= nil and ('error ' .. rex.json.encode(ierr)) or rex.json.encode(ins)
+      H.diag(string.format('resolve %s: refused candidate %q: target.resolve %s; client.inspect %s', label,
+        tostring(c.client_id), rex.json.encode(res), answer))
+    end
   end
   if #connected == 1 then return connected[1] end
   return nil
 end
 H.resolve = resolve
+
+-- H.check_client is the last check of a View's client: an error, never a View that cannot be called.
+H.check_client = function(v, client)
+  if not is_client_id(client) then
+    error(setmetatable({code = 'bad_client', message = string.format('view %s (%s, label %s): the renderer client is %q, not a client ID',
+      tostring(v.id), tostring(v.route), tostring(v.label), tostring(client))}, Err), 0)
+  end
+  return client
+end
 
 local function hub(action, args) return perform(hub_id, action, args) end
 H.hub = hub
@@ -535,12 +574,12 @@ H.user = setmetatable({}, User)
 local function view_of(info)
   local v = setmetatable({id = info.view_id, route = info.route, tab = info.tab, plugin = info.plugin or A.plugin,
     label = 'lazyrex-testview:' .. info.view_id, context = info.context, session = info.session_id, window = info.window_id, block = info.block_id}, View)
-  v.client = wait('the renderer of ' .. v.route .. ' to attach', function()
+  v.client = H.check_client(v, wait('the renderer of ' .. v.route .. ' to attach', function()
     for _, w in ipairs(H.views(v.plugin)) do
       if w.view_id == v.id and w.attached then return resolve(v.label) end
     end
     return nil
-  end, 15)
+  end, 15))
   return v
 end
 

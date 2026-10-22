@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -621,5 +622,47 @@ func TestRestartLogLastLinesExactTail(t *testing.T) {
 	l.readRun(strings.NewReader(first + strings.Repeat("y", tailMax-len(first)-1) + "\n"))
 	if got := l.lastLines(10); len(got) != 2 || got[0] != "first line" {
 		t.Fatalf("lines %q", got)
+	}
+}
+
+// main's early context (a signal before the wrapper's own handler, or one that reaches only that
+// context) stops the wrapper for its whole run, through stopOnDone: here a cancel while the child
+// runs. The child gets SIGTERM and exits (status 0, not a kill), and no restart follows.
+func TestRestartContextStopsChild(t *testing.T) {
+	wr := newWrapperTest(t, "ready-wait", "ready-exit0")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer stopOnDone(ctx, wr.w.sigs)()
+	done := wr.runAsync()
+	wr.waitPhase(t, "running")
+	for deadline := time.Now().Add(10 * time.Second); wr.startCount() == 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if code := waitCode(t, done); code != 0 {
+		t.Fatalf("exit %d, want 0\n%s", code, wr.text())
+	}
+	if n := wr.startCount(); n != 1 {
+		t.Errorf("%d starts, want 1", n)
+	}
+	if s := wr.status(t); s.Phase != "stopped" {
+		t.Errorf("status %+v", s)
+	}
+}
+
+// A context that ended before the wrapper ran: no child starts.
+func TestRestartContextBeforeFirstStart(t *testing.T) {
+	wr := newWrapperTest(t, "ready-wait")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	defer stopOnDone(ctx, wr.w.sigs)() // as in restartMain: the wrapper runs right after it
+	if n := len(wr.w.sigs); n != 1 {
+		t.Fatalf("stopOnDone returned with %d signals in sigs, want 1: an ended context is in sigs at once", n)
+	}
+	if code := waitCode(t, wr.runAsync()); code != 0 {
+		t.Fatalf("exit %d, want 0\n%s", code, wr.text())
+	}
+	if n := wr.startCount(); n != 0 {
+		t.Errorf("%d starts, want 0", n)
 	}
 }

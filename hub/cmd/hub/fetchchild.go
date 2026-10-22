@@ -332,7 +332,7 @@ func fetchChildMain() {
 
 func fetchTestStop(point string) {
 	if os.Getenv(fetchStopEnv) == point {
-		syscall.Kill(os.Getpid(), syscall.SIGSTOP)
+		stopSelf()
 	}
 }
 

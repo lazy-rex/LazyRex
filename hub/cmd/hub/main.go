@@ -354,11 +354,19 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	// The handler comes before the first call to Rex (checkServer asks Rex for its servers; a server
+	// that does not answer holds that call up to 10 s): a signal from here on is a deliberate stop.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := checkServer(cfg.Server, *realServer, *testMode); err != nil {
+	if err := checkServer(ctx, cfg.Server, *realServer, *testMode); err != nil {
+		if ctx.Err() != nil {
+			log.Print(err) // a signal during the check is a deliberate stop: exit 0
+			return
+		}
 		log.Fatal(err)
 	}
 	cfg.Real = *realServer
@@ -393,10 +401,8 @@ func main() {
 		if renv.readyFD >= 0 || renv.expectState != "" {
 			log.Fatal("-restart is refused under a restart wrapper")
 		}
-		os.Exit(restartMain(cfg, restartArgs(os.Args[1:])))
+		os.Exit(restartMain(ctx, cfg, restartArgs(os.Args[1:])))
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	h, err := start(ctx, cfg, fs)
 	if err != nil {
 		if ctx.Err() != nil {

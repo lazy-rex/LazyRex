@@ -71,7 +71,7 @@ func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
 	}
 	cfg, err := loadConfig(*cfgPath)
 	if err == nil {
-		err = checkServer(cfg.Server, *realServer, false)
+		err = checkServer(context.Background(), cfg.Server, *realServer, false)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
