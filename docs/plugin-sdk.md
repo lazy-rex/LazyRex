@@ -115,7 +115,8 @@ The schema is the short form (`{text = 'string', note = 'string?'}`, or a JSON S
 or a full JSON Schema. The SDK adds an optional `key`; the handler gets it as `ctx.key`, not in args.
 
 Saved replies: with a key and `store = true` (the default), a retry gets the first terminal reply,
-also with `tx = false`. A reply with `status = 'running'` is never saved, so a retry reaches the
+also with `tx = false`. A retry of an agent also finds a reply saved under one of its legacy IDs
+(`ctx.aliases`); a new reply is saved under its current ID. A reply with `status = 'running'` is never saved, so a retry reaches the
 handler. With `store = false`, every call reaches the handler.
 
 `ctx`: `agent` (nil for the user), `user`, `key`, `session_id`, `block_id`, `requester_pid`,

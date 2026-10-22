@@ -480,3 +480,15 @@ app.action('p.any', {type = 'object', properties = {v = {type = {'string', 'inte
   expect(s:agent('p.any', {v = 3, n = 2}).result, 'an integer is a number').to_equal({v = 3})
   expect(s:agent('p.any', {v = true}).error.message).to_be('Argument v must be string or integer')
 end)
+
+test('a retry finds a reply that the agent saved under one of its legacy IDs', function()
+  local s = todo({legacy = {alice = {'claude'}}})
+  -- The call before the takeover: the agent was 'claude' then (no legacy IDs for it).
+  s.agents[9] = 'claude'
+  expect(s:agent('todo.add', {text = 'old', key = 'k1'}, 9).result).to_equal({id = 1})
+  -- Now the same pane is alice, with the legacy ID claude: the same key replays.
+  expect(s:agent('todo.add', {text = 'old', key = 'k1'}, 7).result).to_equal({id = 1})
+  expect(#s.sql.rows('todos')).to_be(1)
+  -- Other content under the same key is still a conflict.
+  expect(s:agent('todo.add', {text = 'new', key = 'k1'}, 7).error.code).to_be('operation_conflict')
+end)

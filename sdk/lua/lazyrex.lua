@@ -222,12 +222,17 @@ local function run(spec, fn, ...)
   return result
 end
 
--- with_replay runs fn in a frame, after it checks the saved reply of key. A call without a key, or
--- with store = false, always runs fn.
+-- with_replay runs fn in a frame, after it checks the saved reply of key, then of each key in
+-- spec.legacy_keys (the same key of the caller's legacy IDs). A call without a key, or with
+-- store = false, always runs fn. A new reply is saved under key only.
 local function with_replay(spec, fn, ...)
   if spec.key ~= nil and spec.store ~= false then
     local saved = hub('hub.sql.replay', {key = spec.key, fingerprint = spec.fingerprint})
     if saved.found then return saved.reply end
+    for _, k in ipairs(spec.legacy_keys or {}) do
+      saved = hub('hub.sql.replay', {key = k, fingerprint = spec.fingerprint})
+      if saved.found then return saved.reply end
+    end
   end
   return run(spec, fn, ...)
 end
@@ -542,7 +547,10 @@ function M.plugin(name)
     local inner = {}
     for k, v in pairs(call_args) do if k ~= 'key' then inner[k] = v end end
     local fp = a.opts.fingerprint and a.opts.fingerprint(inner) or M.fingerprint({action = a.name, args = inner})
-    local spec = {tx = a.opts.tx ~= false, store = a.opts.store, key = op_key(ctx, ctx.key), fingerprint = fp}
+    local spec = {tx = a.opts.tx ~= false, store = a.opts.store, key = op_key(ctx, ctx.key), fingerprint = fp, legacy_keys = {}}
+    if ctx.key ~= nil then
+      for _, id in ipairs(ctx.aliases or {}) do spec.legacy_keys[#spec.legacy_keys + 1] = op_key({agent = id}, ctx.key) end
+    end
     return with_replay(spec, a.fn, ctx, inner)
   end
   local function exported(n) local a = actions[n]; return a and not a.opts.user_only end
