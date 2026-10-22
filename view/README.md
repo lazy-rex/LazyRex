@@ -400,6 +400,7 @@ Form layout:
 - A row can hold more than one control (`row.Extra`). Each control has its own `Left` and
   `HitWidth`. Tab order goes from left to right.
 - The footer names PgUp/PgDn history only when the view has a history node.
+- When the footer help does not fit, it drops whole hints from the end. It never cuts a word.
 
 Ctrl+Q in a tab waits for saved drafts and unresolved operations. It calls
 `hub.view.close` before it quits. A failed close leaves the view open and shows

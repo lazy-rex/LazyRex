@@ -135,3 +135,28 @@ func TestNoHubNoticeInANarrowPane(t *testing.T) {
 		t.Fatalf("notice row %q (%d columns)", notice, ansi.StringWidth(notice))
 	}
 }
+
+// The footer help drops whole hints from the end instead of cutting a word.
+func TestFooterHelpDropsWholeHints(t *testing.T) {
+	if got := fitHints("Ctrl+N form · Tab · Ctrl+T select · Ctrl+Q quit", 33); got != "Ctrl+N form · Tab · Ctrl+T select" {
+		t.Fatalf("33 cells: %q", got)
+	}
+	if got := fitHints("Ctrl+N form · Tab", 8); got != "Ctrl+N …" {
+		t.Fatalf("8 cells: %q", got)
+	}
+	for width := 30; width <= 80; width++ {
+		m := testModel()
+		m.width = width
+		m.apply(flowSnapshot())
+		rows := m.screenRows()
+		help := ansi.Strip(rows[len(rows)-1].Text)
+		if ansi.StringWidth(help) > m.contentWidth() {
+			t.Fatalf("width %d: help %q is wider than %d", width, help, m.contentWidth())
+		}
+		for _, hint := range strings.Split(help, " · ") {
+			if !strings.Contains("Ctrl+N form · Tab next · Tab · Ctrl+T select · Ctrl+Q quit", hint) {
+				t.Fatalf("width %d: help has a cut hint %q", width, hint)
+			}
+		}
+	}
+}

@@ -547,8 +547,18 @@ func (m *model) screenRows() []row {
 	if status != "" {
 		rows = append(rows, row{Text: lipgloss.NewStyle().Foreground(p.muted).Render(singleLine(status))})
 	}
-	rows = append(rows, row{Text: lipgloss.NewStyle().Foreground(p.muted).Render(help)})
+	rows = append(rows, row{Text: lipgloss.NewStyle().Foreground(p.muted).Render(fitHints(help, width))})
 	return rows
+}
+
+// fitHints drops whole hints from the end of a " · " list until it fits the width. A single hint
+// that does not fit ends in an ellipsis.
+func fitHints(help string, width int) string {
+	hints := strings.Split(help, " · ")
+	for len(hints) > 1 && ansi.StringWidth(strings.Join(hints, " · ")) > width {
+		hints = hints[:len(hints)-1]
+	}
+	return ansi.Truncate(strings.Join(hints, " · "), width, "…")
 }
 func (m *model) View() tea.View {
 	if m.replacement != nil {
