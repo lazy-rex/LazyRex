@@ -424,7 +424,8 @@ function M.plugin(name)
   -- app.view(route, handlers, opts): a raw view. A route that ends with '*' matches each route with
   -- that prefix. handlers.render(ctx, args) answers the whole tree. handlers[<hub view action>]
   -- (view.action, view.draft.save, view.send, view.seen, ...) get (ctx, args) in one transaction
-  -- with ctx.key = the operation key. opts.store = false saves no reply.
+  -- with ctx.key = the operation key. opts.store = false saves no reply; opts.tx = false runs each SQL
+  -- call alone (long operations: use app.db.transaction for the steps).
   function app.view(route, handlers, opts)
     views[#views + 1] = {route = route, prefix = route:sub(-1) == '*' and route:sub(1, -2) or nil, handlers = handlers, opts = opts or {}}
   end
@@ -571,7 +572,7 @@ function M.plugin(name)
     end
     local v = view_of(a.route)
     local h = v and v.handlers[action]
-    if h then return with_replay({tx = true, key = key, fingerprint = fp, store = v.opts.store}, h, ctx, a) end
+    if h then return with_replay({tx = v.opts.tx ~= false, key = key, fingerprint = fp, store = v.opts.store}, h, ctx, a) end
     if action == 'view.seen' then return {} end
     fail('invalid_input', 'Unknown action ' .. tostring(action) .. ' on ' .. tostring(a.route))
   end

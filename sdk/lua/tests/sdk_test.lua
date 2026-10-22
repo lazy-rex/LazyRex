@@ -458,3 +458,15 @@ end)]])
   expect(r.error and r.error.code, show(r)).to_be('conflict')
   expect(#s.sql.rows('todos')).to_be(0)
 end)
+
+test('app.view with tx = false and store = false runs its handler with no transaction', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)'}
+app.view('/forms/long', {['view.action'] = function(ctx) app.db.exec('INSERT INTO todos (text) VALUES (?)', 'step'); return {status = 'running'} end}, {tx = false, store = false})]])
+  local starts = s.sql.count('hub.sql.begin')
+  local r = s:call('view.action', {route = '/forms/long', node_id = 'f', action = 'go', input = {}, user = 'user', operation_key = 'o1'})
+  expect(r.result).to_equal({status = 'running'})
+  expect(s.sql.count('hub.sql.begin'), 'no begin after the start').to_be(starts)
+  expect(s.sql.count('hub.sql.replay')).to_be(0)
+  expect(#s.sql.rows('todos'), 'the exec ran alone').to_be(1)
+end)
