@@ -2,6 +2,7 @@ package main
 
 import (
 	"image/color"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -302,5 +303,31 @@ func TestSnapshotLayoutTogglesHistoryInPlace(t *testing.T) {
 		if m.editors["composer"].text() != "unsaved draft" {
 			t.Fatalf("layout %q: the draft changed to %q", step.layout, m.editors["composer"].text())
 		}
+	}
+}
+
+// A tall tree that comes after loading trees starts at its top. The second loading tree shows the
+// "Loading the updated view…" notice; the tall tree removes it, so the body gets one row higher in
+// the same update.
+func TestTreeAfterLoadingStartsAtTheTop(t *testing.T) {
+	m := newModel(&viewClient{ViewID: "v1", Plugin: "sp", Route: "/panels/big", Requests: make(chan mutation, 16)})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.Update(connectionMsg{Ready: true, Text: "Connected"})
+	loading := Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/big", Revision: "1", Tree: Tree{Title: "Big", Nodes: []Node{{ID: "l", Type: "loading", Text: "Loading"}}}}
+	m.Update(loading)
+	m.Update(loading)
+	if m.status != loadingViewStatus {
+		t.Fatalf("status %q, want %q", m.status, loadingViewStatus)
+	}
+	nodes := []Node{{ID: "first", Type: "widget", Text: "first"}}
+	for i := range 60 {
+		nodes = append(nodes, Node{ID: "n" + strconv.Itoa(i), Type: "widget", Text: "filler"})
+	}
+	m.Update(Snapshot{SchemaVersion: 1, ViewID: "v1", Route: "/panels/big", Revision: "2", Tree: Tree{Title: "Big", Nodes: nodes}})
+	if len(m.bodyRows()) <= m.bodyHeight() {
+		t.Fatalf("the tree has %d rows, want more than %d", len(m.bodyRows()), m.bodyHeight())
+	}
+	if m.scroll != 0 {
+		t.Fatalf("the tree starts at row %d of %d, want 0", m.scroll, len(m.bodyRows()))
 	}
 }

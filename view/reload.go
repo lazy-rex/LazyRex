@@ -86,8 +86,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hover = hover
 		return m, nil
 	}
+	// A body at its bottom stays at its bottom when its height changes. A snapshot is not part of
+	// this rule: it replaces the rows, and apply keeps a history at its bottom itself. (A loading
+	// tree fits, so it is at its bottom; a tall tree after it must start at its top.)
 	beforeHeight := m.bodyHeight()
-	follow := m.scroll >= max(0, len(m.bodyRows())-beforeHeight)
+	_, snapshot := msg.(Snapshot)
+	follow := !snapshot && m.scroll >= max(0, len(m.bodyRows())-beforeHeight)
 	_, cmd := m.update(msg)
 	// A source action can finish while its replacement waits for safe input.
 	// Submitted values become saved; values typed after submission remain dirty.
