@@ -240,14 +240,38 @@ end)
 
 ### Agents
 
-`agent(id, opts)` opens a test agent: a real lab pane that runs `lazyrex-hub testagent`. The hub
-sees real pane ancestry for its calls. Options:
+`agent(name, opts)` opens a test agent: a real lab pane that runs `lazyrex-hub testagent`. The hub
+sees real pane ancestry for its calls. The suite's manifest sets the mode of all its agents:
 
-- `join`: the roster agent to join as (default `id`). `false`: do not join.
-- `title`: the tab label (default `id`). The hub uses it as the identity name.
+- Roster mode: the manifest has the `test.agents` key (also as an empty list; it refuses `null`).
+  The agent joins the roster agent `join`, and `a.id` is `name`.
+- Identity mode: the manifest has no `test.agents` key. The agent reports the conversation
+  identity `<kind>:<name>` from its pane (`a:report`, source `startup`). `agent` returns when
+  `hub.identity.list` shows that identity current in the agent's pane, and fails after 15 s. If
+  the identity is current in another pane, `agent` fails at once and names both panes. A failure
+  closes the pane, and a later call opens a new one. `a.id` is the identity.
+
+A second call with the same name returns the same agent. A call with another `kind` or `report`
+option is an error. After `a:exit()`, the same name opens a new pane. A second pane that reports
+the same kind and conversation ID makes the identity current in the new pane, and the old pane
+has no current identity. That is a move, not "superseded" (another conversation replaces it).
+
+Options:
+
+- `join` (roster mode only): the roster agent to join as (default `name`). `false`: do not join.
+  Identity mode refuses `join`.
+- `kind` (identity mode only): `claude` (default) or `codex`. Roster mode refuses `kind`.
+- `report` (identity mode only): `false` sends no report, and `a.id` is nil until a test reports
+  (`a:report` sets `a.id` to the reported identity). Roster mode refuses `report`.
+- `title`: the tab label (default `name`). The hub uses it as the identity name.
 - `unnamed`: `true` gives the tab no label, so Rex shows its generated label. The hub then names an identity after the terminal title (`a:title`).
 - `keep_open`: `true` keeps the pane after the agent process exits (by default Rex closes the pane). Use it with `a:exit()`.
 - `session`: the session of the pane (default: the tests session).
+
+To move a suite to identity mode, delete `test.agents` from its manifest. A literal agent ID in a
+test (`'alice'`) becomes `alice.id`, and `join = false` becomes `report = false`. The roster mode
+ends when the hub removes `hub.join` and the roster (step (d) of the join removal); the manifest
+then refuses `test.agents`.
 
 Methods:
 
@@ -646,6 +670,8 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
   and the harness fixture in `test.plugins`. Run `lazyrex-hub test plugins/lazyrex`.
 - `tests/harness/`: a fixture plugin and tests of the harness itself (agents, views, effects,
   limits, injections, assertions). Run `lazyrex-hub test tests/harness`.
+- `tests/harness-identity/`: a plugin with no actions and no `test.agents`, so its tests run the
+  identity mode of `agent`. Run `lazyrex-hub test tests/harness-identity`.
 - `tests/harness-fail/`: files that must fail, each for the reason in its first line. Its main
   file loads `tests/harness/fixture.lua` with `dofile`.
 - `tests/isolation/`: a probe plugin, loaded as the plugin under test and as a dependency

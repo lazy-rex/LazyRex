@@ -149,6 +149,16 @@ func TestHarnessSelfTestsPass(t *testing.T) {
 	assertLabsGone(t, out)
 }
 
+// tests/harness-identity has no test.agents, so its agents run in identity mode.
+func TestHarnessIdentityPass(t *testing.T) {
+	bin, root := harnessBinary(t)
+	out, code := runHarness(t, bin, filepath.Join(root, "tests", "harness-identity"), "-keep")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	assertLabsGone(t, out)
+}
+
 // Each fixture in tests/harness-fail names the reason it must fail in its first line.
 func TestHarnessFailures(t *testing.T) {
 	bin, root := harnessBinary(t)
