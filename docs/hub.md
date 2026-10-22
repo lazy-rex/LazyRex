@@ -1097,6 +1097,8 @@ focused one must not take the focus from another place. So:
   `window_not_active`, `focus_moved` (another block or layer has the focus), `under_unknown` (no
   recorded block, also for a form from an older hub) or `read_failed`. The user opens the panel
   again from the palette.
+- `replacement_id` is absent in one case: `read_failed` when the hub cannot read the session at
+  the form's close. Then no replacement row exists. Every other skip has its row.
 - Limit: the read and `session.new_layer` are two calls. The focus can move between them, and a
   move away and back before the read cannot be seen. Rex has no conditional focus operation.
 
