@@ -60,6 +60,7 @@ type startLab struct {
 	l        *lab
 	o        *testOpts
 	bin, cfg string
+	keeper   string // the keeper binary: the H binary, also when bin is another hub (OLD has no keeper role)
 	src      string // the source directories
 	c        *helperConn
 	hub      string // the hub client
@@ -124,7 +125,7 @@ func newStartLab(t *testing.T, sources ...string) *startLab {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	l, err := o.startLab(ctx)
-	s := &startLab{t: t, l: l, o: o, bin: bin, src: filepath.Join(l.dir, "src")}
+	s := &startLab{t: t, l: l, o: o, bin: bin, keeper: bin, src: filepath.Join(l.dir, "src")}
 	t.Cleanup(func() {
 		for _, p := range l.stop() {
 			t.Error(p)
@@ -164,7 +165,7 @@ func (s *startLab) start() {
 		s.t.Fatal(err)
 	}
 	defer logf.Close() // the started keeper has its own copy
-	if s.l.hub, err = startKept(s.bin, "hub", append([]string{s.bin, "-config", s.cfg, "-test"}, s.args...), s.l.env, s.l.home(), logf, logf); err != nil {
+	if s.l.hub, err = startKept(s.keeper, "hub", append([]string{s.bin, "-config", s.cfg, "-test"}, s.args...), s.l.env, s.l.home(), logf, logf); err != nil {
 		s.t.Fatal(err)
 	}
 	s.l.trackKept(s.l.hub)
