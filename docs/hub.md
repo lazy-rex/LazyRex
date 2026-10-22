@@ -1098,7 +1098,8 @@ focused one must not take the focus from another place. So:
   recorded block, also for a form from an older hub) or `read_failed`. The user opens the panel
   again from the palette.
 - `replacement_id` is absent in one case: `read_failed` when the hub cannot read the session at
-  the form's close. Then no replacement row exists. Every other skip has its row.
+  the form's close. Then no replacement row exists. Every other skip has its row. A consumer must
+  not read a missing `replacement_id` as an error.
 - Limit: the read and `session.new_layer` are two calls. The focus can move between them, and a
   move away and back before the read cannot be seen. Rex has no conditional focus operation.
 
@@ -1108,7 +1109,9 @@ Split mode and the return after an action (the return replaces the form) do not 
 The hub stores `{session_id, window_id, source_view_id, source_route,
 source_block_id, source_pwd, source_pwd_error}` as form context. Every form
 render and action receives this object in `args.context`. The plugin does not
-inspect later focus to find the source thread.
+inspect later focus to find the source thread. The context also carries hub-internal
+fields (`return`, `panel`, `restart`, `under_block_id`). A plugin must not read or depend on them;
+they can change in any release.
 
 The hub reads the source pane's working directory once, at the open (a palette
 command, or a form or panel effect), and freezes it in the context:
