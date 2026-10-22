@@ -420,14 +420,22 @@ func TestViewChangedEndHandoff(t *testing.T) {
 	h, hr := notifyHub(t)
 	h.db.Exec(`DELETE FROM view_transcripts`)
 	var once sync.Once
+	var second *viewNotifier // the sender that the render at the end starts
 	ended := make(chan struct{})
 	senderEndHook = func(k notifyKey) {
 		once.Do(func() {
 			h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 99)
+			second = notifierOf(h, roleComposer, "att-c")
 			close(ended)
 		})
 	}
-	defer func() { senderEndHook = nil }()
+	// The hook is reset only after the second sender has ended: its own end reads the hook.
+	defer func() {
+		if second != nil {
+			waitDone(t, second, "the second sender")
+		}
+		senderEndHook = nil
+	}()
 	h.renderOnce(t)
 	hr.waitSent(t, "att-c", 1)
 	hr.release(t, "att-c", "")
@@ -435,6 +443,9 @@ func TestViewChangedEndHandoff(t *testing.T) {
 	hr.waitSent(t, "att-c", 2)
 	if got := hr.sent("att-c")[1].revision; got != "99" {
 		t.Errorf("the render at the end tells revision %s, want 99", got)
+	}
+	if second == nil {
+		t.Fatal("the render at the end started no sender")
 	}
 	hr.release(t, "att-c", "")
 	hr.settle(t, map[string]int{"att-c": 2})
