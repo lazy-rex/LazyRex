@@ -19,12 +19,15 @@ import (
 
 // outboxRow is one notice of a committed outbox.
 type outboxRow struct {
-	seq     int64
-	agent   string
-	pending bool
+	seq int64
+	noticeOp
 }
 
-// noticeArgs reads the notices of a commit: [{agent, pending}], one entry for each agent.
+// noticeFields are the fields that a commit notice may have: those of a notify op.
+var noticeFields = map[string]bool{"agent": true, "pending": true, "once": true, "read": true}
+
+// noticeArgs reads the notices of a commit: the three forms of a notify op ({agent, pending},
+// {agent, pending: true, once: true} or {agent, read: true}), one entry for each agent.
 func noticeArgs(v any) ([]noticeOp, error) {
 	if v == nil {
 		return nil, nil
@@ -34,22 +37,30 @@ func noticeArgs(v any) ([]noticeOp, error) {
 		if m, ok := v.(map[string]any); ok && len(m) == 0 {
 			return nil, nil // Lua encodes an empty table as {}
 		}
-		return nil, refuse("invalid_input", "notices is a list of {agent, pending}")
+		return nil, refuse("invalid_input", "notices is a list of {agent, pending}, {agent, pending = true, once = true} or {agent, read = true}")
 	}
 	seen := map[string]bool{}
 	var out []noticeOp
 	for i, x := range list {
 		m, _ := x.(map[string]any)
 		agent, _ := m["agent"].(string)
-		pending, ok := m["pending"].(bool)
-		if agent == "" || !ok || len(m) != 2 {
-			return nil, refuse("invalid_input", "notices[%d] is {agent, pending}", i+1)
+		if agent == "" {
+			return nil, refuse("invalid_input", "notices[%d] needs an agent", i+1)
+		}
+		for f := range m {
+			if !noticeFields[f] {
+				return nil, refuse("invalid_input", "notices[%d] has the unknown field %q", i+1, f)
+			}
+		}
+		n, err := parseNotice(agent, m)
+		if err != nil {
+			return nil, refuse("invalid_input", "notices[%d]: %v", i+1, err)
 		}
 		if seen[agent] {
 			return nil, refuse("invalid_input", "agent %q appears twice in notices", agent)
 		}
 		seen[agent] = true
-		out = append(out, noticeOp{agent: agent, pending: pending})
+		out = append(out, n)
 	}
 	return out, nil
 }
@@ -57,11 +68,7 @@ func noticeArgs(v any) ([]noticeOp, error) {
 // writeOutbox adds the notices to the outbox in the open transaction. The caller holds the lock.
 func (p *pluginSQL) writeOutbox(ctx context.Context, notes []noticeOp) error {
 	for _, n := range notes {
-		pending := 0
-		if n.pending {
-			pending = 1
-		}
-		if err := p.w.hub(ctx, `INSERT INTO lazyrex_notice_outbox (agent, pending) VALUES (?, ?)`, n.agent, pending); err != nil {
+		if err := p.w.hub(ctx, `INSERT INTO lazyrex_notice_outbox (agent, pending, once, read) VALUES (?, ?, ?, ?)`, n.agent, n.pending, n.once, n.read); err != nil {
 			return err
 		}
 	}
@@ -72,7 +79,7 @@ func (p *pluginSQL) writeOutbox(ctx context.Context, notes []noticeOp) error {
 // the retry timer applies them later.
 func (s *sqlService) drain(ctx context.Context, p *pluginSQL) error {
 	p.w.trusted = true
-	rows, err := p.w.c.QueryContext(ctx, `SELECT seq, agent, pending FROM lazyrex_notice_outbox ORDER BY seq`)
+	rows, err := p.w.c.QueryContext(ctx, `SELECT seq, agent, pending, once, read FROM lazyrex_notice_outbox ORDER BY seq`)
 	if err != nil {
 		p.w.trusted = false
 		return err
@@ -80,13 +87,13 @@ func (s *sqlService) drain(ctx context.Context, p *pluginSQL) error {
 	var list []outboxRow
 	for rows.Next() {
 		var r outboxRow
-		var pending int
-		if err := rows.Scan(&r.seq, &r.agent, &pending); err != nil {
+		var pending, once, read int
+		if err := rows.Scan(&r.seq, &r.agent, &pending, &once, &read); err != nil {
 			rows.Close()
 			p.w.trusted = false
 			return err
 		}
-		r.pending = pending == 1
+		r.pending, r.once, r.read = pending == 1, once == 1, read == 1
 		list = append(list, r)
 	}
 	rows.Close()

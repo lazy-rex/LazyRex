@@ -123,9 +123,12 @@ authorized at CREATE.
 
 ## 7. Notices (built)
 
-- `hub.sql.commit {notices = [{agent, pending}]}` (the SDK's `app.notice`). The admission has the
-  rules of a `hub.store.batch` notify op: the manifest's `notice`, a known agent, one entry for each
-  agent.
+- `hub.sql.commit {notices = [...]}` takes the three forms of a `hub.store.batch` notify op
+  (docs/hub.md, "Notices (notify ops)"): `{agent, pending}` (the SDK's `app.notice`),
+  `{agent, pending = true, once = true}` (`app.notice(agent, true, {once = true})`) and
+  `{agent, read = true}` (`app.notice_read`). The admission has the rules of a notify op: the
+  manifest's `notice`, a known agent, one entry for each agent, no other field. The hub applies each
+  form with the same rules as a notify op.
 - The notices go into `lazyrex_notice_outbox` in the handler's transaction: a rollback has none.
 - After the commit the hub applies the rows to hub.db in `seq` order, in one hub.db transaction that
   writes a receipt `(plugin, seq)` for each row; then it deletes the rows, then the receipts. A row

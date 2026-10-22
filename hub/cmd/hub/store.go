@@ -331,6 +331,62 @@ type noticeOp struct {
 	pending, once, read bool
 }
 
+// parseNotice reads the fields of a notify op of agent. hub.sql.commit notices use it too.
+func parseNotice(agent string, nm map[string]any) (noticeOp, error) {
+	op := noticeOp{agent: agent}
+	_, hasPending := nm["pending"]
+	_, hasOnce := nm["once"]
+	if r, hasRead := nm["read"]; hasRead {
+		if r != true || hasPending || hasOnce {
+			return op, bad("a read is {notify: {agent, read: true}}, with no pending or once")
+		}
+		op.read = true
+		return op, nil
+	}
+	pending, okP := nm["pending"].(bool)
+	once, okO := nm["once"].(bool)
+	if !okP || (hasOnce && (!okO || !pending)) {
+		return op, bad("notify needs a boolean pending; once is true or false, and only with pending: true")
+	}
+	op.pending, op.once = pending, once
+	return op, nil
+}
+
+// applyNotice applies one notify op in tx. rev is the new intent revision, or 0 when the op made
+// none. hub.sql outbox rows use it too (applySQLNotices).
+func applyNotice(ctx context.Context, tx *sql.Tx, ns string, n noticeOp) (rev int64, err error) {
+	switch {
+	case n.read:
+		_, err := tx.ExecContext(ctx, `UPDATE notices SET read = 1 WHERE ns = ? AND agent = ?`, ns, n.agent)
+		return 0, err
+	case n.pending:
+		if n.once {
+			// One nudge until a read: a pending row that was not read since its revision stays.
+			var pending, read int
+			err := tx.QueryRowContext(ctx, `SELECT pending, read FROM notices WHERE ns = ? AND agent = ?`, ns, n.agent).Scan(&pending, &read)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return 0, err
+			}
+			if err == nil && pending == 1 && read == 0 {
+				return 0, nil
+			}
+		}
+		// A plain pending:true advances the intent revision each time, so each send can cause a
+		// new notice.
+		rev, err := nextRev(tx)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO notices (ns, agent, pending, intent_rev, read) VALUES (?, ?, 1, ?, 0) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev, read = 0`, ns, n.agent, rev); err != nil {
+			return 0, err
+		}
+		return rev, nil
+	default:
+		_, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, ns, n.agent)
+		return 0, err
+	}
+}
+
 type batchOutcome struct {
 	result    any
 	committed bool
@@ -368,21 +424,9 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 			if !roster[agent] {
 				return nil, bad("notify needs a roster agent")
 			}
-			op := noticeOp{agent: agent}
-			_, hasPending := nm["pending"]
-			_, hasOnce := nm["once"]
-			if r, hasRead := nm["read"]; hasRead {
-				if r != true || hasPending || hasOnce {
-					return nil, bad("a read is {notify: {agent, read: true}}, with no pending or once")
-				}
-				op.read = true
-			} else {
-				pending, okP := nm["pending"].(bool)
-				once, okO := nm["once"].(bool)
-				if !okP || (hasOnce && (!okO || !pending)) {
-					return nil, bad("notify needs a boolean pending; once is true or false, and only with pending: true")
-				}
-				op.pending, op.once = pending, once
+			op, err := parseNotice(agent, nm)
+			if err != nil {
+				return nil, err
 			}
 			if seenAgent[agent] {
 				return nil, bad("agent %q appears twice", agent)
@@ -527,37 +571,12 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 	}
 	out.intentRev = map[string]int64{}
 	for _, n := range notes {
-		switch {
-		case n.read:
-			if _, err := tx.ExecContext(ctx, `UPDATE notices SET read = 1 WHERE ns = ? AND agent = ?`, ns, n.agent); err != nil {
-				return nil, err
-			}
-		case n.pending:
-			if n.once {
-				// One nudge until a read: a pending row that was not read since its revision stays.
-				var pending, read int
-				err := tx.QueryRowContext(ctx, `SELECT pending, read FROM notices WHERE ns = ? AND agent = ?`, ns, n.agent).Scan(&pending, &read)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
-					return nil, err
-				}
-				if err == nil && pending == 1 && read == 0 {
-					continue
-				}
-			}
-			// A plain pending:true advances the intent revision each time, so each send can cause a
-			// new notice.
-			rev, err := nextRev(tx)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO notices (ns, agent, pending, intent_rev, read) VALUES (?, ?, 1, ?, 0) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev, read = 0`, ns, n.agent, rev); err != nil {
-				return nil, err
-			}
+		rev, err := applyNotice(ctx, tx, ns, n)
+		if err != nil {
+			return nil, err
+		}
+		if rev != 0 {
 			out.intentRev[n.agent] = rev
-		default:
-			if _, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, ns, n.agent); err != nil {
-				return nil, err
-			}
 		}
 	}
 	if opKey != "" {
@@ -688,15 +707,7 @@ func (db *DB) applySQLNotices(ctx context.Context, plugin string, rows []outboxR
 		if n > 0 {
 			continue
 		}
-		if r.pending {
-			rev, err := nextRev(tx)
-			if err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO notices (ns, agent, pending, intent_rev, read) VALUES (?, ?, 1, ?, 0) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev, read = 0`, plugin, r.agent, rev); err != nil {
-				return err
-			}
-		} else if _, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, plugin, r.agent); err != nil {
+		if _, err := applyNotice(ctx, tx, plugin, r.noticeOp); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO notice_receipts VALUES (?, ?)`, plugin, r.seq); err != nil {
