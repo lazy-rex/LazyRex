@@ -7,9 +7,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -69,6 +69,7 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	go h.saveCommands(context.Background(), name, cmds) // go: register holds h.mu
 	h.kickAgentKeymap()
 	h.kickWaiting() // a dependent can wait for this plugin
+	h.kickOps()     // an unresolved start attempt can wait for this registration (observeLater)
 	h.ev.emit("plugin_registered", map[string]any{"plugin": name, "instance_id": instance, "client_id": pl.ClientID})
 	h.clearDeclarations(name)        // a new instance declares again
 	h.kickViews(name, causeRegister) // views rendered while the plugin was away hold a stale tree
