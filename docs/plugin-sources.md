@@ -596,6 +596,8 @@ the plugin to start (built: step 1):
 - `refused`, with the error: the static check failed. A dependent of a statically refused
   dependency is refused, not waiting.
 - `retained`: see "Run and candidate".
+- `crashing`: desired running; the recorded instance has exited; a respawn is due at `respawn_at`
+  (the crash backoff, hub.md). It is not `stopped` and not `running`.
 
 **Wake rule.** The hub checks a waiting plugin again when any plugin registers, when
 `hub.admin.start` or `hub.admin.stop` runs for any plugin, and when a plugin is refused. If the

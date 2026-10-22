@@ -435,6 +435,9 @@ func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, 
 	if x != nil {
 		return h.startExpected(ctx, pl, keepLive, x, e, cand, lease)
 	}
+	h.mu.Lock()
+	pl.cancelRespawnLocked() // the start passed its refusals: it owns the plugin now (respawn.go)
+	h.mu.Unlock()
 	if keepLive {
 		h.mu.Lock()
 		live := pl.entry == e && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
@@ -702,6 +705,7 @@ func (h *Hub) resolveIntentsFor(ctx context.Context, pl *Plugin, mk func(plugin,
 		h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'created', block_id = ? WHERE instance_id = ?`, block, i.id)
 		h.mu.Lock()
 		pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart = i.id, found, block, pid, startTime(pid)
+		pl.respawn.spawned = h.clock() // adopted now: the base of the backoff reset
 		h.savePlugin(ctx, pl)
 		h.mu.Unlock()
 	}
@@ -900,6 +904,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	}
 	h.mu.Lock()
 	pl.BlockID, pl.ChildPID, pl.ChildStart = out.BlockID, pid, startTime(pid)
+	pl.respawn.spawned = h.clock() // the base of the backoff reset
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
 	h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'created', block_id = ? WHERE instance_id = ?`, pl.BlockID, instance)
@@ -926,15 +931,21 @@ func exitNow() {
 }
 
 // pluginExited handles child_exited for a plugin block: replace it while desired state is running,
-// unless the block itself was closed (a user stop).
+// unless the block itself was closed (a user stop). An entry's instance respawns after the crash
+// backoff (respawn.go). A kept, refused or retained record takes the start path at once, as
+// before: it spawns nothing, or it starts after a repair.
 func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payload json.RawMessage) {
 	pl.lifecycle.Lock()
 	defer pl.lifecycle.Unlock()
 	h.mu.Lock()
 	current := pl.BlockID == blockID
 	instance := pl.InstanceID
+	if current && instance != "" && pl.respawn.exited == instance {
+		current = false // a second child_exited for the same instance counts once
+	}
 	if current {
 		pl.ClientID = ""
+		pl.respawn.exited = instance
 		h.kickAgentKeymap()
 	}
 	h.mu.Unlock()
@@ -944,10 +955,20 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_exited", map[string]any{"plugin": pl.Name, "instance_id": instance, "block_id": blockID})
 	log.Printf("plugin %s exited: %s", pl.Name, payload)
-	h.changed("plugins")
 	// child_exited means the process ended in a block that is still open (a pane close sends
 	// block_closed instead), so this is a crash or exit, not a user stop.
-	if pl.Desired != "running" {
+	h.mu.Lock()
+	backoff := pl.Desired == "running" && pl.entry != nil && pl.state == ""
+	if backoff {
+		h.crashedLocked(ctx, pl, exitDetail(payload))
+	}
+	delay := pl.respawn.delay
+	h.mu.Unlock()
+	if backoff {
+		h.ev.emit("plugin_respawn_scheduled", map[string]any{"plugin": pl.Name, "instance_id": instance, "delay_ms": delay.Milliseconds()})
+	}
+	h.changed("plugins")
+	if backoff || pl.Desired != "running" {
 		return
 	}
 	if err := h.startPlugin(ctx, pl); err != nil {
@@ -957,6 +978,10 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 
 func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	h.mu.Lock()
+	// Before the stop is saved or reported: a respawn callback that waits for pl.lifecycle sees a
+	// new generation and does nothing. A later start begins the delays again.
+	pl.cancelRespawnLocked()
+	pl.respawn.delay = 0
 	block := pl.BlockID
 	pl.clearInstance()
 	pl.Desired, pl.state, pl.refusal, pl.waiting = "stopped", "", "", nil

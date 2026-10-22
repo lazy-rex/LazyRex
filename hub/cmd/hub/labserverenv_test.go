@@ -36,7 +36,7 @@ func TestLabServerEnv(t *testing.T) {
 	rexBin := filepath.Join(dir, "rex")
 	os.WriteFile(rexBin, []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o755)
 	l := &lab{dir: dir, server: "unix://" + dir + "/rex.sock", env: []string{"PATH=/bin"}}
-	if err := l.startServer(t.Context(), rexBin); err == nil || !strings.Contains(err.Error(), "REX_SERVER") {
+	if err := l.startServer(t.Context(), os.Args[0], rexBin); err == nil || !strings.Contains(err.Error(), "REX_SERVER") {
 		t.Fatalf("startServer without REX_SERVER: %v", err)
 	}
 	if _, err := os.Stat(ran); !os.IsNotExist(err) {

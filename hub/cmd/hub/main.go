@@ -124,12 +124,14 @@ type Plugin struct {
 	// state is "" (running or stopped, from Desired), refused (the last start check refused the
 	// entry), retained (refused, and the recorded instance still lives; it may not register) or
 	// waiting (the check passed, and a dependency is not registered: waitLoop starts it again).
+	// hub.plugins reports "" as crashing while a respawn is due (respawn.go).
 	state     string
 	refusal   string       // the error of the refused start (state refused or retained)
 	waiting   []string     // the dependencies that are not registered (state waiting)
 	attempted bool         // a start attempt (startPlugin) ran in this hub process: recovery skips the record
 	lifecycle sync.Mutex   // serializes replace, start and stop
 	writes    sync.RWMutex // the store fence: a store write holds it to read (fencedBatch)
+	respawn   respawnState // the crash backoff (respawn.go); h.mu guards it
 }
 
 // reportedState is the state that hub.plugins reports. h.mu must be held.
@@ -137,6 +139,8 @@ func (pl *Plugin) reportedState() string {
 	switch {
 	case pl.state != "":
 		return pl.state
+	case pl.crashing():
+		return "crashing"
 	case pl.Desired == "stopped":
 		return "stopped"
 	}
@@ -187,6 +191,9 @@ type Hub struct {
 	// shutdown cancels main's signal context, as SIGTERM does (hub.admin.shutdown). nil: no stop.
 	shutdown func()
 	calls    *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
+	// The crash backoff clock (respawn.go). nil: time.Now and time.AfterFunc; a test sets fakes.
+	now       func() time.Time
+	afterFunc func(time.Duration, func()) stopper
 
 	mu           sync.Mutex
 	identMu      sync.Mutex // serializes identity reports (identity.go)
@@ -307,6 +314,9 @@ func findRex(configured string) (string, error) {
 }
 
 func main() {
+	if os.Getenv(labKeeperEnv) == "1" {
+		labKeeper() // a lab keeper of lazyrex-hub test (labkeeper.go): it never returns
+	}
 	fetchChildMain() // a fetch watcher or gate of the plugin manager runs its role and exits (fetchchild.go)
 	// The restart wrapper's variables (restartenv.go): read and unset first, before any exec.
 	renv, renvErr := takeRestartEnv()

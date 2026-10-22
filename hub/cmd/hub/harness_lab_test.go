@@ -2,11 +2,17 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -33,6 +39,8 @@ func harnessBinary(t *testing.T) (bin, root string) {
 func runHarness(t *testing.T, bin, dir string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(bin, append(append([]string{"test"}, args...), dir)...)
+	cmd.Env = harnessEnv(t)
+	harnessStarted(t)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -40,12 +48,20 @@ func runHarness(t *testing.T, bin, dir string, args ...string) (string, int) {
 	} else if err != nil {
 		t.Fatal(err)
 	}
+	removeKeptLabs(t, string(out))
 	return string(out), code
+}
+
+// harnessEnv is the environment of a lazyrex-hub test that a test runs: its lab sweep uses a test
+// directory, never the real /tmp.
+func harnessEnv(t *testing.T) []string {
+	return append(os.Environ(), labSweepRootEnv+"="+t.TempDir())
 }
 
 var keptLab = regexp.MustCompile(`lab kept: (/tmp/lrt-[0-9]+)`)
 
-// assertLabsGone checks that no process names a kept lab directory, then removes the directories.
+// assertLabsGone checks that no process names a kept lab directory, then removes the directories
+// that a probe proves ended. A lab with a survivor stays as evidence.
 func assertLabsGone(t *testing.T, out string) {
 	t.Helper()
 	ps, err := exec.Command("ps", "-eww", "-o", "pid=,command=").Output()
@@ -53,13 +69,74 @@ func assertLabsGone(t *testing.T, out string) {
 		t.Fatal(err)
 	}
 	for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+		survived := false
 		sc := bufio.NewScanner(strings.NewReader(string(ps)))
 		for sc.Scan() {
 			if strings.Contains(sc.Text(), m[1]+"/") {
 				t.Errorf("a process of lab %s survived: %s", m[1], sc.Text())
+				survived = true
 			}
 		}
-		os.RemoveAll(m[1])
+		if survived {
+			t.Errorf("lab %s kept as evidence", m[1])
+			continue
+		}
+		removeIfEnded(t, m[1])
+	}
+}
+
+// removeKeptLabs removes, when the test ends, each lab that the harness output names as kept: a
+// harness test runs with -keep, and a check that fails before assertLabsGone must not leave its
+// labs (the lrt leak, 2026-10-22). A lab that a probe does not prove ended stays as evidence.
+func removeKeptLabs(t *testing.T, out string) {
+	t.Cleanup(func() {
+		for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+			removeIfEnded(t, m[1])
+		}
+	})
+}
+
+// harnessStarts holds, for each test, the time before its first harness run: a KEEP marker that the
+// harness wrote in that run is not older.
+var harnessStarts sync.Map // *testing.T -> time.Time
+
+// harnessStarted records the start of the test's first harness run. A test that starts the harness
+// itself (not with runHarness) calls it before the start, or removeIfEnded keeps its -keep labs.
+func harnessStarted(t *testing.T) {
+	harnessStarts.LoadOrStore(t, time.Now().Add(-time.Second).UTC().Truncate(time.Second))
+}
+
+// removeIfEnded removes a lab that a harness run of this test kept with -keep, when labProbe proves
+// it absent. A marker of another kind (failed, unproved: labKeep.class) stays and is logged: the
+// sweep or -clean removes it. A lab without this test's own -keep marker, or that the probe does
+// not prove ended, stays too, and the test fails with its path.
+func removeIfEnded(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	k, err := readLabKeep(dir)
+	if err == nil && k.class() != labKindKeep {
+		t.Logf("lab %s kept: a %s marker (%s); %s", dir, k.class(), k.Why, keptHow(k))
+		return
+	}
+	since, _ := harnessStarts.Load(t)
+	at, terr := time.Parse(time.RFC3339, k.At)
+	if err != nil || k.By != "lazyrex-hub test -keep" || since == nil || terr != nil || at.Before(since.(time.Time)) {
+		t.Errorf("lab %s kept: it has no -keep marker of this test's run (%+v, %v)", dir, k, err)
+		return
+	}
+	procs, err := labProcs()
+	if err != nil {
+		t.Errorf("lab %s kept: %v", dir, err)
+		return
+	}
+	if st, why := labProbe(filepath.Dir(dir), dir, procs); st != labAbsent {
+		t.Errorf("lab %s kept (%s): %s", dir, st, why)
+		return
+	}
+	if err := removeLab(dir); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -87,7 +164,7 @@ func TestHarnessFailures(t *testing.T) {
 			first, _, _ := strings.Cut(string(b), "\n")
 			want := strings.TrimPrefix(first, "-- want: ")
 			args := []string{"-keep", "-file", filepath.Base(f)}
-			if filepath.Base(f) == "timeout.lua" {
+			if strings.Contains(filepath.Base(f), "timeout") {
 				args = append(args, "-timeout", "8s")
 			}
 			out, code := runHarness(t, bin, dir, args...)
@@ -115,8 +192,10 @@ func TestHarnessRunMatchesNothing(t *testing.T) {
 func TestHarnessInterrupt(t *testing.T) {
 	bin, root := harnessBinary(t)
 	cmd := exec.Command(bin, "test", "-keep", "-file", "timeout.lua", "-timeout", "120s", filepath.Join(root, "tests", "harness-fail"))
+	cmd.Env = harnessEnv(t)
 	var buf strings.Builder
 	cmd.Stdout, cmd.Stderr = &buf, &buf
+	harnessStarted(t)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +203,7 @@ func TestHarnessInterrupt(t *testing.T) {
 	cmd.Process.Signal(syscall.SIGINT)
 	err := cmd.Wait()
 	out := buf.String()
+	removeKeptLabs(t, out)
 	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
 		t.Errorf("exit %v, want 1\n%s", err, out)
 	}
@@ -152,18 +232,45 @@ func TestHarnessIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The harness's own `go env GOCACHE GOMODCACHE` (isolation.go goCaches) runs in the outer
+	// environment, and Go writes its telemetry counters to the outer config dir. GOTELEMETRY=off in
+	// the environment does not stop it (observed, Go 1.27.2). That writer is the harness, not a lab
+	// process, so the listing skips exactly the telemetry dirs and the directory entries of their
+	// parents; any other file, also one in a parent such as Application Support/go, still counts.
+	telemetry := []string{
+		filepath.Join(home, "Library", "Application Support", "go", "telemetry"), // macOS
+		filepath.Join(home, ".config", "go", "telemetry"),                        // Linux (XDG_CONFIG_HOME)
+	}
+	skip := func(p string, fi os.FileInfo) bool {
+		for _, d := range telemetry {
+			if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+				return true
+			}
+			if fi != nil && fi.IsDir() && p != home && strings.HasPrefix(d, p+string(filepath.Separator)) {
+				return true // the entry of a parent directory only: each file in it still counts
+			}
+		}
+		return false
+	}
 	listing := func() string {
 		var names []string
-		filepath.Walk(home, func(p string, _ os.FileInfo, _ error) error { names = append(names, p); return nil })
-		return strings.Join(names, "\n")
+		filepath.Walk(home, func(p string, fi os.FileInfo, _ error) error {
+			if !skip(p, fi) {
+				names = append(names, p)
+			}
+			return nil
+		})
+		return strings.Join(names, "\n") + "\n"
 	}
 	before := listing()
 	const secret = "lrt-outer-secret-7f3a"
 	cmd := exec.Command(bin, "test", "-keep", filepath.Join(root, "tests", "isolation"))
-	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+	cmd.Env = append(harnessEnv(t), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"TMPDIR="+filepath.Join(outer, "tmp"), "LRT_OUTER_SECRET="+secret)
+	harnessStarted(t)
 	outb, err := cmd.CombinedOutput()
 	out := string(outb)
+	removeKeptLabs(t, out)
 	if err != nil || !strings.Contains(out, "tests/isolation.lua: 6 passed, 0 failed") {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -182,4 +289,179 @@ func TestHarnessIsolation(t *testing.T) {
 		})
 	}
 	assertLabsGone(t, out)
+}
+
+// A harness test that ends before assertLabsGone (a failed check) leaves no lab: runHarness
+// removes the kept labs when the test ends. Each kept lab has its KEEP marker until then. Before
+// the fix this left every -keep lab (the lrt leak, 2026-10-22).
+func TestHarnessKeptLabsRemoved(t *testing.T) {
+	bin, root := harnessBinary(t)
+	var labs []string
+	t.Run("run", func(t *testing.T) {
+		out, code := runHarness(t, bin, filepath.Join(root, "tests", "harness"), "-keep", "-file", "calls.lua")
+		if code != 0 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+			labs = append(labs, m[1])
+			b, err := os.ReadFile(filepath.Join(m[1], labKeepFile))
+			if err != nil || !strings.Contains(string(b), `"by":"lazyrex-hub test -keep"`) {
+				t.Errorf("%s: KEEP marker %s %v", m[1], b, err)
+			}
+		}
+		// No assertLabsGone here: the test ends as a failed check would end it.
+	})
+	if len(labs) != 2 {
+		t.Fatalf("kept labs %v, want the parity sweep and calls.lua", labs)
+	}
+	for _, l := range labs {
+		if _, err := os.Stat(l); err == nil {
+			t.Errorf("lab %s stays after the test", l)
+		}
+	}
+}
+
+// descendants lists every live descendant of pid, with its start time.
+func descendants(t *testing.T, pid int) map[int]string {
+	t.Helper()
+	out, err := exec.Command("ps", "-ax", "-o", "pid=,ppid=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := map[int][]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		c, _ := strconv.Atoi(f[0])
+		p, _ := strconv.Atoi(f[1])
+		children[p] = append(children[p], c)
+	}
+	found := map[int]string{}
+	var walk func(int)
+	walk = func(p int) {
+		for _, c := range children[p] {
+			if s := startTime(c); s != "" {
+				found[c] = s
+				walk(c)
+			}
+		}
+	}
+	walk(pid)
+	return found
+}
+
+// A SIGKILL of lazyrex-hub test (for example an agent tool's time limit) leaves no process of its
+// lab: each keeper (labkeeper.go) sees its control pipe end and stops its group (the server, the
+// hub, the runner), and the panes end with the server. Before that the server, its panes, the hub
+// and the runner ran on under parent 1 (2026-10-22). The test kills the run after the file's hub
+// restart, while a testagent pane runs. The runner's keeper is the test process's child, and its
+// command line names the file and the lab.
+func TestLabKeeperKilledRun(t *testing.T) {
+	bin, root := harnessBinary(t)
+	cmd := exec.Command(bin, "test", "-file", "restart_timeout.lua", "-timeout", "120s", filepath.Join(root, "tests", "harness-fail"))
+	cmd.Env = harnessEnv(t)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// The lab of the file: the runner's keeper (a child of the test process) names the file and the lab.
+	var lab string
+	for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(300 * time.Millisecond) {
+		if lab == "" {
+			out, _ := exec.Command("ps", "-ax", "-ww", "-o", "ppid=,command=").Output()
+			for _, line := range strings.Split(string(out), "\n") {
+				f := strings.Fields(line)
+				if len(f) > 1 && f[0] == strconv.Itoa(cmd.Process.Pid) && strings.Contains(line, "restart_timeout.lua") {
+					if i := strings.Index(line, " lab="); i >= 0 {
+						lab = strings.Fields(line[i+5:])[0]
+					}
+				}
+			}
+		}
+		if b, _ := os.ReadFile(filepath.Join(lab, "runner.log")); lab != "" && strings.Contains(string(b), "LRT restart") {
+			break
+		}
+	}
+	if lab == "" {
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatal("no runner of restart_timeout.lua in 60 s")
+	}
+	// The shared decision ends the lab (endGoLab): a survivor keeps it as unproved evidence.
+	var unproved []string
+	t.Cleanup(func() { endGoLab(t, lab, unproved) })
+	time.Sleep(2 * time.Second) // the new hub starts
+	procs := descendants(t, cmd.Process.Pid)
+	cmd.Process.Kill() // SIGKILL: no cleanup of its own
+	cmd.Wait()
+	var left []int
+	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
+		left = left[:0]
+		for pid, start := range procs {
+			if alive(pid, start) {
+				left = append(left, pid)
+			}
+		}
+		if len(left) == 0 {
+			break
+		}
+	}
+	if len(procs) < 4 {
+		t.Errorf("only %d processes under the test process: %v", len(procs), procs)
+	}
+	// A survivor gets no signal: this test did not start it, and a pid found by lookup can be reused
+	// (docs/testing.md). It is reported and kept as evidence.
+	for _, pid := range left {
+		argv, _ := procArgv(pid)
+		p := fmt.Sprintf("a process of %s survived: pid %d, start %s, %.160s (not signaled)", lab, pid, procs[pid], strings.Join(argv, " "))
+		t.Error(p)
+		unproved = append(unproved, p)
+	}
+}
+
+// The real binary in the keeper role runs no hub code (the hub lead's condition on main.go): with a
+// wrong first control line it exits 125, and the hub of its arguments never ran (no state
+// directory, no log).
+func TestLabKeeperMainRunsNoHub(t *testing.T) {
+	bin, _ := harnessBinary(t)
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	cfg := filepath.Join(dir, "hub.json")
+	b, _ := json.Marshal(map[string]any{"server": "unix://" + filepath.Join(dir, "none.sock"), "state": state,
+		"agents": []any{map[string]any{"id": "user", "name": "User"}}, "plugins": []any{}}) // a hub run would make state
+	if err := os.WriteFile(cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cr, cw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, rw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rr.Close()
+	cmd := exec.Command(bin, "-config", cfg)
+	cmd.Env = append(os.Environ(), labKeeperEnv+"=1")
+	cmd.ExtraFiles = []*os.File{cr, rw}
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cr.Close()
+	rw.Close()
+	cw.WriteString("go\n")
+	cw.Close()
+	err = cmd.Wait()
+	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != keeperNoStart {
+		t.Fatalf("status %v, want exit %d; output %q", err, keeperNoStart, out.String())
+	}
+	if _, err := os.Stat(state); err == nil {
+		t.Error("the hub made its state directory")
+	}
+	if out.Len() > 0 {
+		t.Errorf("output %q", out.String())
+	}
 }

@@ -29,16 +29,15 @@ import (
 type lab struct {
 	dir, socket, server string
 	env                 []string
-	srv, hub            *exec.Cmd
-	runner              *exec.Cmd // the current runner: a snapshot root while it lives
-	srvW, hubW          *waiter
-	srvExit, hubExit    chan error
+	srv, hub            *kept // each under its keeper (labkeeper.go)
+	runner              *kept // the current runner: a snapshot root while it lives
 	r                   *rex.Rex
 	tracked             map[int]string               // pid -> start time: every process seen under the server or the hub
 	args                map[string]map[string]string // plugin args after expansion (manifest test.args)
 	watchRoots          map[string][]string          // plugin watch roots after expansion (manifest test.watch_roots)
 	profiles            string                       // LAB/profiles.json, the hub's profile file
 	restarts            int                          // hub:restart() calls (restartHub)
+	unproved            []string                     // stop: why the cleanup is not proved (a survivor, a keeper)
 }
 
 // home is the lab HOME, the working directory of every lab process.
@@ -51,10 +50,12 @@ func newNonce() string {
 }
 
 // startServer starts the Rex server of the lab in l.dir (rex.sock, state, blocks), with l.env and
-// the working directory l.home(), writes the lab proof, and waits until the server answers (10 s).
-func (l *lab) startServer(ctx context.Context, rexBin string) error {
+// the working directory l.home(), under its keeper (self in the keeper role, labkeeper.go), writes
+// the lab proof, and waits until the server answers (10 s).
+func (l *lab) startServer(ctx context.Context, self, rexBin string) error {
 	// Lab panes inherit REX_SERVER from the server. Without it, a hook in a lab pane uses Rex's
-	// default endpoint, which is the user's real server (hook.go; the hub lead, 2026-10-22).
+	// default endpoint, which is the user's real server (hook.go; the hub lead, 2026-10-22). The
+	// keeper gives the server l.env without the keeper's own variables (keeperEnv).
 	if err := labServerEnv(l.env, l.server); err != nil {
 		return err
 	}
@@ -62,17 +63,14 @@ func (l *lab) startServer(ctx context.Context, rexBin string) error {
 	if err != nil {
 		return err
 	}
-	l.srv = exec.Command(rexBin, "-v", "server", "run", "--listen", l.server, "--state-dir", filepath.Join(l.dir, "state"),
-		"--block-dir", filepath.Join(l.dir, "blocks"), "--config", "/dev/null")
-	l.srv.Env, l.srv.Dir, l.srv.Stdout, l.srv.Stderr = l.env, l.home(), logf, logf
-	l.srv.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := l.srv.Start(); err != nil {
+	l.srv, err = startKept(self, "lab server", []string{rexBin, "-v", "server", "run", "--listen", l.server,
+		"--state-dir", filepath.Join(l.dir, "state"), "--block-dir", filepath.Join(l.dir, "blocks"), "--config", "/dev/null"},
+		l.env, l.home(), logf, logf)
+	if err != nil {
 		return err
 	}
-	l.track(l.srv.Process.Pid)
-	l.srvW = watch(l.srv)
-	l.srvExit = l.srvW.done
-	proof, _ := json.Marshal(map[string]any{"socket": l.server, "server_pid": l.srv.Process.Pid, "nonce": newNonce()})
+	l.trackKept(l.srv)
+	proof, _ := json.Marshal(map[string]any{"socket": l.server, "server_pid": l.srv.pid, "nonce": newNonce()})
 	if err := os.WriteFile(filepath.Join(l.dir, "lab.json"), proof, 0o600); err != nil {
 		return err
 	}
@@ -88,9 +86,8 @@ func (l *lab) startServer(ctx context.Context, rexBin string) error {
 			}
 		}
 		select {
-		case err := <-l.srvExit:
-			l.srvExit = nil
-			return fmt.Errorf("lab server exited: %v (see %s)", err, filepath.Join(l.dir, "server.log"))
+		case <-l.srv.done:
+			return fmt.Errorf("lab server exited: %v (see %s)", l.srv.status, filepath.Join(l.dir, "server.log"))
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
@@ -159,9 +156,13 @@ func (w *waiter) signal(sig syscall.Signal) bool {
 	return true
 }
 
-func (l *lab) track(pid int) {
-	if s := startTime(pid); s != "" {
-		l.tracked[pid] = s
+// trackKept records a kept command and its keeper. The command is a snapshot root.
+func (l *lab) trackKept(k *kept) {
+	if k.start != "" {
+		l.tracked[k.pid] = k.start
+	}
+	if s := startTime(k.w.pid); s != "" {
+		l.tracked[k.w.pid] = s
 	}
 }
 
@@ -190,11 +191,11 @@ func (l *lab) snapshot() {
 		start string
 	}
 	var roots []proc
-	for _, c := range []*exec.Cmd{l.srv, l.hub, l.runner} {
-		if c == nil || c.Process == nil {
+	for _, k := range []*kept{l.srv, l.hub, l.runner} {
+		if k == nil {
 			continue
 		}
-		pid := c.Process.Pid
+		pid := k.pid
 		if s, ok := l.tracked[pid]; ok && s != "" && startTime(pid) == s {
 			roots = append(roots, proc{pid, s})
 		}
@@ -213,32 +214,23 @@ func (l *lab) snapshot() {
 	}
 }
 
-// stop ends the hub, then the server, and checks that every tracked process is gone. A process
-// that survives makes the cleanup fail; it gets no signal.
+// stop retires the keepers of the runner, the hub and the server, in that order, and checks that
+// every tracked process is gone. A keeper's problem or a process that survives makes the cleanup
+// fail (l.unproved); a survivor gets no signal.
 func (l *lab) stop() []string {
 	var problems []string
 	l.snapshot()
 	if l.r != nil {
 		l.r.Close()
 	}
-	// A leader that already exited gets no group signal (waiter.signal). Its group members are in
-	// tracked; a member that survives fails the cleanup below.
-	stopGroup := func(w *waiter, exit chan error, what string) {
-		if w == nil || exit == nil {
-			return
+	for _, k := range []*kept{l.runner, l.hub, l.srv} {
+		if k == l.srv {
+			l.snapshot()
 		}
-		w.signal(syscall.SIGTERM)
-		select {
-		case <-exit:
-		case <-time.After(10 * time.Second):
-			problems = append(problems, what+" did not stop in 10 s after SIGTERM; sent SIGKILL")
-			w.signal(syscall.SIGKILL)
-			<-exit
-		}
+		p := k.stop()
+		problems = append(problems, p...)
+		l.unproved = append(l.unproved, p...)
 	}
-	stopGroup(l.hubW, l.hubExit, "hub")
-	l.snapshot()
-	stopGroup(l.srvW, l.srvExit, "lab server")
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var alive []int
@@ -257,8 +249,10 @@ func (l *lab) stop() []string {
 			sort.Ints(alive)
 			for _, pid := range alive {
 				argv, _ := procArgv(pid)
-				problems = append(problems, fmt.Sprintf("cleanup: process survived the lab server: pid %d, start %s, command %s (not signaled)",
-					pid, l.tracked[pid], strings.Join(argv, " ")))
+				p := fmt.Sprintf("cleanup: process survived the lab server: pid %d, start %s, command %s (not signaled)",
+					pid, l.tracked[pid], strings.Join(argv, " "))
+				problems = append(problems, p)
+				l.unproved = append(l.unproved, p)
 			}
 			break
 		}

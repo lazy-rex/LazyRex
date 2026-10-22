@@ -25,12 +25,80 @@ Flags:
 | `-file send.lua` | Run only this file of `tests/`. |
 | `-run <Lua pattern>` | Run only tests whose name matches. The run fails if no test matches. |
 | `-timeout 120s` | The time limit for one test file. |
-| `-keep` | Keep each lab directory (logs, events, state). The processes stop anyway. |
+| `-keep` | Keep each lab directory (logs, events, state). The processes stop anyway. Each kept lab gets a `KEEP` marker (see "Lab directories"). |
+| `-clean <dir>...` | Remove the given lab directories (`/tmp/lrt-<digits>` of this user, with or without `KEEP`), then exit. Only a lab that the probe proves ended is removed (see "Lab directories"): a live or uncertain lab is refused, with the reason. |
 | `-v` | Print the hub, plugin and runner logs. |
 | `-lazyrex <dir>` | The LazyRex checkout. Default: `../LazyRex` beside the plugin, `LAZYREX_DIR`, or the checkout of the binary. |
 
 Exit status: 0 when every file passes, 1 when a test or a check fails, 2 for a harness error (for
 example a bad manifest).
+
+## Lab directories
+
+Each test file runs in its own lab directory, `/tmp/lrt-<digits>` (a Unix socket path must stay
+short). When a file passes, the run removes its lab. When it fails (also by a file timeout, SIGINT
+or SIGTERM), the lab stays with a `failed` marker for 24 hours (see below). A lab can hold read-only plugin cache entries; the removal makes each directory writable
+first.
+
+- A kept lab gets a file `KEEP`: JSON `{by, why, at, kind}`, for example `{"by": "lazyrex-hub test
+  -keep", "why": "tests/send.lua: 3 passed, 1 failed, 0 problems", "kind": "keep"}`. Keep a lab
+  only while a message cites it as evidence. A lab that you keep by hand needs a `KEEP` file too.
+  Each removal rule keys on the kind:
+  - `keep` (`-keep`): only `-clean` removes it (a Go harness test removes the `-keep` labs of its
+    own run, see below).
+  - `failed` (a failed file without `-keep`, by `lazyrex-hub test`, why `failed: <file>: ...`; or
+    a failed Go lab test of the hub): the sweep removes it 24 hours after the marker's `at`, and
+    only when the probe proves it absent. A passed file removes its lab at once.
+  - `unproved` (the cleanup is not proved): only `-clean` removes it. An unproved cleanup is
+    `unproved` on every path, also for a failed file or a failed Go lab test.
+  - A marker without a kind (an older binary): by `lazyrex-hub test -keep` is `keep`; by
+    `lazyrex-hub test` is `unproved`; any other, and a kind that the binary does not know, is
+    protected as `unproved`.
+- A lab whose cleanup is not proved stays too, also without `-keep`: a process survived the stop,
+  a keeper did not stop cleanly, or the probe after the stop is not "absent". Its `KEEP` marker has
+  `{"by": "lazyrex-hub test", "why": "cleanup not proved: <reason>", "kind": "unproved"}`, the file fails with a
+  problem that names the lab, and the summary line names it:
+  `FAIL tests/send.lua: 3 passed, 0 failed (lab kept: /tmp/lrt-123)`.
+- No run removes failure evidence (a `KEEP` marker for an unproved cleanup). A Go harness test may
+  remove an ordinary `-keep` lab that it made itself, after it passed. Every other kept lab is
+  removed only by `lazyrex-hub test -clean /tmp/lrt-<digits>`, after the review. A lab server in a
+  kept lab can still run, and `-clean` refuses that lab: stop that server first, by the `server_pid`
+  in its `lab.json` (check that its command names the lab's `rex.sock`), never by a name pattern.
+- The probe (`labProbe`) says whether a lab is live, absent or uncertain. Live: a process whose
+  command line names the lab (this process and its ancestors do not count), or a server that
+  accepts a connection on `rex.sock`. A lab has a name under each name of its root: on macOS
+  `/tmp/lrt-1` and `/private/tmp/lrt-1`; a command line matches a name followed by `/`, or the name
+  as a whole word. Absent: no `rex.sock`, no such process, and `lab.json` names no server pid or
+  one that no longer runs; or `rex.sock` refuses the connection and `lab.json` names a server pid
+  that no longer runs.
+  Uncertain: every other case, for example a recorded server pid that runs, a refusal without
+  `lab.json` (a live server with a full connection queue also refuses on macOS), another connection
+  error, or a failed process listing (`ps -eww -o pid=,ppid=,command=`). Only an absent lab is
+  removed.
+- The sweep: at the start of each run, at most once per hour per user (the stamp file
+  `/tmp/lrt-sweep-<uid>`), the command removes each `/tmp/lrt-<digits>` directory of this user that
+  is absent and either has no `KEEP` file and is older than 24 hours, or has a `failed` marker
+  older than 24 hours. It prints one line for each removal
+  and for each uncertain lab, which it keeps. A failed process listing stops the sweep. (24 hours
+  for the first release; then 1 hour.)
+- A killed run (SIGKILL) cannot clean up. Its lab directory waits for the sweep.
+- The lab keepers: the run starts each lab command (the lab server, the hub, the runner) under a
+  keeper, the same binary with `LAZYREX_LAB_KEEPER=1`. The keeper leads its own process group and
+  starts the command in it, without the keeper variables. The run controls it through two pipes:
+  `start` before the command exists, then `stop`; the keeper reports the command's pid, its exit
+  status, and the end of the stop. At `stop`, or when the control pipe ends (the run was killed),
+  the keeper sends SIGTERM to its group and waits up to 10 s for the group to empty. The keeper's
+  exit status: 0 is a clean stop; 125 means no `start` came, and nothing ran; 126 means the command
+  did not start; SIGKILL means members remained or the group listing failed, and the keeper killed
+  the whole group, itself included. The command's status comes only from the keeper's report. An
+  escalation, a keeper that does not end, or a report without the command's status makes the
+  cleanup not proved. The lab panes run in their own groups outside the keepers' groups: they end
+  with the server, and the run checks them as survivors. So a killed run leaves no lab process;
+  only its directory waits for the sweep.
+- Still give the tool call that runs `lazyrex-hub test` a time limit above `-timeout`, or run it in
+  the background: a killed run gives no result.
+- The hub's own lab tests set `LAZYREX_LAB_SWEEP_ROOT` to a test directory: a test never sweeps the
+  real `/tmp`.
 
 ## What one run does
 
@@ -51,9 +119,10 @@ warning never fails the run.
       every process that it saw under them is gone. A survivor fails the file, and the output
       names its pid, start time and command. The harness sends a survivor no signal: on macOS a
       pid can be reused between a check and a signal, so the harness cannot prove that it owns it.
-   6. Without `-keep` it removes the lab directory, also when the file failed. For a failed file
-      the output says so after the log tails: `lab removed: /tmp/lrt-<digits> (run with -keep to
-      keep it)`, because the printed log paths no longer exist.
+   6. Without `-keep` it removes the lab directory of a passed file, when the probe proves the lab
+      ended. A failed file keeps its lab for 24 hours (a `failed` KEEP marker), and its FAIL line
+      names it, so the printed log paths still exist. A removal that fails is a problem of the
+      file. "Lab directories" below has the rules.
 4. Tests in one file share one hub and run in order. Files do not share anything.
 
 The same cleanup runs after a failure, a startup failure, a timeout and an interrupt (Ctrl-C).
@@ -114,14 +183,24 @@ and workers are Rex blocks, so they inherit the server environment) a private en
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | `LAB/home/.config`, `LAB/home/.local/share`, `LAB/home/.local/state`, `LAB/home/.cache` |
 | `TMPDIR` | `LAB/tmp/` |
 | `REX_SERVER` | The lab server. |
+| `GOCACHE`, `GOMODCACHE` | The harness's `go env` values, when `go` is on `PATH` (the one exception below). |
 | `test.env` | As the manifest gives them. |
 
-No other variable is copied. `LANG`, `TERM` and similar variables are not set: Rex and the self-tests
+No other variable is copied, with one exception: `GOCACHE` and `GOMODCACHE`. The harness runs
+`go env GOCACHE GOMODCACHE` once per run and passes both values, so a Go build in a lab reuses the
+user's caches. Without them, each lab built from a cold cache under its own HOME, and Go's
+read-only module files stayed in the lab directory. Go locks and verifies both caches itself, and
+both are content-addressed, so a normal lab build cannot corrupt them. A relative value, or one
+under `/tmp` or the system temporary directory, is not passed; the run prints one line that says
+why. `GOPATH`, `GOFLAGS`, `GOTOOLCHAIN` and `GOENV` are never passed: the lab HOME stays isolated,
+and a lab's `go env -w` writes only the lab's own file. The harness runs `go env` once, in the caller's environment, and
+Go can write its telemetry dir there (`go/telemetry` in the caller's config dir). `LANG`, `TERM` and similar variables are not set: Rex and the self-tests
 do not need them (observed on the Rex build 88fd41c of 2026-10-16). If a tool needs one, set a fixed value in `test.env`.
 
 Rules for `test.env` and `test.args`:
 
-- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `LAZYREX_AGENT`, any `XDG_*` or any `REX_*`.
+- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `LAZYREX_AGENT`, `GOCACHE`, `GOMODCACHE`, any
+  `XDG_*` or any `REX_*`.
 - A value can name `${LAB}` (the lab dir) and `${PLUGIN}` (the dir of `main`). Any other
   placeholder is an error. `~` is not expanded and is refused.
 - A value with a `/`, or one that starts with `.` or `~`, is a path. After expansion a path must be

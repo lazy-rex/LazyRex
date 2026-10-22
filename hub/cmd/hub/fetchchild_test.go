@@ -22,6 +22,9 @@ import (
 const fetchHubSimEnv = "LAZYREX_FETCH_HUBSIM"
 
 func TestMain(m *testing.M) {
+	if os.Getenv(labKeeperEnv) == "1" {
+		labKeeper() // the test binary as a lab keeper (labkeeper_test.go)
+	}
 	fetchChildMain()
 	if path := os.Getenv(fetchHubSimEnv); path != "" {
 		_, err := runFetchChild(context.Background(), fetchCmd{Argv: os.Args[1:]}, func(_ context.Context, w, g int) error {

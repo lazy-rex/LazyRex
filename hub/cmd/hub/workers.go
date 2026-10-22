@@ -1541,6 +1541,7 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			id, pending := h.ownedInstance(pl)
 			item["instance_id"], item["instance_pending"] = id, pending
 			item["desired"], item["registered"] = pl.Desired, h.registeredLocked(e.name)
+			pl.respawnFields(item)
 		}
 		item["name"], item["state"] = name, state
 		if state == "refused" || state == "retained" {

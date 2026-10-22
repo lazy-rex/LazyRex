@@ -86,7 +86,7 @@ func TestReviewerSnapshotRejectsReusedRootPID(t *testing.T) {
 	defer func() { child.Process.Kill(); child.Wait() }()
 	// Model PID reuse without sending any signal: the recorded root lifetime differs from the
 	// current process. Its child must not become a cleanup target.
-	l := &lab{srv: &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}}, tracked: map[int]string{os.Getpid(): "old-lifetime"}}
+	l := &lab{srv: &kept{pid: os.Getpid()}, tracked: map[int]string{os.Getpid(): "old-lifetime"}}
 	l.snapshot()
 	if _, claimed := l.tracked[child.Process.Pid]; claimed {
 		t.Fatal("snapshot claimed a child of a root with a different process lifetime")
@@ -114,25 +114,17 @@ func TestWaiterSendsNoGroupSignalAfterReap(t *testing.T) {
 	}
 }
 
-// The runner exits at once, and its child keeps the output open for 8 s. The leader is reaped,
-// so its group gets no signal. The wait must end at the timeout, not when the child exits.
+// The runner exits at once, and its child keeps the output open for 8 s. The wait must end at the
+// timeout, not when the child exits.
 func TestRunnerTimeoutEndsWhenAChildHoldsTheOutput(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", "sleep 8 & exit 0")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	k, stdout := keptShell(t, "sleep 8 & exit 0")
 	o := &testOpts{timeout: time.Second}
 	l := &lab{tracked: map[int]string{}}
 	res := &fileResult{}
 	fctx, cancel := context.WithTimeout(context.Background(), o.timeout)
 	defer cancel()
 	began := time.Now()
-	o.waitRunner(context.Background(), fctx, l, cmd, stdout, res, io.Discard)
+	o.waitRunner(context.Background(), fctx, l, k, stdout, res, io.Discard)
 	if d := time.Since(began); d > 3*time.Second {
 		t.Fatalf("the wait took %s", d)
 	}
@@ -145,15 +137,7 @@ func TestRunnerTimeoutEndsWhenAChildHoldsTheOutput(t *testing.T) {
 // waitRunner returns only after the restart returns (the lab cleanup runs after it).
 func TestRunnerEndDuringRestartWaitsForTheRestart(t *testing.T) {
 	for _, interrupt := range []bool{false, true} {
-		cmd := exec.Command("/bin/sh", "-c", "echo 'LRT plan 1'; echo 'LRT restart term'; exec sleep 30")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
+		k, stdout := keptShell(t, "echo 'LRT plan 1'; echo 'LRT restart term'; exec sleep 30")
 		var done atomic.Bool
 		started := make(chan struct{})
 		o := &testOpts{timeout: 500 * time.Millisecond}
@@ -172,7 +156,7 @@ func TestRunnerEndDuringRestartWaitsForTheRestart(t *testing.T) {
 		if interrupt {
 			go func() { <-started; stop() }()
 		}
-		o.waitRunner(ctx, fctx, l, cmd, stdout, res, io.Discard)
+		o.waitRunner(ctx, fctx, l, k, stdout, res, io.Discard)
 		cancel()
 		stop()
 		if !done.Load() {
@@ -191,27 +175,19 @@ func TestRunnerEndDuringRestartWaitsForTheRestart(t *testing.T) {
 // The reviewer's reproducer: a restart that still writes l.hub after the timeout. The timeout
 // snapshot reads l.hub, so it must wait for the restart (go test -race).
 func TestRunnerTimeoutSnapshotWaitsForTheRestart(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", "echo 'LRT plan 1'; echo 'LRT restart term'; exec sleep 30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
+	k, stdout := keptShell(t, "echo 'LRT plan 1'; echo 'LRT restart term'; exec sleep 30")
 	l := &lab{tracked: map[int]string{}}
 	o := &testOpts{timeout: 200 * time.Millisecond}
 	o.restartFn = func(ctx context.Context, l *lab, mode string) error {
 		<-ctx.Done()
 		until := time.Now().Add(300 * time.Millisecond)
 		for time.Now().Before(until) {
-			l.hub = cmd // as startHub assigns it
+			l.hub = k // as startHub assigns it
 			runtime.Gosched()
 		}
 		return ctx.Err()
 	}
 	fctx, cancel := context.WithTimeout(context.Background(), o.timeout)
 	defer cancel()
-	o.waitRunner(context.Background(), fctx, l, cmd, stdout, &fileResult{}, io.Discard)
+	o.waitRunner(context.Background(), fctx, l, k, stdout, &fileResult{}, io.Discard)
 }
