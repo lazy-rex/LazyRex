@@ -66,7 +66,7 @@ var openIntentText = map[string]string{
 
 func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error) {
 	for k := range args {
-		if k != "plugin" && k != "expect_instance" && k != "expect_run" {
+		if k != "plugin" && k != "expect_instance" && k != "expect_run" && k != "attempt" {
 			return nil, bad("invalid: unknown field %s", k)
 		}
 	}
@@ -76,6 +76,10 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 		return nil, bad("invalid: replace needs plugin and a nonempty expect_instance")
 	}
 	x, err := parseExpectRun(args)
+	if err != nil {
+		return nil, err
+	}
+	attempt, err := parseAttempt(args)
 	if err != nil {
 		return nil, err
 	}
@@ -91,10 +95,28 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	defer pl.lifecycle.Unlock()
 	defer h.kickWaiting() // the wake rule: a start or a stop of any plugin
 
+	// The row read inserts no row: up to sent_at the call has no effect (adminattempt.go).
 	h.mu.Lock()
-	err = h.loadPluginRow(ctx, pl)
+	err = h.readPluginRow(ctx, pl)
+	target, block := pl.InstanceID, pl.BlockID
 	h.mu.Unlock()
 	if err != nil {
+		return nil, err
+	}
+	if attempt != "" {
+		if err := h.bindAttempt(ctx, attempt, "replace", target, block); err != nil {
+			return nil, err
+		}
+		pl.opAttempt = attempt // the spawn of this call writes its intent_id (spawn)
+		defer func() { pl.opAttempt = "" }()
+	}
+	// The first effect: the insert of an absent row, then the resolution of earlier intents. That
+	// resolution belongs to the earlier intents: a refusal after it says that this call retired and
+	// spawned nothing, not that nothing changed.
+	if err := h.attemptSent(ctx, attempt); err != nil {
+		return nil, err
+	}
+	if err := h.ensurePluginRow(ctx, pl.Name); err != nil {
 		return nil, err
 	}
 	if err := h.resolveIntents(ctx, pl); err != nil {
@@ -105,6 +127,7 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	owned, pending := h.ownedInstance(pl)
 	live := owned != "" && !pending && alive(pl.ChildPID, pl.ChildStart)
 	kept := pl.entry == nil
+	nowBlock := pl.BlockID
 	h.mu.Unlock()
 	if desired != "running" {
 		return nil, refuse("stopped", "plugin %s is stopped; use hub.admin.start", name)
@@ -114,6 +137,11 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	}
 	if owned != expect {
 		return nil, refuse("instance_changed", "plugin %s runs instance %s, not %s; nothing was replaced", name, owned, expect)
+	}
+	if attempt != "" && (owned != target || nowBlock != block) {
+		// The intent resolution adopted another instance or block: the bound target is not what a
+		// retire would act on.
+		return nil, refuse("instance_changed", "plugin %s: the intent resolution changed the instance from %s to %s; this replace retired and spawned nothing", name, target, owned)
 	}
 	if kept {
 		return nil, refuse("refused", "plugin %s has no config entry: stop it with hub.admin.stop, or start its entry by source", name)

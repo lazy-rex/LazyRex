@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NU
 -- effect began. intent_id: the spawn intent of a start or a replace. proof: how the outcome is
 -- known (separate from the outcome text). resolved_by: the operator that resolved the attempt.
 CREATE TABLE IF NOT EXISTS plugin_op_attempts (attempt TEXT PRIMARY KEY, op_id TEXT NOT NULL, call TEXT NOT NULL,
-  expect_instance TEXT NOT NULL DEFAULT '', expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
+  expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
   outcome TEXT NOT NULL DEFAULT '', bound_at TEXT NOT NULL DEFAULT '', target_instance TEXT NOT NULL DEFAULT '',
   target_block TEXT NOT NULL DEFAULT '', intent_id TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
   proof TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '');
@@ -876,27 +876,19 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		return err
 	}
 	attempt = hex.EncodeToString(b)
-	// A stop attempt names the instance of the plugins row that it is for. A stop keeps the row's
-	// instance_id (clearInstance), and any later start writes a new one, also from a rollback hub
-	// that does not write entry_identity: the observation then cannot take another stop for this one.
-	var instance string
-	if call == "stop" {
-		err := h.db.QueryRowContext(ctx, `SELECT instance_id FROM plugins WHERE name = ?`, op.Name).Scan(&instance)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-	}
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, expect_instance, expect_run, at) VALUES (?, ?, ?, ?, ?, ?)`,
-		attempt, op.ID, call, instance, op.Target, time.Now().UnixMilli()); err != nil {
+	// The start and stop handlers bind the attempt (target_instance, target_block, intent_id) and
+	// commit sent_at before their first effect (adminattempt.go).
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, expect_run, at) VALUES (?, ?, ?, ?, ?)`,
+		attempt, op.ID, call, op.Target, time.Now().UnixMilli()); err != nil {
 		return err
 	}
 	var res any
 	var callErr error
 	switch call {
 	case "start":
-		res, callErr = h.opStart(ctx, op)
+		res, callErr = h.opStart(ctx, op, attempt)
 	case "stop":
-		res, callErr = h.opStop(ctx, op)
+		res, callErr = h.opStop(ctx, op, attempt)
 	case "reload":
 		res, callErr = opReload(ctx, h)
 	}
@@ -907,10 +899,20 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		return ctx.Err() // the outcome is unknown: the next hub observes it
 	}
 	phase, result, errText := op.nextPhase(op.Phase), opResultText(call, res), ""
+	proof := ""
+	if call != "reload" { // the reload's proof: a later commit (the file attempts)
+		var err error
+		if proof, err = h.returnProof(ctx, call, attempt, callErr); err != nil {
+			return err
+		}
+	}
 	if callErr != nil {
 		phase, result, errText = "failed", "", callErr.Error()
 		if isRefusal(callErr, "candidate_changed") || isRefusal(callErr, "entry_changed") {
 			phase = "conflict"
+		}
+		if call != "reload" && proof == "" {
+			phase = "unknown" // the call can have had its effect
 		}
 	}
 	if call == "reload" && callErr == nil {
@@ -918,12 +920,50 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 			errText = msg
 		}
 	}
-	return h.finishCall(ctx, op, attempt, phase, result, errText)
+	return h.finishCall(ctx, op, attempt, phase, result, errText, proof)
+}
+
+// afterSentNone are the refusals of each call that come after sent_at and before the call's own
+// effect: the call retired, spawned and saved nothing. For replace, the resolution of earlier
+// intents can come before them; it belongs to those intents, not to this attempt.
+var afterSentNone = map[string][]string{
+	"start":   {"refused", "candidate_changed", "dependency_not_ready", "unresolved_intent"},
+	"stop":    {},
+	"replace": {"unresolved_intent", "stopped", "no_instance", "instance_changed", "refused", "candidate_changed", "dependency_not_ready"},
+}
+
+// returnProof is the proof that the return of a bound call gives (docs/hub.md, "attempt"):
+//   - a success: applied;
+//   - any return while sent_at is '': not_applied (no effect began);
+//   - after sent_at, a refusal of afterSentNone: not_applied;
+//   - else '': unresolved, until an observation or an operator.
+//
+// attempt_bound proves nothing: the call did nothing, and the attempt keeps its own state.
+func (h *Hub) returnProof(ctx context.Context, call, attempt string, callErr error) (string, error) {
+	if callErr == nil {
+		return "applied: the call returned", nil
+	}
+	if isRefusal(callErr, "attempt_bound") {
+		return "", nil
+	}
+	var sent string
+	if err := h.db.QueryRowContext(ctx, `SELECT sent_at FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&sent); err != nil {
+		return "", err
+	}
+	if sent == "" {
+		return "not_applied: the call returned before its first effect", nil
+	}
+	for _, code := range afterSentNone[call] {
+		if isRefusal(callErr, code) {
+			return "not_applied: the call refused (" + code + ") before its own effect", nil
+		}
+	}
+	return "", nil
 }
 
 // finishCall stores the outcome of the op's open attempt and the op's next phase in one
 // transaction.
-func (h *Hub) finishCall(ctx context.Context, op *pluginOp, attempt, phase, result, errText string) error {
+func (h *Hub) finishCall(ctx context.Context, op *pluginOp, attempt, phase, result, errText, proof string) error {
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -933,7 +973,7 @@ func (h *Hub) finishCall(ctx context.Context, op *pluginOp, attempt, phase, resu
 	if errText != "" {
 		stored = "error: " + errText
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ? WHERE attempt = ?`, stored, attempt); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ?, proof = ? WHERE attempt = ?`, stored, proof, attempt); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET phase = ?, result = ?, error = ?, updated = ? WHERE op_id = ?`,
@@ -998,7 +1038,7 @@ func entryChanged(op *pluginOp, now string) error {
 
 // opStart starts the op's entry with the op's expect_run and expect_entry: nothing else than that
 // run of that entry starts.
-func (h *Hub) opStart(ctx context.Context, op *pluginOp) (any, error) {
+func (h *Hub) opStart(ctx context.Context, op *pluginOp, attempt string) (any, error) {
 	if _, now := h.opEntryNow(op); now != op.EntryIdentity {
 		return nil, entryChanged(op, now)
 	}
@@ -1011,7 +1051,7 @@ func (h *Hub) opStart(ctx context.Context, op *pluginOp) (any, error) {
 			delete(x, k) // a local source has no commit and no digest
 		}
 	}
-	args := map[string]any{"expect_run": x, "expect_entry": op.EntryIdentity}
+	args := map[string]any{"expect_run": x, "expect_entry": op.EntryIdentity, "attempt": attempt}
 	if op.Name != "" {
 		args["plugin"] = op.Name
 	} else {
@@ -1022,7 +1062,7 @@ func (h *Hub) opStart(ctx context.Context, op *pluginOp) (any, error) {
 
 // opStop stops the op's plugin, only while it is bound to the op's entry. An entry without a record
 // has nothing to stop.
-func (h *Hub) opStop(ctx context.Context, op *pluginOp) (any, error) {
+func (h *Hub) opStop(ctx context.Context, op *pluginOp, attempt string) (any, error) {
 	pl, now := h.opEntryNow(op)
 	if op.Name == "" || pl == nil {
 		return map[string]any{"desired": "stopped", "note": "no instance"}, nil
@@ -1030,46 +1070,30 @@ func (h *Hub) opStop(ctx context.Context, op *pluginOp) (any, error) {
 	if now != op.EntryIdentity {
 		return nil, entryChanged(op, now)
 	}
-	return opAdmin(ctx, h, "hub.admin.stop", map[string]any{"plugin": op.Name, "expect_entry": op.EntryIdentity})
+	return opAdmin(ctx, h, "hub.admin.stop", map[string]any{"plugin": op.Name, "expect_entry": op.EntryIdentity, "attempt": attempt})
 }
 
 // opObserve ends an op whose call has an attempt without an outcome. The manager does not call
-// again: it reads what the hub knows.
+// again: it reads what the hub knows. It runs only when the call cannot act any more: the call
+// returned in this process (a test fault), or the hub restarted. The proof follows the binding
+// of the start and stop handlers (adminattempt.go):
+//   - bound_at = '' (the handler never bound it) or sent_at = '' (no effect began): not_applied;
+//     the op failed, and nothing was changed by it.
 //   - stop: the stored record is stopped with no instance, its saved entry identity is the op's,
-//     and its instance_id is the one that the attempt was for -> the stop happened (the same
-//     effect from any caller); else unknown. A row without an identity (from before it was
+//     and its instance_id is the target_instance that the handler bound -> applied (the same
+//     effect from any caller); else unresolved. A row without an identity (from before it was
 //     recorded), with another entry's, or with a later instance (a start, also by a rollback hub
 //     that does not write entry_identity) is never a match. The identity counts only while
 //     entry_stamp is the stamp of the row's values (entryStamp): a rollback hub's write, or a save
 //     of a kept record, makes it invalid.
+//   - start: the spawn intent intent_id is created (its block has the instance marker), the record
+//     has that instance with the op's valid entry identity, and the instance registered ->
+//     applied; else unresolved. An absent block never proves not_applied: Rex can complete a
+//     create after its client is gone.
 //   - reload: the hub's entries have the op's intended entry -> done (the hub start or the call read
-//     the file); else unknown.
-//   - start: unknown. A new start goes through the unresolved-intent guard of the start path.
+//     the file); else unknown. Its proof comes with the file attempts.
 func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string) error {
-	switch call {
-	case "stop":
-		var expect string
-		if err := h.db.QueryRowContext(ctx, `SELECT expect_instance FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&expect); err != nil {
-			return err
-		}
-		var desired, block, identity, instance, session, start, run, stamp string
-		var pid int
-		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
-			Scan(&desired, &block, &identity, &instance, &session, &pid, &start, &run, &stamp)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err == nil && stamp != entryStamp(desired, instance, session, block, pid, start, run) {
-			identity = "" // a write that does not know entry_identity changed the row (a rollback hub), or a kept record saved it
-		}
-		if err == nil && op.EntryIdentity != "" && identity == op.EntryIdentity && instance == expect && desired == "stopped" && block == "" {
-			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "stop: stopped (observed after the hub restarted)", "")
-		}
-		if err != nil {
-			return h.finishCall(ctx, op, attempt, "unknown", "", "the stop's outcome is unknown: the plugin has no record")
-		}
-		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, expect, op.EntryIdentity))
-	case "reload":
+	if call == "reload" {
 		intended, err := op.intended()
 		if err != nil {
 			return err
@@ -1084,11 +1108,57 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 		now := canonicalEntry(cur)
 		h.entriesMu.Unlock()
 		if now == intended {
-			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "reload: the hub has the new entry (observed after the hub restarted)", "")
+			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "reload: the hub has the new entry (observed after the hub restarted)", "", "")
 		}
-		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the reload's outcome is unknown: the hub has %s", now))
+		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the reload's outcome is unknown: the hub has %s", now), "")
 	}
-	return h.finishCall(ctx, op, attempt, "unknown", "", "the start's outcome is unknown: the hub stopped during the start. A new start runs only after the hub resolves the spawn intent (unresolved_intent).")
+	var bound, sent, target, intent string
+	if err := h.db.QueryRowContext(ctx, `SELECT bound_at, sent_at, target_instance, intent_id FROM plugin_op_attempts WHERE attempt = ?`, attempt).
+		Scan(&bound, &sent, &target, &intent); err != nil {
+		return err
+	}
+	if bound == "" || sent == "" {
+		how := "the call never bound the attempt"
+		if bound != "" {
+			how = "the call stopped before its first effect"
+		}
+		return h.finishCall(ctx, op, attempt, "failed", "", "the "+call+" did not run: "+how+" (observed after the hub restarted)", "not_applied: "+how)
+	}
+	var desired, block, identity, instance, session, start, run, stamp string
+	var pid int
+	err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
+		Scan(&desired, &block, &identity, &instance, &session, &pid, &start, &run, &stamp)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return h.finishCall(ctx, op, attempt, "unknown", "", "the "+call+"'s outcome is unknown: the plugin has no record", "")
+	}
+	if stamp != entryStamp(desired, instance, session, block, pid, start, run) {
+		identity = "" // a write that does not know entry_identity changed the row (a rollback hub), or a kept record saved it
+	}
+	mine := op.EntryIdentity != "" && identity == op.EntryIdentity
+	if call == "stop" {
+		if mine && instance == target && desired == "stopped" && block == "" {
+			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "stop: stopped (observed after the hub restarted)", "", "applied: observed the stored record")
+		}
+		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, target, op.EntryIdentity), "")
+	}
+	var status string
+	if intent != "" {
+		err := h.db.QueryRowContext(ctx, `SELECT status FROM spawn_intents WHERE instance_id = ?`, intent).Scan(&status)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	h.mu.Lock()
+	pl := h.plugins[op.Name]
+	registered := pl != nil && pl.InstanceID == intent && h.registeredLocked(op.Name)
+	h.mu.Unlock()
+	if intent != "" && status == "created" && mine && instance == intent && registered {
+		return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "start: running (observed after the hub restarted)", "", "applied: observed the created intent and its registration")
+	}
+	return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the start's outcome is unknown: the hub stopped during the start (intent %q, status %q). A new start runs only after the hub resolves the spawn intent (unresolved_intent).", intent, status), "")
 }
 
 // pluginOpActions are hub.plugins.op and hub.plugins.ops on the agent face (agentKeymap).
