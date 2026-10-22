@@ -574,6 +574,15 @@ function M.plugin(name)
     order[#order + 1] = action_name
   end
 
+  -- opts.refresh (app.panel and app.view): "writes" (the default: the view renders again after each
+  -- SQL commit of the plugin) or "reads" (after a write to a table that its render read). The SDK sends
+  -- "reads" in each render reply; the hub decides at each render (render opt-in, hub lead).
+  local function refresh_of(opts)
+    local v = opts.refresh
+    assert(v == nil or v == 'reads' or v == 'writes', 'refresh is "reads" or "writes"')
+    return v == 'reads' and v or nil
+  end
+
   -- app.panel(title, fn, opts): a tab in the LazyRex window. fn(view) answers a list of nodes
   -- (app.ui.*). opts: id (default from the title), description, keywords, landing (default true).
   function app.panel(title, fn, opts)
@@ -581,7 +590,7 @@ function M.plugin(name)
     local id = opts.id or slug(title)
     check_command({id = id})
     local route = '/panels/' .. id
-    panels[route] = {title = title, fn = fn}
+    panels[route] = {title = title, fn = fn, refresh = refresh_of(opts)}
     commands[#commands + 1] = {id = id, title = title, description = opts.description or ('Show ' .. title), keywords = opts.keywords or {id},
       route = route, surface = 'panel', landing = opts.landing ~= false, user_only = 'navigation'}
   end
@@ -592,7 +601,8 @@ function M.plugin(name)
   -- with ctx.key = the operation key. opts.store = false saves no reply; opts.tx = false runs each SQL
   -- call alone (long operations: use app.db.transaction for the steps).
   function app.view(route, handlers, opts)
-    views[#views + 1] = {route = route, prefix = route:sub(-1) == '*' and route:sub(1, -2) or nil, handlers = handlers, opts = opts or {}}
+    opts = opts or {}
+    views[#views + 1] = {route = route, prefix = route:sub(-1) == '*' and route:sub(1, -2) or nil, handlers = handlers, opts = opts, refresh = refresh_of(opts)}
   end
   -- app.command(spec): an extra hub.register command (a palette entry).
   function app.command(spec) commands[#commands + 1] = check_command(spec) end
@@ -862,10 +872,10 @@ function M.plugin(name)
     local panel = panels[a.route]
     if action == 'view.render' then
       if panel then
-        return sized({tree = run({tx = false, render = a.render, in_render = true}, function() return tree(panel, panel.fn(user_ctx(a))) end)})
+        return sized({tree = run({tx = false, render = a.render, in_render = true}, function() return tree(panel, panel.fn(user_ctx(a))) end), refresh = panel.refresh})
       end
       local v = view_of(a.route)
-      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render, in_render = true}, v.handlers.render, user_ctx(a), a)}) end
+      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render, in_render = true}, v.handlers.render, user_ctx(a), a), refresh = v.refresh}) end
       fail('not_found', 'Unknown route ' .. tostring(a.route))
     end
     local ctx = user_ctx(a)

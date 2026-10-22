@@ -105,6 +105,13 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   comes back as a decimal string.
 - **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs
   again after each write.
+- **Selective refresh (opt-in).** `app.panel(title, fn, {refresh = 'reads'})` or
+  `app.view(route, handlers, {refresh = 'reads'})`: the view renders again after its own action and
+  after a write to a table that its render read. For other state, call `app.refresh()`. If the render
+  reads through another hub call (for example `hub.store.*`), that render is not tracked: the view then
+  renders again after each write. `'writes'` is the default; another value fails at load. Before a
+  release that sets `'reads'`, your pair checks the render path. A hub without render tracking
+  (before hub 4.2) ignores the option.
 - **A render only reads.** A panel, view or form render reads the committed state, with no
   transaction. A write (`db.exec`, `db.batch`, `db.transaction`, `app.notice`) in a render fails with `refused`.
   Write in an action or an `on_select` handler.

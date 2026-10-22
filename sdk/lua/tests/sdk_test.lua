@@ -1006,6 +1006,33 @@ test('a panel with a title of several words gets a command id that the hub accep
   expect(tostring(bad.load_error):find('A command id uses only a-z, 0-9 and _ (not notes.add)', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
 end)
 
+test('refresh = "reads" on a panel or a view goes into its render reply; the default sends no field', function()
+  -- Render opt-in (hub lead lead-optin-final, coordinator coord-render-g4-final): each render states
+  -- it again; the hub filters refreshes by the tables that the render read only for "reads".
+  local s = plugin([[
+app.panel('Reads', function() return {} end, {refresh = 'reads'})
+app.panel('Plain', function() return {} end)
+app.panel('Writes', function() return {} end, {refresh = 'writes'})
+local function render() return {title = 'V', nodes = {}} end
+app.view('/v/reads', {render = render}, {refresh = 'reads'})
+app.view('/v/plain', {render = render})
+app.view('/v/writes', {render = render}, {refresh = 'writes'})
+]])
+  for route, want in pairs({['/panels/reads'] = 'reads', ['/panels/plain'] = false, ['/panels/writes'] = false,
+      ['/v/reads'] = 'reads', ['/v/plain'] = false, ['/v/writes'] = false}) do
+    local r = s:render(route, 'render-1')
+    expect(r.error, route).to_be(nil)
+    expect(r.result.refresh, route).to_be(want or nil)
+    expect(r.result.tree.refresh, route .. ': not in the tree').to_be(nil)
+  end
+  for _, decl in ipairs({"app.panel('P', function() return {} end, {refresh = 'read'})",
+      "app.view('/v', {render = function() return {} end}, {refresh = true})"}) do
+    local bad = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. decl})
+    expect(bad.loaded, decl .. ': fails at the declaration').to_be(false)
+    expect(tostring(bad.load_error):find('refresh is "reads" or "writes"', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
+  end
+end)
+
 test('a lost reply is unavailable: client_unavailable, and a table error with timeout, disconnected or client_unavailable', function()
   -- Rex fails a waiting request with client_unavailable when a connection drops (rex-protocol.md,
   -- client.perform; a reply frame over the limit closes the client). The outcome is unknown, as for a
