@@ -2,8 +2,8 @@ package main
 
 // The plugin lock (docs/plugin-sources.md, section 3): a file that pins each GitHub source to one
 // commit. The key and the commit are the pin; every other field is derived from them, so sync can
-// rebuild it. The hub only reads the lock (readLock, lockedDir); the plugin commands write it
-// (writeLock), always by a rename.
+// rebuild it. A hub start only reads the lock (readLock, lockedDir); the plugin commands and the
+// plugin manager's locking phase (pluginopslock.go) write it (writeLock), always by a rename.
 //
 // For one source string and one commit, the pin (lockPin) is the same on every machine: the name
 // and the digest depend only on the commit's tree. dir is local: it names this machine's cache
