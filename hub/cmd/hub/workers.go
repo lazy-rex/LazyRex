@@ -1430,7 +1430,8 @@ func candidateChange(cand, run *pluginRun) map[string]any {
 			c["commit"] = nil // a local candidate: no commit
 		}
 	}
-	if cand.Dir != run.Dir {
+	// A local run's dir is its snapshot: the candidate's source dir is not a change.
+	if cand.Dir != run.Dir && !strings.HasPrefix(run.Entry, "local/") {
 		c["dir"] = cand.Dir
 	}
 	if cand.Tag != run.Tag {
