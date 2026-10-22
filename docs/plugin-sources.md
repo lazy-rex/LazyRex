@@ -369,6 +369,8 @@ exactly, or nothing:
 ## 6. Commands
 
 The commands are CLI only. A hub action must answer fast, because the hub has one request queue.
+The plugin manager's add and update ops also write the lock (docs/hub.md, the `locking` phase).
+They run in the hub's op manager, not in a hub action, and take the same two flocks.
 
 - `lazyrex-hub plugin sync -config <cfg>`: first install and repair.
   - A GitHub source without a lock entry: resolve the ref, fetch, add the entry.
@@ -440,9 +442,9 @@ unchanged`.
 1. `<state>/plugins/.lock`: all commands on one state, for any config or lock file.
 2. `<lockfile>.lck`.
 
-A second command fails at once: `another plugin command runs (pid N)`. No hub code in this design
-takes a flock. (The plugin manager design adds a hub writer that takes both flocks; then N can be
-the hub's pid.) A rename replaces the lock, and cache entries are immutable, so a hub start reads
+A second command fails at once: `another plugin command runs (pid N)`. The plugin manager's
+writes (the lock and the managed file) take both flocks too, so N can be the hub's pid. An op
+that finds the flocks held waits in its phase and tries again. A rename replaces the lock, and cache entries are immutable, so a hub start reads
 the old lock or the new lock, never a mix.
 
 ## 6a. Pin sync
@@ -806,8 +808,8 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
   - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
 - After `lockedDir`, Part B reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
-- No hub code takes a flock (section 6). The hub reads the lock with one read. The commands
-  replace the file with a rename, so the hub reads the old lock or the new lock.
+- A hub start takes no flock (section 6). The hub reads the lock with one read. The commands and
+  the plugin manager replace the file with a rename, so the hub reads the old lock or the new lock.
 - For tests, the commands are also Go functions with an option for the remote URL, so a test can
   use a local bare repository (`file://`) in place of GitHub:
 
