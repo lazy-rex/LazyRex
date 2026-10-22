@@ -753,19 +753,18 @@ func unescapeLRT(s string) string {
 	return strings.NewReplacer(`\n`, "\n       ", `\\`, `\`).Replace(s)
 }
 
-// removeRunLab removes the lab of a test file at its end, unless -keep. For a failed file it
-// returns a line for the output after the log tails: the printed log paths are gone then, and the
-// line says how to keep them.
+// removeRunLab removes the lab of a test file at its end, unless -keep. It returns a line for the
+// output: for any file whose removal fails, the error; for a failed file, after the log tails, that
+// its lab was removed (the printed log paths are gone then) and how to keep it.
 func removeRunLab(dir string, keep, failed bool) string {
 	if keep {
 		return ""
 	}
-	err := os.RemoveAll(dir)
-	switch {
-	case !failed:
-		return ""
-	case err != nil:
+	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Sprintf("lab not fully removed: %s: %v", dir, err)
+	}
+	if !failed {
+		return ""
 	}
 	return "lab removed: " + dir + " (run with -keep to keep it)"
 }

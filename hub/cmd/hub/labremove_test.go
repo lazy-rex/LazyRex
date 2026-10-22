@@ -9,7 +9,7 @@ import (
 
 // A failed file's lab is removed without -keep, and the output line says so, because the printed
 // log paths are gone (the vanished-lab reports, 2026-10-22). A passed file prints nothing; -keep
-// removes nothing.
+// removes nothing. A removal that fails is reported for a failed and for a passed file.
 func TestRemoveRunLab(t *testing.T) {
 	root := t.TempDir()
 	mk := func(name string) string {
@@ -44,6 +44,12 @@ func TestRemoveRunLab(t *testing.T) {
 	os.Chmod(locked, 0o500)
 	t.Cleanup(func() { os.Chmod(locked, 0o700) })
 	if note := removeRunLab(locked, false, true); !strings.HasPrefix(note, "lab not fully removed: "+locked) {
-		t.Errorf("a failed removal: %q", note)
+		t.Errorf("a failed removal of a failed file: %q", note)
+	}
+	lockedPass := mk("lrt-5")
+	os.Chmod(lockedPass, 0o500)
+	t.Cleanup(func() { os.Chmod(lockedPass, 0o700) })
+	if note := removeRunLab(lockedPass, false, false); !strings.HasPrefix(note, "lab not fully removed: "+lockedPass) {
+		t.Errorf("a failed removal of a passed file: %q", note)
 	}
 }
