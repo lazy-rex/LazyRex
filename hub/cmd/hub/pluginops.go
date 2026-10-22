@@ -42,12 +42,14 @@ const pluginOpsSchema = `
 -- write renames, stored before the rename.
 -- entry_identity: entryIdentity of the entry at admission; the start and stop calls send it as expect_entry.
 -- pin: add and update: the fetched lock entry (JSON), stored before the lock write.
+-- lock_base: add and update: the lock entry of each key that the target can use, at admission
+-- (JSON: key -> lockBase); the lock write compares against it.
 CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NULL, key TEXT NOT NULL,
   fingerprint TEXT NOT NULL, origin TEXT NOT NULL, kind TEXT NOT NULL, entry TEXT NOT NULL, name TEXT NOT NULL,
   expect TEXT NOT NULL, input TEXT NOT NULL, target TEXT NOT NULL, phase TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 1,
   confirmed TEXT NOT NULL DEFAULT '', base TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', entry_identity TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL,
-  pin TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
+  pin TEXT NOT NULL DEFAULT '', lock_base TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
 -- run; the manager observes its result and never calls again.
 -- bound_at: the handler bound the attempt (with target_instance, target_block, target_session) before its first
@@ -154,6 +156,7 @@ type pluginOp struct {
 	Input                        string
 	Target                       string // start: the expect_run JSON; restart: the run and instance; add, update: the resolved target
 	Pin                          string // add, update: the fetched lock entry (JSON)
+	LockBase                     string // add, update: the admission snapshot of the lock (lock_base)
 	Base, Output                 string
 	EntryIdentity                string // entryIdentity of the entry at admission ("" in no admitted op)
 	Result, Error                string
@@ -166,8 +169,10 @@ func (h *Hub) pluginOpsSchemaUp(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, pluginOpsSchema); err != nil {
 		return err
 	}
-	if _, err := h.db.ExecContext(ctx, `ALTER TABLE plugin_ops ADD COLUMN pin TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return err
+	for _, col := range []string{"pin", "lock_base"} {
+		if _, err := h.db.ExecContext(ctx, `ALTER TABLE plugin_ops ADD COLUMN `+col+` TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
 	}
 	return nil
 }
@@ -402,9 +407,9 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 	// and the insert are one BEGIN IMMEDIATE transaction (pluginhold.go): under a hold, no op is
 	// inserted.
 	if err := h.admitUnderHold(ctx, func(c *sql.Conn) error {
-		_, err := c.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, entry_identity, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
-			op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, op.EntryIdentity, now, now)
+		_, err := c.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, entry_identity, lock_base, created, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
+			op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, op.EntryIdentity, op.LockBase, now, now)
 		return err
 	}); err != nil {
 		return nil, err
@@ -526,6 +531,22 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		}
 		op.Base = canonicalEntry(m)
 	}
+	if req.Op == "update" {
+		// The keys that the resolve can choose (opResolveTarget): latest, or the two spellings of a tag.
+		var in opUpdateInput
+		var base managedFileEntry
+		json.Unmarshal([]byte(op.Input), &in)
+		json.Unmarshal([]byte(op.Base), &base)
+		keys := []string{opNewSource(base.Source, in.To, false)}
+		if in.To != "latest" {
+			keys = append(keys, opNewSource(base.Source, in.To, true))
+		}
+		snap, err := h.lockSnapshot(keys)
+		if err != nil {
+			return nil, err
+		}
+		op.LockBase = snap
+	}
 	return op, nil
 }
 
@@ -573,8 +594,8 @@ func (h *Hub) startTarget(origin opOrigin, req opRequest, name, source string, g
 func (h *Hub) loadOp(ctx context.Context, id string) (*pluginOp, error) {
 	op := &pluginOp{ID: id}
 	var origin string
-	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin FROM plugin_ops WHERE op_id = ?`, id).
-		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin)
+	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin, lock_base FROM plugin_ops WHERE op_id = ?`, id).
+		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin, &op.LockBase)
 	if err != nil {
 		return nil, err
 	}
