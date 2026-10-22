@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func userAdmit(h *Hub, key string, req opRequest) (map[string]any, error) {
@@ -219,5 +221,154 @@ func TestPluginOpAddAdmissionReloadRace(t *testing.T) {
 		if _, err := userAdmit(h, fmt.Sprintf("race-ok-%d", i), opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@v1", "id": fmt.Sprintf("n%d", i)})}); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// resolveOp admits req and runs its resolving phase only.
+func resolveOp(t *testing.T, h *Hub, key string, req opRequest) (*pluginOp, error) {
+	t.Helper()
+	v, err := userAdmit(h, key, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := opsOf(t, h, v["op_id"].(string))
+	op.Phase = "resolving"
+	return op, h.opResolve(context.Background(), op)
+}
+
+// The resolving phase at a remote: the target source and commit of each add and update form.
+func TestPluginOpResolveTargets(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(map[string]string{"a": "1"})
+	r.git("tag", "-a", "-m", "v1", "v1.0.0")
+	v1 := r.git("rev-parse", "v1.0.0^{}")
+	r.git("branch", "only-branch")
+	c2 := r.commit(map[string]string{"a": "2"})
+	r.git("tag", "v1.1.0")
+	r.git("branch", "both")
+	r.git("tag", "both")
+	h, _, dir := opsTestHub(t, "")
+	h.pops.cmd = pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
+	writeManaged(t, dir, `{"plugins":[{"id":"tools","source":"github:acme/tools/sub@v1.0.0"}]}`)
+	opsLoadEntries(t, h)
+	add := func(src string) opRequest { return opRequest{Op: "add", Input: rawJSON(map[string]any{"source": src})} }
+	update := func(to string) opRequest {
+		return opRequest{Op: "update", Entry: "managed:tools", Input: rawJSON(map[string]any{"to": to})}
+	}
+	for i, c := range []struct {
+		req  opRequest
+		want opResolved
+	}{
+		{add("github:acme/a@latest"), opResolved{Source: "github:acme/a@latest", RefKind: "latest", Tag: "v1.1.0", Commit: c2, FetchRef: "refs/tags/v1.1.0"}},
+		{add("github:acme/b@main"), opResolved{Source: "github:acme/b@main", RefKind: "branch", Commit: c2, FetchRef: "refs/heads/main"}},
+		{add("github:acme/c@v1.0.0"), opResolved{Source: "github:acme/c@v1.0.0", RefKind: "tag", Commit: v1, FetchRef: "refs/tags/v1.0.0"}},
+		{add("github:acme/d@" + v1), opResolved{Source: "github:acme/d@" + v1, RefKind: "commit", Commit: v1, FetchRef: v1}},
+		{update("latest"), opResolved{Source: "github:acme/tools/sub@latest", RefKind: "latest", Tag: "v1.1.0", Commit: c2, FetchRef: "refs/tags/v1.1.0"}},
+		{update("v1.1.0"), opResolved{Source: "github:acme/tools/sub@v1.1.0", RefKind: "tag", Commit: c2, FetchRef: "refs/tags/v1.1.0"}},
+		// A tag that a branch also has: the full tag ref, so a CLI sync reads the tag.
+		{update("both"), opResolved{Source: "github:acme/tools/sub@refs/tags/both", RefKind: "tag", Commit: c2, FetchRef: "refs/tags/both"}},
+	} {
+		op, err := resolveOp(t, h, fmt.Sprintf("res-%d", i), c.req)
+		var got opResolved
+		json.Unmarshal([]byte(op.Target), &got)
+		if err != nil || got != c.want || op.Phase != "fetching" || opsOf(t, h, op.ID).Target != op.Target {
+			t.Errorf("%d: %+v phase %s %v, want %+v", i, got, op.Phase, err, c.want)
+		}
+	}
+	// No such tag, a branch-only name, and an add ref that is not found: failed, nothing stored.
+	for i, c := range []struct {
+		req  opRequest
+		text string
+	}{
+		{update("v9.0.0"), "not a tag: v9.0.0"},
+		{update("only-branch"), "not a tag: only-branch"},
+		{add("github:acme/e@nosuch"), "ref nosuch is not found"},
+		{add("github:acme/f@bad..ref"), "bad..ref is not a valid ref"},
+	} {
+		op, err := resolveOp(t, h, fmt.Sprintf("fail-%d", i), c.req)
+		if stored := opsOf(t, h, op.ID); err != nil || stored.Phase != "failed" || stored.Target != "" ||
+			!strings.Contains(stored.Error, c.text) || !strings.Contains(stored.Error, "nothing was written") {
+			t.Errorf("%d: %+v %v", i, stored, err)
+		}
+	}
+}
+
+// The first STORED target is the decision (lead ruling 4). A crash after the remote read and
+// before the store: the replay resolves again and takes the new answer. A stored target: the
+// replay makes no resolver call.
+func TestPluginOpResolveStoredTarget(t *testing.T) {
+	h, _, _ := opsTestHub(t, "")
+	calls := 0
+	h.pops.resolve = func(ctx context.Context, op *pluginOp) (opResolved, error) {
+		calls++
+		return opResolved{Source: "github:acme/notes@latest", RefKind: "latest", Tag: fmt.Sprintf("v1.%d.0", calls), Commit: strings.Repeat(fmt.Sprint(calls), 40)}, nil
+	}
+	crash := true
+	h.pops.fault = func(point string) bool { return crash && point == "plugin-op-after-resolve" }
+	v, err := userAdmit(h, "a", opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@latest"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := opsOf(t, h, v["op_id"].(string))
+	op.Phase = "resolving"
+	if err := h.opResolve(context.Background(), op); !errors.Is(err, errOpCrash) {
+		t.Fatal(err)
+	}
+	if op := opsOf(t, h, op.ID); op.Target != "" || calls != 1 {
+		t.Fatalf("the crash stored a target: %+v (calls %d)", op, calls)
+	}
+	crash = false
+	op = opsOf(t, h, op.ID)
+	op.Phase = "resolving"
+	if err := h.opResolve(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	var got opResolved
+	json.Unmarshal([]byte(opsOf(t, h, op.ID).Target), &got)
+	if calls != 2 || got.Tag != "v1.2.0" {
+		t.Fatalf("the replay after the crash: calls %d, target %+v", calls, got)
+	}
+	// A crash after the store and before the phase write: the replay keeps the stored target.
+	if _, err := h.db.Exec(`UPDATE plugin_ops SET phase = 'resolving' WHERE op_id = ?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	op = opsOf(t, h, op.ID)
+	if err := h.opResolve(context.Background(), op); err != nil || calls != 2 || op.Phase != "fetching" {
+		t.Fatalf("the replay with a stored target: calls %d, %+v, %v", calls, op, err)
+	}
+}
+
+// A hub stop during the resolve stores nothing and keeps the phase; a resolve that does not answer
+// within the limit ends failed.
+func TestPluginOpResolveStopAndLimit(t *testing.T) {
+	h, _, _ := opsTestHub(t, "")
+	h.pops.resolve = func(ctx context.Context, op *pluginOp) (opResolved, error) {
+		<-ctx.Done()
+		return opResolved{}, ctx.Err()
+	}
+	limit := resolveLimit
+	t.Cleanup(func() { resolveLimit = limit })
+	resolveLimit = time.Hour
+	v, err := userAdmit(h, "a", opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@latest"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	op := opsOf(t, h, v["op_id"].(string))
+	op.Phase = "resolving"
+	h.db.Exec(`UPDATE plugin_ops SET phase = 'resolving' WHERE op_id = ?`, op.ID)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	if err := h.opResolve(ctx, op); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if op := opsOf(t, h, op.ID); op.Phase != "resolving" || op.Target != "" {
+		t.Fatalf("a stop changed the op: %+v", op)
+	}
+	resolveLimit = 50 * time.Millisecond
+	if err := h.opResolve(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if op := opsOf(t, h, op.ID); op.Phase != "failed" || !strings.Contains(op.Error, "no answer within 50ms; nothing was written") {
+		t.Fatalf("the limit: %+v", op)
 	}
 }
