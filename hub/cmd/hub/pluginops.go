@@ -47,14 +47,14 @@ CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NU
   UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
 -- run; the manager observes its result and never calls again.
--- bound_at: the handler bound the attempt (with target_instance and target_block) before its first
+-- bound_at: the handler bound the attempt (with target_instance, target_block, target_session) before its first
 -- effect. sent_at: the handler committed it before its first effect; empty sent_at means that no
 -- effect began. intent_id: the spawn intent of a start or a replace. proof: how the outcome is
 -- known (separate from the outcome text). resolved_by: the operator that resolved the attempt.
 CREATE TABLE IF NOT EXISTS plugin_op_attempts (attempt TEXT PRIMARY KEY, op_id TEXT NOT NULL, call TEXT NOT NULL,
   expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
   outcome TEXT NOT NULL DEFAULT '', bound_at TEXT NOT NULL DEFAULT '', target_instance TEXT NOT NULL DEFAULT '',
-  target_block TEXT NOT NULL DEFAULT '', intent_id TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
+  target_block TEXT NOT NULL DEFAULT '', target_session TEXT NOT NULL DEFAULT '', intent_id TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
   proof TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '');
 -- The release hold: at most one row. A release tool holds it while no manager write may run.
 CREATE TABLE IF NOT EXISTS plugin_hold (one INTEGER PRIMARY KEY CHECK (one = 1), release_id TEXT NOT NULL,
@@ -81,6 +81,8 @@ const (
 	// opRegisterPoll is the interval of the checks while a start observation waits for a
 	// registration (a registration also kicks the manager).
 	opRegisterPoll = time.Second
+	// opObservePoll is the interval of the later observation while an attempt stays unresolved.
+	opObservePoll = 30 * time.Second
 )
 
 // opRegisterWait bounds the wait of a start observation for the registration of its intent's
@@ -572,7 +574,7 @@ func (h *Hub) opsLoop(ctx context.Context) {
 // opsRun runs the open ops in admission order. An op that must wait stops the run: the later ops
 // wait for it. It returns the wait (0: nothing to wait for).
 func (h *Hub) opsRun(ctx context.Context) time.Duration {
-	h.observeLater(ctx)
+	left := h.observeLater(ctx)
 	rows, err := h.db.QueryContext(ctx, `SELECT op_id FROM plugin_ops WHERE phase NOT IN ('done', 'failed', 'conflict', 'unknown') ORDER BY created, rowid`)
 	if err != nil {
 		log.Printf("plugin ops: %v", err)
@@ -603,7 +605,19 @@ func (h *Hub) opsRun(ctx context.Context) time.Duration {
 			return opBusyRetry
 		}
 	}
+	if left > 0 {
+		return opObservePoll
+	}
 	return 0
+}
+
+// attemptTarget is what the handler bound to an attempt: the instance, block and session that it
+// acted on (stop, replace), and the spawn intent that it created (start, replace).
+type attemptTarget struct{ instance, block, session, intent string }
+
+// opSessionBlocks lists the blocks of a session for an observation (a test replaces it).
+var opSessionBlocks = func(ctx context.Context, h *Hub, sess string) (map[string]bool, error) {
+	return h.sessionBlocksIn(ctx, sess)
 }
 
 func (h *Hub) opFault(point string) bool {
@@ -1122,9 +1136,10 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 		}
 		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the reload's outcome is unknown: the hub has %s", now), "")
 	}
-	var bound, sent, target, intent string
-	if err := h.db.QueryRowContext(ctx, `SELECT bound_at, sent_at, target_instance, intent_id FROM plugin_op_attempts WHERE attempt = ?`, attempt).
-		Scan(&bound, &sent, &target, &intent); err != nil {
+	var bound, sent string
+	var t attemptTarget
+	if err := h.db.QueryRowContext(ctx, `SELECT bound_at, sent_at, target_instance, target_block, target_session, intent_id FROM plugin_op_attempts WHERE attempt = ?`, attempt).
+		Scan(&bound, &sent, &t.instance, &t.block, &t.session, &t.intent); err != nil {
 		return err
 	}
 	if bound == "" || sent == "" {
@@ -1134,7 +1149,7 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 		}
 		return h.finishCall(ctx, op, attempt, "failed", "", "the "+call+" did not run: "+how+" (observed after the hub restarted)", "not_applied: "+how)
 	}
-	proof, detail, waiting, err := h.attemptEvidence(ctx, op, call, target, intent)
+	proof, detail, waiting, err := h.attemptEvidence(ctx, op, call, t)
 	if err != nil {
 		return err
 	}
@@ -1151,7 +1166,7 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 			h.pops.observing[attempt] = first
 		}
 		if time.Since(first) < opRegisterWait {
-			return &opWait{after: opRegisterPoll, why: "waiting for the registration of " + intent}
+			return &opWait{after: opRegisterPoll, why: "waiting for the registration of " + t.intent}
 		}
 		detail += fmt.Sprintf(" The hub waited %v for the registration; it keeps the observation.", opRegisterWait)
 	}
@@ -1167,7 +1182,8 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 // sure that the call cannot act any more.
 //
 // waiting: a start whose intent can still register (not abandoned); the observation can wait.
-func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call, target, intent string) (proof, detail string, waiting bool, err error) {
+func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t attemptTarget) (proof, detail string, waiting bool, err error) {
+	target, intent := t.instance, t.intent
 	var desired, block, identity, instance, session, start, run, stamp string
 	var pid int
 	err = h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
@@ -1184,7 +1200,25 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call, target, i
 	mine := op.EntryIdentity != "" && identity == op.EntryIdentity
 	if call == "stop" {
 		if mine && instance == target && desired == "stopped" && block == "" {
-			return "applied: observed the stored record", "stopped", false, nil
+			// The row alone is no proof: retire saves the cleared row before block.close, and it
+			// ignores a close failure. Here a missing block is the goal of the call, so a complete
+			// read of the stored session without target_block proves the stop.
+			if t.block == "" {
+				return "applied: observed the stored record (no block was bound)", "stopped", false, nil
+			}
+			if t.session == "" {
+				return "", fmt.Sprintf("the stop's block %s has no stored session, so the hub cannot read it", t.block), false, nil
+			}
+			blocks, err := opSessionBlocks(ctx, h, t.session)
+			switch {
+			case sessionGone(err):
+				return "applied: observed the stored record, and session " + t.session + " does not exist", "stopped", false, nil
+			case err != nil:
+				return "", fmt.Sprintf("the read of session %s failed (%v); the hub reads it again", t.session, err), false, nil
+			case blocks[t.block]:
+				return "", fmt.Sprintf("block %s is still in session %s", t.block, t.session), false, nil
+			}
+			return "applied: observed the stored record, and block " + t.block + " is not in session " + t.session, "stopped", false, nil
 		}
 		return "", fmt.Sprintf("the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, target, op.EntryIdentity), false, nil
 	}
@@ -1210,19 +1244,25 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call, target, i
 // the op ended unknown (a lost answer, or a hub restart before the registration). Each attempt has
 // an outcome, so its call cannot act any more. It never calls again and never changes the op's
 // phase: only the attempt's proof (docs/hub.md, "attempt"). The hold reads that proof.
-func (h *Hub) observeLater(ctx context.Context) {
-	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.intent_id FROM plugin_op_attempts a
+//
+// It returns the number of attempts that stay unresolved: the manager passes again after
+// opObservePoll while there are any.
+func (h *Hub) observeLater(ctx context.Context) (left int) {
+	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
 		JOIN plugin_ops o ON o.op_id = a.op_id
 		WHERE a.proof = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop') AND o.phase = 'unknown'`)
 	if err != nil {
 		log.Printf("plugin ops: the later observation: %v", err)
-		return
+		return 0
 	}
-	type open struct{ attempt, op, call, target, intent string }
+	type open struct {
+		attempt, op, call string
+		t                 attemptTarget
+	}
 	var list []open
 	for rows.Next() {
 		var a open
-		if rows.Scan(&a.attempt, &a.op, &a.call, &a.target, &a.intent) == nil {
+		if rows.Scan(&a.attempt, &a.op, &a.call, &a.t.instance, &a.t.block, &a.t.session, &a.t.intent) == nil {
 			list = append(list, a)
 		}
 	}
@@ -1232,17 +1272,23 @@ func (h *Hub) observeLater(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		proof, _, _, err := h.attemptEvidence(ctx, op, a.call, a.target, a.intent)
+		proof, _, _, err := h.attemptEvidence(ctx, op, a.call, a.t)
 		if err != nil || proof == "" {
+			left++
 			continue
 		}
 		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = ''`, proof+" (later)", a.attempt)
-		if n, _ := res.RowsAffected(); err != nil || n != 1 {
+		if err != nil {
+			left++
+			continue
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
 		h.ev.emit("plugin_op_attempt", map[string]any{"op_id": a.op, "attempt": a.attempt, "call": a.call, "proof": proof + " (later)"})
 		h.changed("plugins")
 	}
+	return left
 }
 
 // pluginOpActions are hub.plugins.op and hub.plugins.ops on the agent face (agentKeymap).
