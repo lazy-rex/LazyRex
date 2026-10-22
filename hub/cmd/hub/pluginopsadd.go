@@ -209,8 +209,8 @@ func (h *Hub) opResolveTarget(ctx context.Context, op *pluginOp) (opResolved, er
 	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
 		return opResolved{}, err
 	}
-	url := h.pops.cmd.url(r)
-	git := h.pops.cmd.runner()
+	o := h.opCmd(op, "resolving")
+	url, git := o.url(r), o.git
 	return withTmp(tmpRoot, func(tmp string) (opResolved, error) {
 		switch {
 		case to != "" && to != "latest":
