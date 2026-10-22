@@ -249,7 +249,10 @@ Use these only when a plain form cannot do the job. If one plugin needs more, us
   fails with `conflict`.
 - A value that the render fixed (form v1 has no hidden field): a select field with `check = false`
   takes any text. `on_submit` compares it with the current state.
-- `tx = false`, `store = false`: as for actions.
+- `tx = false`: as for actions.
+- Do not use `store = false` on a form. The SDK checks the values before the plugin can replay its
+  own saved reply, so a retry can fail where the first submit passed. A form that needs its own
+  operations table is a raw `app.view` (see below).
 - An `app.fail` in `intro`, `after` or `instead` also shows its message in place of the form.
 
 ## v0: the advanced surface
@@ -263,7 +266,7 @@ errors and the transaction rules above.
 | `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. |
 | `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
-| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
+| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Each run is one transaction. Start code runs after `hub.register` and the migrations; `{after_register = true}` runs it after the other start code. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
 | `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |
