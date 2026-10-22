@@ -1,95 +1,19 @@
 # Plugin sources
 
-Status: **design approved** (v3, 2026-10-20, the hub reviewer). This document joins design v1 with
-the corrections of v2 and v3. Each section says what is built. Approval of the design is not
-approval of code: each commit gets a source review and independent tests.
+This document is the reference for plugin sources: where a plugin comes from, how the hub pins and
+caches a GitHub source, and how the hub starts, replaces and reports a plugin. docs/hub.md gives
+the hub actions in short form and points here.
 
-Built on main:
+Code:
 
-- Step 1: the manifest rules and the dependency graph (`hub/cmd/hub/sources.go`). These functions
-  read and check. They start nothing.
-- Step 2a: both manifest parsers accept `notice`.
-- Step 2b: the bounded manifest read (`readManifestBytes`, 64 KiB), for both loaders.
-- Step 2c, part 1: the harness reads `test.plugins` (`requires` is refused), with the hub's manifest
-  and graph rules. The home plugin is `plugins/lazyrex/`.
-- Step 2c, part 2 (`pluginconfig.go`): config source entries (section 1), resolved once at hub
-  start. A GitHub source is refused as "not installed" until step 3. The manifest owns `events`
-  and `notice`; a `notify` op without a notice fails with `no_notice` (section 10). Hub start
-  spawns in `startOrder`. `hub.plugins` reports `source` and `dir` for each running plugin, and a
-  `refused` list. The harness lab config has local source entries only.
-
-Step 2d part 1:
-
-- One start path, `startPlugin` (`plugins.go`), for hub start recovery, `hub.admin.start`, a crash
-  respawn and a restart after a session loss. Its order is the one of section 7, "Lifecycle".
-- Each start attempt resolves every entry again (`resolveEntries`). A name binds at the first
-  resolution that gives it without a conflict. A duplicate name refuses every entry with it (step
-  1), also when one entry resolved earlier: that owner keeps its name and a running instance; the
-  other entry binds nothing. Two entries with one name at hub start: neither binds.
-- Kept records (reviewer, ownership model approved 2026-10-20). The plugins row records the
-  source of the entry that bound its name (column `source`). At hub start, each row with a recorded
-  block or an open spawn intent gives a record, also when no entry gives its name now. An entry
-  adopts that record when it gives the same name from the same source; a row from before the
-  source was recorded matches by name only (migration rule). A record that no entry adopts is
-  kept: it never starts or respawns, it gets no notices, and `hub.register` from its instance
-  fails (code `retained`). Its state is retained (the child lives) or refused. `hub.admin.stop`
-  resolves its intents first (an unresolved one keeps the record: code `unresolved_intent`), then
-  retires its block and drops the record. `hub.admin.start` on it is refused.
-- Each record loads its plugins row when the hub makes it, before an action can see it. The admin
-  actions load the row again under the record's lifecycle lock. Recovery skips a record that
-  `hub.admin.start` already started in this hub process.
-- The ownership guard: an entry whose source a kept record holds under another name, or whose
-  name a kept record holds from another source, is refused ("stop X first") and binds nothing.
-  Its name still counts in the duplicate check. After the stop of X, `hub.admin.start {source}`
-  starts the entry.
-- The states `refused` and `retained`. A refused start retires nothing. A recorded instance that
-  still lives makes the record `retained`; `hub.register` from it fails with code `retained`.
-- `run`: the plugins row saves it at each spawn (column `run`). Notices use `run.notice`. Watch
-  roots come from `run` while an instance is recorded, else from the config entry.
-- `hub.admin.start {"source": "<exact source>"}`.
-- `hub.admin.start` no longer abandons open spawn intents. An unresolved intent fails the start with
-  code `unresolved_intent`. The text names the instance and the session: a `client.reply` error has
-  no other fields (rex-protocol.md, "Client RPC").
-- `hub.plugins` adds `entries`: one item for each config entry, with `entry`, `source`, `name`,
-  `state`, `dir` (of the run), `error` (state refused or retained) and `"candidate": {"error"}`
-  when the last resolution refused it. `plugins` and `refused` keep their shape. `kept` lists each
-  kept record: `name`, `source`, `state`, `error`, `dir`.
-
-On the branch `plugins/step2d2` (in review), step 2d part 2:
-
-- The state `waiting` (`startOrWait`, `plugins.go`). After the start check and the retire, a
-  plugin whose dependency has no accepted `hub.register` for its current instance waits. A
-  dependency counts as registered when it has a config entry, is not retained, has a client from
-  `hub.register` and a live child. An unresolved spawn intent gives no client, so the dependent
-  waits. Waiting makes no spawn intent and changes no recorded ownership. The event
-  `plugin_waiting {plugin, waiting}` comes when the names change.
-- The wake rule (`waitLoop`): an accepted `hub.register`, a `hub.admin.start` or `hub.admin.stop`
-  of any plugin, and a refusal wake the loop. It runs the start path again for each waiting plugin,
-  in config order. A wake during a scan makes one more scan. A stop of a waiting plugin ends the
-  wait. A stop, a refusal and a spawn clear the names.
-- Hub start: a dependency spawns first; its dependent waits and spawns after the dependency
-  registers.
-- `hub.admin.start` of a plugin that must wait gives `{"desired": "running", "state": "waiting",
-  "waiting": [names]}`. `hub.plugins` entries in state `waiting` add `waiting`.
-
-Step 2e part 1 (managed entries, section 13) is on main (51d27c4).
-
-Step 3 Part A is on main (08dbb89): the lock (`pluginlock.go`), the cache and `lockedDir`
-(`plugincache.go`), refs and fetch (`pluginfetch.go`), and `lazyrex-hub plugin sync|update|status`
-(`plugincmd.go`), with subdir sources and managed entries.
-
-Step 3 Part B is on main (ddc3e1b): `resolveEntries` resolves a
-GitHub source from its cache entry, with one lock snapshot for each resolution. A run records its
-commit, and `hub.plugins` reports `commit` and the candidate fields (section 7). The lab test
-`TestPluginCacheStartLab` starts a GitHub plugin from its read-only cache entry, updates it, and
-reloads.
-
-`hub.admin.replace` (section 14) is on main (74190de).
-
-Pin sync step 1 (section 6a): `lazyrex-hub plugin export` and `lazyrex-hub plugin pull -file`
-(`pinsync.go`). Step 2 (hub to hub) is not designed in detail.
-
-`@latest`, the highest release tag (`pluginlatest.go`): sections 3, 5, 6, 6a and 7.
+| Part | Files (`hub/cmd/hub`) |
+| --- | --- |
+| Config entries, resolution | `pluginconfig.go`, `sources.go` (manifest and graph rules) |
+| Lock, cache, prune lock | `pluginlock.go`, `plugincache.go`, `digest.go`, `prunelock.go` |
+| Refs, fetch, `@latest` | `pluginfetch.go`, `pluginlatest.go` |
+| `lazyrex-hub plugin` commands | `plugincmd.go`, `pinsync.go`, `pluginnew.go` |
+| Start, states, kept records | `plugins.go`, `respawn.go`, `reload.go` |
+| `expect_run`, replace | `expectrun.go`, `replace.go` |
 
 ## Terms
 
@@ -119,10 +43,10 @@ Pin sync step 1 (section 6a): `lazyrex-hub plugin export` and `lazyrex-hub plugi
 - A source that starts with `github:` is a GitHub source. Any other source is a local directory.
 - A local path is absolute or relative to the directory of the config file. `~` is refused.
 - `<owner>` matches `[A-Za-z0-9-]+`. `<repo>` matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
-- `<subdir>` is optional (the coordinator, 2026-10-21): the plugin directory inside the repository, in
-  the form of a Go module path, for example `github:lazy-rex/LazyRex/plugins/lazyrex@main`. It is one or
-  more segments separated by `/`. Each segment matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
-  No segment is empty, and there is no leading or trailing `/`. Owner, repo and subdir never
+- `<subdir>` is optional: the plugin directory inside the repository, in the form of a Go module
+  path, for example `github:lazy-rex/LazyRex/plugins/lazyrex@main`. It is one or more segments
+  separated by `/`. Each segment matches `[A-Za-z0-9._-]+` and is not `.` or `..`. No segment is
+  empty, and there is no leading or trailing `/`. Owner, repo and subdir never
   contain `@`, so the first `@` ends the path and the ref is the rest. (A ref can contain `#`, so a
   `@ref#subdir` form would be ambiguous.) Text: `source <s>: subdir <d> must be a relative path of
   names (A-Z, a-z, 0-9, ., _, -)`.
@@ -147,7 +71,7 @@ Every other problem refuses that entry only (section 7).
 ## 2. Manifest
 
 Fields: `name`, `main`, `sdk`, `events`, `notice`, `depends`, `test`. The hub refuses unknown fields.
-The file is one JSON object; data after the object is refused. (Built: step 1.)
+The file is one JSON object; data after the object is refused.
 
 - `name`: `[a-z0-9_-]+`, required.
 - `main`: required. It is relative to the manifest directory, has no `..` component and is not
@@ -161,7 +85,8 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
   plugin directory and the SDK directory in `package.path`, so `require('lazyrex')` and a sibling
   `require` work. The hub gets the SDK directory from `-sdk` (dev.sh and `lazyrex-hub test` pass
   `<checkout>/sdk/lua`). Without a directory that holds `boot.lua`, the plugin is refused. The arg
-  names `main` and `lazyrex_sdk` are reserved. Without `sdk`, a plugin starts as before.
+  names `main` and `lazyrex_sdk` are reserved. Without `sdk`, the hub runs `rex do <absolute
+  main>` (section 7, "Run").
 - `events`: `session` (default) or `all`.
 - `notice`: an optional string. It is behavior, so it belongs to the plugin. See section 10.
 - `depends`: an array of plugin names, for example `["profiles"]`. A name appears once. There is
@@ -170,7 +95,7 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
   relative to the manifest directory, each with its own manifest. The harness reads it; the hub
   does not. A stub can satisfy a dependency by its manifest name.
 
-`test.plugins` is built (step 2c). `requires` is an unknown field, so it is refused.
+`requires` is an unknown field, so it is refused.
 
 ## 3. Lock
 
@@ -261,9 +186,10 @@ lazyrex-hub plugin sync`.
   `.` are stages, not entries.
 - There is no prune. A running plugin can `dofile` a sibling file later (Tunnels does), so the hub
   must not delete an entry that is in use.
-- **The prune lock** (the hub side of the planned prune; on main, f5fe259). Each admitted start
-  opens `<state>/plugins/prune.lock` and takes a shared flock on its own descriptor. It takes it before the resolution that reads the lock file (`checkStart`;
-  `validateCandidate` in `hub.admin.replace`). Spawn releases it after hub.db has saved the run.
+- **The prune lock** (`prunelock.go`): the hub side of a future prune command. Each admitted start
+  opens `<state>/plugins/prune.lock` and takes a shared flock on its own descriptor. It takes it
+  before the resolution that reads the lock file (`checkStart`; `validateCandidate` in
+  `hub.admin.replace`). Spawn releases it after hub.db has saved the run.
   Each start that ends without a spawn releases it. A waiting plugin holds nothing. Prune takes an
   exclusive flock without waiting. So each entry that a start can use is in a lock file or in a
   stored run while prune reads them. A run that hub.db cannot save stops the spawn before the
@@ -277,9 +203,8 @@ lazyrex-hub plugin sync`.
 
 ## 5. Refs and fetch
 
-The hub uses the git CLI for `plugin sync` and `plugin update` only, never at start (dependency
-exception approved by the coordinator). Git runs with `GIT_TERMINAL_PROMPT=0`. It uses the user's
-credential helper and `url.insteadOf` (for SSH).
+The `lazyrex-hub plugin` commands use the git CLI. Hub start never runs git. Git runs with
+`GIT_TERMINAL_PROMPT=0`. It uses the user's credential helper and `url.insteadOf` (for SSH).
 
 **Ref forms**: `latest`, `<name>`, `refs/heads/<name>`, `refs/tags/<name>`, or 40 lowercase hex.
 The ref `latest` has the kind `latest` only (see "@latest" below): a branch or a tag named
@@ -385,6 +310,14 @@ The commands are CLI only. A hub action must answer fast, because the hub has on
   - a highest tag lower than the locked tag: refused, `the newest version tag is <t>, lower than
     the locked <locked>`. Update never goes to a lower release;
   - a latest entry whose commit is not trusted (section 3): replaced by the selected release.
+
+  An argument of `update` selects entries by three keys: the plugin name, the exact source string,
+  and `managed:<id>`. An argument that starts with `managed:` selects only by managed id; it never
+  matches a name or a source. (A local config source literally named `managed:...` is selected by
+  its plugin name.) The selector counts distinct entries: one entry that matches by name and by
+  source counts once. It must select exactly one entry. Zero: `plugin update: no entry has the
+  name, source or identity <arg>`. Two or more: `plugin update: <arg> selects <identities>; write
+  managed:<id> or the exact source`, with the identities `entry N` and `managed:<id>`.
 - Each tag that the selection skips gives a line before the verb line of its entry: `ignored
   <source>: refs/tags/<t> points to a <tree|blob>, not a commit`. The line also prints when the
   lock does not change. If that write fails: `plugin <cmd>: the lock is unchanged, but the result
@@ -437,10 +370,9 @@ unchanged`.
 1. `<state>/plugins/.lock`: all commands on one state, for any config or lock file.
 2. `<lockfile>.lck`.
 
-A second command fails at once: `another plugin command runs (pid N)`. No hub code in this design
-takes a flock. (The plugin manager design adds a hub writer that takes both flocks; then N can be
-the hub's pid.) A rename replaces the lock, and cache entries are immutable, so a hub start reads
-the old lock or the new lock, never a mix.
+A second command fails at once: `another plugin command runs (pid N)`. The hub process takes
+neither flock (section 11). A rename replaces the lock, and cache entries are immutable, so a hub
+start reads the old lock or the new lock, never a mix.
 
 ## 6a. Pin sync
 
@@ -456,10 +388,9 @@ digest shows that two machines have the same tree. Observed for one tree
 a711415): macOS 27.0.1 arm64 with git 2.54.0 and umask 022, and Linux 6.8.0 x86_64 with git
 2.43.0 and umask 0002, gave the same digest, the same 275 files and the same 5 executable files.
 
-Step 1 moves the pins in a file: the user carries it by git, a synced folder or scp. Step 2 (a hub
-action and `pull -host <label>` over Rex hosts) needs its own plan. Its action has the visibility
-of `hub.plugins`: any client that can call the hub reads each entry's exact source, commit and
-digest. A source name can name a private repository.
+The pins move in a file: the user carries it by git, a synced folder or scp. There is no hub-to-hub
+pull. Note: `hub.plugins` shows each entry's exact source, commit and digest to any client that
+can call the hub, and a source name can name a private repository.
 
 **The pin document.**
 
@@ -574,13 +505,37 @@ agreement check.
   "state": "refused", "error": "..."}`. The hub keeps such entries in a list beside the name map,
   never under an invented name.
 - Duplicate names: every entry with that name is refused: `entries 2 and 4 have the same name
-  messaging`. (Built: step 1.) An entry that resolves later and finds its name in use is refused
-  the same way.
+  messaging`. An entry that resolves later and finds its name in use is refused the same way.
+- Each start attempt resolves every entry again (`resolveEntries`). A name binds at the first
+  resolution that gives it without a conflict. A duplicate name refuses every entry with it, also
+  when one entry resolved earlier: that owner keeps its name and a running instance; the other
+  entry binds nothing. Two entries with one name at hub start: neither binds.
+
+**Kept records.** The plugins row records the source of the entry that bound its name (column
+`source`). Each record loads its plugins row when the hub makes it, before an action can see it.
+The admin actions load the row again under the record's lifecycle lock.
+
+- At hub start, each row with a recorded block or an open spawn intent gives a record, also when
+  no entry gives its name now.
+- An entry adopts that record when it gives the same name from the same source. A row without a
+  recorded source matches by name only.
+- A record that no entry adopts is kept. It never starts or respawns, and it gets no notices.
+  `hub.register` from its instance fails (code `retained`). Its state is `retained` (the child
+  lives) or `refused`.
+- `hub.admin.stop` of a kept record resolves its intents first (an unresolved one keeps the
+  record: code `unresolved_intent`), then retires its block and drops the record.
+  `hub.admin.start` of a kept record is refused.
+- Recovery skips a record that `hub.admin.start` already started in this hub process.
+
+**Ownership guard.** An entry whose source a kept record holds under another name, or whose name
+a kept record holds from another source, is refused ("stop X first") and binds nothing. Its name
+still counts in the duplicate check. After the stop of X, `hub.admin.start {source}` starts the
+entry.
 
 **The graph.** Each start attempt rebuilds the whole graph. A start attempt is a hub start,
 `hub.admin.start`, a crash respawn, or a restart after a session loss. The attempt re-reads every
 local manifest and the lock, and verifies the cache entries. Then it applies the refusal rules to
-the plugin to start (built: step 1):
+the plugin to start:
 
 - a missing dependency: `plugin worktrees: dependency profiles is not configured`;
 - a refused dependency, transitively: `plugin worktrees: dependency profiles is refused: <its
@@ -605,15 +560,30 @@ check gives refused, the state becomes refused. A refused plugin is not retried 
 does not watch files. `hub.admin.start` checks it again, so a repaired manifest applies at the next
 `hub.admin.start` of that plugin.
 
-**Order.** Hub start runs recovery in topological order. Ties keep config order: each step takes
-the first entry in config order whose dependencies are listed. (Built: step 1, `startOrder`.) A
-cycle member is refused, so the order always exists.
+- A dependency counts as registered when it has a config entry, is not retained, has a client
+  from `hub.register` and a live child. An unresolved spawn intent gives no client, so the
+  dependent waits.
+- Waiting makes no spawn intent and changes no recorded ownership. The event
+  `plugin_waiting {plugin, waiting}` comes when the names change.
+- The wake loop (`waitLoop`) runs the start path again for each waiting plugin, in config order. A
+  wake during a scan makes one more scan.
+- A stop of a waiting plugin ends the wait. A stop, a refusal and a spawn clear the names.
+- `hub.admin.start` of a plugin that must wait gives `{"desired": "running", "state": "waiting",
+  "waiting": [names]}`.
 
-**Lifecycle.** There is no adoption exception. Inside recovery, plugin exit handling and
-`hub.admin.start`, the order is:
+**Order.** Hub start runs recovery in topological order (`startOrder`). Ties keep config order:
+each step takes the first entry in config order whose dependencies are listed. A cycle member is
+refused, so the order always exists. A dependency spawns first; its dependent waits and spawns
+after the dependency registers.
 
-1. Resolve spawn intents, as today. An unresolved intent still blocks a spawn, and it gives no
-   registered current instance, so dependents wait.
+**Lifecycle.** One start path, `startPlugin` (`plugins.go`), serves hub start recovery,
+`hub.admin.start`, a crash respawn and a restart after a session loss. There is no adoption
+exception. The order is:
+
+1. Resolve spawn intents. An unresolved intent blocks a spawn, and it gives no registered current
+   instance, so dependents wait. `hub.admin.start` does not abandon open intents: an unresolved
+   intent fails the start with code `unresolved_intent`. The text names the instance and the
+   session, because a `client.reply` error has no other fields (rex-protocol.md, "Client RPC").
 2. Resolve the source and run the static graph check.
 3. Only if step 2 passes: retire the old instance.
 4. Spawn now, or enter `waiting` and spawn on wake.
@@ -629,9 +599,11 @@ are a malformed config, so a source names one entry. A hub restart works too.
 
 **Run and candidate.** Each plugin has two records:
 
-- `run`: the metadata of the current instance. The hub saves it in the plugins row when it spawns:
-  source, dir, commit, digest, tag (a latest source only), events, notice, depends. Exports come from that instance's
-  register. Notices use `run.notice`. Readiness is the registration of `run`.
+- `run`: the metadata of the current instance. The hub saves it in the plugins row (column `run`)
+  at each spawn: source, dir, commit, digest, tag (a latest source only), events, notice, depends.
+  Exports come from that instance's register. Notices use `run.notice`. Readiness is the
+  registration of `run`. Watch roots come from `run` while an instance is recorded, else from the
+  config entry.
 - `candidate`: the last resolution attempt, `{commit, dir, tag}` or `{error}`. A resolution never
   writes into `run`. Only a spawn copies the candidate to `run`.
 - `hub.plugins` reports state, `dir`, `commit` and `tag` from `run` (`commit` only for a GitHub
@@ -653,9 +625,18 @@ are a malformed config, so a source names one entry. A hub restart works too.
   resolution (for example `hub.plugins.reload` or a start attempt) gives the new candidate.
 
 Example: P runs C1. An update locks C2, and C2 fails its graph check. The hub keeps `run` = C1.
-`hub.admin.start` on a running plugin changes nothing (as today). To apply an update, run
-`hub.admin.stop`, then `hub.admin.start`. In the example the start is refused, and the stop has
+`hub.admin.start` on a running plugin changes nothing. To apply an update, use
+`hub.admin.replace` (section 14), or `hub.admin.stop` and then `hub.admin.start`. In the example
+the replace is refused and C1 runs on; after a stop, the start is refused, and the stop has
 cleared `run` (no instance).
+
+**`hub.plugins` fields.** `plugins` lists the running plugins with `source` and `dir`. `refused`
+lists the refusals. `entries` has one item for each config and managed entry: `entry` (the
+config index) or `managed` (the managed id), `source`, `name`, `state`, `dir`, `commit` and `tag`
+(of the run), `error` (state refused or retained), `waiting` (state waiting), and `"candidate"`
+(above). An entry with a record adds `instance_id`,
+`instance_pending`, `desired` and `registered` (section 14). `kept` lists each kept record:
+`name`, `source`, `state`, `error`, and `dir`, `commit` and `tag` of its run.
 
 **Retained instance.** Hub recovery with a refused candidate does not retire the recorded block.
 The hub marks the row `retained`.
@@ -664,13 +645,14 @@ The hub marks the row `retained`.
   retained after a refused start`.
 - A retained instance satisfies no dependency. Its dependents wait, or are refused when the static
   check refuses them.
-- `hub.admin.stop` retires a retained block (as today).
+- `hub.admin.stop` retires a retained block.
 - Source fact, not tested in a lab: Messaging, Profiles and `lazyrex.lua` read
   `rex.args.hub_client_id` at launch and register once at load. So an instance from an older hub
   calls the old hub client ID and cannot reach the new hub.
 
-**Run.** The hub runs `rex do <dir>/<main>`, as today. A changed manifest name at a plugin start is
-refused: `the manifest name changed from X to Y; restart the hub`.
+**Run.** The hub runs `rex do <dir>/<main>` (an SDK plugin: section 2, `sdk`). A changed
+manifest name at a plugin start is refused: `the manifest name changed from X to Y; restart the
+hub`.
 
 ## 8. Error texts
 
@@ -693,103 +675,50 @@ Sections 3 to 7 give the other texts.
 - The generated lab config has local `{"source": "<abs dir>", "args": ...}` entries only, so the
   lab needs no lock.
 - `test.args` stays keyed by the manifest name.
-- The harness adds the home plugin only when the plugin under test is not `lazyrex` (as today). A
+- The harness adds the home plugin only when the plugin under test is not `lazyrex`. A
   `test.plugins` entry named `lazyrex` is a harness error. Any other duplicate name among
   `test.plugins` and the plugin under test is a harness error.
 
-**Home plugin.** It moves to `plugins/lazyrex/`, with `plugins/lazyrex/lazyrex.json` (name
-`lazyrex`, main `lazyrex.lua`). Its tests move from `tests/home/` to `plugins/lazyrex/tests/`. The
-messaging stub becomes `plugins/lazyrex/tests/stubs/messaging/`, with a manifest. Real configs
-still list the home plugin as an entry. The config field `home` stays. `tests/harness-fail` and
-`tests/isolation` get their own directories, because main must stay inside its directory.
+**Home plugin.** It lives in `plugins/lazyrex/`, with `plugins/lazyrex/lazyrex.json` (name
+`lazyrex`, main `lazyrex.lua`) and its tests in `plugins/lazyrex/tests/`. The messaging stub is
+`plugins/lazyrex/tests/stubs/messaging/`, with a manifest. Real configs list the home plugin as an
+entry. The config field `home` names the plugin whose tabs mount first (default `lazyrex`).
+`tests/harness-fail` and `tests/isolation` have their own directories, because main must stay
+inside its directory.
 
-## 10. Notice migration
+## 10. Notice
 
-1. Step 2a (built): the manifest parsers accept `notice`. The harness forwards it into the config
-   field `plugins[].notice` of its lab config. Production start still uses the config's `notice`
-   or the default text.
-2. Messaging adds `"notice": "New message. Call messaging_read."` to its manifest.
-3. The source-config change switches to the manifest notice and adds `no_notice` in one step, with
-   no temporary fallback. `storeBatch` checks every op before its transaction. A `notify` op from
-   a plugin without a notice fails with code `no_notice`: `plugin X has no notice in its
-   manifest`. Nothing in that batch is written. There is no default text.
+The manifest owns the notice text (section 2, `notice`). There is no default text and no config
+field. `storeBatch` checks every op before its transaction. A `notify` op from a plugin without a
+notice fails with code `no_notice`: `plugin X has no notice in its manifest`. Nothing in that batch
+is written. The notice of an instance is `run.notice` (section 7).
 
-The live config changes format only at a release that the user approves. Local sources relative to
-`~/.lazyrex` keep the release clones, for example `{"source": "release/Messaging"}`.
+## 11. Lock reads in the hub
 
-## 11. Steps
+A resolution reads the lock and the cache with three functions. None of them runs git, uses the
+network, or writes a lock file or a cache entry.
 
-This repository, one branch per step:
+- `lockPath(cfgPath, field)` gives the lock file: the config field `lock` relative to the config
+  directory, or the section 1 default. It reads no file.
+- `readLock(path)` reads the lock file. A missing file gives an empty lock and no error: each
+  GitHub entry is then "not installed" (section 8). A file that does not parse, or has another
+  version, gives an error.
+- `lockedDir(cfgPath, stateDir, lock, e)` checks the lock entry of the GitHub entry `e` and its
+  cache entry: the key lookup, the agreement check (section 3), the cache entry, the manifest name
+  and the digest (section 4). It returns the absolute plugin directory (the cache entry, or
+  `<entry>/<subdir>`) and the locked commit.
 
-1. Built: the source manifest loader and the graph checks (`sources.go`), with unit tests. The
-   harness still has its own manifest parser (`testcmd.go`). Step 2 makes both use one loader.
-2. Config source entries, removed fields refused, local resolution, the start graph, the states,
-   `run` and `candidate`, the `hub.plugins` fields, the manifest notice and `no_notice`. The home
-   plugin and self-test moves. `testcmd.go` hubConfig, `hub.example.json`, and the Go tests that
-   write configs.
-3. The lock, the cache, the digest check at start, `plugin sync|update|status`. Unit tests with a
-   local bare repository (`file://`), so no test uses the network. A lab test for a start from a
-   read-only cache entry.
-4. Docs: hub.md, testing.md (the manifest table), README.
+Rules:
 
-**Step 3 split (proposed).** The coordinator split step 3 into two parts (2026-10-21), so that two
-pairs can work at the same time. Part A can start now. Part B starts after step 2e is on main.
-Both parts are in package `main` of `hub/cmd/hub`.
-
-- **Part A: the commands and the files** (sections 3 to 6). Part A owns:
-  - the lock file format and its read and write (section 3), with the version check;
-  - the config field `lock` and its default (section 1), in `Config`. The hub start accepts the
-    field; a missing lock file is not an error;
-  - the cache layout, publish and permissions (section 4), and the digest function;
-  - refs and fetch (section 5): all git use;
-  - the agreement check and the trusted-commit rule (section 3);
-  - `lazyrex-hub plugin sync|update|status`, all or nothing, the graph check and the two flocks
-    (section 6);
-  - the error texts of sections 3 to 6, and the cache texts of section 8.
-
-  Part A adds new files only (for example `pluginlock.go`, `plugincache.go`, `plugincmd.go`), plus
-  the `lock` field in `main.go` and the `plugin` case in `main`. It reads the config with
-  `parseEntries` and the manifests with `readPluginManifest`, and does not change them. It reads
-  config entries only. When step 2e is on main, Part A adds the managed entries (section 13).
-- **Shared files that Part A may change for the subdir form** (section 1): in `pluginconfig.go`,
-  the `githubSource` pattern and the GitHub branch of `checkSource`, and new unexported fields of
-  `configEntry` for the parsed parts (for example `owner`, `repo`, `subdir`, `ref`). No other code in
-  that file. Step 2e also changes `pluginconfig.go`; the two changes do not overlap, and the part
-  that lands second rebases.
-- **Part B: the hub side.** Part B owns `resolveEntries` for a GitHub source: it replaces the
-  "not installed" refusal with the calls below. It adds the commit to `pluginRun` and to
-  `hub.plugins` (`commit` and the `"candidate"` fields, section 7), and adds the lab test of a
-  start from a read-only cache entry.
-
-**The interface.** Part A gives these functions. Part B calls them and no other Part A code.
-
-```go
-// lockPath gives the lock file: the config field lock relative to the config directory, or the
-// section 1 default. It reads no file.
-func lockPath(cfgPath, field string) string
-
-// readLock reads the lock file. A missing file gives an empty lock and no error. A file that
-// does not parse, or has another version, gives an error.
-func readLock(path string) (*pluginLock, error)
-
-// lockedDir checks the lock entry of the GitHub entry e and its cache entry, without git and
-// without the network: the key lookup, the agreement check (section 3), the cache entry, the
-// manifest name and the digest (section 4). It returns the absolute plugin directory (the cache
-// entry, or <entry>/<subdir> for a source with a subdir) and the locked commit. It only reads files.
-func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir, commit string, err error)
-```
-
-- The error of `lockedDir` is a final text of section 3 or 8, with the `-config <cfgPath>` of
-  its command: no lock entry (`is not installed`), an agreement mismatch (`does not match:
-  <field>`, with the `sync` or `update` text by the trusted-commit rule), no cache entry, and a
-  changed cache entry (`digest mismatch`), and a cache entry that cannot be read (`plugin <name>:
-  cannot read the cache entry <absolute dir>: <error>`; a file system error names the path and the
-  error and does not name `sync`). Part B uses the text as the entry error unchanged.
-- Part B calls `readLock` once in each resolution (each start attempt re-reads the lock, section
-  7), and `lockedDir` once for each GitHub entry, with that one snapshot. `lockedDir` never reads
-  the lock file again. Neither function writes a lock file or a cache entry. When no entry is a
-  GitHub source, the resolution reads no lock file.
-- A missing lock file gives an empty lock: each GitHub entry is "not installed" (section 8).
+- Each resolution reads the lock once (`readLockSnapshot`), and calls `lockedDir` once for each
+  GitHub entry with that one snapshot. When no entry is a GitHub source, the resolution reads no
+  lock file.
+- The error of `lockedDir` is the entry error, unchanged. It is a final text of section 3 or 8,
+  with the `-config <cfgPath>` of its command: no lock entry (`is not installed`), an agreement
+  mismatch (`does not match: <field>`, with the `sync` or `update` text by the trusted-commit
+  rule), no cache entry, a changed cache entry (`digest mismatch`), and a cache entry that cannot
+  be read (`plugin <name>: cannot read the cache entry <absolute dir>: <error>`; this text does not
+  name `sync`).
 - A `readLock` error refuses every GitHub entry. The hub start does not fail (section 1: only a
   malformed config fails the start), and local entries resolve as usual. The graph rules refuse a
   local dependent of a refused GitHub entry. The ownership and retained-instance rules apply. The
@@ -801,40 +730,19 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
   - A filesystem error (for example, no read permission): `plugin <source>: cannot read the lock
     file <path>: <error>`.
   - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
-- After `lockedDir`, Part B reads the manifest with `readPluginManifest(dir)`, as for a local
+- After `lockedDir`, the hub reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
-- No hub code takes a flock (section 6). The hub reads the lock with one read. The commands
-  replace the file with a rename, so the hub reads the old lock or the new lock.
-- For tests, the commands are also Go functions with an option for the remote URL, so a test can
-  use a local bare repository (`file://`) in place of GitHub:
+- The hub takes no flock of the lock file (section 6). It reads the lock with one read. The
+  commands replace the file with a rename, so the hub reads the old lock or the new lock. The only
+  flock of the hub process is the shared prune lock (section 4).
+- Tests: the commands are also Go functions (`pluginSync`, `pluginUpdate`) with `pluginCmdOpts`.
+  Its `remote` option gives the fetch URL, so a test can use a local bare repository (`file://`)
+  in place of GitHub. Its `afterResolve` hook runs between the resolution and the fetch (a test of
+  a ref that moves). Only these functions take the options: no CLI flag, config field or
+  environment variable sets them. A lab test calls `pluginSync` in the test process to make the
+  lock and the cache, then starts the hub binary, which reads them.
 
-  ```go
-  type pluginCmdOpts struct {
-      // remote gives the fetch URL of github:<owner>/<repo>. Default: https://github.com/<owner>/<repo>.
-      remote func(owner, repo string) string
-      // afterResolve, when set, runs after a ref is resolved and before the fetch (a test of a ref
-      // that moves during the fetch). Production code never sets it.
-      afterResolve func(source string)
-  }
-  func pluginSync(ctx context.Context, cfgPath string, o pluginCmdOpts) error
-  func pluginUpdate(ctx context.Context, cfgPath string, args []string, o pluginCmdOpts) error
-  ```
-
-  The Part B lab test calls `pluginSync` in the test process to make the lock and the cache. Then
-  it starts the hub binary, which reads them. The remote option and the afterResolve hook exist
-  only in these functions: no CLI flag, config field or environment variable sets them.
-- The arguments of `update` (step 2e rule, approved 2026-10-21): an argument selects entries by
-  three keys: the plugin name, the exact source string, and `managed:<id>`. An argument that
-  starts with `managed:` selects only by managed id; it never matches a name or a source. (A local
-  config source literally named `managed:...` is selected by its plugin name.) The selector counts
-  distinct entries: one entry that matches by name and by source counts once. It must select
-  exactly one entry. Zero: `plugin update: no entry has the name, source or identity <arg>`. Two or
-  more: `plugin update: <arg> selects <identities>; write managed:<id> or the exact source`, with
-  the identities `entry N` and `managed:<id>`.
-- A change of these signatures or of the error texts needs the agreement of both parts and of
-  their reviewers.
-
-## 12. Acceptance matrix
+## 12. Tests
 
 U = Go unit test, L = Go lab test, H = Lua harness test.
 
@@ -896,13 +804,11 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A notify from a plugin without a notice | `no_notice`; no record written | U, H |
 | Harness: the home plugin under test; a `test.plugins` duplicate or `lazyrex` | one home plugin; a harness error | U |
 
-## 13. Managed plugins (proposed for step 2, not approved)
+## 13. Managed plugins
 
-The plugin manager (the hub features pair) adds and removes plugins without editing the user's
-config. Step 2 must read its file from the start. If it does not, a user's `plugin sync` drops the
-lock entries of managed plugins. The coordinator's split: this section goes into step 2. The hub
-writing lock entries, `plugin fetch`, the pinned-target start and the `spawn_intents` kind stay
-with the features pair, on top of step 2.
+The plugin manager adds and removes plugins without editing the user's config. It writes the
+managed file. The hub and the `lazyrex-hub plugin` commands read the managed file with the config,
+so a `plugin sync` keeps the lock entries of managed plugins.
 
 **File.** Config field `managed_plugins`: a path relative to the config directory. Default:
 `<state>/plugins.json`.
@@ -916,12 +822,10 @@ with the features pair, on top of step 2.
 - `source`: an absolute local directory or a `github:` source. A relative path is refused: the
   file has no config directory to resolve against.
 - `args`: as in a config entry.
-- `watch_roots`: an array of absolute, clean paths. Step 2 checks only this shape and keeps the
-  value. Its meaning belongs to the plugin manager design.
+- `watch_roots`: as in a config entry: an array of absolute, clean paths.
 - Unknown fields are refused. This rule also keeps the fields `user_messaging` and `prompts` out of
-  the managed file: only the user's config can set them (user decision, 2026-10-19). They are hub
-  config fields (docs/hub.md, "Agent prompts and acting as the user"). A new managed field needs a
-  design change.
+  the managed file: only the user's config can set them. They are hub config fields (docs/hub.md,
+  "Agent prompts and acting as the user").
 
 **Missing and malformed file.**
 
@@ -929,8 +833,8 @@ with the features pair, on top of step 2.
   empty `plugins` array is another empty list.
 - A malformed file: bad JSON, a root that is not an object with a `plugins` array (also `null`,
   `{}` and `{"plugins": null}`), an unknown field, a bad `id` or source, two entries with the same
-  `id`, two entries with the same source, or a file over 1 MiB (1048576 bytes; the coordinator,
-  2026-10-21; the plugin manager refuses to write a larger file).
+  `id`, two entries with the same source, or a file over 1 MiB (1048576 bytes,
+  `managedFileLimit`; the plugin manager refuses to write a larger file).
   - Hub start does not fail. The hub starts the config plugins and refuses every managed entry.
     `hub.plugins` reports the file error once, as `{"managed_file": "<path>", "error": "..."}`.
     Reason: a defect of the manager must not stop the plugins that the user configured.
@@ -949,8 +853,8 @@ with the features pair, on top of step 2.
   `startOrder`.
 - `hub.admin.start {"source": ...}` names a managed entry too.
 
-**Reload (built, step 2e part 2).** `hub.plugins.reload` reads the managed file again while the
-hub runs. Config entries do not reload: a config change needs a hub restart, as before.
+**Reload.** `hub.plugins.reload` reads the managed file again while the hub runs. Config entries
+do not reload: a config change needs a hub restart.
 
 - Callers: an operator (a process outside agent and plugin panes), or the registered current
   instance of a plugin that has an entry. The hub checks a plugin caller again after it takes the
@@ -996,45 +900,18 @@ A reload keeps `run` and unresolved spawn intents when an entry changes or disap
 file never starts a plugin. `plugin status` reports it as `orphaned`. `plugin sync` removes it.
 For example, a cancelled add of the manager can leave one.
 
-**Size bounds.** A step 2 decision of the coordinator (2026-10-20), separate from the v3 design
-approval: the hub refuses a `lazyrex.json` over
-64 KiB, with one shared constant and an error that names the file and the size. The hub has no
-main-file bound. Reasons:
+**Size bounds.** The hub refuses a `lazyrex.json` over 64 KiB (`maxManifestBytes`, `sources.go`),
+for config and managed entries and for the harness. The text: `<dir>/lazyrex.json is <n> bytes,
+over the 65536-byte limit`.
 
-- Every current plugin is far below the bound (the table below).
-- An unbounded manifest read is a memory and reply-size risk. Compare the scan outage of
-  2026-10-19 (hotfix f125044).
-- The plugin manager needs the same bound.
-
-The features pair first proposed a 1 MiB main-file bound as well. It stays in the manager's
-preview only. Measured on 2026-10-20 (the current main of each repository):
-
-| Plugin | lazyrex.json | main file |
-| --- | --- | --- |
-| Messaging | 459 B | 123461 B |
-| Profiles | 188 B | 25647 B |
-| Templates | 237 B | 61113 B |
-| Tunnels | 367 B | 66160 B |
-| Worktrees | 588 B | 74677 B |
-| lazyrex (home) | none yet | 11241 B |
-
-How step 2 applies the decision:
-
-- Manifest, 64 KiB. The hub reads the whole manifest at each start attempt, so the bound keeps
-  that read small. The largest manifest today is 588 B, about 1/100 of the bound. Proposed error:
-  `<dir>/lazyrex.json is <n> bytes, over the 65536-byte limit`.
-  - The read itself is bounded: the loader reads at most 65537 bytes. A length check after an
-    unbounded read does not meet the memory goal.
-  - Tests: a manifest of exactly 65536 bytes is accepted; 65537 bytes is refused.
+- The read itself is bounded: the loader reads at most 65537 bytes. A length check after an
+  unbounded read would not limit the memory.
+- Tests: a manifest of exactly 65536 bytes is accepted; 65537 bytes is refused.
 - Main file: no hub bound. The hub does not read the main file: it checks its type, and `rex do`
   reads it. (The digest reads every file, as a stream.) Whether Rex limits the size of a `rex do`
   script: not tested.
-- The constant lives with the manifest loader, so the manager and the hub use one value.
 
 ## 14. Replace (`hub.admin.replace`)
-
-Status: on main (74190de). The contract (r1) has the hub reviewer's approval, with corrections
-that are applied here.
 
 `hub.admin.replace {"plugin": "<name>", "expect_instance": "<instance id>"}` replaces the running
 instance of an entry-backed plugin with a new instance from its current candidate. It is an admin
@@ -1065,8 +942,8 @@ another writer wrote later is then refused, not started.
   enters `waiting`, also when a dependency stops after the admission, because a later wake would
   start the candidate of that time. A retained live instance is kept only when its run is the
   expected run. An entry that a reload removed after the resolution refuses the start (code
-  `refused`), and the kept record gets no desired state. (Today the hub serves one request at a
-  time, so a reload cannot come inside a start; the check guards a later concurrent writer.)
+  `refused`), and the kept record gets no desired state. (The hub serves one request at a
+  time, so a reload cannot come inside a start; the check guards a concurrent writer.)
 - start of a running plugin: its run must be the expected run, else `candidate_changed`, "plugin
   <p> runs <run>, not <expected>; nothing was started". A run saved before the digest field has no
   digest, so it does not match a GitHub expectation: replace it.
@@ -1135,11 +1012,7 @@ Tests: `replace_test.go` (the arguments, the local spawn stages) and `replace_la
 replace and its replay, Stop before and after, a refused candidate, `dependency_not_ready`, the
 spawn outcomes with the `plugin-create` faults, `retire_failed`, and a reload after a replace).
 
-## 15. Not in this design
+## 15. Limits
 
-- The lock can replace the release clones: a release is `plugin update <name>` and a plugin
-  restart; a rollback is a lock entry with an older commit. This needs a user decision.
-- `depends` has no consumer of files today. If a plugin needs its dependency's files, the hub can
-  pass the dependency directory as an arg later.
-- Hot reload of local sources belongs to the dev.sh rewrite. dev.sh can read the plugin directories
-  from `hub.plugins`.
+- `depends` has no consumer of files. A plugin cannot read its dependency's directory through the
+  hub.
