@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -313,4 +315,46 @@ func TestReplaceOpenIntentLab(t *testing.T) {
 	trigger("")
 	_, err = s.call("hub.admin.start", map[string]any{"plugin": "a"})
 	s.refusedWith("a start with the sending intent", err, "unresolved_intent", pending)
+}
+
+// A replace with an op attempt, where the intent resolution adopts the block of an earlier intent
+// (plugin-create hold-send, then the release) and the replace then refuses: the attempt is bound
+// and sent, it has no intent of its own, and its return proves not_applied for this attempt. The
+// adopted instance stays.
+func TestReplaceAttemptAdoptionLab(t *testing.T) {
+	s := newStartLab(t, "a")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.start()
+	run, _ := s.startRun("a")
+	f := s.must("hub.test.fault", map[string]any{"point": "plugin-create", "mode": "hold-send", "key": "a", "plugin": "a"})
+	_, err := s.replace("a", run.InstanceID)
+	s.refusedWith("an unknown spawn outcome", err, "spawn_unknown", "may still create a block")
+	pending, _ := s.entry("a")["instance_id"].(string)
+	s.must("hub.test.fault_release", map[string]any{"id": f["id"]})
+	s.wait("the held create is sent", func() bool { return len(s.events("fault_sent", "a")) == 1 })
+
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(s.l.dir, "hub", "hub.db")+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO plugin_op_attempts (attempt, op_id, call, at) VALUES ('r1', 'op', 'replace', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.call("hub.admin.replace", map[string]any{"plugin": "a", "expect_instance": run.InstanceID, "attempt": "r1"})
+	s.refusedWith("the replace after the adoption", err, "instance_changed", "runs instance "+pending)
+	if e := s.entry("a"); e["instance_id"] != pending || e["instance_pending"] != false {
+		t.Errorf("hub.plugins a after the adoption: %v", e)
+	}
+	var bound, sent, intent string
+	if err := db.QueryRow(`SELECT bound_at, sent_at, intent_id FROM plugin_op_attempts WHERE attempt = 'r1'`).Scan(&bound, &sent, &intent); err != nil {
+		t.Fatal(err)
+	}
+	if bound == "" || sent == "" || intent != "" {
+		t.Errorf("the attempt: bound %q, sent %q, intent %q", bound, sent, intent)
+	}
+	proof, perr := (&Hub{db: &DB{db}}).returnProof(context.Background(), "replace", "r1", refuse("instance_changed", "%v", err)) // in the op core the call is in-process: the typed refusal
+	if perr != nil || !strings.HasPrefix(proof, "not_applied") {
+		t.Errorf("the proof %q, %v", proof, perr)
+	}
 }
