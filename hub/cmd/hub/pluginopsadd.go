@@ -5,9 +5,15 @@ package main
 // them are in pluginops.go.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // opAddInput is the input of an add. The admission stores it with the final id, so a replay
@@ -139,4 +145,129 @@ func (h *Hub) restartTarget(name string) (*opRestartTarget, error) {
 		return nil, refuse("refused", "plugin %s is not running; use start", name)
 	}
 	return &opRestartTarget{Source: pl.run.Source, Commit: pl.run.Commit, Digest: pl.run.Digest, Instance: pl.InstanceID}, nil
+}
+
+// opResolveLimit bounds the resolving phase: every git command of it (step 4 plan, item 3a).
+const opResolveLimit = 30 * time.Second
+
+// resolveLimit is opResolveLimit; a test shortens it.
+var resolveLimit = opResolveLimit
+
+// opResolved is the stored target of an add or an update: the entry's source after the op and the
+// commit that the resolve gave. The first stored target is the decision: a replay never resolves
+// again (docs/hub.md, "a replay uses only stored values").
+type opResolved struct {
+	Source   string `json:"source"`
+	RefKind  string `json:"ref_kind"`
+	Tag      string `json:"tag"` // the release tag of a latest source, else ""
+	Commit   string `json:"commit"`
+	FetchRef string `json:"fetch_ref"`
+}
+
+// opNewSource is the source of an update: the entry's source up to its last "@", then the new ref.
+// A tag that a branch also has is spelled refs/tags/<name>, so a later CLI sync reads it as the tag.
+func opNewSource(source, to string, branch bool) string {
+	ref := to
+	if branch {
+		ref = "refs/tags/" + to
+	}
+	return source[:strings.LastIndex(source, "@")] + "@" + ref
+}
+
+// opResolveTarget resolves the target of an add or an update at the remote. It writes nothing.
+func (h *Hub) opResolveTarget(ctx context.Context, op *pluginOp) (opResolved, error) {
+	source, to := "", ""
+	switch op.Kind {
+	case "add":
+		var in opAddInput
+		if err := json.Unmarshal([]byte(op.Input), &in); err != nil {
+			return opResolved{}, err
+		}
+		source = in.Source
+	case "update":
+		var base managedFileEntry
+		var in opUpdateInput
+		if err := json.Unmarshal([]byte(op.Base), &base); err != nil {
+			return opResolved{}, err
+		}
+		if err := json.Unmarshal([]byte(op.Input), &in); err != nil {
+			return opResolved{}, err
+		}
+		source, to = base.Source, in.To
+		if to == "latest" {
+			source = opNewSource(source, "latest", false)
+		}
+	default:
+		return opResolved{}, fmt.Errorf("%s has no resolve", op.Kind)
+	}
+	e := &configEntry{Source: source}
+	if err := e.checkSource(""); err != nil {
+		return opResolved{}, err
+	}
+	r := e.githubRef()
+	tmpRoot := filepath.Join(h.cfg.State, "plugins", ".tmp")
+	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
+		return opResolved{}, err
+	}
+	url := h.pops.cmd.url(r)
+	return withTmp(tmpRoot, func(tmp string) (opResolved, error) {
+		switch {
+		case to != "" && to != "latest":
+			t, err := resolveTag(ctx, tmp, url, to)
+			if err != nil {
+				return opResolved{}, err
+			}
+			return opResolved{Source: opNewSource(source, to, t.Branch), RefKind: "tag", Commit: t.Commit, FetchRef: t.FetchRef}, nil
+		case r.Ref == "latest":
+			rel, err := resolveLatest(ctx, tmp, url)
+			if err != nil {
+				return opResolved{}, err
+			}
+			return opResolved{Source: source, RefKind: "latest", Tag: rel.Tag, Commit: rel.Commit, FetchRef: rel.FetchRef}, nil
+		}
+		if err := checkRef(ctx, tmp, r.Ref); err != nil {
+			return opResolved{}, err
+		}
+		res, err := resolveRef(ctx, tmp, url, r.Ref)
+		if err != nil {
+			return opResolved{}, err
+		}
+		return opResolved{Source: source, RefKind: res.Kind, Commit: res.Commit, FetchRef: res.FetchRef}, nil
+	})
+}
+
+// opResolve is the resolving phase: it resolves the target and stores it. A stored target is
+// never resolved again. A stop of the hub during the resolve stores nothing, so the replay
+// resolves again; a remote that changed then gives the new answer. A failed resolve wrote
+// nothing, so the op ends failed.
+func (h *Hub) opResolve(ctx context.Context, op *pluginOp) error {
+	if op.Target == "" {
+		rctx, cancel := context.WithTimeout(ctx, resolveLimit)
+		resolve := h.pops.resolve
+		if resolve == nil {
+			resolve = h.opResolveTarget
+		}
+		t, err := resolve(rctx, op)
+		timedOut := errors.Is(rctx.Err(), context.DeadlineExceeded)
+		cancel()
+		switch {
+		case ctx.Err() != nil:
+			return ctx.Err()
+		case err != nil && timedOut:
+			return h.setOpPhase(ctx, op, "failed", "", fmt.Sprintf("resolve %s: no answer within %v; nothing was written", op.Entry, resolveLimit))
+		case err != nil:
+			return h.setOpPhase(ctx, op, "failed", "", fmt.Sprintf("resolve %s: %v; nothing was written", op.Entry, err))
+		}
+		if h.opFault("plugin-op-after-resolve") {
+			return errOpCrash
+		}
+		b, _ := json.Marshal(t)
+		if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET target = ?, updated = ? WHERE op_id = ? AND target = ''`, string(b), time.Now().UnixMilli(), op.ID); err != nil {
+			return err
+		}
+		op.Target = string(b)
+	}
+	var t opResolved
+	json.Unmarshal([]byte(op.Target), &t)
+	return h.setOpPhase(ctx, op, op.nextPhase("resolving"), fmt.Sprintf("resolved %s to %s %s", op.Entry, t.Source, t.Commit), "")
 }
