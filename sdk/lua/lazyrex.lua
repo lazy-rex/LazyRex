@@ -46,7 +46,9 @@ M.normalize = normalize
 local raw = {concat = table.concat}
 local function concat(list, sep, i, j)
   if type(list) ~= 'table' then return raw.concat(list, sep, i, j) end
-  i, j = i or 1, j or #list
+  -- Only nil takes the default: table.concat refuses false and other values.
+  if i == nil then i = 1 end
+  if j == nil then j = #list end
   -- A short range, or an odd argument (raw.concat gives its error).
   if type(i) ~= 'number' or type(j) ~= 'number' or i % 1 ~= 0 or j % 1 ~= 0 or j - i < 500 then
     return raw.concat(list, sep, i, j)

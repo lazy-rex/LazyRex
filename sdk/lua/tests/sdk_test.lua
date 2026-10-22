@@ -1052,6 +1052,9 @@ test('concat gives what table.concat gives, also for 2560 items and more', funct
   expect(err(concat, t, ','), 'a bad item names its own index').to_be(err(raw, t, ',', 2001, 3000))
   expect(err(concat, {'a', {}}), 'a short list').to_be(err(raw, {'a', {}}))
   expect(err(concat, nil), 'not a table').to_be(err(raw, nil))
+  for _, a in ipairs({{false, 2}, {1, false}, {'x', 2}}) do
+    expect(err(concat, {'a', 'b'}, ',', a[1], a[2]), 'a bad range argument').to_be(err(raw, {'a', 'b'}, ',', a[1], a[2]))
+  end
 end)
 
 test('boot.lua sets table.concat to the SDK concat before it runs the main file', function()
