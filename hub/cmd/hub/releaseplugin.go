@@ -521,13 +521,16 @@ func relPluginPrecheck(r *releaser) error {
 	if err := r.holdOK(c); err != nil {
 		return err
 	}
+	tool := ""
 	if !r.spec.Lab {
-		tool, err := r.toolPath()
-		if err != nil {
+		if tool, err = r.toolPath(); err != nil {
 			return err
 		}
-		if err := r.checkRehearsal(tool); err != nil {
-			return err
+		// A set step has no rehearsal record in its run: the set gate below reads the set record.
+		if r.spec.Set == nil {
+			if err := r.checkRehearsal(tool); err != nil {
+				return err
+			}
 		}
 	}
 	panes, err := r.devPanes()
@@ -540,6 +543,11 @@ func relPluginPrecheck(r *releaser) error {
 	h, err := r.checkPluginHub(c, "precheck")
 	if err != nil {
 		return err
+	}
+	if r.spec.Set != nil {
+		if err := r.checkSetGate(c, h, tool); err != nil {
+			return err
+		}
 	}
 	if err := r.verifyList(relVerifyBack); err != nil {
 		return err

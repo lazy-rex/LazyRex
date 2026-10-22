@@ -52,10 +52,20 @@ type relSpec struct {
 	Absent     []string `json:"absent"`      // paths that must not exist at backup
 	// LabArgs maps a plugin arg that names a path to its value in the lab (rehearse).
 	LabArgs map[string]map[string]string `json:"lab_args"`
+	// Set: a live plugin step of a rehearsed release set. The precheck reads the set record of the
+	// hub run that released H (checkSetGate), not a rehearsal record of this run.
+	Set *relSpecSet `json:"set,omitempty"`
+}
+
+// relSpecSet names the hub run of a release set and the sha256 of its rehearsal.json.
+type relSpecSet struct {
+	Run          string `json:"run"`
+	RecordSHA256 string `json:"record_sha256"`
 }
 
 var (
 	relCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	relSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	relTag    = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
@@ -100,8 +110,8 @@ func (s *relSpec) check() error {
 				return err
 			}
 		}
-		if s.Plugin != "" || s.To != "" || s.Tag != "" {
-			return errors.New("plugin, to and tag are for a plugin release")
+		if s.Plugin != "" || s.To != "" || s.Tag != "" || s.Set != nil {
+			return errors.New("plugin, to, tag and set are for a plugin release")
 		}
 	case "plugin":
 		if !pluginName.MatchString(s.Plugin) {
@@ -115,6 +125,17 @@ func (s *relSpec) check() error {
 		}
 		if s.H != "" || s.ReleaseDir != "" || s.DevLog != "" || s.Probes != "" {
 			return errors.New("h, release_dir, dev_log and probes are for a hub release")
+		}
+		if s.Set != nil {
+			if s.Lab {
+				return errors.New(`a lab spec has no "set"; the set rehearsal runs its lab steps`)
+			}
+			if !filepath.IsAbs(s.Set.Run) {
+				return errors.New("set.run must be the absolute path of the hub run")
+			}
+			if !relSHA256.MatchString(s.Set.RecordSHA256) {
+				return errors.New("set.record_sha256 must be 64 lowercase hex")
+			}
 		}
 	default:
 		return errors.New(`kind must be "hub" or "plugin"`)

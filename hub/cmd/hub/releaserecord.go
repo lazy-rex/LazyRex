@@ -37,12 +37,21 @@ type relRehearsal struct {
 	Tier        string              `json:"tier"`
 	TierReasons []string            `json:"tier_reasons"`
 	Phases      []relPhase          `json:"phases"`
-	Lab         string              `json:"lab"`               // the lab directory (deleted after a pass)
-	Mirrors     map[string]string   `json:"mirrors,omitempty"` // rehearse: the HEAD of each GitHub mirror of the lab
-	Commits     map[string][]string `json:"commits,omitempty"` // rehearse: the commits that the mirrors held, by owner/repo
-	SDK         []relSDKCheck       `json:"sdk,omitempty"`     // rehearse: the SDK byte check of each hub check point
-	Set         []relSetCheck       `json:"set,omitempty"`     // rehearse -set: every data check and probe of the set phase
-	Chunks      []relChunkCheck     `json:"chunks,omitempty"`  // rehearse -set: the chunking probe windows
+	Lab         string              `json:"lab"`                 // the lab directory (deleted after a pass)
+	Mirrors     map[string]string   `json:"mirrors,omitempty"`   // rehearse: the HEAD of each GitHub mirror of the lab
+	Commits     map[string][]string `json:"commits,omitempty"`   // rehearse: the commits that the mirrors held, by owner/repo
+	SDK         []relSDKCheck       `json:"sdk,omitempty"`       // rehearse: the SDK byte check of each hub check point
+	Set         []relSetCheck       `json:"set,omitempty"`       // rehearse -set: every data check and probe of the set phase
+	Chunks      []relChunkCheck     `json:"chunks,omitempty"`    // rehearse -set: the chunking probe windows
+	SetSteps    []relSetStep        `json:"set_steps,omitempty"` // rehearse -set: each plugin step as its lab freeze saw it
+}
+
+// relSetStep is one plugin step of a set rehearsal: the frozen lab candidate and the base pins of
+// the lab lock at that freeze. The live gate predicts the live state before the same step from it.
+type relSetStep struct {
+	Plugin    string       `json:"plugin"`
+	Candidate relCandidate `json:"candidate"`
+	BasePins  []string     `json:"base_pins"`
 }
 
 type relPhase struct {

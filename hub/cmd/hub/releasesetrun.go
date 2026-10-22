@@ -26,6 +26,7 @@ type relSetState struct {
 	ref    map[string]*relSnap // the reference snapshot of each plugin
 	runs   map[string]string   // the lab plugin run of each plugin
 	checks []relSetCheck       // the record of every data check and probe
+	steps  []relSetStep        // each plugin step as its lab freeze saw it, in set order
 }
 
 // relSetCheck is one record line: a phase, a plugin and what passed there.
@@ -113,6 +114,9 @@ func (h *rehearsal) pluginForward(e *relSetEntry) error {
 		return relFail("%s: %v", e.Plugin, err)
 	}
 	h.set.runs[e.Plugin] = run
+	if err := h.recordStep(e, run); err != nil {
+		return err
+	}
 	step := func(name string) error {
 		if err := h.child(name, nil, "-run", run); err != nil {
 			return relFail("%s: %v", e.Plugin, err)
