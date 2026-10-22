@@ -439,3 +439,22 @@ func TestViewChangedEndHandoff(t *testing.T) {
 	hr.release(t, "att-c", "")
 	hr.settle(t, map[string]int{"att-c": 2})
 }
+
+// A notification with an unchanged revision, while a request is held, sends one more request
+// after the answer: an operation completion asks for view.changed with an unchanged tree
+// (vs.notify; Codex review of c2e9a78). Before, the same revision did not count, and the answer
+// ended the sender.
+func TestViewChangedSameRevision(t *testing.T) {
+	h, hr := notifyHub(t)
+	h.db.Exec(`DELETE FROM view_transcripts`)
+	h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 1)
+	hr.waitSent(t, "att-c", 1)
+	h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 1)
+	hr.release(t, "att-c", "")
+	hr.waitSent(t, "att-c", 2)
+	if got := hr.sent("att-c")[1].revision; got != "1" {
+		t.Errorf("the second request tells revision %s, want 1", got)
+	}
+	hr.release(t, "att-c", "")
+	hr.settle(t, map[string]int{"att-c": 2})
+}

@@ -14,11 +14,15 @@ import (
 // was busy were 20 requests (timeout audit, row 10, 2026-10-22).
 //
 // The hub keeps at most one view.changed request outstanding for each view, role (composer or
-// printer) and attachment. A render during that request raises want: when the request ends, one
-// more request tells the latest revision, however many renders came. timeout_ms is the only
-// bound: the hub sets no shorter local deadline. A failed request is tried again (three attempts
-// in total), because the renderer can refuse a request just before it records its attachment
-// (requestClose). A success, or a new revision after a failure, starts a fresh count.
+// printer) and attachment. A notification during that request marks the sender pending: when the
+// request ends, one more request tells the latest revision, however many notifications came. A
+// notification counts even with an unchanged revision: an operation completion asks for one with
+// an unchanged tree (vs.notify; Codex review of c2e9a78).
+//
+// timeout_ms is the only bound: the hub sets no shorter local deadline. A failed request is tried
+// again (three attempts in total), because the renderer can refuse a request just before it
+// records its attachment (requestClose). A success, or a new notification after a failure, starts
+// a fresh count.
 //
 // A view close (forgetView), a new attachment of the role, a render pass that no longer finds the
 // attachment, and the hub stop cancel the notifier: its outstanding call returns at once and it
@@ -31,11 +35,12 @@ const (
 
 type notifyKey struct{ view, role, attachment string }
 
-// viewNotifier is the delivery of one key. h.vs.mu guards want, sent and attempts.
+// viewNotifier is the delivery of one key. h.vs.mu guards want, pending and attempts.
 type viewNotifier struct {
 	plugin, client string
-	want, sent     int64 // want: the latest revision to tell; sent: the revision of the current request
-	attempts       int   // failed attempts for sent
+	want           int64 // the latest revision to tell
+	pending        bool  // a notification came after the current request was sent
+	attempts       int   // failed attempts since the last notification
 	ctx            context.Context
 	cancel         context.CancelFunc
 	done           chan struct{} // closed when the sender has ended
@@ -58,6 +63,7 @@ func (h *Hub) tellViewChanged(plugin, role, client, viewID, attachment string, r
 		if rev > n.want {
 			n.want = rev
 		}
+		n.pending = true
 		return
 	}
 	// A new attachment of the role replaces the old one: its request no longer waits for the old.
@@ -75,7 +81,7 @@ func (h *Hub) tellViewChanged(plugin, role, client, viewID, attachment string, r
 	}
 	ctx, cancel := context.WithCancel(parent)
 	n := &viewNotifier{plugin: plugin, client: client, want: rev, ctx: ctx, cancel: cancel, done: make(chan struct{})}
-	// The sender owns the key before it starts: a second tellViewChanged raises want.
+	// The sender owns the key before it starts: a second tellViewChanged marks it pending.
 	vs.senders[k] = n
 	go h.notifySender(k, n)
 }
@@ -120,7 +126,7 @@ func (vs *viewSvc) pruneNotifiers(plugin string, composers map[string]string, pr
 
 // notifySender sends the requests of one key, one at a time, until no newer revision is waiting.
 // Each exit decides to stop and removes the sender under one h.vs.mu lock. So tellViewChanged
-// either raises want before that lock, and the sender sends it, or finds no sender after it and
+// either marks it pending before that lock, and the sender sends again, or finds no sender after it and
 // starts a new one (Codex review of 8025d6b: a gap between the two lost a revision).
 func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
 	vs := h.vs
@@ -147,8 +153,8 @@ func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
 			stopLocked()
 			return
 		}
-		n.sent = n.want
-		rev := n.sent
+		n.pending = false
+		rev := n.want
 		vs.mu.Unlock()
 		err := viewChangedCall(n.ctx, h, n.client, k.view, k.attachment, rev)
 		vs.mu.Lock()
@@ -156,8 +162,8 @@ func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
 		case n.ctx.Err() != nil, err != nil && targetGone(err):
 			stopLocked()
 			return
-		case n.want > n.sent:
-			n.attempts = 0 // a newer revision: a success, or a fresh count after a failure
+		case n.pending:
+			n.attempts = 0 // a new notification: after a success, or a fresh count after a failure
 			vs.mu.Unlock()
 			continue
 		case err == nil:
