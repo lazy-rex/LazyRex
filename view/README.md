@@ -239,14 +239,16 @@ history. The default synthetic fixture does not depend on private message data.
 
 ### Padded controls
 
-Buttons keep a three-row target. Half-block caps paint half a row above and
-below the label. Keyboard focus underlines the label without changing dimensions. Each padding row belongs to the same control. List targets contain four rows: top padding, name, detail, and bottom padding. Long list labels
+A button is one row, in the shape of huh's ThemeCharm: the label with two cells of
+padding on each side, and the padding belongs to the button. Adjacent buttons are one cell
+apart. Buttons that do not fit side by side stack, with a blank row between them. Keyboard
+focus underlines the label without changing dimensions. List targets contain four rows: top padding, name, detail, and bottom padding. Long list labels
 and details use an ellipsis. Adjacent targets share a boundary without overlap.
 Choices also use three rows, without an additional gap.
 
-Send uses a three-row, ten-column region inside the composer. Its hint remains
-outside that region. Narrow panes show the send and newline hints on separate
-rows. Send and form submission use the primary style. Other buttons use a muted
+Send is a one-row, ten-column button on the first footer row of the composer. Its hint
+remains outside that region. Narrow panes show the newline hint on a second footer row.
+Browse… is on the text row of its box, and only that row is its target. Send and form submission use the primary style. Other buttons use a muted
 style. Keyboard focus and pointer feedback remain visible.
 
 These changes apply the ui.sh button and form guidance in terminal cells. The
@@ -275,11 +277,10 @@ Lists and forms use at most 72 columns. List hover shades the text and equal
 padding rows above and below it. An accent bar marks keyboard focus. Checkboxes
 use a two-column outline inside a three-row target. The center is empty when
 unchecked and filled with the accent color when checked. The indicator has no
-checkmark. Button hover changes the label fill and both half-block caps together.
-Primary buttons keep the accent color on hover and press.
+checkmark. Button hover and press change the button fill. Primary buttons use the
+highlight role, and its hover and press roles keep readable label contrast.
 Checkbox hover and press shade all three rows, including the label and padding.
-Disabled buttons show diagonal stripes beside the label. The caps keep their
-half-row shape. Disabled buttons do not respond to hover or press.
+Disabled buttons show diagonal stripes beside the label. Disabled buttons do not respond to hover or press.
 
 PNG fixtures use approximate font metrics. They do not prove glyph joins or
 physical touch dimensions in a Rex app. The live composer screenshot shows
@@ -290,7 +291,7 @@ than the available width. A model test verifies that Ctrl+N moves from the
 composer to the first form field and routes subsequent typing to that field.
 The lab must also check the terminal's key encoding.
 
-Half-block button caps use `▄` and `▀`. The small checkbox outline uses `▁`, `▔`,
+The small checkbox outline uses `▁`, `▔`,
 `▏`, and `▕`. These glyphs paint partial cells; they do not change row height.
 Their continuity depends on the terminal's glyph rendering. Preview PNGs draw
 block elements at exact cell fractions but still use approximate text metrics.

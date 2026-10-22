@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -197,5 +198,53 @@ func TestBrowseTargetIsOneRow(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(m.screenRows()[browse[0]].Text), "  Browse…  ") {
 		t.Fatal("Browse… is not on the text row")
+	}
+}
+
+// contrast is the WCAG contrast ratio of two colors.
+func contrast(a, b color.Color) float64 {
+	lum := func(c color.Color) float64 {
+		r, g, b, _ := c.RGBA()
+		return relativeLuminance(float64(r)/0xffff, float64(g)/0xffff, float64(b)/0xffff)
+	}
+	x, y := lum(a)+0.05, lum(b)+0.05
+	return max(x, y) / min(x, y)
+}
+
+// Button labels keep at least 4.5:1 in every state and theme. Text roles keep 4.5:1 and the
+// control border 3:1 on a reference background (white, or zinc-900 in dark mode). The primary
+// button stands out more from the background than a secondary button.
+func TestControlContrast(t *testing.T) {
+	m := testModel()
+	for _, dark := range []bool{false, true} {
+		m.dark = dark
+		p := m.palette()
+		background := color.Color(color.White)
+		if dark {
+			background = lipgloss.Color("#18181B")
+		}
+		check := func(name string, fg, bg color.Color, minimum float64) {
+			ratio := contrast(fg, bg)
+			t.Logf("dark=%t %s %.2f:1", dark, name, ratio)
+			if ratio < minimum {
+				t.Errorf("dark=%t %s is %.2f:1, want %.1f:1", dark, name, ratio, minimum)
+			}
+		}
+		check("primary label idle", p.onHighlight, p.highlight, 4.5)
+		check("primary label hover", p.onHighlight, p.highlightHover, 4.5)
+		check("primary label press", p.onHighlight, p.highlightPress, 4.5)
+		check("secondary label idle", p.text, p.button, 4.5)
+		check("secondary label hover", p.text, p.hover, 4.5)
+		check("secondary label press", p.text, p.press, 4.5)
+		check("title", p.title, background, 4.5)
+		check("highlight text", p.highlight, background, 4.5)
+		check("selected", p.selected, background, 4.5)
+		check("danger", p.danger, background, 4.5)
+		check("control border", p.control, background, 3)
+		primary, secondary := contrast(p.highlight, background), contrast(p.button, background)
+		t.Logf("dark=%t primary fill %.2f:1, secondary fill %.2f:1 against the background", dark, primary, secondary)
+		if primary <= secondary {
+			t.Errorf("dark=%t the secondary button stands out more than the primary button", dark)
+		}
 	}
 }

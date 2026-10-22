@@ -16,11 +16,11 @@ import (
 )
 
 // palette holds the semantic color roles. Every control color comes from a role, and the literal
-// colors of the roles are only here. The control roles port huh's ThemeCharm (huh v2.0.3,
-// theme.go): title is Charm indigo, highlight is Charm fuchsia (the selector and the focused
-// button), onHighlight is cream, selected is green, danger is red. ThemeCharm v2.0.3 passes its
-// normal text and blurred button colors to LightDark in the wrong order (light text on a light
-// background); these roles use the order of huh v1 (AdaptiveColor{Light: "235", Dark: "252"}).
+// colors of the roles are only here. The control roles follow the shapes of huh's ThemeCharm
+// (huh v2.0.3, theme.go), with colors chosen by the ui.sh guidance: highlight is fuchsia (the
+// selector and the primary button), and its label contrast is at least 4.5:1 in every state and
+// theme, where Charm's cream on fuchsia is about 2:1. Secondary buttons and borders use zinc
+// neutrals. Dark mode uses one light title color. selected is emerald and danger is red.
 type palette struct {
 	text, muted, accent, border, surface color.Color
 	// Form controls.
@@ -35,16 +35,16 @@ func (m *model) palette() palette {
 	if m.dark {
 		return palette{
 			text: lipgloss.Color("#E2E8F0"), muted: lipgloss.Color("#94A3B8"), accent: lipgloss.Color("#A5B4FC"), border: lipgloss.Color("#475569"), surface: lipgloss.Color("#1E293B"),
-			title: lipgloss.Color("#7571F9"), highlight: lipgloss.Color("#F780E2"), onHighlight: lipgloss.Color("#FFFDF5"), selected: lipgloss.Color("#02BF87"), danger: lipgloss.Color("#ED567A"),
-			control: lipgloss.Color("#94A3B8"), button: lipgloss.Color("237"), hover: lipgloss.Color("#253145"), press: lipgloss.Color("#334155"),
-			highlightHover: lipgloss.Color("#FAA5EB"), highlightPress: lipgloss.Color("#D660C2"),
+			title: lipgloss.Color("#F4F4F5"), highlight: lipgloss.Color("#E879F9"), onHighlight: lipgloss.Color("#09090B"), selected: lipgloss.Color("#34D399"), danger: lipgloss.Color("#F87171"),
+			control: lipgloss.Color("#A1A1AA"), button: lipgloss.Color("#27272A"), hover: lipgloss.Color("#3F3F46"), press: lipgloss.Color("#52525B"),
+			highlightHover: lipgloss.Color("#F0ABFC"), highlightPress: lipgloss.Color("#D946EF"),
 		}
 	}
 	return palette{
 		text: lipgloss.Color("#1E293B"), muted: lipgloss.Color("#526176"), accent: lipgloss.Color("#4338CA"), border: lipgloss.Color("#CBD5E1"), surface: lipgloss.Color("#EEF2FF"),
-		title: lipgloss.Color("#5A56E0"), highlight: lipgloss.Color("#F780E2"), onHighlight: lipgloss.Color("#FFFDF5"), selected: lipgloss.Color("#02BA84"), danger: lipgloss.Color("#FF4672"),
-		control: lipgloss.Color("#64748B"), button: lipgloss.Color("252"), hover: lipgloss.Color("#F1F3F5"), press: lipgloss.Color("#DCE1E7"),
-		highlightHover: lipgloss.Color("#FAA5EB"), highlightPress: lipgloss.Color("#D660C2"),
+		title: lipgloss.Color("#4338CA"), highlight: lipgloss.Color("#C026D3"), onHighlight: lipgloss.Color("#FFFFFF"), selected: lipgloss.Color("#047857"), danger: lipgloss.Color("#DC2626"),
+		control: lipgloss.Color("#71717A"), button: lipgloss.Color("#E4E4E7"), hover: lipgloss.Color("#D4D4D8"), press: lipgloss.Color("#A1A1AA"),
+		highlightHover: lipgloss.Color("#A21CAF"), highlightPress: lipgloss.Color("#86198F"),
 	}
 }
 func (m *model) contentWidth() int { return max(8, m.width-6) }
