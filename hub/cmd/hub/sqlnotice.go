@@ -118,6 +118,10 @@ func (s *sqlService) drainLater(p *pluginSQL) {
 		for {
 			time.Sleep(wait)
 			p.lock <- struct{}{}
+			if p.closed {
+				p.release()
+				break // hub.admin.sql_return drained the outbox and closed the file
+			}
 			err := s.drain(context.Background(), p)
 			p.release()
 			if err == nil {
@@ -146,8 +150,8 @@ func (s *sqlService) drainAll(ctx context.Context) {
 		if !pluginName.MatchString(name) {
 			continue
 		}
-		if _, err := os.Stat(f); err != nil {
-			continue
+		if _, err := os.Stat(f); err != nil || s.returning(name) {
+			continue // a file that hub.admin.sql_return moves aside is not drained here
 		}
 		p, err := s.open(ctx, name)
 		if err != nil {
