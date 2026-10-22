@@ -7,7 +7,7 @@
   `hub.admin.restart` and `lazyrex-hub restart` (child exit 4, then the wrapper runs its own
   binary again with the lock held). Target: before the
   public candidate.
-- **Live feed.** The LazyRex tab shows recent and running plugin operations (from `view_ops` and
+- **Live feed.** A LazyRex surface (its place is not chosen yet) shows recent and running plugin operations (from `view_ops` and
   the hub's records) with their state, and a Retry for failures. Running work may also report
   through Rex's Program Status Protocol, so that the app shows it in tab headers and in the
   Activity sidebar (untested in the app).
@@ -92,11 +92,11 @@ Ordered by value to LazyRex.
 
 ## Known defects
 
-- **Lab: `rex send-key` sends a capital letter as lowercase (Rex 0.0.1792158932-g88fd41, inferred
-  from the form screen).** `send-key M` typed `m` in a form text field. Tests type lowercase text.
-- **Renderer: text without key events does not reach the thread composer (lab, Rex 1203, cause
-  unknown).** `rex send -b <thread view> <text>` did not change the composer; `rex send-key`
-  letters did. Pasted text may be dropped. Not reproduced by a second run.
-- **Renderer: keys right after a focus change are lost (lab, Rex 1203, cause unknown).** In a
+- **Lab: `rex send-key` sends a capital letter as lowercase (Rex 0.0.1792158932-g88fd41, 2026-10-17,
+  inferred from the form screen).** `send-key M` typed `m` in a form text field. Tests type lowercase text.
+- **Renderer: text without key events does not reach the thread composer (lab, Rex 1203, 2026-10-17,
+  cause unknown).** `rex send -b <thread view> <text>` did not change the composer; `rex send-key`
+  letters did. Pasted text may be dropped. Independent reproduction remains unverified.
+- **Renderer: keys right after a focus change are lost (lab, Rex 1203, 2026-10-17, cause unknown).** In a
   thread view, the first two letters sent with `send-key` right after the Tab that moves focus to
-  the composer did not appear. A 500 ms wait avoided it. Not reproduced by a second run.
+  the composer did not appear. A 500 ms wait avoided it. Independent reproduction remains unverified.
