@@ -460,7 +460,7 @@ type stmtResult struct {
 	columns  []string
 	rows     [][]any
 	complete bool
-	size     int // the encoded size of rows
+	size     int // the encoded size of rows (run); of the complete exec reply (stmt)
 	changes  int64
 	id       int64
 	changed  int64           // total_changes() during the statement: trigger and cascade writes count
