@@ -17,10 +17,9 @@ end
 test('a:print puts its text on the agent screen', function()
   local a = agent('printer', {join = false})
   a:report({kind = 'claude', conversation_id = 'print-1'})
-  local i
-  wait('the hub knows the pane', function()
-    i = identity('claude:print-1')
-    return i and i.block_id ~= nil
+  local i = wait('the hub knows the pane', function()
+    local found = identity('claude:print-1')
+    return found and found.block_id ~= nil and found
   end)
   a:print('lazyrex print check 7f3a\r\n')
   wait('the text is on the screen', function() return screen(a.session, i.block_id):find('lazyrex print check 7f3a', 1, true) ~= nil end)
