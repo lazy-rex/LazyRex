@@ -22,7 +22,10 @@ import (
 	"time"
 )
 
-const relHubFile = "hub-H.json" // the H hub that step start saw
+const (
+	relHubFile    = "hub-H.json"   // the H hub that step start saw
+	relOldHubFile = "hub-OLD.json" // the OLD hub that rollback started
+)
 
 // relClone is the release clone of LazyRex.
 func (r *releaser) relClone() string { return filepath.Join(r.spec.ReleaseDir, "LazyRex") }
@@ -679,47 +682,23 @@ func (r *releaser) runtime(h *relHub, commit, label string) error {
 	return r.checkProvenance(devHub, commit, label)
 }
 
-// startHub starts the dev pane of the checked-out commit, and checks the runtime of its hub. A
-// rerun after an interrupted start of this label follows the "sent" record of devStart:
-//   - no "sent" record: the create never went out, so the step creates the pane;
-//   - "sent", and one dev pane: the step adopts the new hub of that pane (it waits for it);
-//   - "sent", and no dev pane: the create can still finish, so the step stops with no second create.
+// startHub starts the dev pane of the checked-out commit, and checks the runtime of its hub. The
+// caller settles a pending create first (settleCreate): startHub refuses while one is pending, and
+// while a dev pane runs. A begin record without a "sent" record (a stop before the send) is not
+// pending: the create never went out, and startHub creates the pane.
 func (r *releaser) startHub(commit, label string) (*relHub, error) {
 	op := "dev-start-" + label
+	if p, _, err := r.pendingCreate(); err != nil {
+		return nil, err
+	} else if p != "" {
+		return nil, relFail("the dev pane create of %s is pending", p)
+	}
 	panes, err := r.devPanes()
 	if err != nil {
 		return nil, err
 	}
-	data, open, err := r.lastBegin(op)
-	if err != nil {
-		return nil, err
-	}
-	sent := false
-	if open {
-		if sent, err = r.sentAfterBegin(op); err != nil {
-			return nil, err
-		}
-	}
 	if len(panes) > 0 {
-		if !sent || len(panes) != 1 {
-			return nil, relFail("a %s pane runs without a new hub of this step; stop it, or roll back", devPaneLabel)
-		}
-		var before hubStartEvent
-		if err := json.Unmarshal(data, &before); err != nil {
-			return nil, relFail("the saved hub_started event of %s: %v", op, err)
-		}
-		h, err := r.waitNewHub(before)
-		if err != nil {
-			return nil, relFail("the dev pane of this step runs no new hub: %v", err)
-		}
-		if err := r.runtime(h, commit, label); err != nil {
-			return nil, err
-		}
-		r.say("adopted the hub pid %d that this step started", h.PID)
-		return h, r.appendJournal(op, "end", h)
-	}
-	if sent {
-		return nil, relFail("this step sent session.new_block, and its result is unknown; no %s pane is visible. The create can still finish: wait, then run this step again. Do not send a second create, and do not start a dev pane by hand; if no pane appears, stop and report", devPaneLabel)
+		return nil, relFail("a %s pane runs without a new hub of this step; stop it, or roll back", devPaneLabel)
 	}
 	last, _, err := hubEvents(r.cfg.state)
 	if err != nil {
@@ -741,6 +720,16 @@ func hubStart(r *releaser) error {
 	if err != nil {
 		return err
 	}
+	op, sh, err := r.settleCreate(c)
+	if err != nil {
+		return err
+	}
+	if op == "dev-start-forward" {
+		if sh == nil {
+			return relFail("the dev pane of this step runs no new hub; see %s, then roll back", r.spec.DevLog)
+		}
+		return r.saveHubH(sh)
+	}
 	if err := r.needHead(c.To.Commit, "H"); err != nil {
 		return err
 	}
@@ -754,6 +743,11 @@ func hubStart(r *releaser) error {
 	if err != nil {
 		return err
 	}
+	return r.saveHubH(h)
+}
+
+// saveHubH writes the H hub of step start for replace and rollback.
+func (r *releaser) saveHubH(h *relHub) error {
 	if err := writeJSON(filepath.Join(r.run, relHubFile), h); err != nil {
 		return err
 	}
@@ -887,9 +881,9 @@ func hubVerify(r *releaser) error {
 	return r.verifyList(relVerifyFwd)
 }
 
-// readHubH reads the H hub that step start recorded, nil without one.
-func (r *releaser) readHubH() *relHub {
-	b, err := os.ReadFile(filepath.Join(r.run, relHubFile))
+// readHub reads a hub that a step recorded in the run file name, nil without one.
+func (r *releaser) readHub(name string) *relHub {
+	b, err := os.ReadFile(filepath.Join(r.run, name))
 	if err != nil {
 		return nil
 	}
@@ -905,6 +899,21 @@ func hubRollback(r *releaser) error {
 	if err != nil {
 		return err
 	}
+	// 0. A pending create first: before a pin, clone or pane change, and before another create.
+	op, sh, err := r.settleCreate(c)
+	if err != nil {
+		return err
+	}
+	switch {
+	case op == "dev-start-forward" && sh != nil:
+		if err := r.saveHubH(sh); err != nil {
+			return err
+		}
+	case op == "dev-start-rollback" && sh != nil:
+		if err := writeJSON(filepath.Join(r.run, relOldHubFile), sh); err != nil {
+			return err
+		}
+	}
 	b, err := r.currentBackup()
 	if err != nil {
 		return err
@@ -917,6 +926,18 @@ func hubRollback(r *releaser) error {
 	}
 	if err := r.othersEqual(c, b); err != nil {
 		return err
+	}
+	// A rerun after this rollback started OLD: the OLD hub runs, the pins are back and the clone is
+	// at OLD. Do not close it; continue at step 4.
+	if h := r.readHub(relOldHubFile); r.running(h) {
+		if err := r.holdBackup(c, "from from"); err != nil {
+			return err
+		}
+		if err := r.needHead(c.From.Commit, "OLD"); err != nil {
+			return err
+		}
+		r.say("the OLD hub of this rollback runs (pid %d, %s)", h.PID, h.Client)
+		return r.rollbackFinish(c, h)
 	}
 	// 1. The pins, through plugin pull of the back document (the base advances with it). A pull
 	// writes the lock, then the base: a stop between the two leaves the lock ahead of the base.
@@ -979,7 +1000,7 @@ func hubRollback(r *releaser) error {
 	// 2. Only when the H hub of step start still runs (pid, start time, last hub_started): it has
 	// expect_run, so it replaces the home plugin back to the OLD pin. A dev pane without that hub
 	// (a failed build or start, or H ended) gets no hub call: step 3 closes it.
-	if h := r.readHubH(); r.running(h) {
+	if h := r.readHub(relHubFile); r.running(h) {
 		r.say("the H hub runs (pid %d, %s)", h.PID, h.Client)
 		if err := r.replacePlugin(c, h.Client, c.To, c.From, true); err != nil {
 			return err
@@ -1015,8 +1036,16 @@ func hubRollback(r *releaser) error {
 	if err != nil {
 		return err
 	}
-	// 4. A home run at H here means that H stopped before step 2: OLD replaces it, in the form of
-	// the frozen candidate. No other form is tried after a failure.
+	if err := writeJSON(filepath.Join(r.run, relOldHubFile), h); err != nil {
+		return err
+	}
+	return r.rollbackFinish(c, h)
+}
+
+// rollbackFinish is step 4 of the rollback, under the OLD hub h. A home run at H here means that H
+// stopped before step 2: OLD replaces it, in the form of the frozen candidate. No other form is
+// tried after a failure.
+func (r *releaser) rollbackFinish(c *relCandidate, h *relHub) error {
 	if err := r.replacePlugin(c, h.Client, c.To, c.From, c.OldExpectRun); err != nil {
 		return err
 	}
@@ -1041,28 +1070,33 @@ func hubResume(r *releaser) error {
 	if s, _ := r.stamp(); s != "" {
 		return relFail("a backup stamp exists (%s): use rollback", s)
 	}
-	panes, err := r.devPanes()
+	op, sh, err := r.settleCreate(c)
 	if err != nil {
 		return err
 	}
-	if len(panes) != 0 {
-		data, open, _ := r.lastBegin("dev-start-resume")
-		_ = data
-		if !open {
+	if op == "dev-start-resume" && sh == nil {
+		return relFail("the dev pane of this step runs no new hub; see %s", r.spec.DevLog)
+	}
+	if op != "dev-start-resume" {
+		panes, err := r.devPanes()
+		if err != nil {
+			return err
+		}
+		if len(panes) != 0 {
 			return relFail("a %s pane runs; nothing to resume", devPaneLabel)
 		}
-	}
-	if err := r.needHead(c.From.Commit, "OLD"); err != nil {
-		return err
-	}
-	if err := r.holdOK(c); err != nil {
-		return err
-	}
-	if err := r.fetchRole(); err != nil {
-		return err
-	}
-	if _, err := r.startHub(c.From.Commit, "resume"); err != nil {
-		return err
+		if err := r.needHead(c.From.Commit, "OLD"); err != nil {
+			return err
+		}
+		if err := r.holdOK(c); err != nil {
+			return err
+		}
+		if err := r.fetchRole(); err != nil {
+			return err
+		}
+		if _, err := r.startHub(c.From.Commit, "resume"); err != nil {
+			return err
+		}
 	}
 	if err := r.verifyList(relVerifyBack); err != nil {
 		return err

@@ -460,3 +460,88 @@ func (r *releaser) verifyList(file string) error {
 	}
 	return relFail("verify %s at the 120 s deadline: %s", file, last)
 }
+
+// The dev pane creates of a hub release. A create is pending when its op has an open begin record
+// and a "sent" record: session.new_block went out, and its result is unknown. The creates of all
+// three ops share one dev pane label and one release clone, so one pending create blocks every
+// step until settleCreate resolves it.
+
+// pendingCreate returns the op of the pending create, "" without one.
+func (r *releaser) pendingCreate() (op string, before hubStartEvent, err error) {
+	for _, label := range []string{"forward", "rollback", "resume"} {
+		o := "dev-start-" + label
+		data, open, err := r.lastBegin(o)
+		if err != nil {
+			return "", before, err
+		}
+		if !open {
+			continue
+		}
+		sent, err := r.sentAfterBegin(o)
+		if err != nil {
+			return "", before, err
+		}
+		if !sent {
+			continue
+		}
+		if op != "" {
+			return "", before, relFail("two dev pane creates are pending (%s and %s); stop and report", op, o)
+		}
+		op = o
+		if err := json.Unmarshal(data, &before); err != nil {
+			return "", before, relFail("the saved hub_started event of %s: %v", o, err)
+		}
+	}
+	return op, before, nil
+}
+
+// settleCreate resolves a pending create before any pin, clone or pane change, and before another
+// create. With no dev pane, the create can still finish: the step stops (an empty pane list does
+// not prove that no pane comes). With one dev pane, the create is done: settleCreate adopts the new
+// hub of the pane (it waits up to 180 s, then checks its runtime), or records a pane without a hub
+// (a failed build or start). It returns the op of the settled create and its hub (nil: no hub).
+func (r *releaser) settleCreate(c *relCandidate) (string, *relHub, error) {
+	op, before, err := r.pendingCreate()
+	if err != nil || op == "" {
+		return "", nil, err
+	}
+	panes, err := r.devPanes()
+	if err != nil {
+		return "", nil, err
+	}
+	switch len(panes) {
+	case 0:
+		return "", nil, relFail("step %s sent session.new_block, and its result is unknown; no %s pane is visible. The create can still finish: wait, then run a step again. Do not send a second create, and do not start a dev pane by hand; if no pane appears, stop and report", strings.TrimPrefix(op, "dev-start-"), devPaneLabel)
+	case 1:
+	default:
+		return "", nil, relFail("expected one %s pane for the create of %s, found %d", devPaneLabel, op, len(panes))
+	}
+	label := strings.TrimPrefix(op, "dev-start-")
+	commit := c.From.Commit
+	if label == "forward" {
+		commit = c.To.Commit
+	}
+	h, err := r.waitNewHub(before)
+	if err != nil {
+		r.say("the create of %s made the pane %s, and no new hub runs in it: %v", op, panes[0][1], err)
+		return op, nil, r.appendJournal(op, "end", map[string]any{"pane": panes[0][1], "hub": nil})
+	}
+	if err := r.runtime(h, commit, label); err != nil {
+		return "", nil, err
+	}
+	r.say("adopted the hub pid %d of the create of %s", h.PID, op)
+	return op, h, r.appendJournal(op, "end", h)
+}
+
+// noPendingCreate wraps a step that must not run while a create is pending. Only start, rollback
+// and resume settle a create.
+func noPendingCreate(run func(*releaser) error) func(*releaser) error {
+	return func(r *releaser) error {
+		if op, _, err := r.pendingCreate(); err != nil {
+			return err
+		} else if op != "" {
+			return relFail("the dev pane create of %s is pending; run start, rollback or resume to settle it", op)
+		}
+		return run(r)
+	}
+}

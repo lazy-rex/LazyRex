@@ -497,25 +497,26 @@ func relStepFor(name string) (relStep, bool) {
 	hub := func(run func(*releaser) error) (relStep, bool) {
 		return relStep{open: openStep, run: relKind("hub", run)}, true
 	}
+	gated := func(run func(*releaser) error) (relStep, bool) { return hub(noPendingCreate(run)) }
 	switch name {
 	case "freeze":
 		return relStep{open: openFreeze, run: relKind("hub", hubFreeze)}, true
 	case "precheck":
-		return hub(hubPrecheck)
+		return gated(hubPrecheck)
 	case "stop":
-		return hub(hubStop)
+		return gated(hubStop)
 	case "backup":
-		return hub(hubBackup)
+		return gated(hubBackup)
 	case "checkout":
-		return hub(hubCheckout)
+		return gated(hubCheckout)
 	case "pull":
-		return hub(hubPull)
+		return gated(hubPull)
 	case "start":
 		return hub(hubStart)
 	case "replace":
-		return hub(hubReplace)
+		return gated(hubReplace)
 	case "verify":
-		return hub(hubVerify)
+		return gated(hubVerify)
 	case "rollback":
 		return hub(hubRollback)
 	case "resume":

@@ -1027,3 +1027,53 @@ func TestReleaseHubUnknownCreate(t *testing.T) {
 		t.Errorf("resume: %d creates, dev %s", w.creates, w.devRev[:6])
 	}
 }
+
+// R5 across steps (review of a88a649): a pending create blocks the rollback before any pin or
+// clone change and before a second create; a rollback rerun adopts its own late OLD hub instead of
+// closing it. Both are the reviewer's regressions. A gated step refuses while a create is pending.
+func TestReleaseHubPendingCreateAcrossSteps(t *testing.T) {
+	w := newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull")
+	w.creates = 0
+	w.createLost = "none"
+	if err := w.step("start"); err == nil {
+		t.Fatal("start must lose its reply")
+	}
+	if err := w.step("rollback"); err == nil || w.creates != 1 || w.head != commitH || w.lockPin(homeSrc) != pinH {
+		t.Errorf("rollback with a pending forward create: %v, %d creates, head %s, pin %s", err, w.creates, w.head[:6], w.lockPin(homeSrc).Commit[:6])
+	}
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "is pending") {
+		t.Errorf("replace with a pending create: %v", err)
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	w.creates = 0
+	w.createLost = "late"
+	if err := w.step("rollback"); err == nil {
+		t.Fatal("rollback must lose its reply")
+	}
+	pid := w.hubPID
+	if err := w.step("rollback"); err != nil || !w.devPane || w.hubPID != pid || w.creates != 1 {
+		t.Errorf("rollback rerun: %v, pane %v, pid %d want %d, %d creates", err, w.devPane, w.hubPID, pid, w.creates)
+	}
+	w.wantPins(pinOld, pinOld)
+	if _, err := os.Stat(filepath.Join(w.run, relStampFile)); err == nil {
+		t.Error("the stamp is still there after the rollback")
+	}
+
+	// The rollback rerun after a failure under its own running OLD hub keeps that hub.
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	if err := w.stepStop("rollback", "start-expected:begin"); !errors.Is(err, errTestStop) {
+		t.Fatal(err)
+	}
+	pid, n := w.hubPID, w.hubN
+	w.must("rollback")
+	if w.hubPID != pid || w.hubN != n {
+		t.Errorf("the rerun replaced the OLD hub of the rollback: pid %d want %d", w.hubPID, pid)
+	}
+}
