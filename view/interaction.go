@@ -65,9 +65,6 @@ func (m *model) refreshHover() {
 }
 
 func (m *model) editorHeight(e *editor) int {
-	if e.Kind == "text" {
-		return 1
-	}
 	return min(e.Area.Height(), max(1, min(10, (m.height-8)/2)))
 }
 func (m *model) editorOffset(e *editor) int {

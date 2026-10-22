@@ -333,6 +333,12 @@ func (m *model) resizeEditors() {
 		if e.Kind != "composer" {
 			width = m.controlWidth() - browse[id]
 		}
+		if e.Kind == "text" {
+			// The bar, the prompt and the cell for the cursor after the last character.
+			e.Input.SetWidth(max(1, width-inputBar-lipgloss.Width(e.Input.Prompt)-1))
+			e.Input.SetStyles(m.inputStyles())
+			continue
+		}
 		e.Area.SetWidth(max(4, width-4))
 		e.Scroll = min(e.Scroll, max(0, e.Area.Height()-m.editorHeight(e)))
 
@@ -346,11 +352,6 @@ func (m *model) resizeEditors() {
 		styles.Focused.CursorLine = styles.Focused.Text
 		styles.Blurred.CursorLine = styles.Blurred.Text
 		e.Area.SetStyles(styles)
-		if e.Kind == "text" {
-			// The bar, the prompt and the cell for the cursor after the last character.
-			e.Input.SetWidth(max(1, width-inputBar-lipgloss.Width(e.Input.Prompt)-1))
-			e.Input.SetStyles(m.inputStyles())
-		}
 	}
 }
 func (m *model) setFocus(id string) tea.Cmd {
