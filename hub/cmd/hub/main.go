@@ -981,13 +981,6 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.store.ops_scan":
 		return h.db.storeOpsScan(ctx, ns, args)
 	case "hub.store.batch":
-		if hasNotify(args) {
-			if moved, err := h.db.noticesMoved(ctx, ns); err != nil {
-				return nil, err
-			} else if moved {
-				return nil, refuse("notices_moved", "plugin %s sends its notices through hub.sql.commit now", ns)
-			}
-		}
 		out, err := h.fencedBatch(ctx, pl, p.Requester.ClientID, args)
 		if err != nil {
 			return nil, err
@@ -1097,6 +1090,15 @@ func (h *Hub) fencedBatch(ctx context.Context, pl *Plugin, client string, args m
 	if storeBatchHook != nil {
 		storeBatchHook("fenced")
 	}
+	// Under the fence: a move to hub.sql notices (admitSQLNotices) holds the fence exclusively, so a
+	// store notify commits before the move or sees it.
+	if hasNotify(args) {
+		if moved, err := h.db.noticesMoved(ctx, pl.Name); err != nil {
+			return nil, err
+		} else if moved {
+			return nil, refuse("notices_moved", "plugin %s sends its notices through hub.sql.commit now", pl.Name)
+		}
+	}
 	if h.test != nil {
 		if err := h.testBeforeBatch(ctx, pl.Name, args); err != nil {
 			return nil, err
@@ -1145,19 +1147,27 @@ func (h *Hub) currentClient(plugin, client string) bool {
 }
 
 // admitSQLNotices checks the notices of a hub.sql commit with the rules of a notify op of
-// hub.store.batch, then records that the plugin's notices moved to hub.sql.
+// hub.store.batch, then records that the plugin's notices moved to hub.sql. The move holds the
+// store fence exclusively: a store notify in flight commits first, and a later one is refused
+// (notices_moved), so no store notice lands after the first SQL notice.
 func (h *Hub) admitSQLNotices(plugin string, notes []noticeOp) error {
 	if !h.noticed(plugin) {
 		return refuse("no_notice", "plugin %s has no notice in its manifest", plugin)
 	}
 	h.mu.Lock()
 	roster := h.roster()
+	pl := h.plugins[plugin]
 	h.mu.Unlock()
+	if pl == nil {
+		return refuse("no_notice", "plugin %s is not configured", plugin)
+	}
 	for _, n := range notes {
 		if !roster[n.agent] {
 			return refuse("invalid_input", "notices: %q is not a known agent", n.agent)
 		}
 	}
+	pl.writes.Lock()
+	defer pl.writes.Unlock()
 	return h.db.moveNotices(context.Background(), plugin)
 }
 

@@ -137,7 +137,9 @@ authorized at CREATE.
 - A failed apply does not fail the call: the commit stands, and a timer retries (1 s to 60 s). The
   hub start applies every outbox in `<state>/sql`, also of plugins that are not configured now.
 - One notice path for each plugin: after a commit with notices, the hub refuses `hub.store.batch`
-  notify ops of that plugin (`notices_moved`).
+  notify ops of that plugin (`notices_moved`). The hub checks it under the store fence, and the move
+  holds that fence exclusively: a store notify in flight commits before the move, and no store
+  notice lands after the first SQL notice.
 
 ## 8. Saved replies (built)
 
