@@ -1014,3 +1014,15 @@ test('a lost reply is unavailable: client_unavailable, and a table error with ti
   expect(code({code = 'not_found', message = 'gone'}), 'another table code stays').to_be('not_found')
   expect(code('client.perform failed: timeout: statement timeout (status=500 code=internal)'), 'a hub.sql timeout stays timeout (rolled back)').to_be('timeout')
 end)
+
+test('a form command that names user_only keeps it; the SDK takes no action from the submit tool', function()
+  -- The hub parity check refuses a command with both action and user_only (hub/sql-r2 c840c92,
+  -- testmode.go parityProblem; codex-15 review of e258d8d).
+  local s = plugin([[
+app.action('p.add', {}, function() return {} end)
+app.form('/forms/add', {title = 'Add', fields = {}, on_submit = function() end,
+  submit = {tool = 'p.add'}, command = {id = 'add', title = 'Add', user_only = 'navigation'}})]])
+  local c = s.registered.commands[1]
+  expect(c.user_only).to_be('navigation')
+  expect(c.action, 'no action next to user_only').to_be(nil)
+end)

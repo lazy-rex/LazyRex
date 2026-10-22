@@ -674,7 +674,7 @@ function M.plugin(name)
   --     {navigate}, {close_form}, {status = 'running'}, ...).
   --   cancel: the Cancel label (default 'Cancel'); false: no Cancel.
   --   command: a palette command that opens the form ({id, title, description, keywords}).
-  --   tx, store: as for app.action.
+  --   tx: as for app.action. No store = false: the value checks run before a private replay.
   -- An app.fail in title, fields, intro, after or instead shows the message in place of the form.
   -- The SDK checks the values first: a required field must be filled in (a required boolean must be
   -- true), a select value must be an option, and an unknown field is refused. An on_select of a node
@@ -771,9 +771,12 @@ function M.plugin(name)
     if spec.command then
       local c = copy(spec.command)
       c.route = c.route or route
-      if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
-      -- Agent parity: a command without an action gives the reason (as the submit does).
-      if c.action == nil and c.user_only == nil then c.user_only = (spec.submit or {}).user_only or 'navigation' end
+      -- Agent parity, as the submit: the tool, else the reason. A command that names action or user_only
+      -- keeps it (the hub refuses a command with both).
+      if c.action == nil and c.user_only == nil then
+        local submit = spec.submit or {}
+        if submit.tool then c.action = submit.tool else c.user_only = submit.user_only or 'navigation' end
+      end
       commands[#commands + 1] = check_command(c)
     end
   end
