@@ -66,17 +66,27 @@ func TestSDKArgExact(t *testing.T) {
 		argv []string
 		want string // a path, or "!<text of the error>"
 	}{
-		"flag":        {[]string{"hub", "-config", "c", "-sdk", "/a b/sdk/lua"}, "/a b/sdk/lua"},
-		"equals":      {[]string{"hub", "--sdk=/s/lua"}, "/s/lua"},
-		"argv0 only":  {[]string{"-sdk=/s/lua"}, "!no -sdk"},
-		"missing":     {[]string{"hub", "-config", "c"}, "!no -sdk"},
-		"repeated":    {[]string{"hub", "-sdk", "/a", "-sdk=/b"}, "!2 -sdk"},
-		"no value":    {[]string{"hub", "-sdk"}, "!without a value"},
-		"empty":       {[]string{"hub", "-sdk", ""}, "!empty"},
-		"relative":    {[]string{"hub", "-sdk", "sdk/lua"}, "!not absolute"},
-		"not clean":   {[]string{"hub", "-sdk", "/a/../b"}, "!not absolute"},
-		"value -sdk":  {[]string{"hub", "-sdk", "-sdk"}, "!not absolute"},
-		"other flags": {[]string{"hub", "-sdkx", "/a", "-sdk", "/b"}, "/b"},
+		"flag":            {[]string{"hub", "-config", "c", "-sdk", "/a b/sdk/lua"}, "/a b/sdk/lua"},
+		"equals":          {[]string{"hub", "--sdk=/s/lua"}, "/s/lua"},
+		"argv0 only":      {[]string{"-sdk=/s/lua"}, "!no -sdk"},
+		"empty argv":      {nil, "!empty"},
+		"after --":        {[]string{"hub", "-config", "/lab/c", "--", "-sdk", "/lab/H/sdk/lua"}, "!arguments after"},
+		"positional":      {[]string{"hub", "-config", "/lab/c", "x", "-sdk", "/lab/H/sdk/lua"}, "!arguments after"},
+		"subcommand":      {[]string{"hub", "release", "-sdk", "/lab/H/sdk/lua"}, "!arguments after"},
+		"config eats":     {[]string{"hub", "-config", "-sdk", "/lab/H/sdk/lua"}, "!arguments after"},
+		"config eats all": {[]string{"hub", "-config", "-sdk"}, "!no -sdk"},
+		"bool flag":       {[]string{"hub", "-real-server", "-test=false", "-sdk", "/s/lua"}, "/s/lua"},
+		"bool no value":   {[]string{"hub", "-restart", "/x", "-sdk", "/s/lua"}, "!arguments after"},
+		"lab fault":       {[]string{"hub", "-lab-fault", "point=store-commit,mode=exit", "-sdk", "/s/lua"}, "/s/lua"},
+		"sdk eats":        {[]string{"hub", "-sdk", "-config", "/c"}, "!arguments after"},
+		"missing":         {[]string{"hub", "-config", "c"}, "!no -sdk"},
+		"repeated":        {[]string{"hub", "-sdk", "/a", "-sdk=/b"}, "!2 -sdk"},
+		"no value":        {[]string{"hub", "-sdk"}, "!needs an argument"},
+		"empty":           {[]string{"hub", "-sdk", ""}, "!empty"},
+		"relative":        {[]string{"hub", "-sdk", "sdk/lua"}, "!not absolute"},
+		"not clean":       {[]string{"hub", "-sdk", "/a/../b"}, "!not absolute"},
+		"value -sdk":      {[]string{"hub", "-sdk", "-sdk"}, "!not absolute"},
+		"unknown flag":    {[]string{"hub", "-sdkx", "/a", "-sdk", "/b"}, "!does not parse"},
 	} {
 		got, err := sdkArgExact(tc.argv)
 		if w, bad := strings.CutPrefix(tc.want, "!"); bad {

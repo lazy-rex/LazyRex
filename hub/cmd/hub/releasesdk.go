@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,32 +61,31 @@ func parseProcArgs2(b []byte) ([]string, error) {
 	return argv, nil
 }
 
-// sdkArgExact is the value of the one -sdk flag of a hub argv (after argv[0]). It refuses a
-// missing, repeated or empty flag, and a path that is not absolute and clean.
+// sdkArgExact is the value of the one -sdk flag of a hub argv. It parses argv[1:] with the hub's
+// own flags (hubFlags), so it stops where the hub stops and consumes values as the hub does. It
+// refuses an argv that does not parse, any argument after the flags (a "--" or a positional
+// argument: the hub would not read a -sdk after it), a missing, repeated or empty -sdk, and a path
+// that is not absolute and clean.
 func sdkArgExact(argv []string) (string, error) {
-	var vals []string
-	for i := 1; i < len(argv); i++ {
-		a := argv[i]
-		switch {
-		case a == "-sdk" || a == "--sdk":
-			if i+1 >= len(argv) {
-				return "", relFail("the hub argv has -sdk without a value")
-			}
-			i++
-			vals = append(vals, argv[i])
-		case strings.HasPrefix(a, "-sdk="):
-			vals = append(vals, strings.TrimPrefix(a, "-sdk="))
-		case strings.HasPrefix(a, "--sdk="):
-			vals = append(vals, strings.TrimPrefix(a, "--sdk="))
-		}
+	if len(argv) == 0 {
+		return "", relFail("the hub argv is empty")
+	}
+	set := flag.NewFlagSet("hub", flag.ContinueOnError)
+	set.SetOutput(io.Discard)
+	v := hubFlags(set)
+	if err := set.Parse(argv[1:]); err != nil {
+		return "", relFail("the hub argv does not parse with the hub flags: %v", err)
+	}
+	if set.NArg() > 0 {
+		return "", relFail("the hub argv has arguments after its flags: %q", set.Args())
 	}
 	switch {
-	case len(vals) == 0:
+	case v.sdkN == 0:
 		return "", relFail("the hub argv has no -sdk flag")
-	case len(vals) > 1:
-		return "", relFail("the hub argv has %d -sdk flags", len(vals))
+	case v.sdkN > 1:
+		return "", relFail("the hub argv has %d -sdk flags", v.sdkN)
 	}
-	p := vals[0]
+	p := *v.sdk
 	switch {
 	case p == "":
 		return "", relFail("the hub argv has an empty -sdk path")

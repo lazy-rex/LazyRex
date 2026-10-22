@@ -232,7 +232,6 @@ type Hub struct {
 	changedQ changedQueue // hub.changed deliveries in flight (changed.go)
 }
 
-
 func loadConfig(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path)
@@ -349,13 +348,8 @@ func main() {
 			os.Exit(0)
 		}
 	}
-	fs := &faults{}
-	configPath := flag.String("config", "", "hub configuration JSON (required)")
-	flag.Var(fs, "lab-fault", "lab-only fault, for example point=store-commit,mode=exit (repeatable)")
-	realServer := flag.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
-	testMode := flag.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
-	restart := flag.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")
-	sdkDir := flag.String("sdk", "", "the plugin SDK directory (sdk/lua of the LazyRex checkout); default: sdk/lua above this binary")
+	hf := hubFlags(flag.CommandLine)
+	fs, configPath, realServer, testMode, restart, sdkDir := hf.faults, hf.config, hf.real, hf.test, hf.restart, hf.sdk
 	flag.Parse()
 	if *realServer && len(fs.list) > 0 {
 		log.Fatal("-lab-fault is refused with -real-server")
@@ -1147,6 +1141,7 @@ func (h *Hub) fenceStoreWrites(pl *Plugin) {
 	pl.writes.Lock()
 	pl.writes.Unlock()
 }
+
 // sdkLogLine is the hub's start line for the SDK that plugins with sdk use: "sdk: <dir>", or "sdk:
 // none" (such plugins cannot start).
 func sdkLogLine(dir string) string {
@@ -1223,4 +1218,29 @@ func hasNotify(args map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// hubFlagSet holds the flags of a hub run. sdkN counts the -sdk flags (the last one wins).
+type hubFlagSet struct {
+	faults              *faults
+	config, sdk         *string
+	real, test, restart *bool
+	sdkN                int
+}
+
+// hubFlags defines the flags of a hub run on set. main parses with them, and the release SDK check
+// (sdkArgExact) parses a hub argv with them: so the check follows the hub's own flag rules.
+func hubFlags(set *flag.FlagSet) *hubFlagSet {
+	v := &hubFlagSet{faults: &faults{}, sdk: new(string)}
+	v.config = set.String("config", "", "hub configuration JSON (required)")
+	set.Var(v.faults, "lab-fault", "lab-only fault, for example point=store-commit,mode=exit (repeatable)")
+	v.real = set.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
+	v.test = set.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
+	v.restart = set.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")
+	set.Func("sdk", "the plugin SDK directory (sdk/lua of the LazyRex checkout); default: sdk/lua above this binary", func(s string) error {
+		v.sdkN++
+		*v.sdk = s
+		return nil
+	})
+	return v
 }
