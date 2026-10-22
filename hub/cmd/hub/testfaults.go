@@ -55,6 +55,7 @@ type testFault struct {
 	Op                   string // spawn-create: the spawn key ("" = any)
 	Plugin, Action, When string // action
 	Key                  string // action: the call's args.key ("" = any)
+	SQLParam             string // action: a parameter in the call's args.params ("" = any; sqlParamsHave)
 	FailCode             string // action, mode fail: the reply's error code (default failed)
 	Nth, seen            int    // fire on the Nth matching call; seen counts the matching calls
 	HoldMS               int    // start-admission, plugin-create, view-render: the hold ends by itself after this time (default 30 s)
@@ -69,7 +70,7 @@ var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop",
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
-	"action":          {"point", "mode", "action", "when", "key", "plugin", "fail_code", "nth"},
+	"action":          {"point", "mode", "action", "when", "key", "sql_param", "plugin", "fail_code", "nth"},
 	"watch-nudge":     {"point", "mode", "key", "plugin"},
 	"status-read":     {"point", "mode", "key", "plugin", "nth"},
 	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"},
@@ -151,6 +152,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		f.Action, _ = args["action"].(string)
 		f.When, _ = args["when"].(string)
 		f.Key, _ = args["key"].(string)
+		f.SQLParam, _ = args["sql_param"].(string)
 		if v, ok := args["fail_code"]; ok {
 			// lose-reply always means disconnected; only fail takes a code.
 			if f.FailCode, _ = v.(string); f.FailCode == "" || f.Mode != "fail" {
@@ -346,13 +348,15 @@ func (h *Hub) dispatchFaulted(ctx context.Context, p perform) (any, error) {
 		h.testRecordCall(pl.Name, pl.InstanceID, p.Action, p.Args) // before the faults: a faulted call is recorded too
 	}
 	var args struct {
-		Key any `json:"key"`
+		Key    any `json:"key"`
+		Params any `json:"params"`
 	}
 	json.Unmarshal(p.Args, &args)
 	key, _ := args.Key.(string)
 	match := func(when string) func(*testFault) bool {
 		return func(f *testFault) bool {
-			return f.Point == "action" && f.When == when && f.Plugin == pl.Name && f.Action == p.Action && (f.Key == "" || f.Key == key)
+			return f.Point == "action" && f.When == when && f.Plugin == pl.Name && f.Action == p.Action && (f.Key == "" || f.Key == key) &&
+				(f.SQLParam == "" || sqlParamsHave([]any{args.Params}, f.SQLParam))
 		}
 	}
 	gated, f := h.takeBefore(match("before"))

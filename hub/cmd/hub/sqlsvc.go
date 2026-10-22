@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -34,7 +35,10 @@ type sqlService struct {
 	committed func(plugin string, marks []string) // after a commit that changed tables ("*": the schema)
 	// beforeCommit is a test fault point (testmode.go): an error fails the commit; with after, the
 	// commit happens first and the caller still gets the error (a lost reply).
-	beforeCommit func(plugin string, marks []string) (err error, after bool)
+	beforeCommit func(plugin string, marks []string, params []any) (err error, after bool)
+	// beforeBegin is a test point (testmode.go): statements of another writer that commit just
+	// before a handler transaction begins.
+	beforeBegin func(plugin string) []map[string]any
 	// The hub.db side of notices (sqlnotice.go). admitNotices checks a commit's notices (the
 	// manifest notice, known agents) and marks the plugin's notices as moved to hub.sql;
 	// applyNotices applies outbox rows with their receipts; dropReceipts deletes the receipts up
@@ -56,7 +60,8 @@ type sqlService struct {
 }
 
 func newSQLService(state string, current func(plugin, client string) bool) *sqlService {
-	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, beforeCommit: func(string, []string) (error, bool) { return nil, false },
+	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, beforeCommit: func(string, []string, []any) (error, bool) { return nil, false },
+		beforeBegin:  func(string) []map[string]any { return nil },
 		admitNotices: func(string, []noticeOp) error { return refuse("no_notice", "the hub has no notice service") },
 		applyNotices: func(string, []outboxRow) error { return nil }, dropReceipts: func(string, int64) error { return nil },
 		notified: func() {}, returning: func(string) bool { return false }, idle: sqlTxIdle, total: sqlTxTotal,
@@ -73,6 +78,9 @@ type pluginSQL struct {
 	rmu  sync.Mutex // serializes the reader
 	// closed: hub.admin.sql_return closed the file (sqlreturn.go). It changes under lock and rmu.
 	closed bool
+	// params: the parameters of each statement of the open write transaction, for the commit fault
+	// point (testmode.go). It changes under lock.
+	params []any
 
 	mu       sync.Mutex // guards tx, expired and retrying
 	retrying bool       // a drainLater goroutine runs (sqlnotice.go)
@@ -381,6 +389,12 @@ func (s *sqlService) begin(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 		return nil, refuse("invalid_input", "hub.sql.begin takes no arguments")
 	}
 	return s.withWriter(p, c, "", func(*sqlTx) (any, error) {
+		if stmts := s.beforeBegin(p.name); len(stmts) > 0 {
+			if err := s.otherWriter(ctx, p, stmts); err != nil {
+				return nil, err
+			}
+		}
+		p.params = nil
 		if err := p.w.hub(ctx, "BEGIN DEFERRED"); err != nil {
 			return nil, refuse("sql_error", "begin: %v", err)
 		}
@@ -434,6 +448,31 @@ func rowsOrEmpty(rows [][]any) [][]any {
 
 // stmt runs one exec statement of a call inside the open SQLite transaction, under a savepoint: a
 // failed statement leaves no effect, and the transaction continues.
+// otherWriter commits stmts in a transaction of their own, as another writer (a test injection at
+// hub.sql.begin): no commit fault point applies. The caller holds the lock.
+func (s *sqlService) otherWriter(ctx context.Context, p *pluginSQL, stmts []map[string]any) error {
+	if err := p.w.hub(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return refuse("sql_error", "begin: %v", err)
+	}
+	var marks []string
+	for i, m := range stmts {
+		r, err := s.stmt(ctx, p, m, sqlReplyBudget)
+		if err != nil {
+			p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
+			return fmt.Errorf("the injected statement %d: %w", i+1, err)
+		}
+		marks = append(marks, r.marks()...)
+	}
+	if err := p.w.hub(ctx, "COMMIT"); err != nil {
+		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
+		return refuse("sql_error", "commit: %v", err)
+	}
+	if len(marks) > 0 {
+		s.committed(p.name, marks)
+	}
+	return nil
+}
+
 func (s *sqlService) stmt(ctx context.Context, p *pluginSQL, args map[string]any, budget int) (*stmtResult, error) {
 	q, params, err := stmtArgs(args)
 	if err != nil {
@@ -462,6 +501,9 @@ func (s *sqlService) stmt(ctx context.Context, p *pluginSQL, args map[string]any
 	if err := p.w.hub(ctx, "RELEASE lazyrex_stmt"); err != nil {
 		return nil, refuse("sql_error", "release: %v", err)
 	}
+	if v, ok := args["params"]; ok {
+		p.params = append(p.params, v)
+	}
 	return r, nil
 }
 
@@ -471,12 +513,13 @@ func (s *sqlService) alone(ctx context.Context, p *pluginSQL, fn func() (any, []
 	if err := p.w.hub(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return nil, nil, refuse("sql_error", "begin: %v", err)
 	}
+	p.params = nil
 	out, marks, err := fn()
 	if err != nil {
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
 		return nil, nil, err
 	}
-	fault, after := s.beforeCommit(p.name, marks)
+	fault, after := s.beforeCommit(p.name, marks, p.params)
 	if fault != nil && !after {
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
 		return nil, nil, fault
@@ -715,7 +758,7 @@ func (s *sqlService) commit(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 			p.end(ctx, "tx_expired")
 			return nil, refuse("sql_error", "write the notices: %v; nothing was committed", err)
 		}
-		fault, after := s.beforeCommit(c.plugin, marks)
+		fault, after := s.beforeCommit(c.plugin, marks, p.params)
 		if fault != nil && !after {
 			p.end(ctx, "tx_expired")
 			return nil, fault
