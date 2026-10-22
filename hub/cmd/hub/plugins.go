@@ -514,7 +514,7 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 		if ws := h.workSession(); ws != "" && ws != lost {
 			pl.lifecycle.Lock()
 			defer pl.lifecycle.Unlock()
-			if err := h.startPlugin(ctx, pl); err != nil {
+			if err := h.startAutomatic(ctx, pl); err != nil {
 				log.Printf("plugin %s: restart after session loss: %v", pl.Name, err)
 			}
 			return
@@ -529,8 +529,9 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 	}
 }
 
-// startPlugin is the one start path (docs/plugin-sources.md, section 7, "Lifecycle"): hub start
-// recovery, hub.admin.start, a crash respawn and a restart after a session loss. The caller holds
+// startPlugin is the explicit start path (docs/plugin-sources.md, section 7, "Lifecycle"): hub start
+// recovery and hub.admin.start. An automatic start (a crash respawn, a restart after a session
+// loss, a wake) takes startAutomatic (selectedrun.go). The caller holds
 // pl.lifecycle. The order:
 //  1. Resolve the spawn intents. An unresolved one stops the start (code unresolved_intent).
 //  2. Resolve every entry and check the graph. A refused entry keeps its recorded instance.
@@ -716,7 +717,7 @@ func (h *Hub) wakeWaiting(ctx context.Context) {
 		still := pl.state == "waiting" && pl.Desired == "running" // a stop or a start can come first
 		h.mu.Unlock()
 		if still {
-			if err := h.startPlugin(ctx, pl); err != nil {
+			if err := h.startAutomatic(ctx, pl); err != nil {
 				log.Printf("plugin %s: wake: %v", pl.Name, err)
 			}
 		}
@@ -1203,7 +1204,7 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 	if backoff || pl.Desired != "running" {
 		return
 	}
-	if err := h.startPlugin(ctx, pl); err != nil {
+	if err := h.startAutomatic(ctx, pl); err != nil {
 		log.Printf("plugin %s: respawn: %v", pl.Name, err)
 	}
 }
