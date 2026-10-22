@@ -635,3 +635,26 @@ func TestLocalSnapshotLateFailure(t *testing.T) {
 		})
 	}
 }
+
+// hub.plugins: commit is the running commit, and pinned_commit is the current lock's commit (""
+// for a local entry). After a CLI update to B, a crash keeps A running: commit A, pinned_commit B.
+func TestSelectedRunPinnedCommit(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, map[string]string{"q": `{"name":"q","main":"p.lua"}`})
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	p1Pin(t, h, "p", p1B, p1Manifest("p"))
+	p1Lose(t, h, pl)
+	out, err := h.pluginsList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	var got struct{ Entries []map[string]any }
+	json.Unmarshal(b, &got)
+	if len(got.Entries) != 2 || got.Entries[0]["commit"] != p1A || got.Entries[0]["pinned_commit"] != p1B {
+		t.Fatalf("the GitHub entry: %v", got.Entries)
+	}
+	if v, ok := got.Entries[1]["pinned_commit"]; !ok || v != "" {
+		t.Fatalf("the local entry: %v", got.Entries[1])
+	}
+}
