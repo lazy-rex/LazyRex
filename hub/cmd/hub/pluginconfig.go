@@ -152,6 +152,16 @@ var managedID = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 // is an empty list. Any other problem makes the whole file malformed: the caller refuses every
 // managed entry and keeps the config entries.
 func parseManaged(path string) ([]*configEntry, error) {
+	b, err := readManagedBytes(path)
+	if err != nil || b == nil {
+		return nil, err
+	}
+	return parseManagedBytes(b)
+}
+
+// readManagedBytes reads at most managedFileLimit+1 bytes of the managed file, so that
+// parseManagedBytes refuses a larger file without a full read. A missing file gives nil, nil.
+func readManagedBytes(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -160,11 +170,7 @@ func parseManaged(path string) ([]*configEntry, error) {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, managedFileLimit+1))
-	if err != nil {
-		return nil, err
-	}
-	return parseManagedBytes(b)
+	return io.ReadAll(io.LimitReader(f, managedFileLimit+1))
 }
 
 // managedFileEntry is one entry of the managed file, as the file has it. The plugin manager
