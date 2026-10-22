@@ -103,9 +103,10 @@ func (h *Hub) lastIntended(ctx context.Context, op *pluginOp, call string) (stri
 
 // opLock writes the op's pin into the lock file, under both plugin command flocks. Its recovery
 // rule, after a crash at any point: the file hash is the intended hash of the op's last write:lock
-// attempt -> written; the key's pin is already the op's pin -> written; the key's pin is still the
-// base (its admission snapshot, lock_base) -> write; else conflict. Before the op goes on, also
-// when the pin is written:
+// attempt -> written; the key's pin is already the op's pin -> written (but if the entry has
+// another cache directory that does not verify, the op writes its own entry: a repair); the key's
+// pin is still the base (its admission snapshot, lock_base) -> write; else conflict. Before the op
+// goes on, also when the pin is written:
 //   - the op's cache entry must still verify (a CLI cleanup can remove a directory that no lock
 //     names): a pin that does not verify is fetched again;
 //   - the graph check (graphRefusals) with the new lock and the managed entries after the op: a
@@ -170,7 +171,16 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	cur := lockBase(lock, t.Source)
 	// written: by this op before a crash, or by another writer.
 	written := last != "" && b != nil && hashBytes(b) == last || cur == intended
-	if !written && cur != base {
+	// repair: the lock has the op's pin with another writer's cache directory, and that directory
+	// does not verify. The op writes its own verified entry: the pin does not change, so the base
+	// does not count.
+	repair := false
+	if written && lock.Plugins[t.Source].Dir != pin.Dir {
+		if _, _, err := lockedDir(h.cfg.path, h.cfg.State, lock, e); err != nil {
+			written, repair = false, true
+		}
+	}
+	if !written && !repair && cur != base {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock changed during the %s; run it again (the entry of %s was %s at admission, now %s); nothing was written", op.Kind, t.Source, base, cur))
 	}
 	next := &pluginLock{Plugins: map[string]*lockEntry{}}
@@ -198,6 +208,9 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	}
 	if err := h.renameAttempt(ctx, op, "write:lock", lockFile, nb, "lock-rename"); err != nil {
 		return err
+	}
+	if repair {
+		return h.setOpPhase(ctx, op, op.nextPhase("locking"), fmt.Sprintf("the lock had %s at %s with a cache entry that does not verify; wrote the fetched entry", t.Source, pin.Commit), "")
 	}
 	return h.setOpPhase(ctx, op, op.nextPhase("locking"), fmt.Sprintf("locked %s at %s", t.Source, pin.Commit), "")
 }
