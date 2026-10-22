@@ -1035,7 +1035,9 @@ func (h *Hub) opStop(ctx context.Context, op *pluginOp) (any, error) {
 //     and its instance_id is the one that the attempt was for -> the stop happened (the same
 //     effect from any caller); else unknown. A row without an identity (from before it was
 //     recorded), with another entry's, or with a later instance (a start, also by a rollback hub
-//     that does not write entry_identity) is never a match.
+//     that does not write entry_identity) is never a match. The identity counts only while
+//     entry_stamp is the stamp of the row's values (entryStamp): a rollback hub's write, or a save
+//     of a kept record, makes it invalid.
 //   - reload: the hub's entries have the op's intended entry -> done (the hub start or the call read
 //     the file); else unknown.
 //   - start: unknown. A new start goes through the unresolved-intent guard of the start path.
@@ -1046,10 +1048,15 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 		if err := h.db.QueryRowContext(ctx, `SELECT expect_instance FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&expect); err != nil {
 			return err
 		}
-		var desired, block, identity, instance string
-		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id FROM plugins WHERE name = ?`, op.Name).Scan(&desired, &block, &identity, &instance)
+		var desired, block, identity, instance, session, start, run, stamp string
+		var pid int
+		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
+			Scan(&desired, &block, &identity, &instance, &session, &pid, &start, &run, &stamp)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		if err == nil && stamp != entryStamp(desired, instance, session, block, pid, start, run) {
+			identity = "" // a write that does not know entry_identity changed the row (a rollback hub), or a kept record saved it
 		}
 		if err == nil && op.EntryIdentity != "" && identity == op.EntryIdentity && instance == expect && desired == "stopped" && block == "" {
 			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "stop: stopped (observed after the hub restarted)", "")
