@@ -53,48 +53,169 @@ func TestRestartTokenChanged(t *testing.T) {
 	}
 }
 
+// restartFormHub is a hub with the view tables, and one open form view "v" with the form f, bound
+// to the renderer client "c1" (attachment "a1"). The owner's worker is a channel that nobody reads:
+// a test runs runOps itself.
+func restartFormHub(t *testing.T, f *restartForm) *Hub {
+	t.Helper()
+	h := resumeTestHub(t)
+	ctx := context.Background()
+	if _, err := h.db.Exec(uiSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := formsStart(ctx, h.db); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.viewsStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.vs.workers[restartFormOwner] = make(chan struct{}, 1)
+	b, _ := json.Marshal(formContext{Restart: f})
+	if _, err := h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, context, client_id, attachment) VALUES ('v', ?, 'form', 'restart', 'open', ?, 'c1', 'a1')`,
+		restartFormOwner, string(b)); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// storedForm is the form in the view row now.
+func storedForm(t *testing.T, h *Hub) *restartForm {
+	t.Helper()
+	var s string
+	if err := h.db.QueryRow(`SELECT context FROM views WHERE view_id = 'v'`).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	var fc formContext
+	if err := json.Unmarshal([]byte(s), &fc); err != nil || fc.Restart == nil {
+		t.Fatalf("stored context %s: %v", s, err)
+	}
+	return fc.Restart
+}
+
+// formAction runs one view.action through restartFormCall, as the worker does.
+func formAction(h *Hub, opKey, action string) error {
+	return h.restartFormCall(context.Background(), "view.action", map[string]any{"view_id": "v", "operation_key": opKey, "action": action}, nil)
+}
+
+func wantCode(t *testing.T, what string, err error, code string) {
+	t.Helper()
+	if re, definite := definiteFailure(err); !definite || re.Code != code {
+		t.Fatalf("%s: %v, want %s", what, err, code)
+	}
+}
+
 // A submit names the revision that the user saw; another revision is refused before anything runs.
 func TestRestartFormStaleRevision(t *testing.T) {
-	h := resumeTestHub(t)
-	fc := formContext{Restart: &restartForm{Kind: "codex", Revision: 2, Key: "k2", Targets: []restartToken{restartTestToken()}}}
-	for _, action := range []string{"restart@1", "restart@x", "restart@"} {
-		_, err := h.restartFormAction(context.Background(), "view-1", fc, action)
-		var se *storeError
-		if !errors.As(err, &se) || se.code != "stale" {
-			t.Errorf("%s: %v", action, err)
-		}
+	h := restartFormHub(t, &restartForm{Kind: "codex", Revision: 2, Key: "k2", Targets: []restartToken{restartTestToken()}})
+	for _, action := range []string{"restart@1", "restart@x", "restart@", "restart", "refresh@1", "refresh"} {
+		wantCode(t, action, formAction(h, "op-"+action, action), "stale")
 	}
-	if _, err := h.restartFormAction(context.Background(), "view-1", fc, "nope"); err == nil {
+	if err := formAction(h, "op-nope", "nope"); err == nil {
 		t.Error("an unknown action passed")
 	}
-	if res, err := h.restartFormAction(context.Background(), "view-1", fc, "close"); err != nil || res.(map[string]any)["close_form"] != true {
+	var res map[string]any
+	if err := h.restartFormCall(context.Background(), "view.action", map[string]any{"view_id": "v", "operation_key": "c", "action": "close"}, &res); err != nil || res["close_form"] != true {
 		t.Errorf("close: %v %v", res, err)
 	}
 }
 
-// After the admission the form is frozen. A retry of the restart replays the operation without
-// reading the targets again (the restart changed them), Refresh is refused, and the render shows
-// the outcome.
-func TestRestartFormFrozenAfterAdmission(t *testing.T) {
-	h := resumeTestHub(t)
+// The reviewer's probe (codex-24, b15b265): a context copied at the admission is not the form. The
+// call reads the view row, so a context in the arguments changes nothing.
+func TestRestartFormReadsTheStoredContext(t *testing.T) {
+	h := restartFormHub(t, &restartForm{Kind: "codex", Revision: 1, Key: "k1"})
+	if err := formAction(h, "r1", "refresh@1"); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := json.Marshal(formContext{Restart: &restartForm{Kind: "codex", Revision: 1, Key: "k1"}})
+	err := h.restartFormCall(context.Background(), "view.action", map[string]any{"view_id": "v", "operation_key": "x1", "context": json.RawMessage(old), "action": "restart@1"}, nil)
+	wantCode(t, "a queued restart of revision 1", err, "stale")
+	if f := storedForm(t, h); f.Revision != 2 || f.Key == "k1" || f.RefreshOp != "r1" {
+		t.Fatalf("after the refresh: %+v", f)
+	}
+}
+
+// Two operations queued while revision 1 is shown, run by the owner's worker in order (viewAdmit,
+// then runOps): Refresh takes revision 2, and the restart of revision 1 is stale. A retry of the
+// Refresh key after the context changed is the same operation, not a conflict. A crash between the
+// context write and the operation's record runs the Refresh again: no new snapshot, no new key.
+func TestRestartFormQueuedOperations(t *testing.T) {
+	h := restartFormHub(t, &restartForm{Kind: "codex", Revision: 1, Key: "k1"})
 	ctx := context.Background()
-	f := &restartForm{Kind: "codex", Revision: 1, Key: "restart-form-k", Targets: []restartToken{restartTestToken()}}
-	fp, _ := json.Marshal(map[string]any{"action": "restart", "kind": "codex", "form_revision": 1})
+	var p perform
+	p.Requester.ClientID = "c1"
+	admit := func(key, action string) any {
+		t.Helper()
+		res, err := h.viewAdmit(ctx, "action", p, map[string]any{"view_id": "v", "attachment": "a1", "operation_key": key, "node_id": "n", "action": action, "input": map[string]any{}})
+		if err != nil {
+			t.Fatalf("admit %s %s: %v", key, action, err)
+		}
+		return res
+	}
+	state := func(key string) map[string]any {
+		t.Helper()
+		s, err := h.opState(ctx, restartFormOwner, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.(map[string]any)
+	}
+	admit("r1", "refresh@1")
+	admit("x1", "restart@1")
+	h.runOps(ctx, restartFormOwner)
+	if s := state("r1"); s["status"] != "succeeded" {
+		t.Fatalf("refresh: %v", s)
+	}
+	if s := state("x1"); s["status"] != "failed" || !strings.Contains(string(s["error"].(json.RawMessage)), `"stale"`) {
+		t.Fatalf("the queued restart of revision 1: %v", s)
+	}
+	f := storedForm(t, h)
+	if f.Revision != 2 || f.RefreshOp != "r1" {
+		t.Fatalf("after the refresh: %+v", f)
+	}
+	// The renderer lost the reply and sends the same key again.
+	if s := admit("r1", "refresh@1").(map[string]any); s["status"] != "succeeded" {
+		t.Fatalf("a retry of the refresh key: %v", s)
+	}
+	// A crash before the record: the operation is pending again and runs again.
+	h.db.Exec(`UPDATE view_ops SET status = 'pending', result = '' WHERE op_key = 'r1'`)
+	h.runOps(ctx, restartFormOwner)
+	if s := state("r1"); s["status"] != "succeeded" {
+		t.Fatalf("the refresh after a crash: %v", s)
+	}
+	if again := storedForm(t, h); again.Revision != 2 || again.Key != f.Key {
+		t.Fatalf("the retry took a new snapshot: %+v, was %+v", again, f)
+	}
+	// Another Refresh of the old revision is stale.
+	admit("r2", "refresh@1")
+	h.runOps(ctx, restartFormOwner)
+	if s := state("r2"); s["status"] != "failed" {
+		t.Fatalf("a second refresh of revision 1: %v", s)
+	}
+}
+
+// After the admission the form is frozen. A retry of the restart replays the operation without
+// reading the targets again (the restart changed them), Refresh is refused also when it was queued
+// for an older revision, and the render shows the outcome.
+func TestRestartFormFrozenAfterAdmission(t *testing.T) {
+	f := &restartForm{Kind: "codex", Revision: 2, Key: "restart-form-k", Targets: []restartToken{restartTestToken()}}
+	h := restartFormHub(t, f)
+	ctx := context.Background()
+	fp, _ := json.Marshal(map[string]any{"action": "restart", "kind": "codex", "form_revision": 2})
 	h.db.Exec(`INSERT INTO agent_ops VALUES ('op-1', 'admin', ?, 'restart', ?, 't0')`, f.Key, string(fp))
 	h.db.Exec(`INSERT INTO agent_op_targets (op_id, identity, seq, phase, detail, updated, stop_result) VALUES ('op-1', 'codex:a', 0, 'resumed', '', 't1', 'interrupted')`)
-	fc := formContext{Restart: f}
 	// No Rex in this test: a target read would fail. The replay must not read one.
-	res, err := h.restartFormAction(ctx, "view-1", fc, "restart@1")
-	if err != nil {
+	var res map[string]any
+	if err := h.restartFormCall(ctx, "view.action", map[string]any{"view_id": "v", "operation_key": "x2", "action": "restart@2"}, &res); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	if op := res.(map[string]any)["operation"].(map[string]any); op["op_id"] != "op-1" {
+	if op := res["operation"].(map[string]any); op["op_id"] != "op-1" {
 		t.Fatalf("replay: %v", res)
 	}
-	_, err = h.restartFormAction(ctx, "view-1", fc, "refresh")
-	var se *storeError
-	if !errors.As(err, &se) || se.code != "invalid_state" {
-		t.Fatalf("refresh after the admission: %v", err)
+	for _, action := range []string{"refresh@2", "refresh@1"} {
+		wantCode(t, action+" after the admission", formAction(h, "r-"+action, action), "invalid_state")
+	}
+	if got := storedForm(t, h); got.Key != f.Key || got.Revision != 2 {
+		t.Fatalf("a refresh replaced the admitted form: %+v", got)
 	}
 	tree, err := h.restartFormRender(ctx, f)
 	if err != nil {
@@ -111,15 +232,12 @@ func TestRestartFormFrozenAfterAdmission(t *testing.T) {
 	}
 }
 
-// restartFormCall answers like a plugin: a refusal is a definite error with its code.
+// restartFormCall answers like a plugin: a refusal is a definite error with its code. A view
+// without a stored form is invalid_state.
 func TestRestartFormCallErrors(t *testing.T) {
-	h := resumeTestHub(t)
-	ctxJSON, _ := json.Marshal(formContext{Restart: &restartForm{Kind: "codex", Revision: 3, Key: "k"}})
-	err := h.restartFormCall(context.Background(), "view.action", json.RawMessage(`{"view_id":"v","context":`+string(ctxJSON)+`,"action":"restart@2"}`), nil)
-	if re, definite := definiteFailure(err); !definite || re.Code != "stale" {
-		t.Fatalf("stale: %v", err)
-	}
-	err = h.restartFormCall(context.Background(), "view.render", map[string]any{"view_id": "v"}, nil)
+	h := restartFormHub(t, &restartForm{Kind: "codex", Revision: 3, Key: "k"})
+	wantCode(t, "stale", formAction(h, "o", "restart@2"), "stale")
+	err := h.restartFormCall(context.Background(), "view.render", map[string]any{"view_id": "missing"}, nil)
 	var re *rex.RexError
 	if !errors.As(err, &re) || re.Code != "invalid_state" {
 		t.Fatalf("no stored snapshot: %v", err)

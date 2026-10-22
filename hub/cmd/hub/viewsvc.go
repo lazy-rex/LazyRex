@@ -314,7 +314,13 @@ func (h *Hub) viewAdmit(ctx context.Context, kind string, p perform, args map[st
 		return nil, bad("invalid_input: operation_key and node_id are required")
 	}
 	// The plugin gets the same arguments on every attempt. The attachment is not part of them.
-	work := viewArgs(v.ID, v.Route, v.Context)
+	// The hub's restart form reads its stored context when the operation runs (restartform.go), so
+	// the context is not part of its arguments: a Refresh can change it while an operation waits.
+	vctx := v.Context
+	if v.Plugin == restartFormOwner {
+		vctx = ""
+	}
+	work := viewArgs(v.ID, v.Route, vctx)
 	work["node_id"], work["operation_key"] = node, key
 	switch kind {
 	case "action":

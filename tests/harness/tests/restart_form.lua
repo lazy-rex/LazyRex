@@ -100,7 +100,7 @@ test('restart runs the snapshot; a retry after a lost reply replays; the form is
   expect(again.status).to_be('succeeded')
   expect(again.result.operation.op_id).to_be(op_id)
   -- Frozen: no refresh, no new restart in the tree.
-  local refresh = form:action('refresh', 'refresh', {})
+  local refresh = form:action('refresh', 'refresh@1', {})
   expect(refresh.status).to_be('failed')
   expect(code(refresh)).to_contain('invalid_state')
   expect(node(tree, 'refresh')).to_be(nil)
@@ -128,7 +128,9 @@ test('a change after the form opened refuses the whole batch; refresh takes a ne
   expect(code(op)).to_contain('conflict')
   expect(identity(a).block_id).to_be(olda)
   -- Refresh: revision 2. The old revision is stale now.
-  expect(form:action('refresh', 'refresh', {}).status).to_be('succeeded')
+  expect(form:action('refresh', 'refresh@1', {}, 'refresh-f3').status).to_be('succeeded')
+  -- A lost reply: the same key again is the same operation, after the context changed too.
+  expect(form:action('refresh', 'refresh@1', {}, 'refresh-f3').status).to_be('succeeded')
   tree = form:render()
   expect(node(tree, 'restart').action.name).to_be('restart@2')
   expect(node(tree, 'restart').action.enabled).to_be(true)
@@ -139,6 +141,24 @@ test('a change after the form opened refuses the whole batch; refresh takes a ne
   tree = done(form)
   expect(item(tree, 'outcome', a).detail).to_contain('rebound')
   expect(item(tree, 'outcome', b).detail).to_contain('rebound')
+  form:action('close', 'close', {})
+end)
+
+test('the form survives a hub restart, before and after its admission', function()
+  local id, old, sess = started('f6')
+  local form = open(sess)
+  form:render()
+  hub:restart({crash = true})
+  -- The renderer attaches again; the stored form is the same.
+  form = user:view('restart', owner, sess)
+  expect(node(form:render(), 'restart').action.name).to_be('restart@1')
+  expect(form:action('restart', 'restart@1', {}).status).to_be('succeeded')
+  -- A crash while the hub stops the agent: the next hub continues the stored operation.
+  hub:restart({crash = true})
+  form = user:view('restart', owner, sess)
+  local tree = done(form)
+  expect(item(tree, 'outcome', id).detail).to_contain('rebound')
+  expect(identity(id).block_id ~= old).to_be(true)
   form:action('close', 'close', {})
 end)
 

@@ -16,9 +16,14 @@ package main
 // stored snapshot and marks a target that changed since. Restart sends the revision in its action
 // name (restart@<revision>); the hub restarts the stored snapshot of that revision, never a list from
 // the renderer, through adminAgentOp with the stored key. Every listed target must still match its
-// token, or the whole batch is refused before any stop. Refresh is an action: it takes a new
-// snapshot (a new revision and key). After the admission the form is frozen: Refresh is refused, and
-// the render shows the operation's outcome. A new restart needs a new form.
+// token, or the whole batch is refused before any stop. Refresh is an action (refresh@<revision>):
+// it takes a new snapshot (a new revision and key). After the admission the form is frozen: Refresh
+// is refused, and the render shows the operation's outcome. A new restart needs a new form.
+//
+// The stored context is the only state. An operation waits in view_ops until the worker runs it,
+// and the form can change in between (a Refresh queued before it), so every call reads the context
+// of the view row when it runs, never a copy from the admission. viewAdmit keeps the context out of
+// this owner's operation arguments, so a retry of the same key matches after a Refresh too.
 //
 // The token binds the agent to its pane and to its process generation, as restartCheck sees them.
 // A token cannot prove the current executable by itself: restartCheck still runs live at admission
@@ -46,6 +51,9 @@ type restartForm struct {
 	Revision int            `json:"revision"`
 	Key      string         `json:"key"` // the hub.admin.restart key of this revision
 	Targets  []restartToken `json:"targets"`
+	// RefreshOp is the view operation key of the Refresh that took this revision ("" at open). A
+	// retry of that operation (a crash after the context write) changes nothing.
+	RefreshOp string `json:"refresh_op,omitempty"`
 }
 
 // restartToken is one target of the form's snapshot.
@@ -220,22 +228,27 @@ func (h *Hub) snapshotTargets(ctx context.Context, f *restartForm) ([]opTarget, 
 func (h *Hub) restartFormCall(ctx context.Context, action string, args any, out any) error {
 	b, _ := json.Marshal(args)
 	var in struct {
-		ViewID  string          `json:"view_id"`
-		Context json.RawMessage `json:"context"`
-		Action  string          `json:"action"`
+		ViewID string `json:"view_id"`
+		OpKey  string `json:"operation_key"`
+		Action string `json:"action"`
 	}
 	json.Unmarshal(b, &in)
+	// The view row's context, as it is now (see the top of this file).
+	var stored string
+	err := h.db.QueryRowContext(ctx, `SELECT context FROM views WHERE view_id = ? AND plugin = ?`, in.ViewID, restartFormOwner).Scan(&stored)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err // not an answer: the view service tries again
+	}
 	var fc formContext
-	if json.Unmarshal(in.Context, &fc) != nil || fc.Restart == nil {
+	if err != nil || json.Unmarshal([]byte(stored), &fc) != nil || fc.Restart == nil {
 		return &rex.RexError{Code: "invalid_state", Message: "the restart form has no stored snapshot"}
 	}
 	var res any
-	var err error
 	switch action {
 	case "view.render":
 		res, err = h.restartFormRender(ctx, fc.Restart)
 	case "view.action":
-		res, err = h.restartFormAction(ctx, in.ViewID, fc, in.Action)
+		res, err = h.restartFormAction(ctx, in.ViewID, in.OpKey, stored, fc, in.Action)
 	default:
 		return &rex.RexError{Code: "unknown_action", Message: action + " is not supported by the restart form"}
 	}
@@ -267,12 +280,21 @@ func (h *Hub) restartOp(ctx context.Context, key string) (string, error) {
 	return op, err
 }
 
-func (h *Hub) restartFormAction(ctx context.Context, viewID string, fc formContext, action string) (any, error) {
+// restartFormAction runs one view operation (opKey) against the stored context of the view (stored,
+// decoded as fc). An action names the revision that the user saw.
+func (h *Hub) restartFormAction(ctx context.Context, viewID, opKey, stored string, fc formContext, action string) (any, error) {
 	f := fc.Restart
-	switch {
-	case action == "close":
+	name, revText, _ := strings.Cut(action, "@")
+	rev, revErr := strconv.Atoi(revText)
+	switch name {
+	case "close":
 		return map[string]any{"close_form": true}, nil
-	case action == "refresh":
+	case "refresh":
+		// This operation took the stored revision already: a retry after a crash between the
+		// context write and the operation's record. No new snapshot, no new key.
+		if opKey != "" && f.RefreshOp == opKey {
+			return map[string]any{}, nil
+		}
 		// After the admission the form is frozen: the outcome is shown, and a new restart needs a
 		// new form.
 		if op, err := h.restartOp(ctx, f.Key); err != nil {
@@ -280,23 +302,35 @@ func (h *Hub) restartFormAction(ctx context.Context, viewID string, fc formConte
 		} else if op != "" {
 			return nil, refuse("invalid_state", "this form's restart was admitted; open a new form for another restart")
 		}
+		if revErr != nil || rev != f.Revision {
+			return nil, refuse("stale", "the form changed since it was shown; look at it again")
+		}
 		targets, err := h.restartSnapshot(ctx, f.Kind)
 		if err != nil {
 			return nil, err
 		}
 		next := *f
-		next.Revision, next.Key, next.Targets = f.Revision+1, randomID("restart-form-"), targets
+		next.Revision, next.Key, next.Targets, next.RefreshOp = f.Revision+1, randomID("restart-form-"), targets, opKey
 		fc.Restart = &next
 		b, _ := json.Marshal(fc)
-		if _, err := h.db.ExecContext(ctx, `UPDATE views SET context = ? WHERE view_id = ? AND status = 'open'`, string(b), viewID); err != nil {
+		// Only over the context that this call read. One worker runs the owner's operations, so
+		// nothing else writes it; a closed view takes no new snapshot.
+		res, err := h.db.ExecContext(ctx, `UPDATE views SET context = ? WHERE view_id = ? AND plugin = ? AND status = 'open' AND context = ?`,
+			string(b), viewID, restartFormOwner, stored)
+		if err != nil {
 			return nil, err
 		}
+		if n, err := res.RowsAffected(); err != nil {
+			return nil, err
+		} else if n == 0 {
+			return nil, refuse("stale", "the form changed or closed since it was shown")
+		}
 		return map[string]any{}, nil
-	case strings.HasPrefix(action, "restart@"):
-		// The revision that the user saw. A retry of an admitted restart sends the same name and gets
-		// the same operation (adminAgentOp looks up the key first).
-		rev, err := strconv.Atoi(strings.TrimPrefix(action, "restart@"))
-		if err != nil || rev != f.Revision {
+	case "restart":
+		// The revision that the user saw, checked against the stored one. A retry of an admitted
+		// restart names the same revision (the form is frozen after the admission) and gets the
+		// same operation: agentOp looks up the stored key before it reads any target.
+		if revErr != nil || rev != f.Revision {
 			return nil, refuse("stale", "the form changed since it was shown; look at it again")
 		}
 		res, err := h.agentOp(ctx, "restart", map[string]any{"key": f.Key, "kind": f.Kind}, f)
@@ -390,7 +424,7 @@ func (h *Hub) restartFormRender(ctx context.Context, f *restartForm) (any, error
 	nodes = append(nodes,
 		map[string]any{"id": "restart", "type": "widget", "text": "", "action": map[string]any{
 			"name": "restart@" + strconv.Itoa(f.Revision), "label": "Restart " + agentCount(len(listed)), "enabled": len(listed) > 0 && !changed, "user_only": restartUserOnly}},
-		map[string]any{"id": "refresh", "type": "widget", "text": "", "action": map[string]any{"name": "refresh", "label": "Refresh", "enabled": true, "user_only": restartUserOnly}},
+		map[string]any{"id": "refresh", "type": "widget", "text": "", "action": map[string]any{"name": "refresh@" + strconv.Itoa(f.Revision), "label": "Refresh", "enabled": true, "user_only": restartUserOnly}},
 		map[string]any{"id": "close", "type": "widget", "text": "", "action": closeAction},
 	)
 	return map[string]any{"tree": map[string]any{"title": title, "back": closeAction, "nodes": nodes}}, nil
