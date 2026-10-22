@@ -207,19 +207,25 @@ func TestExpectRunCrashingStartLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.start()
+	// The baseline is taken while c is crashing, before the repair: a due respawn can run (and
+	// register) at any time after the repair, before the start is served.
 	s.wait("crashing", func() bool { return s.entry("c")["state"] == "crashing" })
-	s.writeSource("c", "", "c")
 	spawned := len(s.events("plugin_spawned", "c"))
+	s.writeSource("c", "", "c")
 	s.must("hub.admin.start", map[string]any{"plugin": "c", "expect_run": map[string]any{"source": "src/c"}})
 	s.registered("c")
 	st := s.status("c")
-	time.Sleep(3 * time.Second) // longer than the respawn delay that was due (1 or 2 s)
+	atStart := len(s.events("plugin_spawned", "c"))
+	if atStart == spawned {
+		t.Fatal("no spawn after the repair: neither the start nor a respawn ran")
+	}
+	time.Sleep(3 * time.Second) // longer than any respawn delay that was due (1 or 2 s)
 	after := s.status("c")
 	e := s.entry("c")
 	if after.InstanceID != st.InstanceID || !alive(after.ChildPID, startTime(after.ChildPID)) || e["state"] != "running" || e["registered"] != true || e["respawn_at"] != nil {
 		t.Fatalf("after the start: %+v (was %+v), entry %v", after, st, e)
 	}
-	if n := len(s.events("plugin_spawned", "c")) - spawned; n != 1 {
-		t.Fatalf("%d spawns from the start on; want 1 (the start, or a respawn that came first)", n)
+	if n := len(s.events("plugin_spawned", "c")) - atStart; n != 0 {
+		t.Fatalf("%d spawns after the registered instance; want 0 (one instance)", n)
 	}
 }
