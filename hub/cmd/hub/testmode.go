@@ -365,14 +365,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		return h.testFaultRelease(id)
 	case "hub.test.fault_state":
 		id, _ := args["id"].(float64)
-		h.test.mu.Lock()
-		defer h.test.mu.Unlock()
-		for _, f := range h.test.faults {
-			if float64(f.ID) == id { // exact: 1.5 is not fault 1
-				return map[string]any{"fired": f.Fired, "seen": f.seen, "gated": f.Gated}, nil
-			}
-		}
-		return nil, bad("invalid: no fault %v", args["id"])
+		return h.testFaultState(id)
 	case "hub.test.injection":
 		id, _ := args["id"].(float64)
 		h.test.mu.Lock()
