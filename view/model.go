@@ -823,11 +823,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, n := range m.snapshot.Tree.Nodes {
 				if n.Type == "form" && len(n.Fields) > 0 {
 					id := editorID(n.ID, n.Fields[0].ID)
-					prefix := "edit:"
-					if n.Fields[0].Kind == "boolean" || n.Fields[0].Kind == "select" {
-						prefix = "choice:"
-					}
-					cmd := m.setFocus(prefix + id)
+					cmd := m.setFocus(fieldControlID(n.Fields[0], id))
 					m.revealFocus()
 					for i, r := range m.bodyRows() {
 						if strings.HasPrefix(r.Anchor, n.ID+":label:") {
@@ -984,4 +980,21 @@ func (m *model) moveFocus(delta int) tea.Cmd {
 	cmd := m.setFocus(cs[(idx+delta+len(cs))%len(cs)].ID)
 	m.revealFocus()
 	return cmd
+}
+
+// fieldControlID is the ID of a field's first control: Yes for a boolean, the closed select, or
+// the text editor.
+func fieldControlID(f Field, editor string) string {
+	switch f.Kind {
+	case "boolean":
+		return "yes:" + editor
+	case "select":
+		return "choice:" + editor
+	}
+	return "edit:" + editor
+}
+
+// fieldChoiceFocus reports focus on a choice control: a closed select, Yes or No.
+func fieldChoiceFocus(id string) bool {
+	return strings.HasPrefix(id, "choice:") || strings.HasPrefix(id, "yes:") || strings.HasPrefix(id, "no:")
 }

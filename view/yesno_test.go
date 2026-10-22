@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -193,5 +194,61 @@ func TestYesNoSubmitDirtyAndRecovery(t *testing.T) {
 	m.apply(s)
 	if m.recovery["f/on"] != "true" {
 		t.Fatalf("Recovery %q", m.recovery["f/on"])
+	}
+}
+
+// The reviewer's case: Ctrl+N focused the removed checkbox ID, so Space did nothing.
+func TestReviewerFormShortcutBoolean(t *testing.T) {
+	m := testModel()
+	s := testSnapshot("saved", "1")
+	s.Tree.Nodes = []Node{{ID: "f", Type: "form", Fields: []Field{{ID: "on", Kind: "boolean", Label: "Enabled", Value: false}}, SubmitAction: &Action{Name: "submit", Label: "Go", Enabled: true}}}
+	m.apply(s)
+	m.setFocus("f:submit")
+	m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	if m.editors["f/on"].Choice != true {
+		t.Fatalf("Ctrl+N then Space left value %v at focus %q", m.editors["f/on"].Choice, m.focus)
+	}
+}
+
+// The reviewer's case: a resize that stacks Yes and No must keep the focused button visible.
+func TestReviewerBooleanResizeKeepsFocusVisible(t *testing.T) {
+	for _, last := range []string{"yes", "no"} {
+		m := testModel()
+		m.width, m.height = 60, 12
+		s := testSnapshot("saved", "1")
+		s.Route = "/forms/f"
+		fields := []Field{}
+		for i := 0; i < 6; i++ {
+			fields = append(fields, Field{ID: fmt.Sprint(i), Kind: "boolean", Label: "Enabled", Value: false})
+		}
+		s.Tree.Nodes = []Node{{ID: "f", Type: "form", Fields: fields}}
+		m.apply(s)
+		target := last + ":f/5"
+		m.setFocus(target)
+		m.revealFocus()
+		m.Update(tea.WindowSizeMsg{Width: 12, Height: 12})
+		if len(controlRows(m, target)) != 1 {
+			t.Fatalf("focused button %q disappeared after resize; scroll=%d", target, m.scroll)
+		}
+	}
+}
+
+// Every field kind's first control is the target of Ctrl+N, and it exists.
+func TestFieldControlIDExists(t *testing.T) {
+	for _, f := range []Field{
+		{ID: "a", Kind: "boolean", Value: false},
+		{ID: "a", Kind: "select", Value: "x", Options: []Option{{Value: "x", Label: "X"}}},
+		{ID: "a", Kind: "text"},
+		{ID: "a", Kind: "multiline"},
+	} {
+		m := testModel()
+		s := testSnapshot("saved", "1")
+		s.Tree.Nodes = []Node{{ID: "f", Type: "form", Fields: []Field{f}}}
+		m.apply(s)
+		m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+		if want := fieldControlID(f, "f/a"); m.focus != want || len(controlRows(m, want)) == 0 {
+			t.Fatalf("%s: Ctrl+N focused %q, control rows %v", f.Kind, m.focus, controlRows(m, want))
+		}
 	}
 }

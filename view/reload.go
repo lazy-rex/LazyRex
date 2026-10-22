@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"reflect"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -98,7 +97,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if follow && beforeHeight != m.bodyHeight() {
 		m.scroll = max(0, len(m.bodyRows())-m.bodyHeight())
 	}
-	if _, resized := msg.(tea.WindowSizeMsg); resized && strings.HasPrefix(m.focus, "choice:") {
+	if _, resized := msg.(tea.WindowSizeMsg); resized && fieldChoiceFocus(m.focus) {
 		m.revealFocus()
 	}
 	m.refreshHover()

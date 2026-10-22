@@ -18,7 +18,7 @@ func TestControlGallery(t *testing.T) {
 	}
 	for _, width := range []int{38, 100} {
 		for _, dark := range []bool{false, true} {
-			for _, kind := range []string{"checkbox", "list", "button", "input", "select", "composer"} {
+			for _, kind := range []string{"yesno", "list", "button", "input", "select", "composer"} {
 				var lines []string
 				lines = append(lines, kind+" controls", strings.Repeat("─", width-6), "")
 				for _, state := range []string{"Normal", "Hover", "Focus", "Pressed", "Selected", "Disabled", "Editor focus"} {
@@ -28,7 +28,7 @@ func TestControlGallery(t *testing.T) {
 					if kind == "list" && state == "Selected" {
 						continue
 					}
-					if (kind == "checkbox" || kind == "select") && state == "Disabled" {
+					if (kind == "yesno" || kind == "select") && state == "Disabled" {
 						continue
 					} // The schema does not define disabled fields.
 					if kind == "input" && (state == "Disabled" || state == "Pressed" || state == "Selected") {
@@ -48,9 +48,9 @@ func TestControlGallery(t *testing.T) {
 					s.Tree.Nodes = nil
 					id := ""
 					switch kind {
-					case "checkbox":
+					case "yesno":
 						s.Tree.Nodes = []Node{{ID: "f", Type: "form", Fields: []Field{{ID: "choice", Kind: "boolean", Label: "Include Claude", Value: state == "Selected"}}}}
-						id = "choice:f/choice"
+						id = "yes:f/choice"
 					case "list":
 						s.Tree.Nodes = []Node{{ID: "list", Type: "list", Items: []Item{{ID: "a", Label: "Design review", Detail: "2 unread messages", Action: &Action{Name: "open", Enabled: state != "Disabled"}}}}}
 						id = "list:a"
@@ -139,7 +139,7 @@ func TestMessagesGallery(t *testing.T) {
 				{ID: "new", Type: "form", Label: "New thread", Fields: []Field{{ID: "title", Kind: "text", Label: "Title (optional)", Value: ""}, {ID: "claude", Kind: "boolean", Label: "Claude", Value: false}, {ID: "codex", Kind: "boolean", Label: "Codex", Value: true}}, SubmitAction: &Action{Name: "create", Label: "Create thread", Enabled: true}},
 			}
 			m.apply(s)
-			m.setFocus("choice:new/claude")
+			m.setFocus("yes:new/claude")
 			m.hover = "threads:claude"
 			name := fmt.Sprintf("%dx40-dark-%t-messages.ansi", width, dark)
 			if err := os.WriteFile(filepath.Join(dir, name), []byte(m.View().Content), 0600); err != nil {

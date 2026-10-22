@@ -286,7 +286,7 @@ It prevents a second wrap from placing the last words on extra short lines.
 Set `LAZYREX_GALLERY` to an existing directory, then run
 `go test -run 'TestControlGallery|TestMessagesGallery'` to export ANSI fixtures.
 The gallery uses the production controls at 38 and 100 columns in both themes.
-It shows supported normal, hover, keyboard focus, pressed, checked, and
+It shows supported normal, hover, keyboard focus, pressed, chosen, and
 unavailable-action states. The schema does not define disabled form fields or
 selected list items. The gallery does not invent those states.
 
