@@ -34,18 +34,20 @@ local function settle()
   end, 20)
 end
 
-sql('CREATE TABLE parts_spec (name TEXT PRIMARY KEY, kb INTEGER, mode TEXT, refresh TEXT)')
+sql('CREATE TABLE parts_spec (name TEXT PRIMARY KEY, kb INTEGER, mode TEXT)')
 sql('CREATE TABLE other (x)')
 
-local function open(name, kb, mode, refresh)
+local function open(name, kb, mode)
   sql('CREATE TABLE parts_' .. name .. ' (x)')
-  sql('INSERT INTO parts_spec VALUES (?, ?, ?, ?)', name, kb, mode or 'ok', refresh or {null = true})
+  sql('INSERT INTO parts_spec VALUES (?, ?, ?)', name, kb, mode or 'ok')
   return user:open('lazy/parts-' .. name)
 end
 
 -- The sha256 of each filler text (fixture.lua filler) and of the 200 KiB result of fix.big.
 local FILLER = 'f73d41167a57f88a0bea7e7b5220e87fdbd7f1b65bb0df63a9c0fc9fb5ef1b81'
 local BIG = '5918d8e4881ed30f06ce8465dbccc340c68eb8ffa30e02d81bcc9db024076db0'
+-- The sha256 of 150 KiB of 's' (fixture.lua fix.saved).
+local SAVED = '1ea33f603a08d9943251c23c9fb7e9ac9c456570d5798a02118e06efd3582f7c'
 
 local function whole(tree, what)
   expect(node(tree, 'last').text, what .. ': the last node').to_be('end')
@@ -101,8 +103,8 @@ test('a missing part, a wrong byte count, and a reply over the cap show the Erro
   end
 end)
 
-test('an opted-in view with a chunked tree stays tracked', function()
-  local f = open('f', 150, 'ok', 'reads')
+test('a view with a chunked tree stays tracked (no refresh field: the default)', function()
+  local f = open('f', 150)
   settle()
   expect(count(f).sql_tracked, 'F tracked').to_be(true)
   local f0 = count(f).attempts
@@ -120,6 +122,29 @@ test('an agent gets a 200 KiB result of a forwarded call whole', function()
   expect(r.value.data.len).to_be(200 * 1024)
   expect(r.value.data.sha256, 'the data').to_be(BIG)
   expect(r.bytes > 200 * 1024).to_be(true)
+end)
+
+-- A probe of the receive size, not the recovery gate: the write step withholds the reply by
+-- convention, and no transport reply is lost. The recovery gate uses the SDK with a real fault.
+test('probe: a plugin receives a 150 KiB saved reply whole, and the retry writes once', function()
+  sql('CREATE TABLE saved_rows (key TEXT)')
+  local function step(name) return alice:call('fix.saved', {kb = 150, key = 'k-saved', step = name}) end
+  local w = step('write')
+  expect(w.withheld, 'write: the reply is withheld').to_be(true)
+  expect(w.replayed, 'write: a first commit').to_be(false)
+  -- The plugin receives the saved reply of a commit replay and of hub.sql.replay whole.
+  local bytes = #'{"data":"",' + 150 * 1024 + #'"kb":150}'
+  for _, name in ipairs({'commit', 'replay'}) do
+    local r = step(name)
+    expect(r.same, name .. ': the saved value').to_be(true)
+    expect(r.bytes, name .. ': the bytes').to_be(bytes)
+  end
+  -- An agent gets it whole through the hub.
+  local d = alice:call_short('fix.saved', {kb = 150, key = 'k-saved', step = 'deliver'})
+  expect(d.value.data.len).to_be(150 * 1024)
+  expect(d.value.data.sha256, 'the delivered data').to_be(SAVED)
+  local r = alice:call('fix.hub', {action = 'hub.sql.query', args = {sql = 'SELECT count(*) FROM saved_rows'}})
+  expect(r.result.rows[1][1], 'one write').to_be(1)
 end)
 
 test('measure: a 150 KiB view in parts and a 40 KiB view in one message', function()
