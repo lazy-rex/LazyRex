@@ -496,7 +496,7 @@ Every call path gives the plugin the same frame. Only `args` changes:
 
 - With `session.attach_all` `event_scope: all`, a `block.method` or a block `client.action` produces **no event**. The watcher saw only `client_joined`, `client_left`, `client_changed`, `keymap_changed`, `client_performed` and session `client_connected` / `client_disconnected` / `client_connection_changed`.
 - The plugin also receives `block.event` `client_connected` / `client_disconnected` with only `client_id` (no principal). For a short CLI call, the frames come in this order: `client_connected` (CLI client) → `block.method` → `client_disconnected` (same client), within 3 ms.
-- This order gives a guess for one-shot CLI callers only. It fails for a long-lived client (the app, the hub, an agent's MCP shim), which connects once and calls many times. It also fails when two clients connect at the same time. Do not use it for identity.
+- This order gives a guess for one-shot CLI callers only. It fails for a long-lived client (the app, the hub), which connects once and calls many times. It also fails when two clients connect at the same time. Do not use it for identity.
 
 ### `args` can carry caller context, but anyone can forge it
 

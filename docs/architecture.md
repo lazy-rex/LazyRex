@@ -85,7 +85,7 @@ Proposed by Claude and Codex, 2026-10-15. Not tested.
 
 ## Agent identity and messaging
 
-1. Each agent gets a stdio MCP shim. The shim connects to the hub's Unix socket.
+1. Each agent calls hub and plugin actions through Rex (`rex -C lazyrex do`). Its hooks report its conversation identity (`hub.identity.report`).
 2. The hub reads the peer pid of the connection and walks up the parent chain to a Rex pane's child pid. That pane is the caller.
 3. The hub adds the sender's name from its own map. It does not trust what the caller says about itself.
 4. Message content stays in the mailbox. The agent reads it with an MCP tool (`read_messages`).
@@ -191,7 +191,7 @@ The exact schemas used here are in `docs/reference/rex-0.0.1792158932-g88fd41/ll
 | Agent binding | Peer PID, terminal process information, labels, and block ownership events. | The hub proves PID ancestry, binds a roster name to a pane, and requires explicit rebind. | Keep identity checks. A label is not an authenticated agent name. `session.own_block` tracks a connected client's block claim, not the terminal process's agent identity. Ask Rex for a direct peer-PID-to-block lookup to replace repeated pane scans. |
 | Detached panes and restoration | `session.detach_block`, `session.move_block`, splits, floating layers, focus, and zoom. | The hub records the workspace it hides. It creates temporary anchor panes because restoration needs an existing anchor. | Keep the current recovery records. Ask Rex for a new window that accepts existing detached blocks, or an atomic layout operation. Replace the anchor workaround when that primitive exists. |
 | Keyboard actions | `client.keymap`, `client.set_script`, account configuration, and keymap change events. | The renderer handles form editing, focus, and local shortcuts in its terminal. Hub and renderer actions are already declared through `client.keymap`. | Keep local editing in the renderer. Use native Rex actions for future workspace shortcuts. `client.set_script` affects the caller's connection; it does not install keys in another application client. |
-| Agent tool transport | `client.inspect` exposes action schemas. `client.perform` invokes typed actions. `rex -C … do` invokes the same actions. | The MCP shim presents these native actions to agents that use MCP. It adds discovery, join, and reconnection. | Keep the thin adapter. Keep business rules in hub or plugin actions. A CLI-capable agent can call those same actions without the adapter. |
+| Agent tool transport | `client.inspect` exposes action schemas. `client.perform` invokes typed actions. `rex -C … do` invokes the same actions. | Agents call these native actions with `rex -C … do`. No adapter sits between them. | Keep business rules in hub or plugin actions. |
 | Worktrees and directories | Rex starts terminal processes with `options.cwd` and reports live terminal process directories. | Git owns worktrees. The plugin owns naming and retry records. The hub prevents new workers during removal and checks live terminal directories. | Keep this split. The plugin uses Rex blocks for long Git mutations. Do not add a separate PID or process-outcome journal. Ask Rex for idempotent resource creation to reduce unknown spawn handling. |
 
 The event log is not a replay log for the hub's application state. SQLite stores operation and recovery state.

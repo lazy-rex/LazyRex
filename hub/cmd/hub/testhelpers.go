@@ -543,7 +543,7 @@ func testAgentMain(argv []string) int {
 			mu.Lock()
 			defer mu.Unlock()
 			c.reply(p.CallID, map[string]any{"id": *id, "pid": os.Getpid(), "joined": joined, "join_error": joinErr}, nil)
-		case "agent.call": // the agent face: the path agents use (MCP shim and `rex -C lazyrex do`)
+		case "agent.call": // the agent face: the path agents use (`rex -C lazyrex do`)
 			client, err := target(agentLabel)
 			if err != nil {
 				c.reply(p.CallID, nil, err)

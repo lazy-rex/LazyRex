@@ -1,6 +1,6 @@
 // Package rexreal tells whether a Rex server is the user's real one: the default server of the rex
 // CLI on PATH. Hard rule (AGENTS.md): never experiment on the real server, so each uncertain answer
-// is "real" and the caller refuses. cmd/hub and cmd/mcp use it; view/ is another module and keeps
+// is "real" and the caller refuses. cmd/hub uses it; view/ is another module and keeps
 // a copy of KnownDefault with the same test cases (view/wire.go).
 package rexreal
 

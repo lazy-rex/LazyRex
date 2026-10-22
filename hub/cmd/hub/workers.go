@@ -1658,7 +1658,7 @@ func (h *Hub) checkProfiles() {
 	}
 }
 
-// hubToolActions are hub actions that agents may call through the MCP shim (hub.tools).
+// hubToolActions are hub actions that agents may call through the agent face (agentface.go).
 var hubToolActions = []map[string]any{
 	{"name": "hub.profiles", "kind": "client", "title": "List profiles",
 		"description": "List the named commands (profiles) that can start in a new tab, with their kind (agent or accessory), their default cwd (empty: the home directory) and how many run now. args lists the named values that hub.spawn accepts for the profile (name, label, default, required).",

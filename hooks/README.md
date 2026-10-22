@@ -75,5 +75,4 @@ Event order equals process launch order only if the agent waits for each hook.
 This ordering is unverified for both agents.
 
 For both agents, retain Rex's own SessionStart hook. LazyRex adds a separate report.
-The report is advisory. MCP tool discovery does not wait for it.
-Codex can also supply its conversation ID in each MCP tool call.
+The report is advisory. The hook waits at most three seconds for it and always exits with success.

@@ -52,8 +52,6 @@ Omit `since` after an interruption to recover all unacknowledged messages.
 `messaging.thread_list` lists threads. Set `include_archived=true` to include archived threads.
 Archiving hides a thread for one participant. It preserves history, drafts, and delivery.
 
-The MCP messaging tools remain available when configured. They use the same mailbox and operation keys.
-
 ## Read older thread history
 
 `messaging.history` returns a bounded page of history, newest messages first.

@@ -120,7 +120,7 @@ type Plugin struct {
 	ChildPID   int
 	ChildStart string
 	ClientID   string   // set by an accepted hub.register
-	Exports    []string // action names agents may call through the MCP shim
+	Exports    []string // action names agents may call through the agent face
 	// state is "" (running or stopped, from Desired), refused (the last start check refused the
 	// entry), retained (refused, and the recorded instance still lives; it may not register) or
 	// waiting (the check passed, and a dependency is not registered: waitLoop starts it again).

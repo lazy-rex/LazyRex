@@ -119,7 +119,7 @@ The rest of this README is for work on LazyRex itself.
 
 | Path | Contents |
 | --- | --- |
-| `hub/` | The hub (Go): plugin host, store, view service, agent identity, MCP shim (`cmd/mcp`) |
+| `hub/` | The hub (Go): plugin host, store, view service, agent identity |
 | `view/` | The renderer (Go, Bubble Tea): forms, lists, thread composer, transcript pane |
 | `plugins/lazyrex/` | The home plugin (plugins, agents and workers) and its tests |
 | `lib/rex-client.mjs` | A dependency-free Rex control and data client for Node tests |

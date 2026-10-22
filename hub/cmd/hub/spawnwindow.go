@@ -27,7 +27,7 @@ package main
 // Callers: the same policy as hub.spawn (spawnCaller): a registered plugin acting for "user" or
 // on_behalf of the agent of a forwarded call in flight, a plugin with a durable grant of this exact
 // request (grant_id, grants.go), or an identified agent pane. The action is not in
-// hubToolActions, so MCP does not offer it.
+// hubToolActions, so the agent face does not offer it.
 // Window status: pending if a leaf is sending, else failed if a leaf failed, else closed if a leaf
 // closed, else open.
 
