@@ -56,6 +56,7 @@ type restartLog struct {
 	dropSince time.Time
 	noticed   bool   // the pane has the notice of the current drop
 	tail      []byte // the end of the current run's output (tailMax)
+	tailCut   bool   // tail lost its start: its first line is incomplete
 	closed    bool
 	kick      chan struct{}
 
@@ -148,7 +149,7 @@ func (l *restartLog) dropLocked(n int64) {
 // readRun moves one run's output into the queue until EOF or a closed read end.
 func (l *restartLog) readRun(r io.Reader) {
 	l.mu.Lock()
-	l.tail = l.tail[:0]
+	l.tail, l.tailCut = l.tail[:0], false
 	l.mu.Unlock()
 	buf := make([]byte, logChunk)
 	for {
@@ -159,6 +160,7 @@ func (l *restartLog) readRun(r io.Reader) {
 			l.tail = append(l.tail, buf[:n]...)
 			if len(l.tail) > tailMax {
 				l.tail = append(l.tail[:0], l.tail[len(l.tail)-tailMax:]...)
+				l.tailCut = true
 			}
 			l.mu.Unlock()
 		}
@@ -175,7 +177,7 @@ func (l *restartLog) readRun(r io.Reader) {
 func (l *restartLog) lastLines(n int) []string {
 	l.mu.Lock()
 	s := string(l.tail)
-	cut := len(l.tail) == tailMax
+	cut := l.tailCut
 	l.mu.Unlock()
 	lines := strings.Split(s, "\n")
 	if cut && len(lines) > 0 {

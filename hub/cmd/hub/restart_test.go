@@ -613,3 +613,13 @@ func TestRestartLogLastLinesHaveNoControls(t *testing.T) {
 		t.Fatalf("lines %q", got)
 	}
 }
+
+// A run of exactly tailMax bytes was never cut: its first line is complete and stays.
+func TestRestartLogLastLinesExactTail(t *testing.T) {
+	l := newRestartLog(t.TempDir(), io.Discard)
+	first := "first line\n"
+	l.readRun(strings.NewReader(first + strings.Repeat("y", tailMax-len(first)-1) + "\n"))
+	if got := l.lastLines(10); len(got) != 2 || got[0] != "first line" {
+		t.Fatalf("lines %q", got)
+	}
+}
