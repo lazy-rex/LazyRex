@@ -47,3 +47,11 @@ test('a label that is not text keeps the real failure visible', function()
     expect(text:find('concatenate', 1, true), 'no concatenation error').to_be(nil)
   end
 end)
+
+test('show prints a list of more than 2559 items (Rex Lua table.concat limit)', function()
+  local big = {}
+  for i = 1, 3000 do big[i] = i end
+  local s = H.show(big)
+  expect(s:sub(1, 6)).to_be('{1, 2,')
+  expect(#s <= 603, 'the text is cut').to_be(true)
+end)

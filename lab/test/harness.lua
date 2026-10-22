@@ -109,14 +109,22 @@ local function show(v, depth)
   if type(v) == 'string' then return string.format('%q', v) end
   if type(v) ~= 'table' or H.is_error(v) then return tostring(v) end
   if depth > 3 then return '{…}' end
-  local parts = {}
+  -- The text is cut at 600 characters, so parts stop there: Rex Lua's table.concat fails on more
+  -- than 2559 items ("registry overflow", observed on Rex 0.0.1792158932-g88fd41).
+  local parts, n = {}, 0
+  local function add(text)
+    if n > 600 then return false end
+    parts[#parts + 1] = text
+    n = n + #text + 2
+    return true
+  end
   if is_array(v) then
-    for _, x in ipairs(v) do parts[#parts + 1] = show(x, depth + 1) end
+    for _, x in ipairs(v) do if not add(show(x, depth + 1)) then break end end
   else
     local keys = {}
     for k in pairs(v) do keys[#keys + 1] = k end
     table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
-    for _, k in ipairs(keys) do parts[#parts + 1] = tostring(k) .. '=' .. show(v[k], depth + 1) end
+    for _, k in ipairs(keys) do if not add(tostring(k) .. '=' .. show(v[k], depth + 1)) then break end end
   end
   local s = '{' .. table.concat(parts, ', ') .. '}'
   if #s > 600 then s = s:sub(1, 600) .. '…' end
