@@ -12,8 +12,9 @@ package main
 //
 // Each plugin client has at most one part set (Rex delivers one client.perform at a time to a
 // client). A new id discards the old set. A stub resolves only the set with its own id: a late
-// stub never touches the next set. A set ends at its stub, at a refused part, when the plugin
-// registers again or its instance ends, and 30 s after its last part.
+// stub never touches the next set. A set ends at its stub, at a refused part or stub of its id,
+// when the plugin registers again or its instance ends, and 30 s after its last part (a timer
+// removes it).
 //
 // Saved replies: hub.sql.commit with reply_parts {id, count, bytes} joins the set and saves the
 // value. The set stays, resolved: the stub with the same id then gets the same value.
@@ -55,7 +56,8 @@ type partSet struct {
 	parts  []string
 	size   int
 	last   time.Time
-	joined []byte // set when hub.sql.commit resolved the set
+	joined []byte      // set when hub.sql.commit resolved the set
+	timer  *time.Timer // removes the set partsExpiry after its last part
 }
 
 type partSets struct {
@@ -63,45 +65,73 @@ type partSets struct {
 	sets map[string]*partSet // by plugin client ID
 }
 
-// sweepLocked discards the expired sets. ps.mu must be held.
-func (ps *partSets) sweepLocked(now time.Time) {
-	for c, s := range ps.sets {
-		if now.Sub(s.last) > partsExpiry {
-			delete(ps.sets, c)
+// partsAfter arms the expiry of a set. A test replaces it.
+var partsAfter = time.AfterFunc
+
+// startLocked records a new set of a client and arms its expiry. ps.mu must be held.
+func (ps *partSets) startLocked(client string, s *partSet) {
+	if ps.sets == nil {
+		ps.sets = map[string]*partSet{}
+	}
+	ps.sets[client] = s
+	ps.armLocked(client, s, partsExpiry)
+}
+
+// armLocked removes the set after it has had no part for partsExpiry. A part that came meanwhile
+// moves the removal. ps.mu must be held.
+func (ps *partSets) armLocked(client string, s *partSet, after time.Duration) {
+	s.timer = partsAfter(after, func() {
+		ps.mu.Lock()
+		defer ps.mu.Unlock()
+		if ps.sets[client] != s {
+			return
 		}
+		if left := partsExpiry - partsNow().Sub(s.last); left > 0 {
+			ps.armLocked(client, s, left)
+			return
+		}
+		delete(ps.sets, client)
+	})
+}
+
+// endLocked ends the set of a client. ps.mu must be held.
+func (ps *partSets) endLocked(client string) {
+	if s := ps.sets[client]; s != nil {
+		if s.timer != nil {
+			s.timer.Stop()
+		}
+		delete(ps.sets, client)
 	}
 }
 
-// drop discards the set of a client: the client registered again or ended.
+// drop ends the set of a client: the plugin registered again or its instance ended.
 func (ps *partSets) drop(client string) {
 	ps.mu.Lock()
-	delete(ps.sets, client)
+	ps.endLocked(client)
 	ps.mu.Unlock()
 }
 
-// part handles hub.reply.part from a registered plugin client. A refused part discards the set.
+// part handles hub.reply.part from a registered plugin client. A part with a new id ends the old
+// set; a refused part ends its set.
 func (ps *partSets) part(client string, args map[string]any) (any, error) {
 	id, _ := args["id"].(string)
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	now := partsNow()
+	s := ps.sets[client]
+	if s != nil && (s.id != id || now.Sub(s.last) > partsExpiry) {
+		ps.endLocked(client) // a new id discards the old set
+		s = nil
+	}
+	fail := func(code, format string, a ...any) (any, error) {
+		ps.endLocked(client)
+		return nil, refuse(code, "part set %s: "+format, append([]any{id}, a...)...)
+	}
 	index, iok := intArg(args["index"])
 	count, cok := intArg(args["count"])
 	data, dok := args["data"].(string)
 	if len(id) > partsMaxID || !partsIDForm.MatchString(id) || !iok || !cok || !dok {
-		return nil, refuse("invalid_input", "hub.reply.part takes id (at most %d bytes of [A-Za-z0-9._:-]), index, count and data (a string)", partsMaxID)
-	}
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	now := partsNow()
-	if ps.sets == nil {
-		ps.sets = map[string]*partSet{}
-	}
-	s := ps.sets[client]
-	if s != nil && (s.id != id || now.Sub(s.last) > partsExpiry) {
-		delete(ps.sets, client) // a new id discards the old set
-		s = nil
-	}
-	fail := func(code, format string, a ...any) (any, error) {
-		delete(ps.sets, client)
-		return nil, refuse(code, "part set %s: "+format, append([]any{id}, a...)...)
+		return fail("invalid_input", "hub.reply.part takes id (at most %d bytes of [A-Za-z0-9._:-]), index, count and data (a string)", partsMaxID)
 	}
 	if count < 1 || count > partsMaxCount || index < 0 || index >= count {
 		return fail("parts_invalid", "index %d of count %d", index, count)
@@ -110,9 +140,8 @@ func (ps *partSets) part(client string, args map[string]any) (any, error) {
 		if index != 0 {
 			return fail("parts_invalid", "the first part has index %d, not 0", index)
 		}
-		ps.sweepLocked(now)
-		s = &partSet{id: id, count: count}
-		ps.sets[client] = s
+		s = &partSet{id: id, count: count, last: now}
+		ps.startLocked(client, s)
 	}
 	switch {
 	case s.joined != nil:
@@ -133,27 +162,31 @@ func (ps *partSets) part(client string, args map[string]any) (any, error) {
 }
 
 // join checks a stub's id, count and bytes against the client's set and returns the joined value.
-// keep: the set stays, resolved (hub.sql.commit); else the set ends, also after a failure.
+// A stub that names no set of the client touches nothing. A stub for the set: keep (hub.sql.commit)
+// leaves the set, resolved, unless the stub is refused; else the set ends, also after a refusal.
 func (ps *partSets) join(client string, stub map[string]any, keep bool) ([]byte, error) {
 	id, _ := stub["id"].(string)
-	count, cok := intArg(stub["count"])
-	size, bok := intArg(stub["bytes"])
-	if id == "" || !cok || !bok || size < 0 || size > partsMaxTotal {
-		return nil, refuse("parts_invalid", "the parts stub takes id, count and bytes (at most %d)", partsMaxTotal)
-	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	s := ps.sets[client]
-	if s == nil || s.id != id || partsNow().Sub(s.last) > partsExpiry {
-		return nil, refuse("parts_invalid", "no part set %s", id)
+	if s == nil || id == "" || s.id != id {
+		return nil, refuse("parts_invalid", "no part set %q", id)
 	}
-	if !keep {
-		delete(ps.sets, client)
+	fail := func(format string, a ...any) ([]byte, error) {
+		ps.endLocked(client)
+		return nil, refuse("parts_invalid", "part set %s: "+format, append([]any{id}, a...)...)
+	}
+	if partsNow().Sub(s.last) > partsExpiry {
+		return fail("expired")
+	}
+	count, cok := intArg(stub["count"])
+	size, bok := intArg(stub["bytes"])
+	if !cok || !bok || size < 0 || size > partsMaxTotal {
+		return fail("the stub takes count and bytes (at most %d)", partsMaxTotal)
 	}
 	if s.joined == nil {
 		if count != s.count || len(s.parts) != s.count {
-			delete(ps.sets, client)
-			return nil, refuse("parts_invalid", "part set %s: %d of %d parts, the stub says %d", id, len(s.parts), s.count, count)
+			return fail("%d of %d parts, the stub says %d", len(s.parts), s.count, count)
 		}
 		var b strings.Builder
 		b.Grow(s.size)
@@ -162,14 +195,15 @@ func (ps *partSets) join(client string, stub map[string]any, keep bool) ([]byte,
 		}
 		joined := []byte(b.String())
 		if !json.Valid(joined) {
-			delete(ps.sets, client)
-			return nil, refuse("parts_invalid", "part set %s: the joined %d bytes are not one JSON value", id, len(joined))
+			return fail("the joined %d bytes are not one JSON value", len(joined))
 		}
 		s.joined, s.parts = joined, nil
 	}
 	if count != s.count || len(s.joined) != size {
-		delete(ps.sets, client)
-		return nil, refuse("parts_invalid", "part set %s: %d parts and %d bytes, the stub says %d and %d", id, s.count, len(s.joined), count, size)
+		return fail("%d parts and %d bytes, the stub says %d and %d", s.count, len(s.joined), count, size)
+	}
+	if !keep {
+		ps.endLocked(client)
 	}
 	return s.joined, nil
 }

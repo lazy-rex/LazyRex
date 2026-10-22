@@ -162,39 +162,113 @@ func TestReplyPartsRefused(t *testing.T) {
 			t.Errorf("%s: want %s, got %v", name, tc.want, err)
 		}
 		// A stub that names no set of its client never touches the set (amendment 3).
-		keeps := name == "the set of another client" || name == "stub bytes over max_total" || name == "a wrong id in the stub"
+		keeps := name == "the set of another client" || name == "a wrong id in the stub"
 		if ps.sets["c1"] != nil && !keeps {
 			t.Errorf("%s: the set stays after a refusal", name)
 		}
 	}
 }
 
-// A new id discards the old set; a set expires 30 s after its last part; a drop ends it.
+// A new id discards the old set; a timer removes a set 30 s after its last part; a drop ends it.
 func TestReplyPartsLifetime(t *testing.T) {
 	now := time.Unix(1000, 0)
 	partsNow = func() time.Time { return now }
-	t.Cleanup(func() { partsNow = time.Now })
+	var fire []func()
+	partsAfter = func(d time.Duration, f func()) *time.Timer {
+		fire = append(fire, f)
+		return time.NewTimer(time.Hour)
+	}
+	t.Cleanup(func() { partsNow, partsAfter = time.Now, time.AfterFunc })
 	var ps partSets
 	sendParts(t, &ps, "c1", "old", []string{`{"a":`})
 	sendParts(t, &ps, "c1", "new", []string{`{"b":1}`})
 	if _, err := ps.join("c1", stubOf("old", 2, 0), false); code(err) != "parts_invalid" {
 		t.Fatalf("the old set after a new id: %v", err)
 	}
+	if s := ps.sets["c1"]; s == nil || s.id != "new" {
+		t.Fatalf("a stub of the old id changed the new set: %+v", s)
+	}
 
-	sendParts(t, &ps, "c1", "slow", []string{`{"a":`})
-	now = now.Add(partsExpiry + time.Second)
-	if _, err := ps.part("c1", map[string]any{"id": "slow", "index": float64(1), "count": float64(2), "data": `1}`}); code(err) != "parts_invalid" {
-		t.Fatalf("a part after the expiry: %v", err)
+	// The timer of a set that got a part meanwhile arms again; with no part for 30 s it removes
+	// the set, with no later call.
+	ps.drop("c1")
+	fire = nil
+	if _, err := ps.part("c1", map[string]any{"id": "slow", "index": float64(0), "count": float64(3), "data": `{"a":`}); err != nil {
+		t.Fatal(err)
 	}
-	sendParts(t, &ps, "c2", "x", []string{`{}`})
-	now = now.Add(partsExpiry + time.Second)
-	sendParts(t, &ps, "c3", "y", []string{`{}`}) // a new set sweeps the expired sets
-	if ps.sets["c2"] != nil {
-		t.Fatal("the expired set of c2 stays")
+	now = now.Add(20 * time.Second)
+	if _, err := ps.part("c1", map[string]any{"id": "slow", "index": float64(1), "count": float64(3), "data": `1,`}); err != nil {
+		t.Fatal(err)
 	}
+	now = now.Add(15 * time.Second)
+	fire[0]() // 35 s after the first part, 15 s after the last
+	if ps.sets["c1"] == nil || len(fire) != 2 {
+		t.Fatalf("the timer removed a set that got a part 15 s ago (timers %d)", len(fire))
+	}
+	now = now.Add(16 * time.Second)
+	fire[1]()
+	if ps.sets["c1"] != nil {
+		t.Fatal("the timer left an expired set")
+	}
+
+	// A stub after the expiry (before its timer) is refused and ends the set.
+	sendParts(t, &ps, "c1", "late", []string{`{}`})
+	now = now.Add(partsExpiry + time.Second)
+	if _, err := ps.join("c1", stubOf("late", 1, 2), false); code(err) != "parts_invalid" || ps.sets["c1"] != nil {
+		t.Fatalf("a stub after the expiry: %v, set %v", err, ps.sets["c1"])
+	}
+	sendParts(t, &ps, "c3", "y", []string{`{}`})
 	ps.drop("c3")
 	if ps.sets["c3"] != nil {
 		t.Fatal("drop")
+	}
+}
+
+// Each refusal of a part or a stub of an existing set's id ends that set: a later valid stub
+// finds nothing (codex-29, render-e5c5d8b-refusal-lifetime-blocker).
+func TestReplyPartsRefusalEndsSet(t *testing.T) {
+	text := `{"a":"` + strings.Repeat("y", 300) + `"}`
+	for name, refused := range map[string]func(ps *partSets) error{
+		"a fraction index": func(ps *partSets) error {
+			_, err := ps.part("c1", map[string]any{"id": "i", "index": 0.5, "count": float64(2), "data": "x"})
+			return err
+		},
+		"data not a string": func(ps *partSets) error {
+			_, err := ps.part("c1", map[string]any{"id": "i", "index": float64(2), "count": float64(2), "data": 1.0})
+			return err
+		},
+		"a part after the last": func(ps *partSets) error {
+			_, err := ps.part("c1", map[string]any{"id": "i", "index": float64(2), "count": float64(2), "data": "x"})
+			return err
+		},
+		"stub bytes over max_total": func(ps *partSets) error {
+			_, err := ps.join("c1", stubOf("i", 2, partsMaxTotal+1), false)
+			return err
+		},
+		"stub bytes not a number": func(ps *partSets) error {
+			_, err := ps.join("c1", map[string]any{"id": "i", "count": float64(2), "bytes": "many"}, false)
+			return err
+		},
+		"a commit stub with a wrong count": func(ps *partSets) error {
+			_, err := ps.join("c1", stubOf("i", 3, len(text)), true)
+			return err
+		},
+	} {
+		var ps partSets
+		sendParts(t, &ps, "c1", "i", partsOf(text, 2))
+		if err := refused(&ps); err == nil {
+			t.Errorf("%s: not refused", name)
+		}
+		if _, err := ps.join("c1", stubOf("i", 2, len(text)), false); code(err) != "parts_invalid" {
+			t.Errorf("%s: a later valid stub resolved the set: %v", name, err)
+		}
+	}
+	// A refused stub that names another id leaves the set.
+	var ps partSets
+	sendParts(t, &ps, "c1", "i", partsOf(text, 2))
+	ps.join("c1", map[string]any{"id": "j", "count": "x"}, false)
+	if got, err := ps.join("c1", stubOf("i", 2, len(text)), false); err != nil || string(got) != text {
+		t.Fatalf("after a stub of another id: %v", err)
 	}
 }
 

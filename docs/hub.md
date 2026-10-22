@@ -229,15 +229,16 @@ The hub keeps one part set for each plugin client (Rex delivers one request at a
 client). It refuses a part with `parts_invalid` when the index is not the next index (also a
 repeated index), when count changes or is not 1 to 64, or when data is empty; with `too_large`
 when the joined size passes `max_total`; with `invalid_input` when the id is not 1 to 128 bytes of
-`[A-Za-z0-9._:-]`. A refused part discards the set. Only the current registered client of a
-plugin can send parts.
+`[A-Za-z0-9._:-]`. A refused part ends the set of its id, also when the refusal is about the
+arguments (`invalid_input`). Only the current registered client of a plugin can send parts.
 
-- A part with a new id discards the old set. A set ends at its stub, at a new registration of the
-  plugin, when its instance ends, and 30 s after its last part.
+- A part with a new id discards the old set. A set ends at its stub, at a refused part or stub of
+  its id, at a new registration of the plugin, when its instance ends, and 30 s after its last
+  part (a timer removes it; no later call is needed).
 - At the stub, the hub checks the id, that all count parts arrived, and that the joined text has
   exactly `bytes` bytes and is one JSON value. Then the joined value is the reply, as if it had
-  come in one message. A stub resolves only the set with its own id: a late stub never touches
-  the next set.
+  come in one message. A stub resolves only the set with its own id: a stub with another id (a
+  late stub) is refused and never touches the set.
 - A failed check gives the error `parts_invalid`, a definite plugin failure: a view shows the
   Error tree (the hub log has the reason), and an agent gets the error. Nothing of the set is
   used.
