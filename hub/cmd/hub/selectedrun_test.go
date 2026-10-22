@@ -476,3 +476,159 @@ func TestSelectedRunNoEntry(t *testing.T) {
 		t.Fatalf("the run %s has no %s", run, want)
 	}
 }
+
+// p1Local is a hub with the local plugin p (its source is <state>/p) and its record.
+func p1Local(t *testing.T) (*Hub, *Plugin, string) {
+	t.Helper()
+	h, _ := p1Hub(t, nil, map[string]string{"p": `{"name":"p","main":"p.lua"}`})
+	return h, h.plugins["p"], filepath.Join(h.cfg.State, "p")
+}
+
+// p1Run is pl's run.
+func p1Run(h *Hub, pl *Plugin) pluginRun {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return pl.run
+}
+
+// p1Entries lists the published local snapshots.
+func p1Entries(t *testing.T, h *Hub) []string {
+	t.Helper()
+	m, _ := filepath.Glob(filepath.Join(h.cfg.State, "plugins", "local", "[0-9a-f]*"))
+	for i := range m {
+		m[i] = "local/" + filepath.Base(m[i])
+	}
+	return m
+}
+
+// p1Edit writes a file of the local source.
+func p1Edit(t *testing.T, src, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// U10: an explicit start of a local source runs a published snapshot of the source.
+func TestLocalSnapshot(t *testing.T) {
+	t.Run("published", func(t *testing.T) {
+		h, pl, src := p1Local(t)
+		os.MkdirAll(filepath.Join(src, ".git"), 0o755)
+		p1Edit(t, filepath.Join(src, ".git"), "config", "x")
+		p1Spawned(t, h, pl, p1Start(t, h, pl), "")
+		run := p1Run(h, pl)
+		dir := filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(run.Entry))
+		d, err := dirDigest(dir)
+		if !strings.HasPrefix(run.Entry, "local/"+strings.TrimPrefix(run.Digest, "sha256:")+".") || err != nil || d != run.Digest ||
+			run.Dir != dir || run.Path != filepath.Join(dir, "p.lua") {
+			t.Fatalf("the run %+v (digest %s %v)", run, d, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".git")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the snapshot has .git: %v", err)
+		}
+		if fi, err := os.Stat(run.Path); err != nil || fi.Mode().Perm() != 0o444 {
+			t.Fatalf("the snapshot file: %v %v", fi.Mode(), err)
+		}
+	})
+	t.Run("reuse", func(t *testing.T) {
+		h, pl, _ := p1Local(t)
+		p1Start(t, h, pl)
+		first := p1Run(h, pl).Entry
+		p1Start(t, h, pl)
+		if got := p1Run(h, pl).Entry; got != first || len(p1Entries(t, h)) != 1 {
+			t.Fatalf("%s, then %s; entries %v", first, got, p1Entries(t, h))
+		}
+	})
+	t.Run("an entry that does not verify", func(t *testing.T) {
+		h, pl, _ := p1Local(t)
+		p1Start(t, h, pl)
+		first := p1Run(h, pl)
+		os.Chmod(first.Dir, 0o755)
+		os.Chmod(first.Path, 0o644)
+		p1Edit(t, first.Dir, "p.lua", "-- changed\n")
+		p1Start(t, h, pl)
+		got := p1Run(h, pl)
+		if b, _ := os.ReadFile(first.Path); got.Entry == first.Entry || got.Digest != first.Digest || string(b) != "-- changed\n" {
+			t.Fatalf("%s, then %s; the bad entry has %q", first.Entry, got.Entry, b)
+		}
+	})
+	for _, c := range []struct {
+		name, want string
+		setup      func(t *testing.T, src string)
+	}{
+		{"symlink", "plugin p: link is not a regular file; a local source is copied, and the copy has no symlinks", func(t *testing.T, src string) {
+			if err := os.Symlink("p.lua", filepath.Join(src, "link")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"bound", "plugin p: the source SRC is over the copy bound (1 files, 67108864 bytes)", func(t *testing.T, src string) {
+			n := localSnapshotFiles
+			localSnapshotFiles = 1
+			t.Cleanup(func() { localSnapshotFiles = n })
+		}},
+		{"the source changed", "plugin p: the source changed during the start; start it again", func(t *testing.T, src string) {
+			localSnapshotHook = func() { p1Edit(t, src, "lazyrex.json", `{"name":"p","main":"p.lua","depends":["x"]}`) }
+			t.Cleanup(func() { localSnapshotHook = nil })
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, pl, src := p1Local(t)
+			c.setup(t, src)
+			err := p1Start(t, h, pl)
+			want := strings.ReplaceAll(c.want, "SRC", src)
+			state, refusal, _ := p1State(h, pl)
+			if codeOf(err) != "refused" || state != "refused" || refusal != want {
+				t.Fatalf("%v; state %s, refusal %q, want %q", err, state, refusal, want)
+			}
+			if m, _ := filepath.Glob(filepath.Join(h.cfg.State, "plugins", "local", ".stage-*")); len(m) != 0 {
+				t.Fatalf("a stage is left: %v", m)
+			}
+		})
+	}
+}
+
+// U13: a start that fails after the publication stores no selected run: the record keeps its
+// earlier one, the lease is released, and no row names the new entry.
+func TestLocalSnapshotLateFailure(t *testing.T) {
+	for _, c := range []string{"the source changed", "the save fails"} {
+		t.Run(c, func(t *testing.T) {
+			h, pl, src := p1Local(t)
+			p1Spawned(t, h, pl, p1Start(t, h, pl), "")
+			var before string
+			h.db.QueryRow(`SELECT selected_run FROM plugins WHERE name = 'p'`).Scan(&before)
+			first := p1Run(h, pl).Entry
+			if c == "the source changed" {
+				localSnapshotHook = func() { p1Edit(t, src, "lazyrex.json", `{"name":"p","main":"p.lua","depends":["x"]}`) }
+				t.Cleanup(func() { localSnapshotHook = nil })
+			} else {
+				p1Edit(t, src, "p.lua", "-- new\n")
+				if _, err := h.db.Exec(`CREATE TRIGGER refuse_run BEFORE UPDATE OF run ON plugins WHEN NEW.run != OLD.run AND NEW.run != ''
+					BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := p1Start(t, h, pl)
+			var se *spawnError
+			if c == "the save fails" && (!errors.As(err, &se) || se.stage != "save") || c != "the save fails" && codeOf(err) != "refused" {
+				t.Fatalf("the start: %v", err)
+			}
+			var after, run string
+			h.db.QueryRow(`SELECT selected_run, run FROM plugins WHERE name = 'p'`).Scan(&after, &run)
+			if after != before {
+				t.Fatalf("the selected run changed:\n%s\n%s", before, after)
+			}
+			if !pruneTry(t, h.cfg.State) {
+				t.Fatal("the start lease is held")
+			}
+			var fresh []string
+			for _, e := range p1Entries(t, h) {
+				if e != first {
+					fresh = append(fresh, e)
+				}
+			}
+			if len(fresh) != 1 || strings.Contains(after+run, fresh[0]) {
+				t.Fatalf("the new entries %v; the row: %s %s", fresh, after, run)
+			}
+		})
+	}
+}
