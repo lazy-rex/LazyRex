@@ -281,12 +281,14 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 	}
 	cur, err := os.ReadFile(cfg.lock)
 	switch {
-	case err == nil && string(cur) == string(b):
-		// No result line: each line names a new cache dir (its name has a random token), so a line
-		// always changes the lock bytes.
+	case err == nil && string(cur) == string(b), errors.Is(err, os.ErrNotExist) && len(next.Plugins) == 0:
+		// The lock stays (or there is no lock file, and nothing to pin). A verb line names a new
+		// cache dir (its name has a random token), so it always changes the lock bytes: only
+		// ignored lines are left.
+		if err := writeLines(w, lines); err != nil {
+			return fmt.Errorf("plugin %s: the lock is unchanged, but the result lines are not written: %w", cmd, err)
+		}
 		return nil
-	case errors.Is(err, os.ErrNotExist) && len(next.Plugins) == 0:
-		return nil // no lock file, and nothing to pin
 	}
 	if err := writeLock(cfg.lock, next); err != nil {
 		var re *replacedError

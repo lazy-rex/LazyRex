@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,5 +279,32 @@ func TestLatestLeavesVersion2(t *testing.T) {
 	}
 	if out, err := env.run("sync", env.config(srcHome)); err != nil || out != "dropped "+srcLatest+"\n" || !bytes.Equal(only, env.lockBytes()) {
 		t.Fatalf("after latest: %q %v\n%s", out, err, env.lockBytes())
+	}
+}
+
+// An update that keeps the lock still prints the ignored lines, and the lock bytes stay. An
+// output failure on that path does not claim a written lock.
+func TestLatestIgnoredOnUnchanged(t *testing.T) {
+	env := newCmdEnv(t)
+	r := env.repo("lazy-rex", "Messaging", "messaging")
+	r.git("tag", "v1.0.0")
+	cfg := env.config(srcLatest)
+	if err := env.sync(cfg); err != nil {
+		t.Fatal(err)
+	}
+	r.git("tag", "v2.0.0", r.git("rev-parse", "HEAD^{tree}"))
+	before := env.lockBytes()
+	out, err := env.run("update", cfg)
+	if err != nil || out != "ignored "+srcLatest+": refs/tags/v2.0.0 points to a tree, not a commit\n" || !bytes.Equal(before, env.lockBytes()) {
+		t.Fatalf("update: %q %v", out, err)
+	}
+	for name, w := range map[string]io.Writer{"failed": failWriter{}, "short": shortWriter{}} {
+		err := runPluginCmd(context.Background(), "update", cfg, nil, env.opts, w)
+		if want := "plugin update: the lock is unchanged, but the result lines are not written: "; err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if !bytes.Equal(before, env.lockBytes()) {
+			t.Errorf("%s: the lock changed", name)
+		}
 	}
 }
