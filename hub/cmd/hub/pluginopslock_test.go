@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -270,5 +271,45 @@ func TestPluginOpLockBusy(t *testing.T) {
 	}
 	if _, err := os.Stat(opLockFile(h)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the lock was written: %v", err)
+	}
+}
+
+// A failed rename reads the file back to compare its hash, in bounded memory: here a sparse 64 MiB
+// file in a read-only directory, so the rename fails. (codex-27, TestReviewerFailedManagedRenameReadBound.)
+func TestPluginOpRenameReadBackBounded(t *testing.T) {
+	for _, call := range []string{"write:managed", "write:lock"} {
+		t.Run(call, func(t *testing.T) {
+			h, _, _ := opsTestHub(t, "")
+			dir := t.TempDir()
+			path := filepath.Join(dir, "file.json")
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Truncate(64 << 20); err != nil {
+				t.Fatal(err)
+			}
+			f.Close()
+			if err := os.Chmod(dir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			defer os.Chmod(dir, 0o700)
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			err = h.renameAttempt(context.Background(), &pluginOp{ID: "bound-" + call}, call, path, []byte("{}\n"), "bound")
+			runtime.ReadMemStats(&after)
+			if err == nil {
+				t.Fatal("the rename in a read-only directory did not fail")
+			}
+			if n := after.TotalAlloc - before.TotalAlloc; n > 8<<20 {
+				t.Fatalf("the read-back allocated %d bytes", n)
+			}
+			var proof string
+			h.db.QueryRow(`SELECT proof FROM plugin_op_attempts WHERE op_id = ?`, "bound-"+call).Scan(&proof)
+			if !strings.HasPrefix(proof, "not_applied") {
+				t.Fatalf("proof %q", proof)
+			}
+		})
 	}
 }
