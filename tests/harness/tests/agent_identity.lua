@@ -53,3 +53,72 @@ test('a silent agent pane shows in Hub Status until its hook reports', function(
   alice:hub('hub.stop', {spawn_id = sh.spawn_id})
   alice:hub('hub.stop', {spawn_id = s.spawn_id})
 end)
+
+-- Two real hook runs in one agent pane, the older started first (the hub orders hook reports by the
+-- reporter process's start time, identity.go). The newer reports first: it becomes current. The
+-- older reports after it: it is stale, records no identity, and its hook still exits 0. The pane
+-- script holds the older hook's input on a FIFO until ps shows that hook's reporter child, then
+-- runs the newer hook. All of it fits in the hook's own 3 s limit (hook.go hookDeadline).
+test('a stale hook report: the older reporter loses, records nothing, and exits 0', function()
+  local d = H.args.lab .. '/twohooks'
+  local marker = tostring(os.time())
+  local script = [[
+d="$3"; m="$4"
+mkdir -p "$d"
+while [ ! -e "$2" ]; do sleep 0.1; done
+mkfifo "$d/old.in"
+"$1" hook codex < "$d/old.in" & hp=$!
+exec 3> "$d/old.in"
+n=0
+while [ $n -lt 20 ]; do
+  r=$(ps -A -o pid=,ppid=,args= | awk -v p="$hp" '$2 == p && /hook -reporter codex/ {print $1; exit}')
+  [ -n "$r" ] && break
+  sleep 0.05; n=$((n + 1))
+done
+if [ -z "$r" ]; then echo setup-expired > "$d/setup"; else echo "$r" > "$d/old.reporter"; fi
+sleep 0.1
+printf '{"hook_event_name":"SessionStart","session_id":"new-%s","source":"startup"}' "$m" | "$1" hook codex
+echo $? > "$d/new.exit"
+printf '{"hook_event_name":"SessionStart","session_id":"old-%s","source":"clear"}' "$m" >&3
+exec 3>&-
+wait "$hp"; echo $? > "$d/old.exit"
+exec sleep 600
+]]
+  local flag = H.args.lab .. '/twohooks-now'
+  write_profiles({profiles = {{id = 'twohooks', name = 'Two hooks', kind = 'agent',
+    command = {'/bin/sh', '-c', script, 'sh', H.args.hub_bin, flag, d, marker}}}})
+  local alice = agent('alice')
+  local s = alice:hub('hub.spawn', {profile = 'twohooks', key = 'twohooks-1', title = 'Two hooks'})
+  wait('the agent runs', function()
+    local w = worker(alice, s.spawn_id)
+    return w and w.state == 'running' and w
+  end, 20)
+  rex.exec{'touch', flag}
+  local function read(name)
+    local f = io.open(d .. '/' .. name)
+    if not f then return nil end
+    local v = f:read('*a'); f:close()
+    return (v:gsub('%s+$', ''))
+  end
+  wait('both hooks exited', function() return read('old.exit') and read('new.exit') and true or nil end, 20)
+  expect(read('setup'), 'the older reporter was seen before the newer hook ran').to_be(nil)
+  expect(read('old.reporter') ~= nil, 'the older reporter pid').to_be(true)
+  expect(read('new.exit'), 'the newer hook exit').to_be('0')
+  expect(read('old.exit'), 'the older hook exit').to_be('0')
+
+  local state = alice:hub('hub.identity.list', {log = 30})
+  local new_id, old_id = 'codex:new-' .. marker, 'codex:old-' .. marker
+  local new_state, old_seen, stale = nil, false, false
+  for _, e in ipairs(state.identities) do
+    if e.identity == new_id then new_state = e.state end
+    if e.identity == old_id then old_seen = true end
+  end
+  for _, e in ipairs(state.log or {}) do
+    if e.identity == old_id and e.event == 'stale_report' then stale = true end
+  end
+  expect(new_state, 'the newer report').to_be('current')
+  expect(old_seen, 'an identity for the older report').to_be(false)
+  expect(stale, 'stale_report for the older report').to_be(true)
+  expect(worker(alice, s.spawn_id).identity).to_be('current')
+  alice:hub('hub.stop', {spawn_id = s.spawn_id})
+end)
