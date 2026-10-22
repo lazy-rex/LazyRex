@@ -133,7 +133,7 @@ func (h *Hub) respawnDue(ctx context.Context, pl *Plugin, gen uint64) {
 		return
 	}
 	h.ev.emit("plugin_respawn", map[string]any{"plugin": pl.Name, "delay_ms": delay.Milliseconds()})
-	err := h.startPlugin(ctx, pl)
+	err := h.startAutomatic(ctx, pl) // the selected run (selectedrun.go)
 	if err == nil {
 		return
 	}
