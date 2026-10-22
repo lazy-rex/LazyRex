@@ -584,6 +584,9 @@ func viewArgs(viewID, route, context string) map[string]any {
 
 // renderViews renders every open, attached view of the plugin and sends view.changed when a
 // tree changed or an operation of that view completed.
+// renderPruneHook runs between the target read and the prune of a pass (tests only).
+var renderPruneHook func()
+
 func (h *Hub) renderViews(ctx context.Context, plugin string) {
 	rows, err := h.db.QueryContext(ctx, `SELECT v.view_id, v.route, v.client_id, v.attachment, v.context, COALESCE(t.status, ''), `+effectiveLayout+`
 		FROM views v LEFT JOIN ui_tabs t ON t.plugin = v.plugin AND t.tab = v.tab LEFT JOIN view_transcripts x ON x.view_id = v.view_id
@@ -600,8 +603,14 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 	}
 	rows.Close()
 	printers := h.transcriptTargets(ctx, plugin)
+	if renderPruneHook != nil {
+		renderPruneHook()
+	}
 	// The causes for every view, and for a view that has no state yet, are taken once for the pass.
-	// The state of a view that is not open and attached now is deleted (renderdeps.go).
+	// The state of a view that is not open and attached now is deleted (renderdeps.go), but only
+	// with no causes: a view that attached after the target read (or asked for a snapshot) keeps
+	// its causes for the next pass, which its mark already asked for (Codex review of 1ddb557). A
+	// close calls forgetView, so a kept state does not outlive its view.
 	h.vs.mu.Lock()
 	all, loose := h.vs.all[plugin], h.vs.loose[plugin]
 	delete(h.vs.all, plugin)
@@ -611,7 +620,7 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		open[t.id] = true
 	}
 	for id, st := range h.vs.views[plugin] {
-		if !open[id] && !st.inFlight {
+		if !open[id] && !st.inFlight && st.dirty == 0 {
 			delete(h.vs.views[plugin], id)
 		}
 	}

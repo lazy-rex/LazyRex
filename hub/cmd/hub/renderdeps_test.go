@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -153,4 +155,37 @@ func fmtList(name string, l []string) string {
 		out += x
 	}
 	return out + "]"
+}
+
+// A view that attaches after a pass read its targets keeps its dirty state: the prune deletes only
+// states with no causes (Codex review of 1ddb557). Before, the prune deleted the new state, and
+// the next pass skipped the first render of the attachment.
+func TestRenderPruneKeepsALateAttach(t *testing.T) {
+	h := testUIHub(t)
+	for _, m := range []string{pairSchema, `ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`} {
+		if _, err := h.db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			t.Fatal(err)
+		}
+	}
+	h.vs = depsHub().vs
+	renderPruneHook = func() {
+		h.markView("p", "late", causeAttach)   // viewAttach committed after the SELECT
+		h.markView("p", "snap", causeSnapshot) // a snapshot request in the same interval
+	}
+	defer func() { renderPruneHook = nil }()
+	h.vs.mu.Lock()
+	h.vs.stateLocked("p", "closed") // a view that is gone, with no causes
+	h.vs.mu.Unlock()
+	h.renderViews(context.Background(), "p")
+	h.vs.mu.Lock()
+	defer h.vs.mu.Unlock()
+	if st := h.vs.views["p"]["late"]; st == nil || st.dirty&causeAttach == 0 {
+		t.Errorf("the late attachment lost its cause: %+v", st)
+	}
+	if st := h.vs.views["p"]["snap"]; st == nil || st.dirty&causeSnapshot == 0 {
+		t.Errorf("the snapshot request lost its cause: %+v", st)
+	}
+	if _, ok := h.vs.views["p"]["closed"]; ok {
+		t.Error("a state with no causes and no target stays")
+	}
 }
