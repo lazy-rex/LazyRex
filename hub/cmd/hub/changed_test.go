@@ -195,10 +195,13 @@ func TestChangedIdleRaceKeepsChange(t *testing.T) {
 	f := newChangedFake(t)
 	h := changedTestHub(map[string]string{"a": "client-a"})
 	var once sync.Once
+	sent := make(chan struct{})
 	h.changedQ.idleHook = func(changedKey) {
-		once.Do(func() { h.changed("workers") })
+		once.Do(func() { h.changed("workers"); close(sent) })
 	}
 	h.changed("workers")
+	// waitIdle alone can see no pair between the first loop's end and the hook's change.
+	<-sent
 	waitIdle(t, h)
 	if n := f.count(); n != 2 {
 		t.Fatalf("%d deliveries, want 2: the change at the idle point was lost", n)
