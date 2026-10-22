@@ -104,3 +104,41 @@ test('a renderer crash: a new attached view of the same tab', function()
   expect(after.status).to_be('open')
   wait_labels('Fixture home,Thread 1')
 end)
+
+-- events are the hub's events with this name for one view.
+local function events(name, view_id)
+  local out = {}
+  for _, e in ipairs(H.hub('hub.test.events', {event = name}).events or {}) do
+    if e.view_id == view_id then out[#out + 1] = e end
+  end
+  return out
+end
+
+-- check_close is the event record of a close from inside the view: one user close, no exit.
+local function check_close(view_id, when)
+  local closed = events('view_closed', view_id)
+  expect(#closed, 'view_closed ' .. when).to_be(1)
+  expect(closed[1].by, 'closed by ' .. when).to_be('user')
+  expect(closed[1].from, 'closed from ' .. when).to_be('view')
+  expect(#events('view_exited', view_id), 'view_exited (a crash) ' .. when).to_be(0)
+end
+
+test('a close from inside a view (Ctrl+Q) is the user\'s close: the tab stays closed, no crash', function()
+  local v = user:view('t1')
+  local r = H.perform(v.client, 'testview.close', {})
+  expect(r.status, 'hub.view.close').to_be('closed')
+  wait('the tab t1 suppressed, no open view', function()
+    if view_of_tab(describe(), 't1') then return nil end
+    for _, t in ipairs(describe().tabs or {}) do
+      if t.tab == 't1' and t.suppressed then return true end
+    end
+    return nil
+  end)
+  wait_labels('Fixture home')
+  check_close(v.id, 'after the pane closed')
+  declare({THREE[1], THREE[2]}) -- the same revision again
+  rex.sleep(2) -- the reconciler does not open it again
+  expect(view_of_tab(describe(), 't1'), 'no view of t1').to_be(nil)
+  expect(labels()).to_be('Fixture home')
+  check_close(v.id, 'after the same revision settled')
+end)
