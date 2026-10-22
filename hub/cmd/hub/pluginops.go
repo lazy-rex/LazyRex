@@ -40,10 +40,11 @@ const pluginOpsSchema = `
 -- phase: queued, then the phases of the kind (pluginOpPhases), then done, failed, conflict or unknown.
 -- base: the entry at admission (canonical JSON, or "absent"); output: the hash of the bytes that the
 -- write renames, stored before the rename.
+-- entry_identity: entryIdentity of the entry at admission; the start and stop calls send it as expect_entry.
 CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NULL, key TEXT NOT NULL,
   fingerprint TEXT NOT NULL, origin TEXT NOT NULL, kind TEXT NOT NULL, entry TEXT NOT NULL, name TEXT NOT NULL,
   expect TEXT NOT NULL, input TEXT NOT NULL, target TEXT NOT NULL, phase TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 1,
-  confirmed TEXT NOT NULL DEFAULT '', base TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '',
+  confirmed TEXT NOT NULL DEFAULT '', base TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', entry_identity TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL,
   UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
@@ -115,6 +116,7 @@ type pluginOp struct {
 	Input                        string
 	Target                       string // start: the expect_run JSON
 	Base, Output                 string
+	EntryIdentity                string // entryIdentity of the entry at admission ("" in no admitted op)
 	Result, Error                string
 	Created, Updated             int64
 }
@@ -334,9 +336,9 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 	ob, _ := json.Marshal(origin)
 	now := time.Now().UnixMilli()
 	// OR IGNORE: a second admission of the same key in a race finds the first one.
-	if _, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
-		op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, now, now); err != nil {
+	if _, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, entry_identity, created, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+		op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, op.EntryIdentity, now, now); err != nil {
 		return nil, err
 	}
 	if id, err = find(); err != nil {
@@ -383,6 +385,7 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		return nil, bad("no plugin entry %q (give managed:<id> or the exact source of a config entry)", req.Entry)
 	}
 	op.Name = name
+	op.EntryIdentity = entryIdentity(e)
 	if (req.Op == "settings" || req.Op == "remove") && e.managed == "" {
 		return nil, bad("%s changes only managed entries; %s is in the config file", req.Op, req.Entry)
 	}
@@ -469,8 +472,8 @@ func (h *Hub) startTarget(origin opOrigin, req opRequest, name, source string, g
 func (h *Hub) loadOp(ctx context.Context, id string) (*pluginOp, error) {
 	op := &pluginOp{ID: id}
 	var origin string
-	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, result, error, created, updated FROM plugin_ops WHERE op_id = ?`, id).
-		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.Result, &op.Error, &op.Created, &op.Updated)
+	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated FROM plugin_ops WHERE op_id = ?`, id).
+		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated)
 	if err != nil {
 		return nil, err
 	}
@@ -890,7 +893,7 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 	phase, result, errText := op.nextPhase(op.Phase), opResultText(call, res), ""
 	if callErr != nil {
 		phase, result, errText = "failed", "", callErr.Error()
-		if isRefusal(callErr, "candidate_changed") {
+		if isRefusal(callErr, "candidate_changed") || isRefusal(callErr, "entry_changed") {
 			phase = "conflict"
 		}
 	}
@@ -948,8 +951,41 @@ func (h *Hub) reloadEntryError(res any, op *pluginOp) string {
 	return ""
 }
 
-// opStart starts the op's entry with the op's expect_run: nothing else than that run starts.
+// opEntryNow is the entry identity of the op's target now: the record of the op's name, or (an
+// entry without a name) the entry of the op's key. "none" when there is no such entry.
+func (h *Hub) opEntryNow(op *pluginOp) (pl *Plugin, now string) {
+	now = "none"
+	if op.Name == "" {
+		h.entriesMu.Lock()
+		defer h.entriesMu.Unlock()
+		for _, e := range h.entries {
+			if opEntryKey(e) == op.Entry {
+				return nil, entryIdentity(e)
+			}
+		}
+		return nil, now
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl = h.plugins[op.Name]
+	if pl != nil && pl.entry != nil {
+		now = entryIdentity(pl.entry)
+	}
+	return pl, now
+}
+
+// entryChanged is the op's conflict when its target is bound to another entry than at admission.
+// This check only saves a call: the admin handler checks expect_entry again under its locks.
+func entryChanged(op *pluginOp, now string) error {
+	return refuse("entry_changed", "%s was admitted for entry %s; the target is bound to %s now; nothing was called", op.Entry, op.EntryIdentity, now)
+}
+
+// opStart starts the op's entry with the op's expect_run and expect_entry: nothing else than that
+// run of that entry starts.
 func (h *Hub) opStart(ctx context.Context, op *pluginOp) (any, error) {
+	if _, now := h.opEntryNow(op); now != op.EntryIdentity {
+		return nil, entryChanged(op, now)
+	}
 	var x map[string]any
 	if err := json.Unmarshal([]byte(op.Target), &x); err != nil {
 		return nil, fmt.Errorf("the stored target: %v", err)
@@ -959,7 +995,7 @@ func (h *Hub) opStart(ctx context.Context, op *pluginOp) (any, error) {
 			delete(x, k) // a local source has no commit and no digest
 		}
 	}
-	args := map[string]any{"expect_run": x}
+	args := map[string]any{"expect_run": x, "expect_entry": op.EntryIdentity}
 	if op.Name != "" {
 		args["plugin"] = op.Name
 	} else {
@@ -968,36 +1004,42 @@ func (h *Hub) opStart(ctx context.Context, op *pluginOp) (any, error) {
 	return opAdmin(ctx, h, "hub.admin.start", args)
 }
 
-// opStop stops the op's plugin. An entry without a record has nothing to stop.
+// opStop stops the op's plugin, only while it is bound to the op's entry. An entry without a record
+// has nothing to stop.
 func (h *Hub) opStop(ctx context.Context, op *pluginOp) (any, error) {
-	h.mu.Lock()
-	pl := h.plugins[op.Name]
-	h.mu.Unlock()
+	pl, now := h.opEntryNow(op)
 	if op.Name == "" || pl == nil {
 		return map[string]any{"desired": "stopped", "note": "no instance"}, nil
 	}
-	return opAdmin(ctx, h, "hub.admin.stop", map[string]any{"plugin": op.Name})
+	if now != op.EntryIdentity {
+		return nil, entryChanged(op, now)
+	}
+	return opAdmin(ctx, h, "hub.admin.stop", map[string]any{"plugin": op.Name, "expect_entry": op.EntryIdentity})
 }
 
 // opObserve ends an op whose call has an attempt without an outcome. The manager does not call
 // again: it reads what the hub knows.
-//   - stop: the stored record is stopped with no instance -> the stop happened (the same effect from
-//     any caller); else unknown.
+//   - stop: the stored record is stopped with no instance, and its saved entry identity is the op's
+//     -> the stop happened (the same effect from any caller); else unknown. A row without an
+//     identity (from before it was recorded), or with another entry's, is never a match.
 //   - reload: the hub's entries have the op's intended entry -> done (the hub start or the call read
 //     the file); else unknown.
 //   - start: unknown. A new start goes through the unresolved-intent guard of the start path.
 func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string) error {
 	switch call {
 	case "stop":
-		var desired, block string
-		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id FROM plugins WHERE name = ?`, op.Name).Scan(&desired, &block)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && desired == "stopped" && block == "") {
+		var desired, block, identity string
+		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity FROM plugins WHERE name = ?`, op.Name).Scan(&desired, &block, &identity)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil && op.EntryIdentity != "" && identity == op.EntryIdentity && desired == "stopped" && block == "" {
 			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "stop: stopped (observed after the hub restarted)", "")
 		}
 		if err != nil {
-			return err
+			return h.finishCall(ctx, op, attempt, "unknown", "", "the stop's outcome is unknown: the plugin has no record")
 		}
-		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q", desired, block))
+		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q, saved with entry %q; the op's entry is %s", desired, block, identity, op.EntryIdentity))
 	case "reload":
 		intended, err := op.intended()
 		if err != nil {
