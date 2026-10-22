@@ -58,7 +58,7 @@ func TestStartLeases(t *testing.T) {
 // here, so a request would panic. The intent is abandoned, the record keeps its earlier values,
 // and the lease stays with the caller.
 func TestSpawnSaveFailureSendsNothing(t *testing.T) {
-	h, _ := appModeHub(t)
+	h, _ := uiTestHub(t)
 	h.cfg.State = t.TempDir()
 	h.ui.sess["session:home"] = uiSessionKey
 	if _, err := h.db.Exec(`DROP TABLE plugins`); err != nil {

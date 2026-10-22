@@ -987,16 +987,8 @@ Status: removed (the user's decision, 2026-10-19: "remove all app mode stuff inc
 
 An older build had app mode. Opening an app hid the user's own sessions (it detached their blocks), and "Exit LazyRex" (`hub.ui.exit`) rebuilt them. Each plugin also had its own app session (`app:<plugin>` in `ui_sessions`, labeled "LazyRex: <name>"). The hub has none of this now. It has no `hub.ui.exit`, no `hub.ui.mode`, no `hub.changed {what: "mode"}`, and no `session` argument for `hub.ui.tabs`.
 
-At startup, the hub removes the state of app mode (`hub/cmd/hub/appmodestate.go`). It changes only hub records, and it makes no Rex call:
-- It drops `ui_cycles`, `ui_hidden`, `ui_exit_keys` and `ui_apps`.
-- It deletes the restore placeholders of app mode (`ui_restores` rows whose view ID starts with `hidden:`) and `ui_state` `active`.
-- It keeps `ui_sessions` rows, views and intent records.
-- When it removed something, it emits one `app_mode_state_removed` event with the counts.
-
-Effects on an old database:
-- The hub restores nothing and closes no pane. A pane that an old active or restoring cycle hid stays detached, and its process keeps running. The user can show it again with Rex (`rex move`). This is intended: it is not a recovery.
-- An old late restore placeholder stays open.
-- A view in an old session (an app session, or a session of an older hub) is legacy. It retires, and its tab opens again in the LazyRex session.
+A view in an old session (an app session, or a session of an older hub) is legacy. It retires, and its
+tab opens again in the LazyRex session.
 
 Legacy session cleanup (`settleLegacySession`, on every UI pass, for each session with a legacy `ui_sessions` row):
 - It waits until every view row in the session is closed. The reconcile loop retires the rows of loaded plugins (an open view retires; a prepared, sending or exited row closes). A row of a plugin that is not loaded keeps the cleanup pending.
@@ -1004,7 +996,7 @@ Legacy session cleanup (`settleLegacySession`, on every UI pass, for each sessio
 - The session has blocks (for example user panes): the hub deletes its legacy rows and stops managing it. The session and its panes stay with the user (event `legacy_session_released`).
 - The session has no blocks: the hub destroys it, then forgets it. A failed destroy keeps the rows, and the next pass tries again (event `legacy_cleanup_failed`).
 
-Lab (observed on Rex 0.0.1792158932-g88fd41): `TestAppModeStateRemovedAtStartupLab` (a detached block of an old cycle and an old app session with a user pane: no layout change) and `TestSettleLegacySessionLab`.
+Lab (observed on Rex 0.0.1792158932-g88fd41): `TestSettleLegacySessionLab`.
 
 ## Navigation to an agent
 
