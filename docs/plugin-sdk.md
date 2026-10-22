@@ -1,7 +1,9 @@
 # Writing a LazyRex plugin
 
-Status: **proposed** (draft 2, 2026-10-21). The SDK does not exist yet. This page is the target:
-a plugin author needs only this page. The details are in "Reference" (sql.md).
+Status: **v0, in progress** (2026-10-22). The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
+`sdk/lua/examples/todo`. Its tests run against a fake hub.sql (`sdk/lua/tests`); the lab run on the real
+hub waits for the hub branch `hub/sql`. A plugin author needs only this page. The details are in
+"Reference" (sql.md).
 
 A plugin is a Lua file that the hub starts. The SDK module `lazyrex` does the registration, the
 calls to the hub, the storage, the transactions and the view refresh for you.
@@ -87,6 +89,46 @@ terminals.
 
 `lazyrex-hub plugin new todo` writes `lazyrex.json`, `main.lua`, a passing test and a README.
 `lazyrex-hub plugin dev .` runs the plugin in a lab hub and loads it again on each save.
+
+## v0: the advanced surface
+
+For what the simple surface does not cover yet. Each one keeps the caller checks, the structured
+errors and the transaction rules above.
+
+| Call | What it does |
+|---|---|
+| `app.fail(code, message)` | An error with a code (`conflict`, `not_found`, `refused`, ...). `error('text')` gives code `failed`. |
+| `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. |
+| `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. A route that ends with `*` is a prefix. |
+| `app.command(spec)` | An extra palette command (`hub.register` commands). |
+| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn)` | A Rex event (or `hub.changed`, `view.seen`), a timer, start code. Each run is one transaction. |
+| `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
+| `app.db.first(sql, ...)` | The first row, or nil. `app.db.query` also answers `more` (true when a reply did not hold every row). |
+| `app.notice(agent, pending)` | Wake an agent at the commit. |
+| `app.refresh()` | Render the open views again, for state outside SQL. |
+| `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
+| `app.args`, `app.dir` | The plugin arguments; the plugin directory. |
+
+Action options: `title`, `description`, `user_only`, `tx = false` (each SQL call alone),
+`store = false` (no saved reply: the plugin keeps its own operations table), `fingerprint`.
+The schema is the short form (`{text = 'string', note = 'string?'}`, or a JSON Schema for a property)
+or a full JSON Schema. The SDK adds an optional `key`; the handler gets it as `ctx.key`, not in args.
+
+Saved replies: with a key and `store = true` (the default), a retry gets the first terminal reply,
+also with `tx = false`. A reply with `status = 'running'` is never saved, so a retry reaches the
+handler. With `store = false`, every call reaches the handler.
+
+`ctx`: `agent` (nil for the user), `user`, `key`, `session_id`, `block_id`, `requester_pid`,
+`aliases`, `identity` (the hub.identify reply), and for views `route`, `input`, `view_id`, `args`.
+
+A list item or a widget with `on_select` gets an action. Give `tool` (the agent action that does
+the same; agent parity) or `user_only` (the reason; default `navigation`).
+
+Start: the hub runs `rex do <sdk>/boot.lua main=<main file>`. boot.lua puts the plugin directory
+and the SDK directory in `package.path`, so `require('lazyrex')` and sibling files need no setup.
+
+SDK tests: `rex -S unix:///tmp/rexlab-<team>-<you>/rex.sock --autostart=false do <hub>/sdk/lua/tests/run.lua`
+(a lab server; no hub). `pattern=<Lua pattern>` runs some tests.
 
 ## More
 
