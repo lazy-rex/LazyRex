@@ -474,7 +474,7 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	if err != nil {
 		// The user text names the command that shows the cause, not the internal error: setup has
 		// no log (the onboarding dry run, 2026-10-22).
-		status := "rex server status"
+		status := "env -u REX_SERVER rex server status" // the default server, as e.endpoint asks it (no REX_SERVER)
 		if e.server != "" {
 			status = "rex -S " + shellWord(e.server) + " server status"
 		}

@@ -118,9 +118,11 @@ func TestSetupPrerequisites(t *testing.T) {
 	}
 
 	// No Rex: the user text has no internal error; it names the command that shows the cause, for
-	// the server that setup asked (the onboarding dry run, 2026-10-22).
+	// the server that setup asked (the onboarding dry run, 2026-10-22). The default lookup ignores
+	// REX_SERVER, so the command does too (codex-28: a REX_SERVER lab would answer a bare
+	// rex server status).
 	for _, c := range []struct{ server, cmd string }{
-		{"", "To see the cause: rex server status\n"},
+		{"", "To see the cause: env -u REX_SERVER rex server status\n"}, // the same server that setup asked
 		{"unix:///tmp/rexlab x/rex.sock", `To see the cause: rex -S "unix:///tmp/rexlab x/rex.sock" server status` + "\n"},
 	} {
 		e, out = setupTestEnv(t, "", true)
