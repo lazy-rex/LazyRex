@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // opsAttemptRow inserts an attempt row of call, as opCall does before its call.
@@ -409,5 +411,64 @@ func TestPluginOpLateRegistration(t *testing.T) {
 	h.opsRun(ctx)
 	if proof := opsProof(t, h, id, "start"); proof != "not_applied: resolved by an operator" {
 		t.Errorf("a resolved attempt changed: %q", proof)
+	}
+}
+
+// A stop observation proves applied only from a complete read of the stored session without the
+// bound block (codex-27, plugins-2d20d80-target-block-rejection-1): the stopped row alone is no
+// proof, because retire saves it before block.close and ignores a close failure.
+//   - the block is still in the session: unresolved;
+//   - the read fails: unresolved, and a later pass reads again;
+//   - the session does not exist (session_not_found): applied;
+//   - a complete read without the block: applied.
+func TestPluginOpStopObservationReadsTargetBlock(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		blocks map[string]bool
+		err    error
+		phase  string
+		proof  string
+	}{
+		{"the block is still there", map[string]bool{"block:original": true}, nil, "unknown", ""},
+		{"a failed read", nil, errors.New("transport closed"), "unknown", ""},
+		{"no session", nil, &rex.RexError{Code: "session_not_found"}, "done", "applied"},
+		{"a complete read without the block", map[string]bool{"block:other": true}, nil, "done", "applied"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, pl, _ := adminEntryHub(t)
+			ctx := context.Background()
+			h.mu.Lock()
+			pl.InstanceID, pl.SessionID, pl.BlockID = "x-1-aaaaaaaa", "session:home", "block:original"
+			err := h.savePlugin(ctx, pl)
+			h.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reads []string
+			opSessionBlocks = func(_ context.Context, _ *Hub, sess string) (map[string]bool, error) {
+				reads = append(reads, sess)
+				return c.blocks, c.err
+			}
+			id := opsMust(t, h, "stop", opRequest{Op: "stop", Entry: "managed:x"})
+			h.pops.fault = func(p string) bool { return p == "plugin-op-after-stop" }
+			h.opsRun(ctx)
+			h.pops.fault = nil
+			// The stop's effect on the row (retire, then the stopped state): the block may remain.
+			h.mu.Lock()
+			pl.Desired, pl.BlockID, pl.SessionID = "stopped", "", ""
+			err = h.savePlugin(ctx, pl)
+			h.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.opsRun(ctx)
+			op, proof := opsOf(t, h, id), opsProof(t, h, id, "stop")
+			if op.Phase != c.phase || !strings.HasPrefix(proof, c.proof) || (c.proof == "" && proof != "") {
+				t.Fatalf("op %+v, proof %q", op, proof)
+			}
+			if len(reads) == 0 || reads[0] != "session:home" {
+				t.Fatalf("the reads %v; want the bound session, not the row's", reads)
+			}
+		})
 	}
 }
