@@ -221,8 +221,9 @@ func TestRemoteControlReadKeepsARecordDuringTheCall(t *testing.T) {
 }
 
 func TestRemoteControlLines(t *testing.T) {
-	at := time.Date(2026, 10, 22, 20, 5, 0, 0, time.UTC)
-	local := at.Local().Format("15:04:05")
+	// An observation from an earlier day: the line keeps its date and zone (it is historical).
+	at := time.Date(2026, 10, 19, 20, 5, 0, 0, time.UTC)
+	local := at.Local().Format(time.RFC3339)
 	app := func(id, label, state, action string) string {
 		a := map[string]any{"client_id": id, "label": label, "state": state}
 		if action != "" {

@@ -744,7 +744,7 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 
 **Remote Control** (the user, 2026-10-22; see "Remote Control (observed)"). For `running`, `status` then reads `hub.app.remote_control` from that hub and prints one line for each connected Rex app, with the app's label and client ID (two apps can have the same label). The lines show the last observed result, never the current setting: the user can change the setting with no app action in between. The exit status stays 0.
 
-- `Remote Control (app <label> <client>): last observed on at <time> (<action>)`
+- `Remote Control (app <label> <client>): last observed on at <time> (<action>)`, where `<time>` is RFC 3339 in local time, with its date and zone (an observation can be days old)
 - `Remote Control (app <label> <client>): last observed off at <time> (<action> refused). Turn it on in the Rex app: Settings, Rex Server, Remote Control. LazyRex needs it for Go to Session and Insert Path.`
 - `Remote Control (app <label> <client>): unknown: no retained app action observation for this app`
 - No connected app: `Remote Control: no Rex app is connected`.

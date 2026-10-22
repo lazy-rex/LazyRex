@@ -166,8 +166,9 @@ func remoteControlLines(raw []byte, readErr error) []string {
 			app = a.Label + " " + a.ClientID
 		}
 		at := a.At
+		// The date and zone stay: an observation can be days old (it survives a same-ID reconnect).
 		if t, err := time.Parse(time.RFC3339, a.At); err == nil {
-			at = t.Local().Format("15:04:05")
+			at = t.Local().Format(time.RFC3339)
 		}
 		var s string
 		switch a.State {
