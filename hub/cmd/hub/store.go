@@ -576,12 +576,28 @@ func (db *DB) recordNotice(ctx context.Context, n pendingNotice, c noticeConv, a
 	return err
 }
 
-// noticeDue decides a pending notice for conversation c. mem is the revision that the hub wrote
-// to the agent's current connection, and memRepeated whether this hub run wrote its repeat (memory
-// only: they hold when a store write of the delivery failed). due: write the nudge; repeat: it is
-// the one repeat, after renudge with no read and no new revision. wake: when to look again (zero:
-// no need). A read ends the nudge of its revision, also before the first write: the agent read.
-func noticeDue(n pendingNotice, c noticeConv, mem int64, memRepeated bool, now time.Time, renudge time.Duration) (due, repeat bool, wake time.Time) {
+// noticeDelivery is the hub run's memory of the last delivery of a notice row: the same fields as
+// its notice_deliveries row, written at the same time. It stands when the store write failed.
+type noticeDelivery struct {
+	rev, at  int64
+	conv     noticeConv
+	repeated bool
+}
+
+// withDelivery lays the memory record d over the stored delivery of n: the memory is never older,
+// and it is newer only when a store write failed (Codex review of a1205c1).
+func (n pendingNotice) withDelivery(d noticeDelivery, ok bool) pendingNotice {
+	if ok && d.rev >= n.delivRev {
+		n.delivRev, n.delivAt, n.delivConv, n.repeated = d.rev, d.at, d.conv, d.repeated
+	}
+	return n
+}
+
+// noticeDue decides a pending notice for conversation c (with its delivery merged: withDelivery).
+// mem is the revision that the hub wrote to the agent's current connection. due: write the nudge;
+// repeat: it is the one repeat, after renudge with no read and no new revision. wake: when to look
+// again (zero: no need). A read ends the nudge of its revision, also before the first write.
+func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge time.Duration) (due, repeat bool, wake time.Time) {
 	if n.read {
 		return false, false, time.Time{}
 	}
@@ -589,7 +605,7 @@ func noticeDue(n pendingNotice, c noticeConv, mem int64, memRepeated bool, now t
 	if n.intentRev > mem && !stored {
 		return true, false, time.Time{}
 	}
-	if !stored || n.delivRev != n.intentRev || n.repeated || memRepeated {
+	if !stored || n.delivRev != n.intentRev || n.repeated {
 		return false, false, time.Time{}
 	}
 	at := time.UnixMilli(n.delivAt).Add(renudge)

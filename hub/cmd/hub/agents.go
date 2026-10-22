@@ -378,9 +378,9 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 		wait time.Duration
 	}
 	tries := map[string]*try{}
-	// repeated: the revision of each notice row whose repeat this hub run wrote (ns, agent). It
-	// holds when the store write of the repeat failed, so a failure never gives a second repeat.
-	repeated := map[[2]string]int64{}
+	// deliveries: this hub run's record of each notice row's last delivery (ns, agent), the same as
+	// its stored row. It stands when a store write of a delivery failed.
+	deliveries := map[[2]string]noticeDelivery{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -406,6 +406,9 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			renudge = noticeRenudgeAfter
 		}
 		for _, n := range pending {
+			key := [2]string{n.ns, n.agent}
+			d, ok := deliveries[key]
+			n = n.withDelivery(d, ok)
 			h.mu.Lock()
 			a, pl := h.noticeTarget(n.agent), h.plugins[n.ns]
 			// wants reports whether a nudge is due now (one repeat after renudge), and arms the wake
@@ -415,7 +418,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				if a == nil || pl == nil || pl.entry == nil || pl.run.Notice == "" {
 					return false
 				}
-				due, rep, wake := noticeDue(n, noticeConv{a.BlockID, a.ChildPID, a.ChildStart}, a.delivered[n.ns], repeated[[2]string{n.ns, n.agent}] == n.intentRev, time.Now(), renudge)
+				due, rep, wake := noticeDue(n, noticeConv{a.BlockID, a.ChildPID, a.ChildStart}, a.delivered[n.ns], time.Now(), renudge)
 				if !wake.IsZero() {
 					arm(time.Until(wake))
 				}
@@ -489,12 +492,18 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			// The stored delivery outlives a hub restart and a reconnect; it names the conversation
 			// captured before the write. A failed store write leaves only the memory record: the
 			// nudge can come once more after a restart, never less often.
-			if err := h.db.recordNotice(ctx, n, conv, time.Now(), repeat); err != nil {
-				log.Printf("notice to %s: record: %v", n.agent, err)
-			}
+			now := time.Now()
 			if repeat {
-				repeated[[2]string{n.ns, n.agent}] = n.intentRev
+				d := deliveries[key]
+				d.rev, d.at, d.conv, d.repeated = n.intentRev, n.delivAt, n.delivConv, true
+				deliveries[key] = d
 			} else {
+				deliveries[key] = noticeDelivery{rev: n.intentRev, at: now.UnixMilli(), conv: conv}
+			}
+			if err := h.db.recordNotice(ctx, n, conv, now, repeat); err != nil {
+				log.Printf("notice to %s: record: %v", n.agent, err) // the memory record stands
+			}
+			if !repeat {
 				arm(renudge) // the wake of the one repeat; no other event may come (Codex review of 8169791)
 			}
 			fields := map[string]any{"agent": n.agent, "plugin": n.ns, "intent_rev": revString(n.intentRev)}

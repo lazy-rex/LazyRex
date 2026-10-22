@@ -934,8 +934,9 @@ nudge with no read and no new revision for 30 minutes is written once more (`not
 `repeat: true`), then not again until a read or a new revision. The loop arms its own wake for the
 repeat when it writes the first nudge, so the repeat needs no other event. In test mode,
 `hub.test.notice_renudge {ms}` sets the repeat time for the hub run. A failed store write of the delivery
-leaves only the memory record (also of a repeat), so only a restart can give the nudge once more:
-never fewer nudges.
+leaves the hub run's memory record of that delivery: the same fields as the stored row (revision,
+first-write time, conversation, repeated), so the repeat and its time stay right. Only a restart can
+give the nudge once more: never fewer nudges.
 Tests: `TestNoticeOnceUntilRead`, `TestNoticeOpForms`, `TestNoticeDue`, `TestNoticeDeliveryStored`,
 `tests/harness/tests/notice_once.lua`.
 
