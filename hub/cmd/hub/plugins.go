@@ -230,8 +230,23 @@ func (h *Hub) loadPluginRow(ctx context.Context, pl *Plugin) error {
 	return err
 }
 
+// entryIdentity names one entry: its key (managed:<id>, or the source of a config entry) and its
+// source, as a JSON array, so that no two entries give the same text. An op stores it at admission,
+// and hub.admin.start and hub.admin.stop check it (expect_entry): a later entry that binds the same
+// name, or the same source, is another entry.
+func entryIdentity(e *configEntry) string {
+	b, _ := json.Marshal([]string{opEntryKey(e), e.Source})
+	return string(b)
+}
+
 func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 	run := ""
+	// entry_identity is the entry that this save happens under. A kept record (no entry) keeps the
+	// identity of its last entry: a stop observation must not match it to another entry.
+	identity := ""
+	if pl.entry != nil {
+		identity = entryIdentity(pl.entry)
+	}
 	if pl.run.Name != "" {
 		b, _ := json.Marshal(pl.run)
 		run = string(b)
@@ -240,8 +255,9 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 	// start keeps a record of that source and name while the row has an instance or an intent
 	// (loadKept).
 	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ?,
-		source = CASE WHEN ? != '' THEN ? ELSE source END WHERE name = ?`,
-		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, pl.Name)
+		source = CASE WHEN ? != '' THEN ? ELSE source END,
+		entry_identity = CASE WHEN ? != '' THEN ? ELSE entry_identity END WHERE name = ?`,
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, identity, identity, pl.Name)
 	return err
 }
 
@@ -1226,6 +1242,20 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		if x != nil && action == "hub.admin.stop" {
 			return nil, bad("invalid: hub.admin.stop has no expect_run")
 		}
+		expect, guarded := args["expect_entry"]
+		want, _ := expect.(string)
+		if guarded && want == "" {
+			return nil, refuse("invalid_input", "expect_entry must be a non-empty string")
+		}
+		if guarded {
+			// A reload changes the entry of a bound record (a removal, an in-place change of a managed
+			// entry) under reloadMu, and a hub start binds them under it too. With reloadMu and then the
+			// lifecycle lock (the order of replace.go), the entry check and the action are one step.
+			// An entry can still bind a kept record without reloadMu (resolveLocked), but a kept record
+			// has no entry, so it never matches.
+			h.reloadMu.Lock()
+			defer h.reloadMu.Unlock()
+		}
 		pl, err := h.adminTarget(action, args)
 		if err != nil {
 			return nil, err
@@ -1238,9 +1268,16 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		h.mu.Lock()
 		err = h.loadPluginRow(ctx, pl)
 		kept := pl.entry == nil
+		now := "none"
+		if !kept {
+			now = entryIdentity(pl.entry)
+		}
 		h.mu.Unlock()
 		if err != nil {
 			return nil, err
+		}
+		if guarded && now != want {
+			return nil, refuse("entry_changed", "plugin %s is bound to entry %s, not %s; nothing was started or stopped", pl.Name, now, want)
 		}
 		if action == "hub.admin.stop" {
 			// A kept record resolves its intents first: a found block is adopted, then retired. An
