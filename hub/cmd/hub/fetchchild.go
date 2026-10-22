@@ -40,8 +40,32 @@ const fetchRoleEnv = "LAZYREX_FETCH_ROLE"
 
 // fetchStopEnv is a test hook of the watcher: it stops itself (SIGSTOP) at the named point
 // ("before-report", "after-go" or "before-exit"), so a test can prove the hub's bound and the
-// gate reservation with a stalled watcher.
+// gate reservation with a stalled watcher. Only fetchCmd.TestStop sets it: runFetchChild removes
+// an inherited value, and the manager sets TestStop only in test mode.
 const fetchStopEnv = "LAZYREX_FETCH_TEST_STOP"
+
+// fetchOutEnv tells the watcher and the gate that git's stdout goes to the hub: fd 3 of the
+// watcher, fd 4 of the gate.
+const fetchOutEnv = "LAZYREX_FETCH_STDOUT"
+
+// fetchCmd is one git command for runFetchChild.
+type fetchCmd struct {
+	Argv     []string
+	Dir      string    // git's working directory; "" is the hub's
+	Stdout   io.Writer // git's stdout; nil: git's stdout goes to the hub's stderr
+	TestStop string    // test mode only: the watcher's stop point (fetchStopEnv)
+}
+
+// fetchChildEnv is the environment of a watcher: the hub's, without the fetch variables, plus env.
+func fetchChildEnv(env ...string) []string {
+	var out []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, fetchRoleEnv+"=") && !strings.HasPrefix(e, fetchStopEnv+"=") && !strings.HasPrefix(e, fetchOutEnv+"=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, env...)
+}
 
 // fetchGrace is the time from a cancel to the hard stop. The hard stop itself returns at once, so
 // a fetch ends within 5 s of its cancel.
@@ -63,43 +87,80 @@ func (r fetchResult) OK() bool {
 	return !r.Stopped && r.GitStatus == 0 && r.WatcherStatus.Exited() && r.WatcherStatus.ExitStatus() == 0
 }
 
-// runFetchChild runs argv (git and its arguments) through a watcher and a gate. record stores the
-// two pids before git may start; an error from record starts nothing. A cancel of ctx stops the
-// fetch, within fetchGrace plus the hard stop.
-func runFetchChild(ctx context.Context, argv []string, env []string, record func(watcher, gate int) error) (fetchResult, error) {
+// runFetchChild runs fc.Argv (git and its arguments) through a watcher and a gate. record stores
+// the two pids before git may start; an error from record starts nothing. record gets ctx and runs
+// beside the cancel: a cancel during a slow record stops the fetch, and git never starts. A
+// cancel of ctx stops the fetch within fetchGrace plus the hard stop.
+func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Context, watcher, gate int) error) (fetchResult, error) {
 	res := fetchResult{GitStatus: -1}
 	self, err := fetchSelf()
 	if err != nil {
 		return res, err
 	}
-	cmd := exec.Command(self, argv...)
-	cmd.Env = append(append(os.Environ(), env...), fetchRoleEnv+"=watcher")
+	env := []string{fetchRoleEnv + "=watcher"}
+	if fc.TestStop != "" {
+		env = append(env, fetchStopEnv+"="+fc.TestStop)
+	}
+	cmd := exec.Command(self, fc.Argv...)
+	cmd.Dir = fc.Dir // the gate and git inherit it
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stderr = os.Stderr
+	// closers are the hub's pipe ends. cmd.Wait is never called, so the hub closes them itself, on
+	// every return.
+	var closers []io.Closer
+	defer func() {
+		for _, c := range closers {
+			c.Close()
+		}
+	}()
+	var outR *os.File
+	if fc.Stdout != nil {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return res, err
+		}
+		closers = append(closers, r, w)
+		cmd.ExtraFiles = []*os.File{w}
+		env = append(env, fetchOutEnv+"=1")
+		outR = r
+	}
+	cmd.Env = fetchChildEnv(env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return res, err
 	}
+	closers = append(closers, stdin)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stdin.Close()
 		return res, err
 	}
+	closers = append(closers, stdout)
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
 		return res, err
 	}
 	res.Watcher = cmd.Process.Pid
 	defer cmd.Process.Release()
-	// cmd.Wait is never called, so the hub closes its pipe ends itself, on every return. quit ends
-	// the reader when the caller returns before EOF.
+	// copied ends when git's stdout reaches EOF: every holder (the watcher, the gate, git and its
+	// helpers) ended. The hub closes its write end now, so it holds none.
+	copied := make(chan struct{})
+	if outR != nil {
+		cmd.ExtraFiles[0].Close()
+		go func() {
+			io.Copy(fc.Stdout, outR)
+			close(copied)
+		}()
+		defer func() {
+			select {
+			case <-copied:
+			case <-time.After(2 * time.Second): // a holder outside the fetch: the close below ends the copy
+				outR.Close()
+				<-copied
+			}
+		}()
+	}
+	// quit ends the reader when the caller returns before EOF.
 	quit := make(chan struct{})
-	defer func() {
-		close(quit)
-		stdin.Close()
-		stdout.Close()
-	}()
+	defer close(quit)
 	lines := make(chan string)
 	go func() {
 		defer close(lines)
@@ -125,8 +186,16 @@ func runFetchChild(ctx context.Context, argv []string, env []string, record func
 		}
 	}
 	var runErr error
+	recorded := make(chan error, 1)
 	for {
 		select {
+		case err := <-recorded:
+			if err != nil {
+				runErr = err
+				stop()
+			} else if deadline == nil {
+				io.WriteString(stdin, "go\n")
+			}
 		case line, ok := <-lines:
 			if !ok {
 				lines = nil
@@ -138,11 +207,9 @@ func runFetchChild(ctx context.Context, argv []string, env []string, record func
 				if res.Gate <= 0 {
 					runErr = fmt.Errorf("fetch watcher: bad report %q", line)
 					stop()
-				} else if err := record(res.Watcher, res.Gate); err != nil {
-					runErr = err
-					stop()
-				} else if deadline == nil {
-					io.WriteString(stdin, "go\n")
+				} else {
+					w, g := res.Watcher, res.Gate
+					go func() { recorded <- record(ctx, w, g) }()
 				}
 			case len(f) == 2 && f[0] == "exit":
 				res.GitStatus, _ = strconv.Atoi(f[1])
@@ -245,9 +312,14 @@ func fetchWatcher(argv []string) int {
 		return 3
 	}
 	gate := exec.Command(self, argv...)
-	gate.Env = append(os.Environ(), fetchRoleEnv+"=gate")
+	gate.Env = append(os.Environ(), fetchRoleEnv+"=gate") // keeps fetchOutEnv for the gate
 	gate.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	gate.ExtraFiles = []*os.File{goR}
+	var out *os.File
+	if os.Getenv(fetchOutEnv) != "" {
+		out = os.NewFile(3, "fetch-stdout") // the hub's pipe: fd 4 of the gate
+		gate.ExtraFiles = append(gate.ExtraFiles, out)
+	}
 	gate.Stderr = os.Stderr
 	report, err := gate.StdoutPipe()
 	if err != nil {
@@ -259,6 +331,9 @@ func fetchWatcher(argv []string) int {
 		return 3
 	}
 	goR.Close()
+	if out != nil {
+		out.Close() // the gate and git hold it now
+	}
 	g := gate.Process.Pid
 	// end kills G. It never reaps the gate, so the number g stays reserved until the watcher
 	// exits (see Ownership).
@@ -328,9 +403,12 @@ func fetchGate(argv []string) int {
 		fetchGateWait()
 	}
 	git := exec.Command(argv[0], argv[1:]...)
-	git.Stdout, git.Stderr = os.Stderr, os.Stderr // stdout carries only the report
+	git.Stdout, git.Stderr = os.Stderr, os.Stderr // the gate's stdout carries only the report
+	if os.Getenv(fetchOutEnv) != "" {
+		git.Stdout = os.NewFile(4, "fetch-stdout")
+	}
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, fetchRoleEnv+"=") {
+		if !strings.HasPrefix(e, fetchRoleEnv+"=") && !strings.HasPrefix(e, fetchOutEnv+"=") && !strings.HasPrefix(e, fetchStopEnv+"=") {
 			git.Env = append(git.Env, e)
 		}
 	}

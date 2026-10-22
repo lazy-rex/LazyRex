@@ -23,7 +23,7 @@ const fetchHubSimEnv = "LAZYREX_FETCH_HUBSIM"
 func TestMain(m *testing.M) {
 	fetchChildMain()
 	if path := os.Getenv(fetchHubSimEnv); path != "" {
-		_, err := runFetchChild(context.Background(), os.Args[1:], nil, func(w, g int) error {
+		_, err := runFetchChild(context.Background(), fetchCmd{Argv: os.Args[1:]}, func(_ context.Context, w, g int) error {
 			return os.WriteFile(path, fmt.Appendf(nil, "%d %d\n", w, g), 0o600)
 		})
 		fmt.Fprintln(os.Stderr, "hubsim:", err)
@@ -106,9 +106,9 @@ func assertAlive(t *testing.T, c *exec.Cmd) {
 }
 
 // recordPids returns a record function and a channel that gets the recorded pids once.
-func recordPids() (func(int, int) error, chan [2]int) {
+func recordPids() (func(context.Context, int, int) error, chan [2]int) {
 	c := make(chan [2]int, 1)
-	return func(watcher, gate int) error { c <- [2]int{watcher, gate}; return nil }, c
+	return func(_ context.Context, watcher, gate int) error { c <- [2]int{watcher, gate}; return nil }, c
 }
 
 // A normal fetch: git exits 0, the watcher kills the helper that git left, every process ends,
@@ -117,7 +117,7 @@ func TestFetchChildNormal(t *testing.T) {
 	stage := t.TempDir()
 	by := bystander(t, stage)
 	rec, pids := recordPids()
-	res, err := runFetchChild(context.Background(), fakeGitArgv(stage, "quick"), nil, rec)
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: fakeGitArgv(stage, "quick")}, rec)
 	p := <-pids
 	w, g := p[0], p[1]
 	if err != nil || !res.OK() || w != res.Watcher || g != res.Gate || g == 0 {
@@ -139,7 +139,7 @@ func TestFetchChildNormal(t *testing.T) {
 	}
 	dst := filepath.Join(t.TempDir(), "clone")
 	rec, pids = recordPids()
-	res, err = runFetchChild(context.Background(), []string{"git", "clone", "-q", "file://" + src, dst}, nil, rec)
+	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"git", "clone", "-q", "file://" + src, dst}}, rec)
 	p = <-pids
 	w, g = p[0], p[1]
 	if err != nil || !res.OK() {
@@ -159,7 +159,7 @@ func TestFetchChildCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rec, pids := recordPids()
 	done := make(chan fetchResult)
-	go func() { res, _ := runFetchChild(ctx, fakeGitArgv(stage, "wait"), nil, rec); done <- res }()
+	go func() { res, _ := runFetchChild(ctx, fetchCmd{Argv: fakeGitArgv(stage, "wait")}, rec); done <- res }()
 	p := <-pids
 	w, g := p[0], p[1]
 	git, helper := waitPid(t, filepath.Join(stage, "git.pid")), waitPid(t, filepath.Join(stage, "helper.pid"))
@@ -215,7 +215,7 @@ func TestFetchChildStalledBeforeReport(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	res, err := runFetchChild(ctx, fakeGitArgv(stage, "wait"), []string{fetchStopEnv + "=before-report"}, func(int, int) error {
+	res, err := runFetchChild(ctx, fetchCmd{Argv: fakeGitArgv(stage, "wait"), TestStop: "before-report"}, func(context.Context, int, int) error {
 		t.Error("record called for a watcher that did not report")
 		return nil
 	})
@@ -259,7 +259,7 @@ func TestFetchChildStalledAfterGo(t *testing.T) {
 	rec, pids := recordPids()
 	done := make(chan fetchResult)
 	go func() {
-		res, _ := runFetchChild(ctx, fakeGitArgv(stage, "wait"), []string{fetchStopEnv + "=after-go"}, rec)
+		res, _ := runFetchChild(ctx, fetchCmd{Argv: fakeGitArgv(stage, "wait"), TestStop: "after-go"}, rec)
 		done <- res
 	}()
 	p := <-pids
@@ -295,7 +295,7 @@ func TestFetchChildStalledBeforeExit(t *testing.T) {
 	rec, pids := recordPids()
 	done := make(chan fetchResult)
 	go func() {
-		res, _ := runFetchChild(ctx, fakeGitArgv(stage, "quick"), []string{fetchStopEnv + "=before-exit"}, rec)
+		res, _ := runFetchChild(ctx, fetchCmd{Argv: fakeGitArgv(stage, "quick"), TestStop: "before-exit"}, rec)
 		done <- res
 	}()
 	p := <-pids
@@ -342,21 +342,97 @@ func TestFetchChildNoLeak(t *testing.T) {
 	}
 	fd0, g0 := fds(), runtime.NumGoroutine()
 	for i := 0; i < 10; i++ {
-		if res, err := runFetchChild(context.Background(), []string{"/usr/bin/true"}, nil, func(int, int) error { return nil }); err != nil || !res.OK() {
+		if res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/usr/bin/true"}}, func(context.Context, int, int) error { return nil }); err != nil || !res.OK() {
 			t.Fatalf("normal %d: %+v %v", i, res, err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		if res, _ := runFetchChild(ctx, []string{"/bin/sleep", "60"}, nil, func(int, int) error { cancel(); return nil }); res.OK() {
+		if res, _ := runFetchChild(ctx, fetchCmd{Argv: []string{"/bin/sleep", "60"}}, func(context.Context, int, int) error { cancel(); return nil }); res.OK() {
 			t.Fatalf("cancelled %d: %+v", i, res)
 		}
 		cancel()
-		if _, err := runFetchChild(context.Background(), []string{"/usr/bin/true"}, nil, func(int, int) error { return errors.New("refused") }); err == nil {
+		if _, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/usr/bin/true"}}, func(context.Context, int, int) error { return errors.New("refused") }); err == nil {
 			t.Fatalf("refused record %d: no error", i)
+		}
+		var out strings.Builder
+		if res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/echo", "x"}, Stdout: &out}, func(context.Context, int, int) error { return nil }); err != nil || !res.OK() || out.String() != "x\n" {
+			t.Fatalf("stdout %d: %+v %v %q", i, res, err, out.String())
 		}
 	}
 	fd1, g1 := fds(), settle(g0, runtime.NumGoroutine)
 	t.Logf("fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
 	if fd1 != fd0 || g1 > g0 {
 		t.Fatalf("leak: fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
+	}
+}
+
+// git's stdout reaches the hub through the watcher and the gate, in git's working directory, also
+// for a large output and a real git archive.
+func TestFetchChildStdout(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	none := func(context.Context, int, int) error { return nil }
+	var out strings.Builder
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "pwd; printf data"}, Dir: dir, Stdout: &out}, none)
+	if err != nil || !res.OK() || out.String() != dir+"\ndata" {
+		t.Fatalf("pwd: %+v %v %q", res, err, out.String())
+	}
+	var big countWriter
+	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "head -c 4194304 /dev/zero"}, Stdout: &big}, none)
+	if err != nil || !res.OK() || big != 4194304 {
+		t.Fatalf("4 MiB: %+v %v %d bytes", res, err, big)
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	for _, args := range [][]string{{"init", "-q", "-b", "main", dir}, {"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	var tar countWriter
+	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"git", "archive", "--format=tar", "HEAD"}, Dir: dir, Stdout: &tar}, none)
+	if err != nil || !res.OK() || tar == 0 || tar%512 != 0 {
+		t.Fatalf("git archive: %+v %v %d bytes", res, err, tar)
+	}
+}
+
+type countWriter int
+
+func (c *countWriter) Write(p []byte) (int, error) { *c += countWriter(len(p)); return len(p), nil }
+
+// A stop variable in the hub's own environment does not reach the watcher: only fetchCmd.TestStop
+// sets it.
+func TestFetchChildInheritedStopIgnored(t *testing.T) {
+	t.Setenv(fetchStopEnv, "after-go")
+	start := time.Now()
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/usr/bin/true"}}, func(context.Context, int, int) error { return nil })
+	if err != nil || !res.OK() || time.Since(start) > 3*time.Second {
+		t.Fatalf("inherited stop: %v %+v %v", time.Since(start), res, err)
+	}
+}
+
+// A record that blocks (a slow database write) does not hold off a cancel: the fetch stops, and
+// git never starts.
+func TestFetchChildSlowRecord(t *testing.T) {
+	stage := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	inRecord := make(chan struct{})
+	go func() { <-inRecord; time.Sleep(100 * time.Millisecond); cancel() }()
+	start := time.Now()
+	res, err := runFetchChild(ctx, fetchCmd{Argv: fakeGitArgv(stage, "wait")}, func(ctx context.Context, _, _ int) error {
+		close(inRecord)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	t.Logf("cancel to return: %v, result %+v, %v", time.Since(start), res, err)
+	if res.OK() || res.Stopped || time.Since(start) > 3*time.Second || !errors.Is(err, context.Canceled) {
+		t.Fatalf("slow record: %v %+v %v", time.Since(start), res, err)
+	}
+	assertGone(t, "slow record", res.Watcher, res.Gate)
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(stage, "git.pid")); !os.IsNotExist(err) {
+		t.Fatalf("git ran: %v", err)
 	}
 }
