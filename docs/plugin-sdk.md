@@ -307,7 +307,7 @@ errors and the transaction rules above.
 | `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |
 | `app.refresh()` | Render the open views again, after a change of a value that a render did not read itself. |
 | `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
-| `app.args`, `app.dir` | The plugin arguments; the plugin directory. |
+| `app.args`, `app.dir` | The plugin arguments; the plugin directory. It is read-only (a cache entry, or the snapshot of a local source): do not write into it. |
 | `app.registration` | The `hub.register` reply (for example `generation`). It is set before the start functions run. |
 
 Action options: `title`, `description`, `user_only`, `tx = false` (each SQL call alone),
