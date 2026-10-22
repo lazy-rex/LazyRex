@@ -30,6 +30,8 @@ Hierarchy: host → session → window → split or floating layer → block. Se
 ## Transport and admission
 
 - The default local server listens on `unix://~/Library/Application Support/rex/server.sock`. `REX_SERVER` in every Rex pane gives the address.
+- On Linux, the default endpoint is `unix://$XDG_RUNTIME_DIR/rex/server.sock`. Without `XDG_RUNTIME_DIR`, it is `unix:///run/user/<uid>/rex/server.sock`. A Linux Rex pane has `REX_SESSION` and `REX_BLOCK` but no `REX_SERVER`, so a bare `rex` in it uses this default. With `--autostart=false` and no socket at the default path, `rex` fails (`connect: no such file or directory`) and starts no server. (Observed on Rex 0.0.1792593189-g3f4a0a, Linux, 2026-10-22.)
+- A2 check (Linux, the same Rex, LazyRex 63592da, 2026-10-22): one lab server (lab/server.sh) whose socket was the default endpoint of a private `XDG_RUNTIME_DIR`. The hub ran with `-real-server`. The hook ran in an agent pane without `REX_SERVER` and reached the hub: `hub.workers` identity `none`, then `current`. The renderer ran without `REX_SERVER`, with the `-server` endpoint from the hub, and attached (`hub.view.attach`, no error).
 - Rex admits a connection or rejects it. It has no per-method authorization.
 - Admission kinds: Unix peer credentials (`kind: peer`), tailnet, and `--allow-anonymous` (needed for plain TCP; use it only in a lab).
 - `whoami` returns `{kind: "peer", transport: "unix", uid, gid, pid}` for a Unix connection.
