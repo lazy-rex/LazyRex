@@ -93,6 +93,7 @@ type rehearsal struct {
 	mirrors map[string]string   // the HEAD of each GitHub mirror, by owner/repo
 	commits map[string][]string // the commits that the mirrors must hold, by owner/repo
 	n       int                 // the number of child steps (log names)
+	stopped bool                // stopLab ran
 }
 
 func (h *rehearsal) say(format string, args ...any) { h.r.say(format, args...) }
@@ -119,10 +120,10 @@ func hubRehearse(r *releaser) (err error) {
 	}
 	defer unlock()
 	h.say("the lab is %s", h.lab)
-	cleaned := false
+	finished := false
 	defer func() {
-		if !cleaned {
-			for _, p := range h.cleanup(false) {
+		if !finished {
+			for _, p := range h.stopLab() {
 				h.say("cleanup: %s", p)
 			}
 			h.say("FAILED; the lab is kept: %s", h.lab)
@@ -147,13 +148,29 @@ func hubRehearse(r *releaser) (err error) {
 	if tier == tierFull {
 		return relFail("the full tier is selected (%s); its phases come in a later commit of c3c", strings.Join(reasons, "; "))
 	}
-	problems := h.cleanup(true)
-	cleaned = true
-	if len(problems) > 0 {
-		h.say("FAILED; the lab is kept: %s", h.lab)
+	if err := h.finish(tier, reasons); err != nil {
+		return err
+	}
+	finished = true
+	return nil
+}
+
+// finish ends a passing rehearsal. It stops the lab processes, reads the live inputs again and
+// writes the record, and only then deletes the lab. A failure before the record keeps the lab as
+// evidence and writes no record. A failed delete after the record is a warning: the record is valid.
+func (h *rehearsal) finish(tier string, reasons []string) error {
+	if problems := h.stopLab(); len(problems) > 0 {
 		return relFail("cleanup: %s", strings.Join(problems, "; "))
 	}
-	return h.publish(tier, reasons)
+	if err := h.publish(tier, reasons); err != nil {
+		return err
+	}
+	if problems := removeLab(h.lab); len(problems) > 0 {
+		h.say("WARNING: the record is written, but %s; delete the lab %s by hand", strings.Join(problems, "; "), h.lab)
+		return nil
+	}
+	h.say("the lab is deleted")
+	return nil
 }
 
 // supersede renames a current record to rehearsal.json.superseded-<time>-<pid> before any phase:
@@ -196,24 +213,25 @@ func (h *rehearsal) capture() (map[string]string, error) {
 	if live.Base, err = read(peersPath(r.cfg.lock)); err != nil {
 		return nil, err
 	}
-	var raw struct {
-		Profiles string `json:"profiles"`
-	}
-	json.Unmarshal(live.Config, &raw)
-	if raw.Profiles != "" {
-		if live.Profiles, err = read(raw.Profiles); err != nil {
+	if p := configProfiles(r.cfg.path); p != "" {
+		if live.Profiles, err = read(p); err != nil {
 			return nil, err
 		}
-	}
-	out := map[string]string{"live config": sha256Bytes(live.Config), "live managed file": sha256Bytes(live.Managed),
-		"live base": sha256Bytes(live.Base), "live profiles": sha256Bytes(live.Profiles)}
-	if out["live lock pins"], err = lockPinsHash(r.cfg.lock); err != nil {
-		return nil, err
 	}
 	bound, err := r.bindings(h.tool)
 	if err != nil {
 		return nil, err
 	}
+	// The record binds the files; the lab gets the bytes read above. They must be the same.
+	for _, f := range []struct {
+		field string
+		b     []byte
+	}{{"live-config", live.Config}, {"live-managed", live.Managed}, {"live-base", live.Base}, {"live-profiles", live.Profiles}} {
+		if f.b != nil && bound[f.field] != sha256Bytes(f.b) {
+			return nil, relFail("a live input changed while the rehearsal read it: %s", f.field)
+		}
+	}
+	out := map[string]string{}
 	for k, v := range bound {
 		if k != "lab-transform" {
 			out["bound "+k] = v
@@ -342,10 +360,10 @@ func (h *rehearsal) setup() error {
 	if strings.Join(livePins, "\n") != strings.Join(labPins, "\n") {
 		return relFail("after OLD's sync, the lab lock pins differ from the live lock pins")
 	}
-	if lp, err := lockPinsHash(labCfg.lock); err != nil || lp != h.start["live lock pins"] {
+	if lp, err := lockPinsHash(labCfg.lock); err != nil || lp != h.start["bound live-lock-pins"] {
 		return relFail("after OLD's sync, the lab lock differs from the live lock without its cache dirs (%v)", err)
 	}
-	if b, err := os.ReadFile(peersPath(labCfg.lock)); err != nil || sha256Bytes(b) != h.start["live base"] {
+	if b, err := os.ReadFile(peersPath(labCfg.lock)); err != nil || sha256Bytes(b) != h.start["bound live-base"] {
 		return relFail("after OLD's sync, the lab base differs from the live base (%v)", err)
 	}
 
@@ -659,39 +677,80 @@ func (h *rehearsal) data(phase string) error {
 	return nil
 }
 
-// schema records every column of the lab hub.db (table, name, type, notnull, default). After
-// "before" (OLD's own schema), a column of OLD that changed or went fails: OLD cannot run on it.
+// schema records the schema of the lab hub.db: every column ("column <table>.<name> <type>
+// <notnull> <default> pk=<n>") and every object of sqlite_master ("object <type> <name> on
+// <table>: <sql>": tables with their constraints, indexes, triggers and views). After "before"
+// (OLD's own schema), a column of OLD that changed or went fails: OLD cannot run on it. Every
+// other difference is a reason for the full tier (schemaChanges).
 func (h *rehearsal) schema(phase string) error {
 	db, err := h.hubDB(true)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT m.name, p.name, p.type, p."notnull", ifnull(p.dflt_value, '-')
-		FROM sqlite_master m, pragma_table_info(m.name) p WHERE m.type = 'table' ORDER BY m.name, p.cid`)
-	if err != nil {
-		return relFail("phase %s: the schema: %v", phase, err)
-	}
-	defer rows.Close()
-	var cols []string
-	for rows.Next() {
-		var t, n, typ, dflt string
-		var notnull int
-		if err := rows.Scan(&t, &n, &typ, &notnull, &dflt); err != nil {
+	var items []string
+	for _, q := range []struct {
+		query  string
+		format string
+		n      int
+	}{
+		{`SELECT m.name, p.name, p.type, p."notnull", ifnull(p.dflt_value, '-'), p.pk
+			FROM sqlite_master m, pragma_table_info(m.name) p WHERE m.type = 'table' ORDER BY m.name, p.cid`, "column %s.%s %s %s %s pk=%s", 6},
+		{`SELECT type, name, tbl_name, ifnull(sql, '-') FROM sqlite_master ORDER BY type, name`, "object %s %s on %s: %s", 4},
+	} {
+		rows, err := db.Query(q.query)
+		if err != nil {
+			return relFail("phase %s: the schema: %v", phase, err)
+		}
+		for rows.Next() {
+			v := make([]any, q.n)
+			for i := range v {
+				v[i] = new(string)
+			}
+			if err := rows.Scan(v...); err != nil {
+				rows.Close()
+				return err
+			}
+			s := make([]any, q.n)
+			for i := range v {
+				s[i] = *v[i].(*string)
+			}
+			items = append(items, fmt.Sprintf(q.format, s...))
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
 			return err
 		}
-		cols = append(cols, fmt.Sprintf("%s.%s %s %d %s", t, n, typ, notnull, dflt))
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	h.schemas[phase] = cols
+	h.schemas[phase] = items
 	if phase != "before" {
-		if gone := missing(h.schemas["before"], cols); len(gone) > 0 {
+		var gone []string
+		for _, x := range missing(h.schemas["before"], items) {
+			if strings.HasPrefix(x, "column ") {
+				gone = append(gone, x)
+			}
+		}
+		if len(gone) > 0 {
 			return relFail("phase %s: a column of OLD changed or went: %s", phase, strings.Join(gone, ", "))
 		}
 	}
 	return nil
+}
+
+// schemaChanges are the schema differences of phase from "before": each column or object that H
+// adds or changes, and each object that it removes.
+func (h *rehearsal) schemaChanges(phase string) []string {
+	var out []string
+	for _, x := range missing(h.schemas[phase], h.schemas["before"]) {
+		out = append(out, "H adds "+x)
+	}
+	for _, x := range missing(h.schemas["before"], h.schemas[phase]) {
+		if strings.HasPrefix(x, "object ") {
+			out = append(out, "H removes "+x)
+		}
+	}
+	return out
 }
 
 // missing lists the items of a that b does not have.
@@ -709,7 +768,7 @@ func missing(a, b []string) []string {
 	return out
 }
 
-// tier selects the tier from the default phases (plan v2 C3, design v2): the columns that H added,
+// tier selects the tier from the default phases (plan v2 C3, design v2): the schema changes of H,
 // the format compare, and the format files.
 func (h *rehearsal) tier() (string, []string, error) {
 	files, err := h.cmd(filepath.Join(h.lab, "release", "LazyRex"), append([]string{"git", "diff", "--name-only", h.c.From.Commit, h.c.To.Commit, "--"}, relFormatFiles()...)...)
@@ -720,20 +779,20 @@ func (h *rehearsal) tier() (string, []string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	tier, reasons, err := decideTier(missing(h.schemas["forward"], h.schemas["before"]), strings.Fields(files), formats, h.r.rehearseTier)
+	tier, reasons, err := decideTier(h.schemaChanges("forward"), strings.Fields(files), formats, h.r.rehearseTier)
 	if err == nil {
 		h.say("tier %s: %s", tier, strings.Join(append([]string{}, reasons...), "; "))
 	}
 	return tier, reasons, err
 }
 
-// decideTier: any added column, format difference or changed format file selects full; none
+// decideTier: any schema change, format difference or changed format file selects full; none
 // selects default. A requested full raises the tier. (A default request with a full reason cannot
 // happen: -tier takes only full.)
-func decideTier(added, files, formats []string, requested string) (string, []string, error) {
+func decideTier(schema, files, formats []string, requested string) (string, []string, error) {
 	var reasons []string
-	for _, c := range added {
-		reasons = append(reasons, "schema: H adds "+c)
+	for _, c := range schema {
+		reasons = append(reasons, "schema: "+c)
 	}
 	for _, f := range files {
 		reasons = append(reasons, "format file changed: "+f)
@@ -803,8 +862,10 @@ func (h *rehearsal) formats() ([]string, error) {
 	if err := cfgOf(hDir); err != nil {
 		return nil, err
 	}
-	type result struct{ outputs, files []string }
-	runSide := func(bin, dir string) result {
+	// A failed or unrun command, or an unreadable result, on either side is uncertain: a reason for
+	// the full tier, also when both sides fail alike.
+	type result struct{ outputs, files, uncertain []string }
+	runSide := func(side, bin, dir string) result {
 		var res result
 		cfg := filepath.Join(dir, relLabConfig)
 		for _, args := range [][]string{{"plugin", "sync", "-config", cfg}, {"plugin", "export", "-config", cfg},
@@ -818,19 +879,28 @@ func (h *rehearsal) formats() ([]string, error) {
 			} else if err != nil {
 				code = -1
 			}
+			if code != 0 {
+				res.uncertain = append(res.uncertain, fmt.Sprintf("format: %s plugin %s exited %d (%v); the compare is uncertain", side, args[1], code, err))
+			}
 			res.outputs = append(res.outputs, fmt.Sprintf("%s exit %d:\n%s", args[1], code, strings.ReplaceAll(string(out), dir, "<scratch>")))
 		}
 		lk := strings.TrimSuffix(cfg, ".json") + ".lock.json"
 		lp, err := lockPinsHash(lk)
+		if err != nil {
+			res.uncertain = append(res.uncertain, fmt.Sprintf("format: %s lock pins: %v; the compare is uncertain", side, err))
+		}
 		res.files = append(res.files, fmt.Sprintf("lock pins %s %v", lp, err))
 		for _, f := range []string{peersPath(lk), filepath.Join(dir, relLabState, "plugins.json")} {
 			s, err := sha256File(f)
+			if err != nil {
+				res.uncertain = append(res.uncertain, fmt.Sprintf("format: %s %s: %v; the compare is uncertain", side, filepath.Base(f), err))
+			}
 			res.files = append(res.files, fmt.Sprintf("%s %s %v", filepath.Base(f), s, err))
 		}
 		return res
 	}
-	a, b := runSide(h.oldBin, oldDir), runSide(hBin, hDir)
-	var reasons []string
+	a, b := runSide("OLD", h.oldBin, oldDir), runSide("H", hBin, hDir)
+	reasons := append(append([]string{}, a.uncertain...), b.uncertain...)
 	for i := range a.outputs {
 		if a.outputs[i] != b.outputs[i] {
 			reasons = append(reasons, fmt.Sprintf("format: the output differs:\n OLD %s\n H   %s", a.outputs[i], b.outputs[i]))
@@ -846,16 +916,14 @@ func (h *rehearsal) formats() ([]string, error) {
 
 func mustReadFile(p string) []byte { b, _ := os.ReadFile(p); return b }
 
-// cleanup closes the dev pane through Rex, stops the lab server and checks that every recorded
-// process is gone (labserver.go: a signal only to a recorded pid with its recorded start time).
-// On a pass with no problem, it deletes the lab (made writable first: read-only cache entries).
-func (h *rehearsal) cleanup(pass bool) []string {
-	if h.l == nil || h.l.srv == nil {
-		if pass {
-			return removeLab(h.lab)
-		}
+// stopLab closes the dev pane through Rex, stops the lab server and checks that every recorded
+// process is gone (labserver.go: a signal only to a recorded pid with its recorded start time). It
+// runs once: a second call does nothing. It never deletes the lab.
+func (h *rehearsal) stopLab() []string {
+	if h.stopped || h.l == nil || h.l.srv == nil {
 		return nil
 	}
+	h.stopped = true
 	var problems []string
 	if h.run != "" {
 		if err := h.withLab(func(lr *releaser) error {
@@ -874,11 +942,7 @@ func (h *rehearsal) cleanup(pass bool) []string {
 			problems = append(problems, "closing the dev pane: "+err.Error())
 		}
 	}
-	problems = append(problems, h.l.stop()...)
-	if pass && len(problems) == 0 {
-		problems = append(problems, removeLab(h.lab)...)
-	}
-	return problems
+	return append(problems, h.l.stop()...)
 }
 
 // removeLab makes the lab tree writable, then deletes it.
@@ -919,7 +983,7 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 	if err := h.r.writeRehearsal(rec); err != nil {
 		return err
 	}
-	h.say("PASS: tier %s; the record is %s; the lab is deleted", tier, filepath.Join(h.r.run, relRehearsalFile))
+	h.say("PASS: tier %s; the record is %s", tier, filepath.Join(h.r.run, relRehearsalFile))
 	return nil
 }
 

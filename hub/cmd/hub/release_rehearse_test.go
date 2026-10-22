@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -282,5 +283,180 @@ func TestReleaseLabMirrors(t *testing.T) {
 	}
 	if err := needCommits(lab, map[string][]string{"o/other": {strings.Repeat("ab", 20)}}); err == nil || !strings.Contains(err.Error(), "no commit") {
 		t.Errorf("a missing commit: %v", err)
+	}
+}
+
+// rehearsalFixture is a frozen release world whose config names a profile file, and a rehearsal of
+// its run that captured the live inputs and passed its phases (codex-26's review fixture, R8 to
+// R11).
+func rehearsalFixture(t *testing.T) (*relWorld, *rehearsal, string) {
+	t.Helper()
+	w := newRelWorld(t)
+	p := filepath.Join(w.dir, "profiles.json")
+	if err := os.WriteFile(p, []byte(`{"profiles":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(mustRead(w.cfg), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg["profiles"] = p
+	b, _ := json.Marshal(cfg)
+	if err := os.WriteFile(w.cfg, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.freeze()
+	r := w.open("precheck")
+	t.Cleanup(r.unlock)
+	c, err := r.readCandidate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &rehearsal{r: r, c: c, tool: r.tool, lab: t.TempDir(), phases: []relPhase{{Name: "forward", Result: "pass"}, {Name: "rollback", Result: "pass"}}}
+	// As hubRehearse: the earlier record (the world's) is superseded before the capture.
+	if err := h.supersede(); err != nil {
+		t.Fatal(err)
+	}
+	if h.start, err = h.capture(); err != nil {
+		t.Fatal(err)
+	}
+	return w, h, p
+}
+
+// R8: a live input that changes during the rehearsal fails the finish with no record, and the lab
+// stays as evidence. With no change, the finish writes the record, then deletes the lab.
+func TestReleaseRehearsalFinish(t *testing.T) {
+	_, h, p := rehearsalFixture(t)
+	evidence := filepath.Join(h.lab, "diagnostic.log")
+	if err := os.WriteFile(evidence, []byte("phase evidence"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`{"profiles":[{"id":"changed"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.finish(tierDefault, nil); err == nil || !strings.Contains(err.Error(), "live-profiles") {
+		t.Fatalf("a changed live input: %v", err)
+	}
+	if _, err := os.Stat(evidence); err != nil {
+		t.Fatalf("a failed finish lost the lab evidence: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.r.run, relRehearsalFile)); err == nil {
+		t.Fatal("a failed finish wrote a record")
+	}
+
+	_, h, _ = rehearsalFixture(t)
+	if err := h.finish(tierDefault, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(h.lab); err == nil {
+		t.Error("the lab is still there after a finish")
+	}
+	if err := h.r.checkRehearsal(h.tool); err != nil {
+		t.Errorf("the record of the finish: %v", err)
+	}
+}
+
+// R9: the record binds every live input that the lab copies; precheck refuses a later change of
+// any of them, the profile file too.
+func TestReleaseRehearsalBindsLiveInputs(t *testing.T) {
+	_, h, p := rehearsalFixture(t)
+	if err := h.publish(tierDefault, nil); err != nil {
+		t.Fatal(err)
+	}
+	bound := map[string]string{}
+	json.Unmarshal(mustRead(filepath.Join(h.r.run, relRehearsalFile)), &struct {
+		Bound *map[string]string `json:"bound"`
+	}{&bound})
+	for _, k := range []string{"live-config", "live-managed", "live-lock-pins", "live-base", "live-profiles"} {
+		if v := bound[k]; v == "" || v == "-" {
+			t.Errorf("the record does not bind %s: %q", k, v)
+		}
+	}
+	if err := os.WriteFile(p, []byte(`{"profiles":[{"id":"changed","command":["sh"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.r.checkRehearsal(h.tool); err == nil || !strings.Contains(err.Error(), "live-profiles") {
+		t.Fatalf("the gate after a profile change: %v", err)
+	}
+	if err := hubPrecheck(h.r); err == nil {
+		t.Fatal("precheck accepted changed profiles after the rehearsal")
+	}
+}
+
+// R10: every schema object counts. An index, trigger, view or constraint that H adds, changes or
+// removes selects the full tier; a column of OLD that changed fails.
+func TestReleaseRehearsalSchemaObjects(t *testing.T) {
+	for name, tc := range map[string]struct {
+		before, after string
+		fail          bool
+	}{
+		"unique index":   {after: "CREATE UNIQUE INDEX t_k_unique ON t(k)"},
+		"trigger":        {after: "CREATE TRIGGER t_ins AFTER INSERT ON t BEGIN SELECT 1; END"},
+		"view":           {after: "CREATE VIEW t_view AS SELECT k FROM t"},
+		"removed index":  {before: "CREATE INDEX t_k ON t(k)", after: "DROP INDEX t_k"},
+		"new table pk":   {after: "CREATE TABLE u (id INTEGER PRIMARY KEY, v TEXT)"},
+		"changed column": {after: "ALTER TABLE t RENAME COLUMN k TO k2", fail: true},
+	} {
+		lab := t.TempDir()
+		os.MkdirAll(filepath.Join(lab, relLabState), 0o700)
+		h := &rehearsal{lab: lab, schemas: map[string][]string{}}
+		db, err := sql.Open("sqlite", "file:"+filepath.Join(lab, relLabState, "hub.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []string{"CREATE TABLE t (k TEXT)", tc.before} {
+			if _, err := db.Exec(s); s != "" && err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		if err := h.schema("before"); err != nil {
+			t.Fatal(err)
+		}
+		if tier, _, _ := decideTier(h.schemaChanges("before"), nil, nil, ""); tier != tierDefault {
+			t.Fatalf("%s: no change selected %s", name, tier)
+		}
+		if _, err := db.Exec(tc.after); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		db.Close()
+		err = h.schema("forward")
+		if tc.fail {
+			if err == nil {
+				t.Errorf("%s: a changed OLD column passed", name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if tier, reasons, err := decideTier(h.schemaChanges("forward"), nil, nil, ""); err != nil || tier != tierFull {
+			t.Errorf("%s: selected %s %v %v", name, tier, reasons, err)
+		}
+	}
+}
+
+// R11: a format command that fails is uncertain, also when it fails the same way under OLD and H.
+func TestReleaseRehearsalFormatFailuresAreUncertain(t *testing.T) {
+	w, h, _ := rehearsalFixture(t)
+	h.env, h.cfg, h.run = os.Environ(), w.cfg, w.run
+	os.MkdirAll(filepath.Join(h.lab, "home"), 0o700)
+	os.MkdirAll(filepath.Join(h.run, "bin"), 0o700)
+	os.MkdirAll(filepath.Join(h.lab, relLabState), 0o700)
+	h.oldBin = filepath.Join(h.lab, "old-bin")
+	script := []byte("#!/bin/sh\nif [ \"$2\" = pull ]; then echo 'pull failed' >&2; exit 1; fi\n")
+	for _, p := range []string{h.oldBin, filepath.Join(h.run, "bin", "hub-H")} {
+		if err := os.WriteFile(p, script, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(h.lab, relLabState, "plugins.json"), h.live.Managed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reasons, err := h.formats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(reasons, "\n"), "plugin pull exited 1") {
+		t.Fatalf("a pull that fails under both binaries is not uncertain: %v", reasons)
 	}
 }

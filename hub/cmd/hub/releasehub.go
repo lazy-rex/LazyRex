@@ -442,7 +442,14 @@ func hubPrecheck(r *releaser) error {
 	if err != nil {
 		return err
 	}
-	// The rehearsal gate binds a live run. A lab run is the rehearsal: it has no record.
+	if err := r.needHead(c.From.Commit, "OLD"); err != nil {
+		return err
+	}
+	if err := r.holdOK(c); err != nil {
+		return err
+	}
+	// The rehearsal gate binds a live run, after the hold check (its refusal names the frozen file).
+	// A lab run is the rehearsal: it has no record.
 	if !r.spec.Lab {
 		tool, err := r.toolPath()
 		if err != nil {
@@ -451,12 +458,6 @@ func hubPrecheck(r *releaser) error {
 		if err := r.checkRehearsal(tool); err != nil {
 			return err
 		}
-	}
-	if err := r.needHead(c.From.Commit, "OLD"); err != nil {
-		return err
-	}
-	if err := r.holdOK(c); err != nil {
-		return err
 	}
 	panes, err := r.devPanes()
 	if err != nil {

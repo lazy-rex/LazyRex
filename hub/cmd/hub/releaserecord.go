@@ -83,6 +83,25 @@ func (r *releaser) bindings(tool string) (map[string]string, error) {
 			return nil, err
 		}
 	}
+	// The live inputs that rehearse copies into the lab (labFiles): a change after the rehearsal
+	// needs a new one. The lock is bound by its pins (a sync can name new cache dirs).
+	for _, f := range [][2]string{{"live-config", r.cfg.path}, {"live-managed", r.cfg.managed}, {"live-base", peersPath(r.cfg.lock)}} {
+		if err := file(f[0], f[1]); err != nil {
+			return nil, err
+		}
+	}
+	if out["live-lock-pins"], err = lockPinsHash(r.cfg.lock); err != nil {
+		return nil, relFail("the lock pins of %s: %v", r.cfg.lock, err)
+	}
+	out["live-profiles"] = "-"
+	if p := configProfiles(r.cfg.path); p != "" {
+		if err := file("live-profiles", p); err != nil {
+			return nil, err
+		}
+		if out["live-profiles"] == "-" {
+			return nil, relFail("the profile file %s does not exist", p)
+		}
+	}
 	out["probes"] = "-"
 	if r.spec.Probes != "" {
 		if err := file("probes", r.spec.Probes); err != nil {
@@ -147,4 +166,14 @@ func (r *releaser) writeRehearsal(rec *relRehearsal) error {
 		return err
 	}
 	return replaceFile(filepath.Join(r.run, relRehearsalFile), append(b, '\n'))
+}
+
+// configProfiles is the profile file that the config at path names, "" for none or an unreadable
+// config.
+func configProfiles(path string) string {
+	var raw struct {
+		Profiles string `json:"profiles"`
+	}
+	json.Unmarshal(mustReadFile(path), &raw)
+	return raw.Profiles
 }
