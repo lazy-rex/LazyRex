@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NU
 -- effect. sent_at: the handler committed it before its first effect; empty sent_at means that no
 -- effect began. intent_id: the spawn intent of a start or a replace. proof: how the outcome is
 -- known (separate from the outcome text). resolved_by: the operator that resolved the attempt.
--- A file write (call write:managed) has its own attempt: intended is the hash of the bytes that it
+-- A file write (call write:managed or write:lock) has its own attempt: intended is the hash of the bytes that it
 -- renames; bound_at is the insert, sent_at the moment just before the rename.
 CREATE TABLE IF NOT EXISTS plugin_op_attempts (attempt TEXT PRIMARY KEY, op_id TEXT NOT NULL, call TEXT NOT NULL,
   expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
@@ -762,6 +762,8 @@ func (h *Hub) runOp(ctx context.Context, op *pluginOp) error {
 			err = h.opResolve(ctx, op)
 		case "fetching":
 			err = h.opFetch(ctx, op)
+		case "locking":
+			err = h.opLock(ctx, op)
 		case "writing":
 			err = h.opWrite(ctx, op)
 		case "reloading":
