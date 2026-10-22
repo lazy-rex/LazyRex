@@ -383,14 +383,20 @@ func (m *model) selectRows(node string, field Field) []row {
 	base := lipgloss.NewStyle().Background(p.surface).Foreground(p.text)
 	border := base.Foreground(p.control)
 	rows := []row{{Text: border.Render("╭" + strings.Repeat("─", width) + "╮")}}
-	// addStyled adds a row whose text is already styled and fits width-2*selectPadding cells.
+	// addStyled adds a row of styled text. Every row is exactly the overlay width: the text is
+	// truncated to the inner width, and a very narrow overlay has less padding.
+	padding := min(selectPadding, max(0, width)/2)
+	inner := max(0, width-2*padding)
 	addStyled := func(text, anchor string, c *control) {
-		pad := base.Render(strings.Repeat(" ", selectPadding))
-		fill := base.Render(strings.Repeat(" ", max(0, width-2*selectPadding-ansi.StringWidth(text))))
+		if ansi.StringWidth(text) > inner {
+			text = ansi.Truncate(text, inner, "…")
+		}
+		pad := base.Render(strings.Repeat(" ", padding))
+		fill := base.Render(strings.Repeat(" ", inner-ansi.StringWidth(text)))
 		rows = append(rows, row{Text: border.Render("│") + pad + text + fill + pad + border.Render("│"), Anchor: anchor, Control: c})
 	}
 	add := func(text, anchor string, c *control, style lipgloss.Style) {
-		addStyled(style.Render(ansi.Truncate(singleLine(text), max(1, width-2*selectPadding), "…")), anchor, c)
+		addStyled(style.Render(singleLine(text)), anchor, c)
 	}
 	info := func(text string) { add(text, "", nil, base.Foreground(p.muted)) }
 	filter := ""
@@ -417,8 +423,7 @@ func (m *model) selectRows(node string, field Field) []row {
 		if m.editors[editorID(node, field.ID)].Choice == o.Value {
 			mark = base.Foreground(p.selected).Render("✓ ")
 		}
-		text := ansi.Truncate(singleLine(o.Label), max(1, width-2*selectPadding-4), "…")
-		addStyled(selector+mark+label.Render(text), id, c)
+		addStyled(selector+mark+label.Render(singleLine(o.Label)), id, c)
 	}
 	info("")
 	var hints []string
@@ -430,7 +435,7 @@ func (m *model) selectRows(node string, field Field) []row {
 	}
 	if len(hints) > 0 {
 		hint := strings.Join(hints, " · ")
-		if ansi.StringWidth(hint) > width-2*selectPadding {
+		if ansi.StringWidth(hint) > inner {
 			hints = nil
 			if start > 0 {
 				hints = append(hints, fmt.Sprintf("↑ %d", start))

@@ -645,3 +645,60 @@ func TestSelectOpeningRevealsCurrentValue(t *testing.T) {
 		t.Fatal("Opening hid the current value or its check mark")
 	}
 }
+
+// Every overlay row is exactly the overlay width at narrow widths: option rows with the selector
+// and the check, blank and wide labels, the filter row, the no-match row, and the count hints.
+func TestSelectNarrowRowsKeepOverlayWidth(t *testing.T) {
+	labels := []string{"old", "", "界界界界界界界界", strings.Repeat("long label ", 5), "b", "c", "d", "e", "f", "g"}
+	for width := 6; width <= 24; width++ {
+		for _, filter := range []string{"", "界", "no match"} {
+			m := testModel()
+			s := selectSnapshot(labels...)
+			s.Tree.Nodes[0].Fields[0].Options[1] = Option{Value: "blank", Label: ""}
+			s.Route = "/forms/start"
+			m.apply(s)
+			m.setFocus("choice:stop/worker")
+			m.width, m.height = width, 24
+			m.resizeEditors()
+			selectKey(m, tea.KeyEnter)
+			if filter != "" {
+				m.Update(tea.PasteMsg{Content: filter})
+			}
+			o := m.selectOverlay()
+			if o == nil {
+				t.Fatalf("width %d: no overlay", width)
+			}
+			options := 0
+			for i, r := range o.Rows {
+				if w := ansi.StringWidth(r.Text); w != o.Width {
+					t.Fatalf("width %d filter %q: row %d has width %d, overlay width %d: %q", width, filter, i, w, o.Width, ansi.Strip(r.Text))
+				}
+				if r.Control != nil && r.Control.Kind == "select_option" {
+					options++
+				}
+			}
+			if filter == "" && options == 0 {
+				t.Fatalf("width %d: no option rows", width)
+			}
+			if filter == "no match" && options != 0 {
+				t.Fatalf("width %d: a no-match filter has %d option rows", width, options)
+			}
+		}
+	}
+}
+
+// The reviewer's case: a 12-column pane overflowed the overlay by one cell.
+func TestReviewerSelectNarrowRows(t *testing.T) {
+	m := selectModel()
+	m.width, m.height = 12, 24
+	selectKey(m, tea.KeyEnter)
+	o := m.selectOverlay()
+	if o == nil {
+		t.Fatal("No overlay")
+	}
+	for i, r := range o.Rows {
+		if w := ansi.StringWidth(r.Text); w != o.Width {
+			t.Fatalf("row %d has width %d, overlay width %d: %q", i, w, o.Width, ansi.Strip(r.Text))
+		}
+	}
+}
