@@ -210,7 +210,7 @@ end)
 local function shell_pane(label)
   local created, err = rex.call('session.create', {label = label, initial_windows = {{window_label = label,
     layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '100000'}, login = false}}}}}})
-  if err then error(err_of(err), 0) end
+  if err then error(err, 0) end
   local w = created.initial_windows[1]
   return created.session_id, w.block_ids[1], w.window_id
 end
