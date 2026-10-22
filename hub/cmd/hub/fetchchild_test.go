@@ -567,3 +567,16 @@ func TestFetchChildStderrHeld(t *testing.T) {
 		t.Fatalf("%+v %v after %v", res, err, took)
 	}
 }
+
+// A result whose stderr copy did not end is not OK, also when git and the watcher exited 0: the
+// fetch is not complete (codex-27, plugins-c2-source-findings-1).
+func TestFetchResultStderrOpenNotOK(t *testing.T) {
+	ok := fetchResult{GitStatus: 0, WatcherStatus: 0}
+	if !ok.OK() {
+		t.Fatal("the base result is not OK")
+	}
+	ok.StderrOpen = true
+	if ok.OK() {
+		t.Fatal("a result with StderrOpen is OK")
+	}
+}
