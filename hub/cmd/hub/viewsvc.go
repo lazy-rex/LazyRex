@@ -51,7 +51,7 @@ type viewSvc struct {
 	seen    map[string]map[string]string     // plugin -> route -> reason the user looked at it, not yet sent
 	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
 	renders map[string]*openRender           // render ID -> a view.render call that has not returned (renderreads.go)
-	logged  map[string]bool                  // plugin + "\x00" + view + "\x00" + value: an unknown refresh value already logged (renderreads.go)
+	logged  map[string]bool                  // plugin + "\x00" + view: a view whose unknown refresh value is already logged (renderreads.go)
 }
 
 // historyFetch is one view.history call that runs outside the hub's request queue.

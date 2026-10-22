@@ -286,8 +286,8 @@ func markAll(h *Hub) {
 
 // The default: a render installs its tables when its reply has no refresh field (or null), it
 // succeeded, its reads stayed tracked and it read at least one table. "all" is the opt-out; any
-// other value (here "reads" and "writes" too) counts as "all" and is logged once for each
-// view. One view's setting does not change another view, and a later "all" render clears the set.
+// other value (here "reads" and "writes" too) counts as "all", and the hub logs the first such
+// value of each view. One view's setting does not change another view, and a later "all" render clears the set.
 func TestRenderDefault(t *testing.T) {
 	ta := map[string]bool{"a": true}
 	null := json.RawMessage("null")
@@ -343,17 +343,24 @@ func TestRenderDefault(t *testing.T) {
 		t.Fatal("after an all render, a commit to b does not mark the view")
 	}
 
-	// An unknown value is logged once for each view.
+	// An unknown value is logged once for each view: other values on the same view add no log
+	// key. A render that read no table, or became untracked, still gets its value logged.
 	h = renderHub(t)
-	for i := 0; i < 2; i++ {
+	for _, v := range []string{"reads", "writes", "some-new-mode"} {
 		markAll(h)
-		renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: "reads"}, "v2": {reads: []map[string]bool{ta}, refresh: "reads"}})
+		renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: v}, "v2": {refresh: v}})
 	}
 	h.vs.mu.Lock()
-	n := len(h.vs.logged)
+	keys := h.vs.logged
 	h.vs.mu.Unlock()
-	if n != 2 {
-		t.Fatalf("%d log keys for one unknown value in two views rendered twice; want 2", n)
+	if len(keys) != 2 || !keys["p\x00v1"] || !keys["p\x00v2"] {
+		t.Fatalf("log keys %v after three unknown values in two views (v2 read no table); want one for each view", keys)
+	}
+	h = renderHub(t)
+	markAll(h)
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta, nil}, refresh: "x"}})
+	if !h.vs.logged["p\x00v1"] {
+		t.Fatal("an untracked render with an unknown value is not logged")
 	}
 }
 

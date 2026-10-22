@@ -38,7 +38,7 @@ type openRender struct {
 	untracked bool
 }
 
-// refreshLogMax bounds the unknown refresh values that the hub remembers for its log.
+// refreshLogMax bounds the views that the hub remembers for its unknown refresh log.
 const refreshLogMax = 64
 
 // newRenderID returns a render ID: 128 random bits, so a closed ID is never made again.
@@ -125,17 +125,21 @@ func (h *Hub) renderRead(plugin, client, id string, reads map[string]bool, ok bo
 
 // renderTables returns the table set that a good render installs into its view: the render's
 // tables when the render is tracked (refreshTracked), stayed tracked, and read a table. Else nil:
-// every SQL commit of the plugin marks the view.
+// every SQL commit of the plugin marks the view. The refresh value is read for each render with a
+// record, so an unknown value is logged also for a render that is untracked or read no table.
 func (h *Hub) renderTables(plugin string, r *openRender, refresh json.RawMessage) map[string]bool {
-	if r == nil || r.untracked || len(r.tables) == 0 || !h.refreshTracked(plugin, r, refresh) {
+	if r == nil {
+		return nil
+	}
+	if !h.refreshTracked(plugin, r, refresh) || r.untracked || len(r.tables) == 0 {
 		return nil
 	}
 	return r.tables
 }
 
 // refreshTracked reads the refresh field of a view.render reply: no field (or null) is tracked.
-// "all" is broad. Any other value is broad too, and the hub logs it once for each view: a plugin
-// may send a value that this hub does not know.
+// "all" is broad. Any other value is broad too, and the hub logs the first such value of each
+// view: a plugin may send a value that this hub does not know.
 func (h *Hub) refreshTracked(plugin string, r *openRender, raw json.RawMessage) bool {
 	if len(raw) == 0 || string(raw) == "null" {
 		return true
@@ -143,11 +147,7 @@ func (h *Hub) refreshTracked(plugin string, r *openRender, raw json.RawMessage) 
 	if s := ""; json.Unmarshal(raw, &s) == nil && s == "all" {
 		return false
 	}
-	v := string(raw)
-	if len(v) > 64 {
-		v = v[:64] + "..."
-	}
-	key := plugin + "\x00" + r.viewID + "\x00" + v
+	key := plugin + "\x00" + r.viewID
 	h.vs.mu.Lock()
 	if h.vs.logged == nil {
 		h.vs.logged = map[string]bool{}
@@ -158,6 +158,10 @@ func (h *Hub) refreshTracked(plugin string, r *openRender, raw json.RawMessage) 
 	}
 	h.vs.mu.Unlock()
 	if logIt {
+		v := string(raw)
+		if len(v) > 64 {
+			v = v[:64] + "..."
+		}
 		log.Printf("views %s: view %s: unknown refresh %s; using all", plugin, r.viewID, v)
 	}
 	return false

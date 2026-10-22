@@ -164,8 +164,9 @@ Read tracking is the default. A `view.render` reply can add `"refresh"` beside `
   when it shows state that a SQL commit does not change and that it does not invalidate. The SDK sends it for every render in which a hub call failed (also a
   caught error, or a call that never reached the hub): the hub cannot see such a call, so absence
   would track an incomplete read set.
-- Any other value counts as `"all"`. The hub logs it once for each view (at most 64 lines in
-  all): "view <id>: unknown refresh <value>; using all".
+- Any other value counts as `"all"`. The hub logs the first such value of each view, also for a
+  render that is untracked or read no table (at most 64 lines in all): "view <id>: unknown refresh
+  <value>; using all".
 - A render that read no table, an untracked render (another hub call than a tokened
   `hub.sql.query`, a failed query; docs/sql.md section 9), and a failed render get no table set:
   every SQL commit renders the view again.
