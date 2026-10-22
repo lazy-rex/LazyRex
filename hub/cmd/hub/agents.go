@@ -398,7 +398,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			retry = time.After(time.Second)
 			continue
 		}
-		renudge := h.renudgeAfter
+		renudge := time.Duration(h.renudgeAfter.Load())
 		if renudge == 0 {
 			renudge = noticeRenudgeAfter
 		}
@@ -488,6 +488,9 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			// nudge can come once more after a restart, never less often.
 			if err := h.db.recordNotice(ctx, n, conv, time.Now(), repeat); err != nil {
 				log.Printf("notice to %s: record: %v", n.agent, err)
+			}
+			if !repeat {
+				arm(renudge) // the wake of the one repeat; no other event may come (Codex review of 8169791)
 			}
 			fields := map[string]any{"agent": n.agent, "plugin": n.ns, "intent_rev": revString(n.intentRev)}
 			if repeat {

@@ -19,12 +19,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode/utf8"
 )
 
@@ -32,7 +34,7 @@ import (
 // client.reply frame) adds less than 1 KiB; the Lua limit is 65536 bytes for the whole message.
 const testReplyLimit = 48 << 10
 
-var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
+var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.notice_renudge", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
 	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
@@ -227,6 +229,15 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return map[string]any{"found": true, "pending": pending, "intent_rev": revString(intent)}, nil
+	case "hub.test.notice_renudge":
+		// The time to the one repeat of an unread nudge, for this hub run (default 30 minutes).
+		ms, ok := args["ms"].(float64)
+		if !ok || ms < 1 || ms != math.Trunc(ms) {
+			return nil, bad("invalid: notice_renudge needs a whole ms of at least 1")
+		}
+		h.renudgeAfter.Store(int64(time.Duration(ms) * time.Millisecond))
+		h.kickNotices()
+		return map[string]any{"ms": ms}, nil
 	case "hub.test.stats":
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()

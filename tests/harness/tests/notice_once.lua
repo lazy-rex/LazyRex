@@ -62,3 +62,21 @@ test('a hub restart does not write a nudge again', function()
   op(a, {agent = id, pending = true, once = true})
   wait('a send after a read gives a nudge after the restart', function() return written(id) == 2 end)
 end)
+
+test('an unread nudge is written once more after the repeat time, then not again', function()
+  local id = 'claude:once-3'
+  local a = far('repeat-far', 'once-3')
+  H.hub('hub.test.notice_renudge', {ms = 1500})
+  op(a, {agent = id, pending = true, once = true})
+  wait('the nudge', function() return written(id) == 1 end)
+  -- No other event comes: the loop's own wake must write the repeat (Codex review of 8169791).
+  wait('the one repeat', function() return written(id) == 2 end, 15)
+  local last
+  for _, e in ipairs(H.hub('hub.test.events', {event = 'notice_written'}).events or {}) do
+    if e.agent == id then last = e end
+  end
+  expect(last['repeat'], 'the second write is the repeat').to_be(true)
+  rex.sleep(4)
+  expect(written(id), 'no second repeat').to_be(2)
+  H.hub('hub.test.notice_renudge', {ms = 1800000})
+end)

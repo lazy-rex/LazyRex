@@ -930,7 +930,9 @@ time, and the conversation: the block, the child pid and its start time). A hub 
 reconnect or a rebind does not write it again. Another child process in the pane (a new
 conversation, a spawn, a resume or a restart) gets it again: that conversation never saw it. A
 nudge with no read and no new revision for 30 minutes is written once more (`notice_written` with
-`repeat: true`), then not again until a read or a new revision. A failed store write of the delivery
+`repeat: true`), then not again until a read or a new revision. The loop arms its own wake for the
+repeat when it writes the first nudge, so the repeat needs no other event. In test mode,
+`hub.test.notice_renudge {ms}` sets the repeat time for the hub run. A failed store write of the delivery
 leaves only the memory record, so a restart can give the nudge once more: never fewer nudges.
 Tests: `TestNoticeOnceUntilRead`, `TestNoticeOpForms`, `TestNoticeDue`, `TestNoticeDeliveryStored`,
 `tests/harness/tests/notice_once.lua`.
