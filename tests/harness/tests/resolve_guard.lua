@@ -1,0 +1,66 @@
+-- The harness's own client checks (the view_of flake, 2026-10-22: a View with an empty client).
+-- resolve runs against a fake Rex (H.rex_call); captures go into tables, never into outer locals
+-- (docs/testing.md, "Waiting").
+
+-- with_fake runs fn with H.rex_call and H.diag replaced, and returns fn's result and the diag lines.
+local function with_fake(answers, fn)
+  local real_call, real_diag = H.rex_call, H.diag
+  local got = {lines = {}}
+  H.rex_call = function(method, payload)
+    local a = answers[method]
+    if type(a) == 'function' then return a(payload) end
+    return a
+  end
+  H.diag = function(text) got.lines[#got.lines + 1] = text end
+  local ok, v = pcall(fn)
+  H.rex_call, H.diag = real_call, real_diag
+  if not ok then error(v, 0) end
+  got.value = v
+  return got
+end
+
+local function resolved(id) return {results = {{status = 'resolved', target = {client_id = id}}}} end
+local function inspect(id) return {client = {client_id = id, connection_state = 'connected'}} end
+
+test('resolve gives a connected client whose ID matches', function()
+  local got = with_fake({['target.resolve'] = resolved('client:abc'), ['client.inspect'] = inspect('client:abc')},
+    function() return H.resolve('lazyrex-testview:v1') end)
+  expect(got.value).to_be('client:abc')
+  expect(got.lines).to_have_length(0)
+end)
+
+test('resolve refuses an empty client ID and logs both answers', function()
+  -- client.inspect {client_id = ""} answers for some connected client (the lead's first hypothesis).
+  local got = with_fake({['target.resolve'] = resolved(''), ['client.inspect'] = inspect('client:caller')},
+    function() return H.resolve('lazyrex-testview:v1') end)
+  expect(got.value).to_be(nil)
+  expect(got.lines).to_have_length(1)
+  expect(got.lines[1]).to_match('refused candidate ""')
+  expect(got.lines[1]).to_match('client:caller')
+end)
+
+test('resolve refuses a candidate when client.inspect names another client', function()
+  local got = with_fake({['target.resolve'] = resolved('client:abc'), ['client.inspect'] = inspect('client:other')},
+    function() return H.resolve('lazyrex-testview:v1') end)
+  expect(got.value).to_be(nil)
+  expect(got.lines).to_have_length(1)
+  expect(got.lines[1]).to_match('client:other')
+end)
+
+test('a View never gets a client that is not a client ID', function()
+  local v = {id = 'view-x', route = '/forms/x', label = 'lazyrex-testview:view-x'}
+  expect(H.check_client(v, 'client:abc')).to_be('client:abc')
+  for _, bad in ipairs({'', 'abc', 'client:'}) do
+    local e = expect_error(function() H.check_client(v, bad) end, 'bad_client')
+    expect(e.message).to_match('view%-x')
+  end
+  expect_error(function() H.check_client(v, nil) end, 'bad_client')
+end)
+
+test('perform refuses a missing client before it calls Rex', function()
+  for _, bad in ipairs({'', false}) do
+    local e = expect_error(function() H.perform(bad or nil, 'test.action', {}) end, 'bad_client')
+    expect(e.message).to_match('test%.action')
+    expect(e.message).to_match('traceback')
+  end
+end)
