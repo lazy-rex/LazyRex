@@ -18,14 +18,16 @@ if [ $# -ne 2 ]; then
 fi
 version=$1
 out=$2
-case $version in
-dev) ;;
-v[0-9]*.[0-9]*.[0-9]*) ;;
-*)
+# The whole value, before any build or output: dev, vX.Y.Z or vX.Y.Z-rc.N, with digits only. The
+# case refuses a newline and any other character first, so the line match of grep sees one line.
+bad_version() {
 	echo "release-build: version $version is not vX.Y.Z, vX.Y.Z-rc.N or dev" >&2
 	exit 2
-	;;
+}
+case $version in
+*[!a-z0-9.-]* | "") bad_version ;;
 esac
+printf '%s\n' "$version" | grep -Eqx 'dev|v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?' || bad_version
 root=$(cd "$(dirname "$0")/.." && pwd)
 if [ "$version" != dev ] && [ -n "$(git -C "$root" status --porcelain)" ]; then
 	echo "release-build: the checkout has changes; a release builds from a clean checkout" >&2
@@ -54,7 +56,13 @@ for target in $targets; do
 			-ldflags "-X main.version=$version" -o "$dir/bin/$bin" "$pkg")
 	done
 	cp "$root/sdk/lua/boot.lua" "$root/sdk/lua/lazyrex.lua" "$dir/sdk/lua/"
-	tar -C "$dir" -czf "$stage/archives/$name.tar.gz" bin sdk
+	# COPYFILE_DISABLE: macOS tar adds AppleDouble (._*) entries for extended attributes otherwise.
+	COPYFILE_DISABLE=1 tar -C "$dir" -czf "$stage/archives/$name.tar.gz" bin sdk
+	files=$(tar -tzf "$stage/archives/$name.tar.gz" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')
+	if [ "$files" != "bin/lazyrex-hub bin/lazyrex-view sdk/lua/boot.lua sdk/lua/lazyrex.lua " ]; then
+		echo "release-build: $name.tar.gz holds $files" >&2
+		exit 1
+	fi
 	echo "release-build: $name.tar.gz"
 done
 

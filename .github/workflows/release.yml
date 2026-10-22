@@ -26,6 +26,7 @@ jobs:
         run: |
           (cd hub && go vet ./...)
           (cd view && go vet ./...)
+          scripts/release-build-test.sh
       # Outside the checkout, so the build of each target sees a clean tree.
       - name: Build
         run: scripts/release-build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/dist"
