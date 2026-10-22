@@ -116,7 +116,7 @@ func labStart(t *testing.T) (bin, f, run string) {
 
 // labRehearse runs release rehearse on the fixture run. Its output goes to f/rehearse.log and to
 // stderr; onLine (if set) sees each line while the rehearsal runs. It returns the log path.
-func labRehearse(t *testing.T, bin, f, run, lab string, onLine func(string)) (string, error) {
+func labRehearse(t *testing.T, bin, f, run, lab string, onLine func(string), extra ...string) (string, error) {
 	logp := filepath.Join(f, "rehearse.log")
 	logf, err := os.Create(logp)
 	if err != nil {
@@ -124,7 +124,7 @@ func labRehearse(t *testing.T, bin, f, run, lab string, onLine func(string)) (st
 	}
 	defer logf.Close()
 	pr, pw := io.Pipe()
-	c := exec.Command(bin, "release", "rehearse", "-run", run, "-lab", lab)
+	c := exec.Command(bin, append([]string{"release", "rehearse", "-run", run, "-lab", lab}, extra...)...)
 	c.Stdout, c.Stderr = pw, pw
 	done := make(chan struct{})
 	go func() {
@@ -198,11 +198,44 @@ func labFixture(t *testing.T, f, bin string) {
 	if err := writePeers(lk, &peerBase{Version: 1, Peers: map[string]map[string]basePin{pinHub: {src: {Commit: e.Commit, Digest: e.Digest}}}}); err != nil {
 		t.Fatal(err)
 	}
+	// The probe file (case 14 of the full tier): rows in a table of OLD, as a stand-in for a table that H adds.
+	probes := filepath.Join(f, "probes.sql")
+	os.WriteFile(probes, []byte(`INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k1', '{"v":1}', 1);
+INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k2', '{"v":2}', 1);
+`), 0o600)
 	spec := filepath.Join(f, "spec.json")
 	b, _ = json.Marshal(map[string]any{"kind": "hub", "h": labH, "config": cfg, "release_dir": filepath.Join(f, "release"),
-		"server": "unix:///nonexistent/release-fixture/rex.sock", "dev_log": filepath.Join(f, "dev.log")})
+		"server": "unix:///nonexistent/release-fixture/rex.sock", "dev_log": filepath.Join(f, "dev.log"), "probes": probes})
 	os.WriteFile(spec, b, 0o600)
 	if out, err := exec.Command(bin, "release", "freeze", "-spec", spec, "-run", filepath.Join(f, "run")).CombinedOutput(); err != nil {
 		t.Fatalf("freeze: %v\n%s", err, out)
+	}
+}
+
+// The full tier (c3e): -tier full runs every full phase after the default phases (spawn, pull-stop,
+// to-from, from-to, build-fails, start-fails, resume, h-ended) on the fixture, and passes.
+func TestReleaseRehearseLabFull(t *testing.T) {
+	bin, f, run := labStart(t)
+	lab := filepath.Join("/tmp", fmt.Sprintf("rexlab-release-t%dfull", os.Getpid()))
+	if out, err := labRehearse(t, bin, f, run, lab, nil, "-tier", tierFull); err != nil {
+		t.Fatalf("rehearse -tier full: %v (log %s; the lab %s is kept)", err, out, lab)
+	}
+	var rec relRehearsal
+	if err := json.Unmarshal(mustReadFile(filepath.Join(run, relRehearsalFile)), &rec); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, p := range rec.Phases {
+		if p.Result != "pass" {
+			t.Errorf("phase %s: %s", p.Name, p.Result)
+		}
+		names = append(names, p.Name)
+	}
+	want := "forward rollback spawn pull-stop to-from from-to build-fails start-fails resume h-ended"
+	if got := strings.Join(names, " "); !rec.Pass || rec.Tier != tierFull || got != want {
+		t.Errorf("record: pass %v tier %s phases %q", rec.Pass, rec.Tier, got)
+	}
+	if _, err := os.Stat(lab); err == nil {
+		t.Errorf("the lab %s is still there after a pass", lab)
 	}
 }
