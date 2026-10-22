@@ -11,6 +11,9 @@ package main
 //     within 10 minutes is refused (gave_up, exit 1).
 //   - SIGTERM, SIGINT or SIGHUP: SIGTERM to the child, at most 10 s, then SIGKILL; never a restart.
 //   - <state>/restart.json is the status for readers (stop and status), replaced as a whole.
+//   - Paths (wrapperPaths): at its start, the wrapper finds its invoked path and resolves it once.
+//     Every child, also a crash respawn, runs the resolved file. A later switch of a symlink in the
+//     invoked path changes no child of this wrapper.
 
 import (
 	"bufio"
@@ -39,7 +42,8 @@ const (
 )
 
 type wrapper struct {
-	bin      string
+	bin      string // the resolved executable: every child runs it
+	invoked  string // the executable path as invoked, absolute, symlinks kept
 	args     []string
 	pane     io.Writer   // the wrapper's pane (its stderr)
 	out      *log.Logger // the wrapper's own lines: the pane, and the log once it is open
@@ -77,15 +81,46 @@ func restartMain(ctx context.Context, cfg Config, args []string) int {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stopOnDone(ctx, sigs)()
-	bin, err := os.Executable()
+	invoked, bin, err := wrapperPaths(os.Args[0])
 	if err != nil {
-		log.Print(err)
+		log.Printf("restart: %v", err)
 		return 1
 	}
-	w := &wrapper{bin: bin, args: args, pane: os.Stderr, now: time.Now,
+	w := &wrapper{bin: bin, invoked: invoked, args: args, pane: os.Stderr, now: time.Now,
 		after: time.After, backoff: time.After, stopWait: childStopWait, sigs: sigs}
 	w.refusals = func(ctx context.Context, pid int) []string { return hubRefusals(cfg, w.state)(ctx, pid) }
 	return w.main(cfg.State)
+}
+
+// wrapperPaths returns the wrapper's invoked path and its resolved path. invoked is arg0 made
+// absolute against the start directory when it has a slash, or else found with exec.LookPath on
+// the start PATH; its symlinks stay. resolved is invoked with every symlink resolved. resolved must
+// be the running executable: a path that names another file now refuses the start.
+func wrapperPaths(arg0 string) (invoked, resolved string, err error) {
+	p := arg0
+	if !strings.Contains(arg0, "/") {
+		if p, err = exec.LookPath(arg0); err != nil {
+			return "", "", fmt.Errorf("the wrapper's path %q: %w", arg0, err)
+		}
+	}
+	if invoked, err = filepath.Abs(p); err != nil {
+		return "", "", fmt.Errorf("the wrapper's path %q: %w", arg0, err)
+	}
+	if resolved, err = filepath.EvalSymlinks(invoked); err != nil {
+		return "", "", fmt.Errorf("the wrapper's path %s: %w", invoked, err)
+	}
+	st, err := os.Stat(resolved)
+	if err != nil {
+		return "", "", fmt.Errorf("the wrapper's path %s: %w", invoked, err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return "", "", fmt.Errorf("the running executable: %w", err)
+	}
+	if selfSt, err := os.Stat(self); err != nil || !os.SameFile(st, selfSt) {
+		return "", "", fmt.Errorf("the wrapper's path %s names %s, not the running executable %s", invoked, resolved, self)
+	}
+	return invoked, resolved, nil
 }
 
 // stopOnDone puts SIGTERM into sigs when ctx ends (the signal may also have been SIGINT). The

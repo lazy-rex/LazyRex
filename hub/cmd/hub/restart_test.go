@@ -666,3 +666,65 @@ func TestRestartContextBeforeFirstStart(t *testing.T) {
 		t.Errorf("%d starts, want 0", n)
 	}
 }
+
+// The wrapper's paths: an absolute symlink, a relative path with a slash and a bare name on PATH
+// keep the symlink in invoked and resolve it in resolved. A bare name that PATH does not have, and
+// a path that names another file than the running executable, refuse the start.
+func TestWrapperPaths(t *testing.T) {
+	self, err := filepath.EvalSymlinks(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	link := filepath.Join(dir, "current")
+	if err := os.Symlink(self, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	wd, _ := os.Getwd()
+	t.Setenv("PATH", dir)
+	for arg0, want := range map[string]string{link: link, "./current": filepath.Join(wd, "current"), "current": filepath.Join(dir, "current")} {
+		invoked, resolved, err := wrapperPaths(arg0)
+		if err != nil || invoked != want || resolved != self {
+			t.Errorf("%s: invoked %q, resolved %q, %v; want %q and %q", arg0, invoked, resolved, err, want, self)
+		}
+	}
+	other := filepath.Join(dir, "other")
+	os.WriteFile(other, []byte("#!/bin/sh\n"), 0o700)
+	for arg0, want := range map[string]string{"missing": "the wrapper's path \"missing\"", other: "not the running executable"} {
+		if _, _, err := wrapperPaths(arg0); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", arg0, err, want)
+		}
+	}
+}
+
+// A switch of the invoked symlink after the start changes no child: the crash respawn runs the
+// resolved file, not the file that the link names now.
+func TestRestartRespawnKeepsTheResolvedExecutable(t *testing.T) {
+	wr := newWrapperTest(t, "ready-exit1", "ready-exit0")
+	link := filepath.Join(wr.dir, "current")
+	if err := os.Symlink(os.Args[0], link); err != nil {
+		t.Fatal(err)
+	}
+	invoked, resolved, err := wrapperPaths(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wr.w.bin, wr.w.invoked = resolved, invoked
+	marker := filepath.Join(wr.dir, "new-ran")
+	newBin := filepath.Join(wr.dir, "new")
+	os.WriteFile(newBin, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o700)
+	os.Remove(link)
+	if err := os.Symlink(newBin, link); err != nil {
+		t.Fatal(err)
+	}
+	if code := waitCode(t, wr.runAsync()); code != 0 {
+		t.Fatalf("exit %d\n%s", code, wr.text())
+	}
+	if n := wr.startCount(); n != 2 {
+		t.Errorf("%d starts of the old executable, want 2", n)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the respawn ran the new file of the link")
+	}
+}
