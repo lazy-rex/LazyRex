@@ -50,12 +50,20 @@ const fetchOutEnv = "LAZYREX_FETCH_STDOUT"
 
 // fetchCmd is one git command for runFetchChild.
 type fetchCmd struct {
-	Argv     []string
-	Dir      string    // git's working directory; "" is the hub's
+	Argv []string
+	Dir  string // git's working directory; "" is the hub's
 	// Output reads git's stdout to EOF and returns its error. runFetchChild owns r: on a cancel or
 	// a failure it closes r, which ends a blocked Read, and it does not wait for Output after that.
 	// Output must return after a Read error. nil: git's stdout goes to the hub's stderr.
-	Output   func(r io.Reader) error
+	Output func(r io.Reader) error
+	// Env is added to the environment of the watcher, the gate and git; the fetch variables of
+	// runFetchChild win over it. The manager sets GIT_TERMINAL_PROMPT=0.
+	Env []string
+	// Stderr, when set, gets the standard error of the watcher, the gate, git and git's helpers: one
+	// pipe that they all inherit. runFetchChild copies the pipe into Stderr, and it ends the copy
+	// before every return (fetchResult.StderrOpen: the copy did not end, so Stderr must not be
+	// read). nil: the hub's stderr.
+	Stderr   io.Writer
 	TestStop string // test mode only: the watcher's stop point (fetchStopEnv)
 }
 
@@ -79,6 +87,13 @@ func fetchChildEnv(env ...string) []string {
 // a fetch ends within 5 s of its cancel.
 var fetchGrace = 4 * time.Second
 
+// fetchStderrWait bounds the wait for the end of the stderr copy after a normal end, and
+// fetchStderrMargin the wait after the hub closes the read end.
+var (
+	fetchStderrWait   = time.Second
+	fetchStderrMargin = 100 * time.Millisecond
+)
+
 // fetchSelf is the binary that runs the watcher and the gate: the hub itself.
 var fetchSelf = os.Executable
 
@@ -89,6 +104,7 @@ type fetchResult struct {
 	WatcherStatus syscall.WaitStatus
 	Stopped       bool  // the hub ended the watcher with the hard stop
 	OutputErr     error // fetchCmd.Output failed, returned early, or did not finish
+	StderrOpen    bool  // the copy into fetchCmd.Stderr did not end: do not read Stderr
 }
 
 // OK reports a fetch that the hub may publish: git exited 0, the watcher exited 0 by itself, and
@@ -123,6 +139,15 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 			c.Close()
 		}
 	}()
+	var errR, errW *os.File
+	if fc.Stderr != nil {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return res, err
+		}
+		closers = append(closers, r, w)
+		errR, errW, cmd.Stderr = r, w, w
+	}
 	var outR *os.File
 	if fc.Output != nil {
 		r, w, err := os.Pipe()
@@ -134,7 +159,7 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 		env = append(env, fetchOutEnv+"=1")
 		outR = r
 	}
-	cmd.Env = fetchChildEnv(env...)
+	cmd.Env = fetchChildEnv(append(append([]string{}, fc.Env...), env...)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return res, err
@@ -150,6 +175,37 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 	}
 	res.Watcher = cmd.Process.Pid
 	defer cmd.Process.Release()
+	// errDone closes when the stderr copy ends. The hub closes its write end now, so only the fetch
+	// holds one.
+	var errDone chan struct{}
+	if errR != nil {
+		errW.Close()
+		errDone = make(chan struct{})
+		go func() {
+			io.Copy(fc.Stderr, errR)
+			close(errDone)
+		}()
+	}
+	// endStderr ends the stderr copy before a return. Every writer is in W or G, which have exited
+	// or been killed then, so EOF comes at once; it waits up to wait for it. Then it closes the read
+	// end, which ends a blocked Read, and waits fetchStderrMargin more. No wait adds to the bound of
+	// a cancel: a stopped fetch passes wait 0.
+	endStderr := func(wait time.Duration) {
+		if errDone == nil {
+			return
+		}
+		select {
+		case <-errDone:
+			return
+		case <-time.After(wait):
+		}
+		errR.Close()
+		select {
+		case <-errDone:
+		case <-time.After(fetchStderrMargin):
+			res.StderrOpen = true
+		}
+	}
 	// consumed gets Output's result. An Output that returns nil must have read to EOF: one more
 	// Read proves it. The hub closes its write end now, so only the fetch holds one.
 	var consumed chan error
@@ -243,6 +299,7 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 		case <-deadline:
 			res.Stopped = true
 			res.WatcherStatus = fetchHardStop(res.Watcher, res.Gate)
+			endStderr(0)
 			return res, runErr
 		case <-tick.C:
 			var ws syscall.WaitStatus
@@ -274,8 +331,14 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 						}
 					}
 				}
+				if deadline == nil {
+					endStderr(fetchStderrWait)
+				} else {
+					endStderr(0)
+				}
 				return res, runErr
 			} else if err != nil && !errors.Is(err, syscall.EINTR) {
+				endStderr(0)
 				return res, err
 			}
 		}
