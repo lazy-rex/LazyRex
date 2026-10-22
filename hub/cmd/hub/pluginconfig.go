@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -22,11 +24,15 @@ import (
 // candidate; a spawn copies it to Plugin.run, the metadata of the current instance (section 7,
 // "Run and candidate"). Notice is "" when the manifest has none (code no_notice).
 type pluginRun struct {
-	Name    string            `json:"name"`
-	Source  string            `json:"source"`           // the exact source string
-	Dir     string            `json:"dir"`              // the plugin directory
+	Name   string `json:"name"`
+	Source string `json:"source"` // the exact source string
+	Dir    string `json:"dir"`    // the plugin directory
+	// Entry is the published directory of the run, relative to <state>/plugins: a GitHub cache
+	// entry (github/<owner>/<repo>/<commit>.<token>; Dir is Entry plus the subdir); "" for a local
+	// source.
+	Entry   string            `json:"entry,omitempty"`
 	Commit  string            `json:"commit,omitempty"` // a GitHub source: the locked commit; "" for a local source
-	Digest  string            `json:"digest,omitempty"` // a GitHub source: the locked digest of the cache entry; "" for a local source
+	Digest  string            `json:"digest,omitempty"` // a GitHub source: the locked digest of the whole cache entry (Entry); "" for a local source
 	Tag     string            `json:"tag,omitempty"`    // a latest source: the locked release tag; "" for every other source
 	Path    string            `json:"path"`
 	SDK     string            `json:"sdk,omitempty"` // the manifest sdk: start through the SDK launcher
@@ -354,7 +360,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			s.Err = e.static
 			continue
 		}
-		dir, commit, digest, tag := e.dir, "", "", ""
+		dir, entry, commit, digest, tag := e.dir, "", "", "", ""
 		if e.github {
 			if snap.err != nil {
 				s.Err = fmt.Errorf("plugin %s: %w", e.Source, snap.err)
@@ -367,6 +373,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			}
 			digest = snap.lock.Plugins[e.Source].Digest // lockedDir checked the cache entry against it
 			tag = snap.lock.Plugins[e.Source].Tag       // set only on a latest entry (pluginlock.go)
+			entry = snap.lock.Plugins[e.Source].Dir
 		}
 		m, main, err := readPluginManifest(dir)
 		if err == nil {
@@ -389,8 +396,9 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			// A name in use is a duplicate name: checkGraph refuses every entry with it. The owner
 			// keeps the binding (uses below), and its running instance continues.
 			s.Name, s.Depends = m.Name, m.Depends
-			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Digest: digest, Tag: tag, Path: main, SDK: m.SDK, Events: m.Events, Notice: m.Notice,
-				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots, Prompts: e.Prompts, UserMessaging: e.UserMessaging}
+			// A run is a copy: it shares no map or slice with the entry, which a reload can change.
+			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Entry: entry, Commit: commit, Digest: digest, Tag: tag, Path: main, SDK: m.SDK, Events: m.Events,
+				Notice: m.Notice, Depends: slices.Clone(m.Depends), Args: maps.Clone(e.Args), WatchRoots: slices.Clone(e.WatchRoots), Prompts: e.Prompts, UserMessaging: e.UserMessaging}
 		}
 	}
 	checkGraph(src)
