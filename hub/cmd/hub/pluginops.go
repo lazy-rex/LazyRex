@@ -872,8 +872,18 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		return err
 	}
 	attempt = hex.EncodeToString(b)
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, expect_run, at) VALUES (?, ?, ?, ?, ?)`,
-		attempt, op.ID, call, op.Target, time.Now().UnixMilli()); err != nil {
+	// A stop attempt names the instance of the plugins row that it is for. A stop keeps the row's
+	// instance_id (clearInstance), and any later start writes a new one, also from a rollback hub
+	// that does not write entry_identity: the observation then cannot take another stop for this one.
+	var instance string
+	if call == "stop" {
+		err := h.db.QueryRowContext(ctx, `SELECT instance_id FROM plugins WHERE name = ?`, op.Name).Scan(&instance)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, expect_instance, expect_run, at) VALUES (?, ?, ?, ?, ?, ?)`,
+		attempt, op.ID, call, instance, op.Target, time.Now().UnixMilli()); err != nil {
 		return err
 	}
 	var res any
@@ -1021,27 +1031,33 @@ func (h *Hub) opStop(ctx context.Context, op *pluginOp) (any, error) {
 
 // opObserve ends an op whose call has an attempt without an outcome. The manager does not call
 // again: it reads what the hub knows.
-//   - stop: the stored record is stopped with no instance, and its saved entry identity is the op's
-//     -> the stop happened (the same effect from any caller); else unknown. A row without an
-//     identity (from before it was recorded), or with another entry's, is never a match.
+//   - stop: the stored record is stopped with no instance, its saved entry identity is the op's,
+//     and its instance_id is the one that the attempt was for -> the stop happened (the same
+//     effect from any caller); else unknown. A row without an identity (from before it was
+//     recorded), with another entry's, or with a later instance (a start, also by a rollback hub
+//     that does not write entry_identity) is never a match.
 //   - reload: the hub's entries have the op's intended entry -> done (the hub start or the call read
 //     the file); else unknown.
 //   - start: unknown. A new start goes through the unresolved-intent guard of the start path.
 func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string) error {
 	switch call {
 	case "stop":
-		var desired, block, identity string
-		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity FROM plugins WHERE name = ?`, op.Name).Scan(&desired, &block, &identity)
+		var expect string
+		if err := h.db.QueryRowContext(ctx, `SELECT expect_instance FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&expect); err != nil {
+			return err
+		}
+		var desired, block, identity, instance string
+		err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id FROM plugins WHERE name = ?`, op.Name).Scan(&desired, &block, &identity, &instance)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err == nil && op.EntryIdentity != "" && identity == op.EntryIdentity && desired == "stopped" && block == "" {
+		if err == nil && op.EntryIdentity != "" && identity == op.EntryIdentity && instance == expect && desired == "stopped" && block == "" {
 			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "stop: stopped (observed after the hub restarted)", "")
 		}
 		if err != nil {
 			return h.finishCall(ctx, op, attempt, "unknown", "", "the stop's outcome is unknown: the plugin has no record")
 		}
-		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q, saved with entry %q; the op's entry is %s", desired, block, identity, op.EntryIdentity))
+		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, expect, op.EntryIdentity))
 	case "reload":
 		intended, err := op.intended()
 		if err != nil {
