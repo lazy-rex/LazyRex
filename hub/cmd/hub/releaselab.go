@@ -1,6 +1,6 @@
 package main
 
-// The lab of a rehearsal (docs/releasing.md; plan v2 A1 and A2, c3 design v2): a new directory
+// The lab of a rehearsal (docs/releasing.md): a new directory
 // under /tmp, and the lab copies of the live config, managed file, lock, base and profiles. The lab
 // files come from the bytes that rehearse read once from the live files. Each key that names a live
 // path gets a lab path, then a scan refuses any string value that is a path outside the lab.
@@ -36,7 +36,7 @@ type relLiveFiles struct {
 	Config, Managed, Lock, Base, Profiles []byte
 }
 
-// createLab makes the lab directory (plan v2 A1): a new directory named rexlab-release-<name>
+// createLab makes the lab directory: a new directory named rexlab-release-<name>
 // directly under /tmp, mode 0700, owned by this user, not a symlink. It writes owner.json. It
 // returns the resolved path.
 func createLab(path string) (string, error) {
@@ -255,13 +255,13 @@ func scanLab(lab string, files ...string) error {
 	return nil
 }
 
-// labMirrors makes the GitHub mirrors of a lab (coordinator decision 2026-10-22, the method of the
-// README lab): no GitHub credential goes into a lab process. This process clones each repo with its
-// own git access into <lab>/mirrors/<owner>/<repo>.git (and <repo>, a link, for a URL without .git).
-// The lab git config maps https://github.com/<owner>/ and git@github.com:<owner>/ to the mirrors,
-// and the lab environment uses only that config, never prompts, and allows only the file transport
-// (GIT_ALLOW_PROTOCOL=file): a lab child that reaches for the network fails at once. base is the
-// URL prefix of the real repos (https://github.com/; a test uses local repos). It returns the lab environment additions and the HEAD of each mirror.
+// labMirrors makes the GitHub mirrors of a lab: no GitHub credential goes into a lab process.
+// This process clones each repo with its own git access into <lab>/mirrors/<owner>/<repo>.git
+// (and <repo>, a link, for a URL without .git). The lab git config maps https://github.com/<owner>/
+// and git@github.com:<owner>/ to the mirrors, and the lab environment uses only that config, never
+// prompts, and allows only the file transport (GIT_ALLOW_PROTOCOL=file): a lab child that reaches
+// for the network fails at once. base is the URL prefix of the real repos (https://github.com/; a
+// test uses local repos). It returns the lab environment additions and the HEAD of each mirror.
 func labMirrors(lab, base string, repos [][2]string) ([]string, map[string]string, error) {
 	root := filepath.Join(lab, "mirrors")
 	heads := map[string]string{}

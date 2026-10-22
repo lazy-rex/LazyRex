@@ -646,7 +646,7 @@ func mustCandidate(t *testing.T, w *relWorld) *relCandidate {
 	return c
 }
 
-// Freeze refuses an H that is not on origin/main, a git grep error in the OLD tree (case 10), and
+// Freeze refuses an H that is not on origin/main, a git grep error in the OLD tree, and
 // an OLD tree without the hub; no match gives old_expect_run false.
 func TestReleaseHubFreezeRefusals(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -681,7 +681,7 @@ func TestReleaseHubFreezeRefusals(t *testing.T) {
 	}
 }
 
-// B-u2 and the precheck gates: a changed hold file, a second dev pane, no rehearsal record, a set
+// The precheck gates: a changed hold file, a second dev pane, no rehearsal record, a set
 // LAZYREX_FETCH_ROLE, a missing inherited python3, and an existing stamp each refuse.
 func TestReleaseHubPrecheckRefusals(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -862,7 +862,7 @@ func TestReleaseHubResume(t *testing.T) {
 	}
 }
 
-// B-u4: the replace rows. The home plugin that already runs the target makes zero replace calls;
+// The replace rows. The home plugin that already runs the target makes zero replace calls;
 // a plugin at from gets one call with its instance; a lost reply rerun makes no second call; a
 // stop at begin reruns with the saved instance; a pending intent stops with zero calls; spawn_failed
 // starts with the saved expect_run; a target that never registers fails without a call.
@@ -929,7 +929,7 @@ func TestReleaseHubReplaceRows(t *testing.T) {
 	}
 }
 
-// B-u3: each mutating op stopped at begin or after, then the step run again, reaches the end
+// Each mutating op stopped at begin or after, then the step run again, reaches the end
 // state of an uninterrupted run, or stops before any mutation on an unresolved state.
 func TestReleaseHubInterruptedSteps(t *testing.T) {
 	type tc struct {
@@ -1154,8 +1154,8 @@ func TestReleaseHubPendingCreateAcrossSteps(t *testing.T) {
 	}
 }
 
-// The H binary (design v2 G): in "from from" a failed build leaves no H binary, also when an older
-// one exists (case 11). After a pin moved, a failed retry keeps the verified binary, and the
+// The H binary: in "from from" a failed build leaves no H binary, also when an older
+// one exists. After a pin moved, a failed retry keeps the verified binary, and the
 // rollback pulls the pins back with it.
 func TestReleaseHubBuildKeepsVerifiedBinary(t *testing.T) {
 	w := newRelWorld(t)
@@ -1201,7 +1201,7 @@ func TestReleaseHubBuildKeepsVerifiedBinary(t *testing.T) {
 	}
 }
 
-// A-u3 (design v2 E): a lab spec runs only on a proved lab server, with every path that the steps
+// A lab spec runs only on a proved lab server, with every path that the steps
 // write or run inside the lab; each path alone outside the lab refuses before the lock file. A spec
 // without "lab" refuses a lab server; "lab" and "real" together refuse.
 func TestReleaseLabSpec(t *testing.T) {

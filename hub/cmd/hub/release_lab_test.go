@@ -14,7 +14,7 @@ import (
 	"testing"
 )
 
-// The release lab test (c3 design v2 C; plan v2 A-l1, C-l1). It runs lazyrex-hub release rehearse
+// The release lab test. It runs lazyrex-hub release rehearse
 // on a small fixture of "live" files in its own temp dir: a config with the home plugin only, its
 // lock and base at OLD, a GitHub clone at OLD, and a frozen run. It never reads the real live files
 // and never calls the real Rex server. Lab only: RELEASE_LAB=1. It needs the network (GitHub), go,

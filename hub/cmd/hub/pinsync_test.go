@@ -691,7 +691,7 @@ func TestPullMain(t *testing.T) {
 }
 
 // A failed write of the result lines fails the pull, with the plugin pull prefix. The lock and
-// the base are already written, so the text claims no unchanged lock (codex-23's probe).
+// the base are already written, so the text claims no unchanged lock.
 func TestPullOutputFailure(t *testing.T) {
 	a, b := machines(t)
 	a.repo("lazy-rex", "Messaging", "messaging")
@@ -711,7 +711,7 @@ func TestPullOutputFailure(t *testing.T) {
 }
 
 // A pull that only removes an orphaned lock entry changes the lock. A base write failure then
-// says that the lock changed (codex-23's probe).
+// says that the lock changed.
 func TestPullBaseFailureAfterOrphanRemoval(t *testing.T) {
 	a, b := machines(t)
 	a.repo("lazy-rex", "Messaging", "messaging")

@@ -1,8 +1,8 @@
 package main
 
 // The steps of a hub release (docs/releasing.md): freeze, precheck, stop, backup, checkout, pull,
-// start, replace, verify; rollback; resume. They are the steps of the release 3 and 3.1 kits. The
-// home plugin pin moves from OLD to H through plugin pull; every other pin stays.
+// start, replace, verify; rollback; resume. The home plugin pin moves from OLD to H through plugin
+// pull; every other pin stays.
 //
 // Each step reads the real state first. A rerun after an interruption either reaches the state of
 // an uninterrupted run, or stops before any mutation when the state is an unresolved outcome. No
@@ -394,7 +394,7 @@ func (r *releaser) toolPath() (string, error) {
 
 // sdkPlugins lists the configured plugins whose manifest (in their locked cache entry) has an sdk
 // field. A hub that cannot run SDK plugins refuses them, so a rollback to it must first roll back
-// each of them (coordinator decision, 2026-10-22).
+// each of them.
 func (r *releaser) sdkPlugins() ([]string, error) {
 	l, err := readLock(r.cfg.lock)
 	if err != nil {
@@ -799,8 +799,8 @@ type relReplaceSaved struct {
 	ExpectRun      map[string]string `json:"expect_run,omitempty"`
 }
 
-// replacePlugin makes the plugin of c run the pin to on the hub client, from the pin from (plan v3,
-// B4). expectRun false is the form of a hub without expect_run (the commit is then the only
+// replacePlugin makes the plugin of c run the pin to on the hub client, from the pin from.
+// expectRun false is the form of a hub without expect_run (the commit is then the only
 // check of a run). A pending intent always stops: do not retry.
 func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin, expectRun bool) error {
 	op := "replace-" + to.Commit[:12]

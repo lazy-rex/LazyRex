@@ -1,7 +1,7 @@
 package main
 
 // lazyrex-hub release rehearse -run <live run> -lab /tmp/rexlab-release-<name> [-tier full]
-// (docs/releasing.md; plan v1 section 5, plan v2 A and C3, c3 design v2).
+// (docs/releasing.md).
 //
 // It runs the release of a frozen live run forward and back in a new lab: a lab Rex server
 // (labserver.go), lab copies of the live files, a GitHub clone of LazyRex at OLD, and the same
@@ -177,7 +177,7 @@ func (h *rehearsal) finish(tier string, reasons []string) error {
 }
 
 // supersede renames a current record to rehearsal.json.superseded-<time>-<pid> before any phase:
-// a failed or interrupted rerun then leaves no current record (c3 design v2 D).
+// a failed or interrupted rerun then leaves no current record.
 func (h *rehearsal) supersede() error {
 	p := filepath.Join(h.r.run, relRehearsalFile)
 	if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
@@ -256,8 +256,8 @@ func (h *rehearsal) cmd(dir string, argv ...string) (string, error) {
 	return stdout.String(), nil
 }
 
-// labEnvironment is labEnv with the Go module and build caches of this process (plan v2 A4: shared
-// on purpose, a fresh cache costs minutes).
+// labEnvironment is labEnv with the Go module and build caches of this process (shared on purpose:
+// a fresh cache costs minutes).
 func labEnvironment(lab, server string) ([]string, error) {
 	extra := map[string]string{}
 	out, err := exec.Command("go", "env", "GOPATH", "GOMODCACHE", "GOCACHE").Output()
@@ -274,7 +274,7 @@ func labEnvironment(lab, server string) ([]string, error) {
 }
 
 // setup makes the lab: the clone and the OLD binary, the lab files, the lab server, the lab cache,
-// the lab run (freeze), and OLD in a dev pane with the probe rows (plan v1 section 5).
+// the lab run (freeze), and OLD in a dev pane with the probe rows.
 func (h *rehearsal) setup() error {
 	L := h.lab
 	server := "unix://" + filepath.Join(L, "rex.sock")
@@ -356,7 +356,7 @@ func (h *rehearsal) setup() error {
 	}
 	h.say("the lab server runs (pid %d)", h.l.srv.pid)
 
-	// The lab cache: OLD syncs the lab copy. Plan v2, design v2 B: the lab lock equals the live lock
+	// The lab cache: OLD syncs the lab copy. The lab lock equals the live lock
 	// by its pins (a sync can name new cache dirs), and the base byte for byte.
 	livePins, err := lockPinLines(labCfg.lock) // still the live bytes
 	if err != nil {
@@ -556,8 +556,8 @@ func (h *rehearsal) forwardAs(name string) error {
 }
 
 // forwardChecks checks a forward run: the environment of the lab processes, the data, the schema,
-// zero replaces of the home plugin under H (B-l1), and OLD's plugin status on the lock that H
-// wrote (C3 d).
+// zero replaces of the home plugin under H, and OLD's plugin status on the lock that H
+// wrote.
 func (h *rehearsal) forwardChecks(name string) error {
 	if err := h.checkLabEnv(); err != nil {
 		return err
@@ -578,7 +578,7 @@ func (h *rehearsal) forwardChecks(name string) error {
 	}
 	for _, ev := range after {
 		if ev["event"] == "plugin_replaced" && ev["plugin"] == h.c.Name {
-			return relFail("the H hub replaced the home plugin %s; the forward run expects zero replaces (B-l1)", h.c.Name)
+			return relFail("the H hub replaced the home plugin %s; the forward run expects zero replaces", h.c.Name)
 		}
 	}
 	out, err := h.cmd(filepath.Join(h.lab, "home"), h.oldBin, "plugin", "status", "-config", h.cfg)
@@ -774,7 +774,7 @@ func missing(a, b []string) []string {
 	return out
 }
 
-// tier selects the tier from the default phases (plan v2 C3, design v2): the schema changes of H,
+// tier selects the tier from the default phases: the schema changes of H,
 // the format compare, and the format files.
 func (h *rehearsal) tier() (string, []string, error) {
 	files, err := h.cmd(filepath.Join(h.lab, "release", "LazyRex"), append([]string{"git", "diff", "--name-only", h.c.From.Commit, h.c.To.Commit, "--"}, relFormatFiles()...)...)
@@ -816,7 +816,7 @@ func decideTier(schema, files, formats []string, requested string) (string, []st
 	return tierDefault, []string{"no schema, format or format file change"}, nil
 }
 
-// formats compares the plugin commands of OLD and H on one shared scratch state (c3 design v2 F):
+// formats compares the plugin commands of OLD and H on one shared scratch state:
 // OLD syncs a scratch copy of the lab inputs and exports once (that makes its pull identity); the H
 // scratch is a byte copy of it, with that identity. Then each binary
 // runs sync, export, and pull of the forward pin document. Every output and the resulting lock
@@ -994,7 +994,7 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 }
 
 // relCredentialVars are the environment names that carry a Git or GitHub credential, or a way to
-// one. No lab process may have one (coordinator decision, 2026-10-22).
+// one. No lab process may have one.
 func relCredentialVars() []string {
 	return []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND"}
 }

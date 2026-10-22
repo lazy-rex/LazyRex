@@ -1,16 +1,16 @@
 package main
 
-// The full tier of release rehearse (c3 design v1 item 5, v2 G; c3e). It runs after the default
-// phases, on the same lab. Each phase starts and ends with OLD running and the home pin at OLD:
-//   spawn        OLD writes a spawns row; forward; H reads the row exactly (case 2); the rows of the
-//                spec probe file stay exact (case 14); rollback.
-//   pull-stop    pull stops after its mutation (B-l2, exit 3); pull again; rollback.
-//   to-from      a pull that stopped after the lock write: the backup base put back (case 8).
+// The full tier of release rehearse. It runs after the default phases, on the same lab.
+// Each phase starts and ends with OLD running and the home pin at OLD:
+//   spawn        OLD writes a spawns row; forward; H reads the row exactly; the rows of the
+//                spec probe file stay exact; rollback.
+//   pull-stop    pull stops after its mutation (exit 3); pull again; rollback.
+//   to-from      a pull that stopped after the lock write: the backup base put back.
 //   from-to      a rollback pull that stopped after the lock write: the backup lock put back.
-//   build-fails  pull with a go command whose build fails: no H binary, "from from" (case 11).
-//   start-fails  start with that go command: dev.sh cannot build, the dev pane stays (case 12).
-//   resume       backup stops before the stamp; resume starts OLD again (case 13).
-//   h-ended      after forward, the dev pane closes outside the tool; rollback (case 9).
+//   build-fails  pull with a go command whose build fails: no H binary, "from from".
+//   start-fails  start with that go command: dev.sh cannot build, the dev pane stays.
+//   resume       backup stops before the stamp; resume starts OLD again.
+//   h-ended      after forward, the dev pane closes outside the tool; rollback.
 // After each phase: the probe rows, the schema, the file probe rows, the pin state "from from",
 // the OLD checkout and the back verify list.
 
@@ -186,10 +186,10 @@ func (h *rehearsal) rollbackAs(name string) error {
 	return h.back(name)
 }
 
-// spawnPhase is case 2 and case 14. The probe agent joins in a lab pane under OLD and spawns the
-// probe profile; OLD stores the spawns row. The file probe rows are written while the hub is
-// stopped in the forward run. Under H the row is the same in every OLD column, and hub.workers
-// lists the spawn once. After the rollback, the row is the same again.
+// spawnPhase: the spawns row and the file probe rows. The probe agent joins in a lab pane under
+// OLD and spawns the probe profile; OLD stores the spawns row. The file probe rows are written
+// while the hub is stopped in the forward run. Under H the row is the same in every OLD column,
+// and hub.workers lists the spawn once. After the rollback, the row is the same again.
 func (h *rehearsal) spawnPhase() error {
 	sp, row, err := h.spawnUnderOld()
 	if err != nil {
@@ -490,7 +490,7 @@ func snapshotDB(db *sql.DB) (*dbSnapshot, error) {
 // or writes no row refuses: the check could not see all of its effects.
 func (h *rehearsal) writeFileProbes() error {
 	if h.r.spec.Probes == "" {
-		h.say("the spec has no probe file: case 14 has no rows to check")
+		h.say("the spec has no probe file: no file probe rows to check")
 		return nil
 	}
 	b, err := os.ReadFile(filepath.Join(h.lab, "probes.sql"))
@@ -592,7 +592,7 @@ func sameRow(a, b map[string]string) bool {
 	return true
 }
 
-// pullStopPhase is B-l2: pull stops after its mutation (before the end record), with the pins at
+// pullStopPhase: pull stops after its mutation (before the end record), with the pins at
 // H; a second pull finds "to to" and passes; then rollback.
 func (h *rehearsal) pullStopPhase() error {
 	if err := h.steps("precheck", "stop", "backup", "checkout"); err != nil {
@@ -610,7 +610,7 @@ func (h *rehearsal) pullStopPhase() error {
 	return h.rollbackAs("pull-stop")
 }
 
-// partialPhase is case 8: after pull, the backup base ("to from") or the backup lock ("from to")
+// partialPhase: after pull, the backup base ("to from") or the backup lock ("from to")
 // is put back, as a stop between the lock write and the base write leaves it. Then rollback.
 func (h *rehearsal) partialPhase(state string) error {
 	if err := h.steps("precheck", "stop", "backup", "checkout", "pull"); err != nil {
@@ -696,7 +696,7 @@ func goBuilds(calls string) []string {
 	return out
 }
 
-// buildFailsPhase is case 11: pull with the failing go command fails at the build, before any pin
+// buildFailsPhase: pull with the failing go command fails at the build, before any pin
 // moves; no H binary stays (the one of the earlier phases is removed first). Then rollback with
 // the real PATH.
 func (h *rehearsal) buildFailsPhase() error {
@@ -728,7 +728,7 @@ func (h *rehearsal) buildFailsPhase() error {
 	return h.rollbackAs("build-fails")
 }
 
-// startFailsPhase is case 12: start with the failing go command. dev.sh in the dev pane runs the
+// startFailsPhase: start with the failing go command. dev.sh in the dev pane runs the
 // go of the child PATH, so its build fails and no new hub starts; the step fails and the dev pane
 // stays. Then rollback with the real PATH closes it.
 func (h *rehearsal) startFailsPhase() error {
@@ -768,7 +768,7 @@ func (h *rehearsal) startFailsPhase() error {
 	return h.rollbackAs("start-fails")
 }
 
-// resumePhase is case 13: backup stops after its begin record of the stamp, so no stamp exists;
+// resumePhase: backup stops after its begin record of the stamp, so no stamp exists;
 // resume starts OLD again.
 func (h *rehearsal) resumePhase() error {
 	if err := h.steps("precheck", "stop"); err != nil {
@@ -791,7 +791,7 @@ func (h *rehearsal) resumePhase() error {
 	return h.back("resume")
 }
 
-// hEndedPhase is case 9: after a forward run, the dev pane of H closes outside the release steps;
+// hEndedPhase: after a forward run, the dev pane of H closes outside the release steps;
 // rollback then makes no hub call to H.
 func (h *rehearsal) hEndedPhase() error {
 	if err := h.forwardAs("h-ended-forward"); err != nil {

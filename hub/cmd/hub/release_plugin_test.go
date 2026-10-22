@@ -437,9 +437,8 @@ func TestReleasePluginStartBarrier(t *testing.T) {
 	w.stepErr("precheck", "did not finish its start")
 }
 
-// Review R14 (codex-26's TestReviewPluginFailedPrecheckCannotPull): a failed precheck leaves no
-// checkpoint, so pull refuses after backup and the pin stays at FROM. A failed rerun after a passed
-// precheck removes the earlier checkpoint too.
+// A failed precheck leaves no checkpoint, so pull refuses after backup and the pin stays at FROM.
+// A failed rerun after a passed precheck removes the earlier checkpoint too.
 func TestReleasePluginFailedPrecheckCannotPull(t *testing.T) {
 	w := newPluginWorld(t, "0")
 	w.freeze()
@@ -460,9 +459,8 @@ func TestReleasePluginFailedPrecheckCannotPull(t *testing.T) {
 	w.stepErr("pull", "no hub of precheck")
 }
 
-// Review R15 (codex-26's TestReviewPluginFailedArgvReadCannotFreeze): a failed or empty argv read
-// of the hub refuses freeze; it is not "no -sdk". A read argv without -sdk is that state (a plugin
-// without the SDK passes).
+// A failed or empty argv read of the hub refuses freeze; it is not "no -sdk". A read argv without
+// -sdk is that state (a plugin without the SDK passes).
 func TestReleasePluginArgvReadFailure(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -493,8 +491,8 @@ func TestReleasePluginArgvReadFailure(t *testing.T) {
 	}
 }
 
-// Review R16 (codex-26's TestReviewPluginVerifyChecksPins): verify checks the pins. The lock of P
-// back at FROM while P runs TO, or another pin moved, fails verify.
+// Verify checks the pins. The lock of P back at FROM while P runs TO, or another pin moved, fails
+// verify.
 func TestReleasePluginVerifyChecksPins(t *testing.T) {
 	for _, c := range []struct {
 		name string

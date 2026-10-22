@@ -1,6 +1,6 @@
 package main
 
-// Plugin sources (design v3, approved 2026-10-20; docs/plugin-sources.md): the manifest rules and
+// Plugin sources (docs/plugin-sources.md): the manifest rules and
 // the dependency graph.
 // A config entry names a source; the manifest (lazyrex.json at the source root) owns the name, the
 // main file, events, notice and depends. These functions read and check; they start nothing.
@@ -31,8 +31,8 @@ type pluginManifest struct {
 	Test    json.RawMessage `json:"test"`
 }
 
-// maxManifestBytes is the largest lazyrex.json that the hub and the harness accept (coordinator
-// decision, 2026-10-20: the hub refuses plugin manifests over 64 KiB by bounding the read).
+// maxManifestBytes is the largest lazyrex.json that the hub and the harness accept: the hub
+// refuses a plugin manifest over 64 KiB by bounding the read.
 const maxManifestBytes = 64 << 10
 
 // readManifestBytes reads dir/lazyrex.json. It reads at most maxManifestBytes+1 bytes of input,
