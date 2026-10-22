@@ -1277,6 +1277,12 @@ func (h *Hub) workersList(ctx context.Context) (any, error) {
 		if s.Agent != "" {
 			w["agent_id"] = s.Agent
 		}
+		// Read after this worker's recovery (workerBlocks): two workers are not one snapshot.
+		if id, err := h.workerIdentity(ctx, s); err != nil {
+			return nil, err
+		} else if id != "" {
+			w["identity"] = id
+		}
 		if s.Block != "" {
 			w["block_id"], w["window_id"] = s.Block, s.Window
 		}
@@ -1675,7 +1681,7 @@ var hubToolActions = []map[string]any{
 			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
 			"required": []string{"profile", "key"}, "additionalProperties": false}},
 	{"name": "hub.workers", "kind": "client", "title": "List workers",
-		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status.",
+		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status. An open agent worker also has identity: current (its pane has a current conversation identity) or none.",
 		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
 	{"name": "hub.stop", "kind": "client", "title": "Stop a worker",
 		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. Any agent can stop any worker, also one that another agent or the user started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
@@ -1988,4 +1994,31 @@ func (h *Hub) cwdUnlock(ctx context.Context, owner string, admin bool, args map[
 		}
 	}
 	return map[string]any{"locked": false, "path": path}, nil
+}
+
+// workerIdentity is the identity field of a worker: for an open spawn with an agent_id (the spawn
+// row, not the current profile, which can change or go), its pane's identity; "" (no field) for
+// every other worker.
+func (h *Hub) workerIdentity(ctx context.Context, s *spawnRow) (string, error) {
+	if s.Status != "open" || s.Agent == "" {
+		return "", nil
+	}
+	return h.paneIdentity(ctx, s.Block)
+}
+
+// paneIdentity is "current" when the pane has a current conversation identity (identity.go: an
+// accepted hook report; cleared on exit and when the conversation resumes in another pane), else
+// "none". Only no row or an empty current is "none": a failed read is an error, never "none".
+func (h *Hub) paneIdentity(ctx context.Context, block string) (string, error) {
+	var current string
+	err := h.db.QueryRowContext(ctx, `SELECT current FROM identity_panes WHERE block_id = ?`, block).Scan(&current)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "none", nil
+	case err != nil:
+		return "", fmt.Errorf("the identity of pane %s: %w", block, err)
+	case current == "":
+		return "none", nil
+	}
+	return "current", nil
 }

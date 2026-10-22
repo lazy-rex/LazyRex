@@ -51,6 +51,7 @@ type ctlView struct {
 	ownTwice bool     // more than one connected hub reports this state
 	localErr error    // the state or its restart lock cannot be read: nothing about this state is known
 	plugins  []string // the refused plugins of the own hub (pluginrefusal.go); nil when not read
+	agents   []string // running agent panes without a current identity (agentidentity.go); nil when not read
 }
 
 type hubClient struct {
@@ -79,6 +80,7 @@ func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
 	v := ctlLook(cfg)
 	if cmd == "status" {
 		v.readPlugins()
+		v.readAgents()
 		code, text := v.statusText()
 		fmt.Fprintln(stdout, text)
 		return code
@@ -269,6 +271,9 @@ func (v *ctlView) statusText() (int, string) {
 		}
 		add(s)
 		for _, l := range v.plugins {
+			add(l)
+		}
+		for _, l := range v.agents {
 			add(l)
 		}
 	case v.holder > 0 && !v.trusted:
