@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fetchedAdd admits an add of src and runs its resolving and fetching phases: the op is in
@@ -474,5 +475,38 @@ func TestPluginOpLockRetainedDir(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The read-back after a failed write:managed rename reads at most managedFileLimit+1 bytes (the
+// lead, lead-c3final): here the managed path is a symlink to an endless file, and the read-back
+// returns, not_applied.
+func TestPluginOpManagedReadBackLimit(t *testing.T) {
+	h, _, _ := opsTestHub(t, "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plugins.json")
+	if err := os.Symlink("/dev/zero", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	done := make(chan error, 1)
+	go func() {
+		done <- h.renameAttempt(context.Background(), &pluginOp{ID: "limit"}, "write:managed", path, []byte("{}\n"), "limit")
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the rename in a read-only directory did not fail")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the read-back did not return in 10 s")
+	}
+	var proof string
+	h.db.QueryRow(`SELECT proof FROM plugin_op_attempts WHERE op_id = ?`, "limit").Scan(&proof)
+	if !strings.HasPrefix(proof, "not_applied") {
+		t.Fatalf("proof %q", proof)
 	}
 }
