@@ -1,6 +1,6 @@
 # Plugin SQL databases: reference (hub.sql)
 
-Status: **built on branch hub/sql-r2 and hub/sql-next, lab only** (2026-10-22). Not on main, not live.
+Status: **built on branches hub/sql-r2, hub/sql-next and hub/sql-lab, lab only** (2026-10-22). Not on main, not live.
 Plugin authors read plugin-sdk.md (the SDK, `require('lazyrex')`); this page is the hub contract
 under the SDK. Labels: "built" (code and a test on this branch), "observed" (with the version),
 "not yet".
@@ -12,7 +12,8 @@ hub.
 ## 1. The database (built)
 
 - One file for each plugin name: `<state>/sql/<name>.db` (with `-wal` and `-shm`). A replace, a
-  stop, a source change and a hub restart keep the file. The hub never deletes it.
+  stop, a source change and a hub restart keep the file. The hub never deletes it;
+  `hub.admin.sql_return` (section 11) moves it aside.
 - Settings: WAL, `synchronous = FULL`, `foreign_keys = ON`, `trusted_schema = OFF`, defensive mode,
   no ATTACH (`SQLITE_LIMIT_ATTACHED = 0`), `max_page_count` for 1 GiB. A plugin cannot change them.
 - Two connections: a writer (all writes and handler transactions) and a read-only reader (a query
@@ -147,6 +148,31 @@ authorized at CREATE.
   views again.
 - Not yet: read tracking (the views that read a changed table render again, not every view).
 
+## 11. Rollback: hub.admin.sql_return (built)
+
+`hub.admin.sql_return {plugin}` takes a plugin back from hub.sql to its store version. The admin
+guard applies. Reply: `{returned = "<directory>"}` (the backup of this return), or `""` when there
+was no file. The plugin's SQL data written after the cutover is not in the store version: that loss
+is accepted (coordinator decision).
+
+- It refuses while the plugin is running or desired running (`refused`): stop it first. It holds
+  the plugin's lifecycle lock, so the plugin does not start during the call.
+- The steps, each safe to run again:
+  1. A marker `sql_returns(plugin, stamp)` in hub.db. While it exists, the hub does not open the
+     file (`hub.sql.*` gives `unavailable`), and the start drain skips it.
+  2. The outbox drains under the plugin's SQL lock. If a row stays, the call fails
+     (`unavailable`) and moves nothing.
+  3. The hub closes its writer and reader of the file. No independent copy of a live file is made.
+  4. `<name>.db`, then `-wal` and `-shm`, move to `<state>/sql-returned/<name>-<stamp>/`, outside
+     `<state>/sql`. A file that is already moved is skipped. Both directories are synced.
+  5. One hub.db transaction deletes the plugin's `sql_notice_plugins` row, its `notice_receipts`
+     and the marker. Then `hub.store.batch` notify ops of the plugin work again.
+- A crash between two steps leaves the marker: no start drains the outbox or opens the file, and
+  the next call continues with the same stamp.
+- A later forward starts with a new, empty file. The first SQL notice moves the notice path again.
+- Rollback procedure: `hub.admin.stop`; `hub.admin.sql_return`; move the release clone back;
+  `hub.admin.start`.
+
 ## 10. Tests
 
 Unit (`go test ./cmd/hub -run TestSQL`, also `-race`): values and tags, refusals, one statement,
@@ -155,7 +181,13 @@ fence, saved replies, batches, paging, notices (outbox, retry, receipts, notices
 `hub.store.ops_scan`.
 
 Lab (`HARNESS_LAB=1 go test ./cmd/hub -run TestSQLWireLab`): a Rex Lua plugin; NULL in the middle and
-at the end of a row, a large integer, a handler transaction, `hub.test.sql`, the commit faults.
+at the end of a row, a large integer, a handler transaction, `hub.test.sql`, the commit faults,
+`hub.admin.sql_return` (refused while running; after a stop, the file moves, and the next start has
+an empty file).
+
+Unit `TestSQLReturn`: a crash after each step of `hub.admin.sql_return`, then a restart of the SQL
+service (a call is `unavailable`), then the call again; each outbox row reaches hub.db once; store
+notices after the return; a later forward.
 
 Harness (docs/testing.md): `sql()`, `sql_write()`, `inject{match = {sql_commit_writes = t}}`.
 
