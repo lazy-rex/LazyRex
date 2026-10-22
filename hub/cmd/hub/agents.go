@@ -97,26 +97,49 @@ func (h *Hub) childPID(ctx context.Context, blockID string) (int, error) {
 }
 
 func (h *Hub) childPIDIn(ctx context.Context, sess, blockID string) (int, error) {
+	c, err := h.childProcIn(ctx, sess, blockID)
+	return c.pid, err
+}
+
+// paneChild is a block's child process as one Rex terminal.process answer reports it.
+type paneChild struct {
+	pid  int    // 0: no child (it exited)
+	path string // the executable
+	// invoked is the path given to exec (not argv0). Rex reports it only while it still resolves to
+	// path: after a symlink moves (a CLI update) it is "" (lab, 2026-10-22).
+	invoked string
+}
+
+// childProcIn reads a block's child process.
+func (h *Hub) childProcIn(ctx context.Context, sess, blockID string) (paneChild, error) {
 	var out struct {
 		Child *struct {
-			PID int `json:"pid"`
+			PID     int    `json:"pid"`
+			Path    string `json:"path"`
+			Invoked string `json:"invoked_path"`
 		} `json:"child"`
 	}
 	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.process", sess, blockID, nil, &out); err != nil {
-		return 0, err
+		return paneChild{}, err
 	}
 	if out.Child == nil {
-		return 0, nil
+		return paneChild{}, nil
 	}
-	return out.Child.PID, nil
+	return paneChild{out.Child.PID, out.Child.Path, out.Child.Invoked}, nil
 }
 
 // paneOf finds the pane whose child process is an ancestor of pid. Agents may run in any
 // session: the work session is searched first, then every other session (attached first).
 func (h *Hub) paneOf(ctx context.Context, pid int) (sess, blockID string, child int, err error) {
+	sess, blockID, c, err := h.paneChildOf(ctx, pid)
+	return sess, blockID, c.pid, err
+}
+
+// paneChildOf is paneOf with the child process as the same Rex answer reports it.
+func (h *Hub) paneChildOf(ctx context.Context, pid int) (sess, blockID string, child paneChild, err error) {
 	ids, err := h.sessionIDs(ctx)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", paneChild{}, err
 	}
 	// The work session is "" while it is being created again: search the other sessions then.
 	work := h.workSession()
@@ -134,16 +157,16 @@ func (h *Hub) paneOf(ctx context.Context, pid int) (sess, blockID string, child 
 		if sessionGone(err) {
 			continue
 		} else if err != nil {
-			return "", "", 0, err
+			return "", "", paneChild{}, err
 		}
 		for b := range blocks {
-			c, err := h.childPIDIn(ctx, s, b)
-			if err == nil && c > 0 && descendsFrom(pid, c) {
+			c, err := h.childProcIn(ctx, s, b)
+			if err == nil && c.pid > 0 && descendsFrom(pid, c.pid) {
 				return s, b, c, nil
 			}
 		}
 	}
-	return "", "", 0, nil
+	return "", "", paneChild{}, nil
 }
 
 // bindingSession is the session of an agent's pane. A binding from before sessions were recorded

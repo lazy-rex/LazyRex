@@ -32,6 +32,9 @@ import (
 const identitySchema = `
 -- One row per pane with an agent conversation. child_pid/child_start is the pane's process
 -- generation. kind is the kind of the current conversation. reporter_start orders hook reports.
+-- child_path/child_invoked (added in workers.go): the generation's executable and exec path, the first
+-- complete values that the Rex answer of an accepted report gave (agentrestart.go); cleared with the
+-- generation.
 CREATE TABLE IF NOT EXISTS identity_panes (block_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, child_pid INTEGER NOT NULL,
   child_start TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', current TEXT NOT NULL DEFAULT '', reporter_start TEXT NOT NULL DEFAULT '');
 -- state: current (runs in block_id), superseded (replaced in its pane by another conversation),
@@ -75,6 +78,7 @@ func startBefore(a, b string) bool {
 
 type identityPane struct {
 	block, session, childStart, kind, current, reporterStart string
+	childPath, childInvoked                                  string
 	childPID                                                 int
 }
 
@@ -112,7 +116,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	if rstart == "" {
 		return nil, bad("not_in_pane: caller pid %d is gone", reporter)
 	}
-	sess, block, child, err := h.paneOfHint(ctx, reporter, hint)
+	sess, block, proc, err := h.paneOfHint(ctx, reporter, hint)
+	child := proc.pid
 	if err != nil {
 		return nil, err
 	}
@@ -155,8 +160,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	}
 	defer tx.Rollback()
 	var row identityPane
-	err = tx.QueryRowContext(ctx, `SELECT block_id, session_id, child_pid, child_start, kind, current, reporter_start FROM identity_panes WHERE block_id = ?`, block).
-		Scan(&row.block, &row.session, &row.childPID, &row.childStart, &row.kind, &row.current, &row.reporterStart)
+	err = tx.QueryRowContext(ctx, `SELECT block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked FROM identity_panes WHERE block_id = ?`, block).
+		Scan(&row.block, &row.session, &row.childPID, &row.childStart, &row.kind, &row.current, &row.reporterStart, &row.childPath, &row.childInvoked)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		row = identityPane{block: block}
@@ -188,10 +193,19 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	if hook {
 		rs = rstart
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start) VALUES (?, ?, ?, ?, ?, ?, ?)
+	// The generation's exec facts come only from this report's Rex answer (the same child pid). The
+	// first complete values stay for the generation: a later answer has a null exec path after an update.
+	path, invoked := "", ""
+	if row.childPID == child && row.childStart == cstart {
+		path, invoked = row.childPath, row.childInvoked
+	}
+	if (path == "" || invoked == "") && cstart != "" && proc.path != "" && proc.invoked != "" {
+		path, invoked = proc.path, proc.invoked
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (block_id) DO UPDATE SET session_id = excluded.session_id, child_pid = excluded.child_pid, child_start = excluded.child_start,
-		kind = excluded.kind, current = excluded.current, reporter_start = excluded.reporter_start`,
-		block, sess, child, cstart, kind, id, rs); err != nil {
+		kind = excluded.kind, current = excluded.current, reporter_start = excluded.reporter_start, child_path = excluded.child_path, child_invoked = excluded.child_invoked`,
+		block, sess, child, cstart, kind, id, rs, path, invoked); err != nil {
 		return nil, err
 	}
 	var state, pred, oldName string
@@ -278,15 +292,15 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 
 // paneOfHint finds the caller's pane, the hinted block first. The hint is not trusted: the pid
 // ancestry decides.
-func (h *Hub) paneOfHint(ctx context.Context, pid int, hint string) (sess, block string, child int, err error) {
+func (h *Hub) paneOfHint(ctx context.Context, pid int, hint string) (sess, block string, child paneChild, err error) {
 	if hint != "" {
 		if s, err := h.findBlockSession(ctx, hint); err == nil && s != "" {
-			if c, err := h.childPIDIn(ctx, s, hint); err == nil && c > 0 && descendsFrom(pid, c) {
+			if c, err := h.childProcIn(ctx, s, hint); err == nil && c.pid > 0 && descendsFrom(pid, c.pid) {
 				return s, hint, c, nil
 			}
 		}
 	}
-	return h.paneOf(ctx, pid)
+	return h.paneChildOf(ctx, pid)
 }
 
 // paneName is the agent's display name: the tab (window) label, or the pane label when the tab
@@ -439,7 +453,7 @@ func (h *Hub) identityChildExited(ctx context.Context, block string) {
 	if pid != 0 && alive(pid, start) {
 		return // the recorded process still runs: the event is for another one
 	}
-	h.db.ExecContext(ctx, `UPDATE identity_panes SET current = '', child_pid = 0, child_start = '', reporter_start = '' WHERE block_id = ?`, block)
+	h.db.ExecContext(ctx, `UPDATE identity_panes SET current = '', child_pid = 0, child_start = '', reporter_start = '', child_path = '', child_invoked = '' WHERE block_id = ?`, block)
 	if cur != "" {
 		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', updated = ? WHERE identity = ? AND block_id = ?`,
 			time.Now().UTC().Format(time.RFC3339Nano), cur, block)

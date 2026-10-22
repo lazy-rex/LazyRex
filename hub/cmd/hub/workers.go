@@ -205,6 +205,13 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		`ALTER TABLE spawns ADD COLUMN generation INTEGER NOT NULL DEFAULT 0`,
 		// The identity that a resume spawn continues (resume.go); '' on other spawns.
 		`ALTER TABLE spawns ADD COLUMN resume_of TEXT NOT NULL DEFAULT ''`,
+		// A restart's pane and configured program (agentrestart.go); a resume-only table has none.
+		`ALTER TABLE agent_op_targets ADD COLUMN stop_block TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agent_op_targets ADD COLUMN stop_session TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agent_op_targets ADD COLUMN program TEXT NOT NULL DEFAULT ''`,
+		// The exec facts of a pane's process generation (identity.go); '' on rows from before.
+		`ALTER TABLE identity_panes ADD COLUMN child_path TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE identity_panes ADD COLUMN child_invoked TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err

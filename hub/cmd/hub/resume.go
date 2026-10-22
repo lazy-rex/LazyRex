@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS agent_op_targets (op_id TEXT NOT NULL, identity TEXT 
   phase TEXT NOT NULL, source_spawn TEXT NOT NULL DEFAULT '', spawn_id TEXT NOT NULL DEFAULT '',
   block_id TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL,
   admitted TEXT NOT NULL DEFAULT '', -- identities.updated at admission: the generation that may launch
-  child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', -- the new pane's program, at its first look
+  child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', -- the new pane's program, at its first look;
+  -- for a restart, first the program to stop. stop_block, stop_session and program (added in workers.go):
+  -- a restart's pane and configured program.
   PRIMARY KEY (op_id, identity));
 -- One active target for each identity, across operations and keys.
 CREATE UNIQUE INDEX IF NOT EXISTS agent_op_active ON agent_op_targets (identity)
@@ -96,27 +98,38 @@ const (
 	resumeRebindWait = 120 * time.Second
 )
 
-var activePhases = []string{"admitted", "launching", "launched", "prompt_sending", "prompt_sent", "unknown"}
+// restart_admitted, stopping, terminating and killing are the phases of a restart before its resume
+// (agentrestart.go).
+var activePhases = []string{"restart_admitted", "stopping", "terminating", "killing", "admitted", "launching", "launched", "prompt_sending", "prompt_sent", "unknown"}
 
 type opTarget struct {
 	op, identity, phase, sourceSpawn, spawn, block, detail, updated, admitted string
 	seq, childPID                                                             int
 	childStart                                                                string
+	stopBlock, stopSession, program                                           string // a restart: the pane to stop and its configured program
 }
 
 // adminResume is hub.admin.resume {key, agent} | {key, kind?, session_id?} | {key, release}. The
 // admin guard runs before it (main.go). The reply is the operation's current state; the caller
 // reads it again with the same key.
 func (h *Hub) adminResume(ctx context.Context, args map[string]any) (any, error) {
+	return h.adminAgentOp(ctx, "resume", args)
+}
+
+// adminAgentOp admits a resume or a restart (agentrestart.go) operation, or replays it.
+func (h *Hub) adminAgentOp(ctx context.Context, action string, args map[string]any) (any, error) {
 	key, _ := args["key"].(string)
 	if key == "" || len(key) > 128 {
 		return nil, bad("key is required (at most 128 characters)")
 	}
-	req := map[string]any{"action": "resume"}
+	req := map[string]any{"action": action}
 	for name, v := range args {
 		switch name {
 		case "key":
 		case "agent", "kind", "session_id", "release":
+			if name == "release" && action != "resume" {
+				return nil, bad("release is an argument of hub.admin.resume")
+			}
 			s, ok := v.(string)
 			if !ok || s == "" {
 				return nil, bad("%s must be a non-empty string", name)
@@ -145,7 +158,11 @@ func (h *Hub) adminResume(ctx context.Context, args map[string]any) (any, error)
 	if id, ok := req["release"].(string); ok {
 		return h.releaseTarget(ctx, key, string(fp), id)
 	}
-	targets, err := h.resumeTargets(ctx, req)
+	resolve := h.resumeTargets
+	if action == "restart" {
+		resolve = h.restartTargets
+	}
+	targets, err := resolve(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -156,26 +173,27 @@ func (h *Hub) adminResume(ctx context.Context, args map[string]any) (any, error)
 		return nil, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO agent_ops VALUES (?, 'admin', ?, 'resume', ?, ?)`, opID, key, string(fp), now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO agent_ops VALUES (?, 'admin', ?, ?, ?, ?)`, opID, key, action, string(fp), now); err != nil {
 		return nil, err
 	}
 	for i, t := range targets {
-		if t.phase == "admitted" {
+		if t.phase == "admitted" || t.phase == "restart_admitted" {
 			var other string
 			// The store has one connection, so this check and the insert see no other admission.
 			if tx.QueryRowContext(ctx, `SELECT op_id FROM agent_op_targets WHERE identity = ? AND phase IN `+inList(activePhases), t.identity).Scan(&other) == nil {
 				t.phase, t.detail = "refused", "busy: operation "+other+" is active for this agent"
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_op_targets (op_id, identity, seq, phase, source_spawn, detail, updated, admitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			opID, t.identity, i, t.phase, t.sourceSpawn, t.detail, now, t.admitted); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_op_targets (op_id, identity, seq, phase, source_spawn, detail, updated, admitted,
+			child_pid, child_start, stop_block, stop_session, program) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			opID, t.identity, i, t.phase, t.sourceSpawn, t.detail, now, t.admitted, t.childPID, t.childStart, t.stopBlock, t.stopSession, t.program); err != nil {
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	h.ev.emit("agent_op_admitted", map[string]any{"op_id": opID, "action": "resume", "targets": len(targets)})
+	h.ev.emit("agent_op_admitted", map[string]any{"op_id": opID, "action": action, "targets": len(targets)})
 	h.kickResume()
 	return h.opReply(ctx, opID)
 }
@@ -291,7 +309,8 @@ func (h *Hub) releaseTarget(ctx context.Context, key, request, identity string) 
 }
 
 func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTarget, error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted, child_pid, child_start
+	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted, child_pid, child_start,
+		stop_block, stop_session, program
 		FROM agent_op_targets WHERE `+where+` ORDER BY updated, seq`, args...)
 	if err != nil {
 		return nil, err
@@ -300,7 +319,8 @@ func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTar
 	var out []opTarget
 	for rows.Next() {
 		var t opTarget
-		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted, &t.childPID, &t.childStart); err != nil {
+		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted, &t.childPID, &t.childStart,
+			&t.stopBlock, &t.stopSession, &t.program); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -400,15 +420,20 @@ func (h *Hub) resumeStep(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// A target waits for a slot before its first action: a resume before its launch, a restart before
+	// its stop. A restart keeps its slot from its stop through its resume.
+	waiting := func(t opTarget) bool {
+		return t.phase == "restart_admitted" || t.phase == "admitted" && t.stopBlock == ""
+	}
 	inFlight := 0
 	for _, t := range ts {
-		if t.phase != "admitted" {
+		if !waiting(t) {
 			inFlight++
 		}
 	}
 	for i := range ts {
 		t := &ts[i]
-		if t.phase == "admitted" {
+		if waiting(*t) {
 			if inFlight >= resumeInFlight {
 				continue
 			}
@@ -438,6 +463,8 @@ func (h *Hub) resumeAdvance(ctx context.Context, t *opTarget) error {
 	}
 	since, _ := time.Parse(time.RFC3339Nano, t.updated)
 	switch t.phase {
+	case "restart_admitted", "stopping", "terminating", "killing":
+		return h.restartAdvance(ctx, t, since)
 	case "admitted":
 		return h.resumeLaunch(ctx, t)
 	case "launching", "unknown":
@@ -601,6 +628,9 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 type paneState struct {
 	child, owner int // 0: no child (it exited), no owner
 	state        string
+	path         string // the child's executable
+	invoked      string // the child's exec path (Rex invoked_path): the path given to exec, not argv0
+	foreground   int    // the pid in the terminal's foreground
 }
 
 // paneProgram reads the pane's child process (terminal.process) and its root status record. Rex
@@ -614,14 +644,22 @@ func (h *Hub) paneProgram(ctx context.Context, sess, block string) (paneState, e
 	}
 	var proc struct {
 		Child *struct {
-			PID int `json:"pid"`
+			PID     int    `json:"pid"`
+			Path    string `json:"path"`
+			Invoked string `json:"invoked_path"`
 		} `json:"child"`
+		Foreground *struct {
+			PID int `json:"pid"`
+		} `json:"foreground"`
 	}
 	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.process", sess, block, nil, &proc); err != nil {
 		return p, err
 	}
 	if proc.Child != nil {
-		p.child = proc.Child.PID
+		p.child, p.path, p.invoked = proc.Child.PID, proc.Child.Path, proc.Child.Invoked
+	}
+	if proc.Foreground != nil {
+		p.foreground = proc.Foreground.PID
 	}
 	var status struct {
 		Records []struct {

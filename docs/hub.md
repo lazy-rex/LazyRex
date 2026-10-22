@@ -551,6 +551,28 @@ Profiles: see "Profiles and workers" (`resume`). Observed on 2026-10-22 (lab, Co
 
 Test: `lazyrex-hub test -file agent_resume.lua tests/harness`. A fake agent CLI (`tests/harness/fake-agent.sh`) reports at its start or at its first prompt. `TestResumeLaunchRechecksTheIdentity` (Go): a queued batch target that became current before its launch is refused, and the other target launches. Cases: a Codex-like resume with one prompt, then a same-key replay and a different-request refusal; a Claude-like resume; refusals; one active operation for each agent, a release, and an older pane's late report that does not complete the newer attempt; a lost create answer (`unknown`, the same spawn on a retry, `busy` for another key, then a release); a status whose owner is another process group (`unknown`, no prompt written; the fake counts its prompts).
 
+## Agent restart
+
+`hub.admin.restart` stops current agents and resumes each one in a new pane (`hub/cmd/hub/agentrestart.go`). It is an admin action (the guard of `hub.admin.*` applies). Arguments: `key` (required, at most 128 characters), and `agent` (an identity or an alias), or `kind` and/or `session_id` (every current identity of that kind, whose pane is in that session). The operation is stored as for a resume (`agent_ops`), with the same reply, replay and `busy` rules; a key used for a resume is another request. `hub.admin.resume {key, release}` releases a restart target too.
+
+Admission refuses a target when the identity is not current, its pane has no spawn record (an agent started by hand), the profile has no `resume` template, or the check below fails. The hub stops only the agent process that the check names:
+
+- It is the pane's child (never an ancestor, never a descendant), with the pid and start time recorded at the identity's report (`identity_panes`).
+- At each accepted report of a new process generation, the hub records the child's executable (Rex `path`) and exec path (`invoked_path`) from the same Rex answer. The first complete values stay for the generation; they are cleared when the generation ends. The recorded exec path must be the configured program: the profile's `command[0]` (or `resume[0]` for a resume spawn), resolved with the hub's PATH as a spawn resolves it. Rex reports an exec path only while it still resolves to the executable (docs/rex-protocol.md), so after a CLI update the record is the proof, not the live answer. argv0 is never used.
+- The live executable must equal the recorded one: an exec to another path in the same pid is refused. This detects a changed path. It is no proof against an exec of the same path, and the check and the signal are two steps, not one atomic operation.
+- A row without a record (an identity reported by an older hub): the live exec path must be the configured program; a null one refuses ("cannot be verified").
+- A null live executable refuses: on macOS Rex reports none after the running executable was removed (a version cleanup); restart the agent by hand. On Linux Rex reports the old path then. A moved executable is refused as a changed path.
+
+The check runs at admission and again before each key write and each signal. The stop, each step a stored phase (`restart_admitted`, `stopping`, `terminating`, `killing`):
+
+1. Exit keys, only when the agent is the terminal's foreground process: one Ctrl-C for Codex, two 300 ms apart for Claude (S1). Otherwise no keys, and SIGTERM at once.
+2. No exit within 5 s: SIGTERM. No exit within 5 s more: SIGKILL. No exit within 5 s more: `failed`. The waits are implementation choices. Only the agent's pid is signaled, not its process group.
+3. When the recorded process is gone, the identity is detached as the pane's exit event would detach it, and the target becomes `admitted` with that generation: the resume steps follow ("Agent resume"). The old pane stays.
+
+A check that fails during the stop ends the target as `failed` ("nothing more was sent"). After a hub stop during the stop, the next step checks again and continues; keys or a signal can then be sent again to the same checked process. A restart keeps its in-flight slot from its stop through its resume.
+
+Test: `lazyrex-hub test -file agent_restart.lua tests/harness`; `TestRestartCheck` (Go). The fake agent's configured program is a symlink in the lab. Cases: one Ctrl-C (Codex-like), two (Claude-like), SIGTERM, SIGKILL, no keys when another process is in the foreground, a moved symlink after the record (also with a later report while the live exec path is null), a forged argv0 (refused, the process stays), an exec to another path in the same pid (refused), no record and a null exec path (refused, then allowed when the symlink resolves again), `busy` and a key reused for a resume, and a restart by kind.
+
 ## Process log
 
 The hub writes one line for each answered call (`Hub.answer`, `hub/cmd/hub/calllog.go`): `<action> from <client> pid <pid> -> <error or <nil>> in <ms>`. One exception: a fast, successful routine read gets no line.

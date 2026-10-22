@@ -102,6 +102,27 @@ Observed on Rex 0.0.1792158932-g88fd41 (lab `/tmp/rexlab-hub-claude`, 2026-10-20
   the connection had created but not attached (observed on Rex 0.0.1792158932-g88fd41, Go lab test
   `TestPluginStartUnresolvedIntentLab`, 2026-10-20).
 
+### The pane's process: executable and exec path
+
+Observed on Rex 0.0.1792158932-g88fd41 (macOS lab `/tmp/rexlab-hubrun-claude` and the Linux lab
+session, 2026-10-22). `com.superlogical.terminal.process` reports `child` (the pane's process) and
+`foreground` (the process in the terminal's foreground) with `pid`, `name`, `path`, `invoked_path`
+and `argv0`:
+
+- `path` is the executable, symlinks resolved (on macOS `/tmp/x` is reported as `/private/tmp/x`).
+- `invoked_path` is the path given to exec, not argv0: `exec -a /fake/bin/claude /x/tool` reports
+  `argv0` `/fake/bin/claude` and `invoked_path` `/x/tool` (macOS and Linux).
+- `invoked_path` is reported only while it still resolves to `path`. After the symlink is moved to
+  another target (a CLI update), it is null; when the symlink points back, it returns (macOS and
+  Linux).
+- After the executable's directory is moved, `path` is the new location (macOS and Linux).
+- After the executable's directory is deleted, `path` is null on macOS; on Linux it is the old path.
+- The CLIs: Codex 0.163.0 reports `invoked_path` `/opt/homebrew/bin/codex` and `path` its Caskroom
+  version; Claude 2.1.307 reports `.../bin/claude` and `path` `.../versions/2.1.307`. Neither execs
+  itself again. macOS `/bin/sh` does: its `invoked_path` is `/bin/bash`, its `argv0` `/bin/sh`.
+
+The hub records `path` and `invoked_path` at an identity report, and agent restart compares them
+(docs/hub.md, "Agent restart").
 
 ### Block events (verified)
 
