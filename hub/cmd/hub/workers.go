@@ -584,13 +584,22 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 		return nil, err
 	}
 	h.spawnAdmitted(s, prof, name)
+	if err := h.sendSpawn(ctx, s, placement, spawnArgv(s, prof, resolved)); err != nil {
+		return nil, err
+	}
+	return s.result(), nil
+}
+
+// sendSpawn marks an admitted spawn sending, sends its one create request and records the answer.
+// It returns an error only when an outcome could not be stored. Otherwise s.Status is the outcome:
+// open, failed, or sending (the outcome is unknown, and resolveSpawns looks for the pane later).
+func (h *Hub) sendSpawn(ctx context.Context, s *spawnRow, placement workerPlacement, argv []string) error {
 	if err := h.markSending(ctx, s); err != nil {
 		if u := (*spawnUnrecorded)(nil); errors.As(err, &u) {
-			return nil, err
+			return err
 		}
-		return s.result(), nil // nothing was sent: the spawn failed (not_created)
+		return nil // nothing was sent: the spawn failed (not_created)
 	}
-	argv := spawnArgv(s, prof, resolved)
 	// Rex's default login setting: the worker gets the user's login environment, like a pane the
 	// user opens. With login false it gets the Rex server's environment (observed in the lab, 1203).
 	opts := map[string]any{"command": argv, "exit": map[string]any{"on_completion": false}}
@@ -607,10 +616,10 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 		var re *rex.RexError
 		if errors.As(err, &re) && re.Code != "disconnected" {
 			h.failSpawn(ctx, s, err.Error()) // Rex answered: nothing was created
-			return s.result(), nil
+			return nil
 		}
 		h.kickSpawns()
-		return s.result(), nil // outcome unknown: resolveSpawns finds the pane by its label later
+		return nil // outcome unknown: resolveSpawns finds the pane by its label later
 	}
 	if placement.Detached && out.BlockID != "" {
 		out.BlockIDs = []string{out.BlockID}
@@ -619,16 +628,16 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 		// Rex said yes, so a pane may exist: the outcome is unknown, as for a lost answer.
 		log.Printf("spawn %s: unexpected %s result %+v; outcome unknown", s.ID, method, out)
 		h.kickSpawns()
-		return s.result(), nil
+		return nil
 	}
 	if placement.Beside != "" {
 		out.WindowID = h.windowOf(ctx, s.Session, out.BlockIDs[0])
 	}
 	if err := h.openSpawn(ctx, s, out.WindowID, out.BlockIDs[0]); err != nil {
-		return nil, err
+		return err
 	}
 	h.focusSpawn(ctx, s.Session, out.BlockIDs[0], placement.Focus)
-	return s.result(), nil
+	return nil
 }
 
 // effectiveCwd is always explicit (the argument, the profile's, else the home directory) and
