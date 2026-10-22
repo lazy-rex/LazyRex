@@ -370,11 +370,13 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 			break
 		}
 	}
-	var name, source string
+	// Every field that admission uses is read here, under entriesMu: a reload changes an entry in
+	// place (updateManaged), so e is not read after the unlock.
+	var name, source, managed, identity string
 	var github bool
 	var cand *pluginRun
 	if e != nil {
-		name, source, github = e.name, e.Source, e.github
+		name, source, managed, identity, github = e.name, e.Source, e.managed, entryIdentity(e), e.github
 		if e.cand != nil {
 			c := *e.cand
 			cand = &c
@@ -385,8 +387,8 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		return nil, bad("no plugin entry %q (give managed:<id> or the exact source of a config entry)", req.Entry)
 	}
 	op.Name = name
-	op.EntryIdentity = entryIdentity(e)
-	if (req.Op == "settings" || req.Op == "remove") && e.managed == "" {
+	op.EntryIdentity = identity
+	if (req.Op == "settings" || req.Op == "remove") && managed == "" {
 		return nil, bad("%s changes only managed entries; %s is in the config file", req.Op, req.Entry)
 	}
 	if (req.Op == "stop" || req.Op == "remove") && name != "" && name == h.homePlugin() {
@@ -419,7 +421,7 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		if err != nil {
 			return nil, refuse("refused", "managed plugin file %s: %v", h.cfg.managedPath, err)
 		}
-		m := managedByID(list, e.managed)
+		m := managedByID(list, managed)
 		if m == nil {
 			return nil, refuse("refused", "%s is not in the managed file now; reload first", req.Entry)
 		}
