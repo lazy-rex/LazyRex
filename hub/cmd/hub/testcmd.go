@@ -56,7 +56,8 @@ func (f *filePrompts) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	var names []string
-	if err := json.Unmarshal(b, &names); err != nil {
+	// A JSON null decodes into a nil list without an error: refuse it, or it would remove the grant.
+	if string(b) == "null" || json.Unmarshal(b, &names) != nil {
 		return fmt.Errorf("prompts is a list of plugin names, or false")
 	}
 	*f = filePrompts{set: true, names: names}

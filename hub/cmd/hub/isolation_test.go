@@ -224,6 +224,7 @@ func TestTestFilePrompts(t *testing.T) {
 	for raw, want := range map[string]string{
 		`{"x.lua":{"prompts":true}}`:      "a list of plugin names, or false",
 		`{"x.lua":{"prompts":"p"}}`:       "a list of plugin names, or false",
+		`{"x.lua":{"prompts":null}}`:      "a list of plugin names, or false",
 		`{"x.lua":{"prompts":["ghost"]}}`: `"ghost" is not the plugin`,
 	} {
 		dir, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"files":`+raw+`}}`)
