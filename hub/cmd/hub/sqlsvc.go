@@ -503,6 +503,14 @@ func (s *sqlService) stmt(ctx context.Context, p *pluginSQL, args map[string]any
 			err = refuse("conflict", "the statement changed %d rows, expected %d", r.changes, want)
 		}
 	}
+	if err == nil {
+		// run counts the row JSON only. The reply also has the column names and the exec fields:
+		// measure its exact encoding (the reply guard's), so that it fails here, before the commit.
+		b, _ := json.Marshal(execReply(r))
+		if r.size = len(b); r.size > budget {
+			err = refuse("too_large", "the RETURNING reply (%d bytes with its column names) exceeds the reply limit (%d bytes)", r.size, budget)
+		}
+	}
 	if err != nil {
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK TO lazyrex_stmt")
 		p.w.hub(context.WithoutCancel(ctx), "RELEASE lazyrex_stmt")
@@ -636,7 +644,7 @@ func (s *sqlService) batch(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 	run := func() (any, []string, error) {
 		results := make([]any, 0, len(stmts))
 		var marks []string
-		budget := sqlReplyBudget
+		budget := sqlReplyBudget - len(`{"results":[]}`)
 		for i, m := range stmts {
 			r, err := s.stmt(ctx, p, m, budget)
 			if err != nil {
@@ -646,7 +654,7 @@ func (s *sqlService) batch(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 				}
 				return nil, nil, err
 			}
-			budget -= r.size + 32
+			budget -= r.size + 1 // the result and its comma
 			results = append(results, execReply(r))
 			marks = append(marks, r.marks()...)
 		}

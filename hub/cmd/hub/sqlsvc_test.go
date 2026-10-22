@@ -307,6 +307,44 @@ func TestSQLQueryPaging(t *testing.T) {
 	l.fails("too_large", "hub.sql.exec", `{"sql":"UPDATE t SET s = s RETURNING s"}`)
 }
 
+// The RETURNING budget counts the complete encoded reply: the column names, the rows, and the exec
+// and batch envelopes. A reply over it fails inside the statement's savepoint, before the commit;
+// before, a long column alias let the statement commit and the reply guard refuse its reply.
+func TestSQLReturningReplyBudget(t *testing.T) {
+	l := newSQLLab(t)
+	l.must("hub.sql.exec", `{"sql":"CREATE TABLE t (x TEXT)"}`)
+	count := func() string { return js(l.must("hub.sql.query", `{"sql":"SELECT count(*) FROM t"}`)["rows"]) }
+	big := `INSERT INTO t VALUES (printf('%.*c', 1035000, 'x')) RETURNING x AS "` + strings.Repeat("a", 16000) + `"`
+	l.fails("too_large", "hub.sql.exec", js(map[string]any{"sql": big}))
+	if c := count(); c != "[[0]]" {
+		t.Fatalf("an oversized RETURNING reply committed its row: count %s", c)
+	}
+	// In a transaction the statement fails alone; the transaction continues.
+	tx := l.must("hub.sql.begin", `{}`)["tx"].(string)
+	l.fails("too_large", "hub.sql.exec", js(map[string]any{"sql": big, "tx": tx}))
+	l.must("hub.sql.exec", js(map[string]any{"sql": "INSERT INTO t VALUES ('y')", "tx": tx}))
+	l.must("hub.sql.commit", js(map[string]any{"tx": tx}))
+	if c := count(); c != "[[1]]" {
+		t.Fatalf("the transaction after a refused statement: count %s", c)
+	}
+	// A batch counts each result and its wrapper; it fails all or nothing.
+	l.fails("too_large", "hub.sql.batch", js(map[string]any{"statements": []any{
+		map[string]any{"sql": "INSERT INTO t VALUES ('z')"}, map[string]any{"sql": big}}}))
+	if c := count(); c != "[[1]]" {
+		t.Fatalf("an oversized batch reply committed: count %s", c)
+	}
+	// A reply that the budget admits passes the reply guard at the server's 1 MiB message limit.
+	for _, q := range []string{
+		`INSERT INTO t VALUES (printf('%.*c', 1035000, 'x')) RETURNING x`,
+		`INSERT INTO t VALUES (printf('%.*c', 1015000, 'x')) RETURNING x AS "` + strings.Repeat("a", 16000) + `"`,
+	} {
+		out := l.must("hub.sql.exec", js(map[string]any{"sql": q}))
+		if _, ok := guardReply("hub.sql.exec", map[string]any{"call_id": "c1", "result": out}, (1<<20)-replyMargin); !ok {
+			t.Errorf("an admitted RETURNING reply exceeds the reply guard: %.80s", q)
+		}
+	}
+}
+
 // Notices of a commit go through the outbox: a rollback has none; a failed apply keeps the rows,
 // and the retry applies them; the outbox is empty after an apply.
 func TestSQLNoticesOutbox(t *testing.T) {
