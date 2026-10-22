@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -144,7 +145,7 @@ type Hub struct {
 	ensureMu       sync.Mutex    // hub.session.ensure: one create at a time (sessions.go)
 	slots          slotState     // side slot locks (panels.go)
 	noticeKick     chan struct{} // wakes noticeLoop (kickNotices)
-	renudgeAfter   time.Duration // the one repeat of an unread nudge; 0: noticeRenudgeAfter (tests set it)
+	renudgeAfter   atomic.Int64  // nanoseconds to the one repeat of an unread nudge; 0: noticeRenudgeAfter (hub.test.notice_renudge)
 	spawnKick      chan struct{} // wakes resolveSpawns (kickSpawns)
 	resumeKick     chan struct{} // wakes resumeLoop (kickResume)
 	waitKick       chan struct{} // wakes waitLoop (kickWaiting)
