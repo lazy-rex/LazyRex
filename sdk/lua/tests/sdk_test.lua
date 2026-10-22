@@ -1104,3 +1104,27 @@ app.form('/forms/reads', {
   end
   for _, p in ipairs({'title', 'fields', 'intro', 'after', 'instead'}) do expect(parts[p], p).to_be(true) end
 end)
+
+test('app.hub adds the render ID to a hub.sql call in a render, and only there', function()
+  -- A raw hub.sql read without the ID makes the hub track no reads for that render (hub lead,
+  -- 2026-10-22), so the SDK sends the ID on app.hub too. The caller's table does not change.
+  local seen = {calls = {}}
+  local s = plugin([[
+app.panel('Raw', function()
+  local a = {sql = 'SELECT n FROM t', params = {}}
+  app.hub('hub.sql.query', a)
+  app.hub('hub.other', {x = 1})
+  return {{id = 'w', text = 'caller render: ' .. tostring(a.render)}}
+end, {id = 'raw'})
+app.action('p.raw', {}, function() app.hub('hub.sql.query', {sql = 'SELECT n FROM t', params = {}}); return {} end)]],
+    {hub = {['hub.sql.query'] = function(a) seen.calls[#seen.calls + 1] = {action = 'query', render = a.render}; return {columns = {'n'}, rows = {}, complete = true} end,
+      ['hub.other'] = function(a) seen.calls[#seen.calls + 1] = {action = 'other', render = a.render}; return {} end}})
+  local r = s:render('/panels/raw', 'render-5')
+  expect(r.error, show(r)).to_be(nil)
+  expect(seen.calls[1]).to_equal({action = 'query', render = 'render-5'})
+  expect(seen.calls[2], 'not a hub.sql call').to_equal({action = 'other'})
+  expect(r.result.tree.nodes[1].text, 'the caller table keeps its fields').to_be('caller render: nil')
+  seen.calls = {}
+  expect(s:agent('p.raw', {}).error).to_be(nil)
+  expect(seen.calls[1], 'outside a render: no ID').to_equal({action = 'query'})
+end)

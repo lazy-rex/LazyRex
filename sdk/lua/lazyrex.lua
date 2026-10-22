@@ -510,7 +510,16 @@ function M.plugin(name)
   local listeners = {}
 
   -- app.hub(action, args) calls the hub. A hub error raises {code, message}: a refusal stays final.
-  function app.hub(action, a) return hub(action, a) end
+  -- A raw hub.sql call in a render carries the render ID too: the hub tracks no reads for a render
+  -- that also reads without it (hub lead, 2026-10-22). A copy keeps the caller's table as it was.
+  function app.hub(action, a)
+    local f = frame()
+    if f and f.render and type(action) == 'string' and action:sub(1, 8) == 'hub.sql.' and type(a) == 'table' and a.render == nil then
+      a = copy(a)
+      a.render = f.render
+    end
+    return hub(action, a)
+  end
   -- app.rex(method, args) calls Rex. A Rex error raises {code, message}.
   function app.rex(method, a)
     local r, err = rex.call(method, a or {})
