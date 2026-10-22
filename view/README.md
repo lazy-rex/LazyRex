@@ -109,6 +109,12 @@ It retries with the same backoff and jitter in every case.
 
 Tests: `TestNoHubSaysHowToStartOne`, `TestTwoHubsSayThePaneNeedsOne`, `TestDiscoveryFailuresAreNotACount`, `TestConnectionStatusHasNoControls`, `TestPaneSafe` and `TestNoHubNoticeInANarrowPane` (the protocol fixture and the model).
 Lab: `HUBUNAVAIL_LAB=1 go test -run TestNoHubTextLab .` starts its own lab server and hub, and opens the hub's restart form (a real renderer pane) at 38×14.
+
+Lab: `CHUNK_LAB=1 go test -run 'TestReplyParts(Hold|Timing)Lab' .` starts its own lab server and hub
+(`-test`) for each test. TestReplyPartsHoldLab: the plugin `testdata/holdparts` stops a 150 KiB render
+before its last reply part; the pane keeps the old tree during the hold and shows the new tree after
+the release. TestReplyPartsTimingLab: through the real SDK (`tests/sdk-parts`), the median
+`view.render` call of a 150 KiB panel in parts takes at most 50 ms more than a 40 KiB panel inline.
 It stops the hub, waits for "No hub: run LazyRex: Start Hub." on the screen with no row wider than 38 columns, starts the hub again, and waits for the attached form without the text.
 Observed on Rex `0.0.1792158932-g88fd41`, macOS, 2026-10-22: pass. Rex answers `not_found` with no candidates when no client has the label.
 
