@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -236,6 +237,105 @@ func TestHarnessKeptLabsRemoved(t *testing.T) {
 	for _, l := range labs {
 		if _, err := os.Stat(l); err == nil {
 			t.Errorf("lab %s stays after the test", l)
+		}
+	}
+}
+
+// descendants lists every live descendant of pid, with its start time.
+func descendants(t *testing.T, pid int) map[int]string {
+	t.Helper()
+	out, err := exec.Command("ps", "-ax", "-o", "pid=,ppid=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	children := map[int][]int{}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		c, _ := strconv.Atoi(f[0])
+		p, _ := strconv.Atoi(f[1])
+		children[p] = append(children[p], c)
+	}
+	found := map[int]string{}
+	var walk func(int)
+	walk = func(p int) {
+		for _, c := range children[p] {
+			if s := startTime(c); s != "" {
+				found[c] = s
+				walk(c)
+			}
+		}
+	}
+	walk(pid)
+	return found
+}
+
+// A SIGKILL of lazyrex-hub test (for example an agent tool's time limit) leaves no process of its
+// lab: the lab guard stops the server, the hub and the runner groups, and the panes end with the
+// server. Before the guard the server, its panes, the hub and the runner ran on under parent 1
+// (2026-10-22). The test kills the run after the file's hub restart, while a testagent pane runs.
+func TestLabGuardKilledRun(t *testing.T) {
+	bin, root := harnessBinary(t)
+	cmd := exec.Command(bin, "test", "-file", "restart_timeout.lua", "-timeout", "120s", filepath.Join(root, "tests", "harness-fail"))
+	cmd.Env = harnessEnv(t)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// The lab of the file: its runner (a child of the test process) names the file and the lab.
+	var lab string
+	for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(300 * time.Millisecond) {
+		if lab == "" {
+			out, _ := exec.Command("ps", "-ax", "-ww", "-o", "ppid=,command=").Output()
+			for _, line := range strings.Split(string(out), "\n") {
+				f := strings.Fields(line)
+				if len(f) > 1 && f[0] == strconv.Itoa(cmd.Process.Pid) && strings.Contains(line, "restart_timeout.lua") {
+					if i := strings.Index(line, " lab="); i >= 0 {
+						lab = strings.Fields(line[i+5:])[0]
+					}
+				}
+			}
+		}
+		if b, _ := os.ReadFile(filepath.Join(lab, "runner.log")); lab != "" && strings.Contains(string(b), "LRT restart") {
+			break
+		}
+	}
+	if lab == "" {
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatal("no runner of restart_timeout.lua in 60 s")
+	}
+	t.Cleanup(func() { removeLab(lab) })
+	time.Sleep(2 * time.Second) // the new hub starts
+	procs := descendants(t, cmd.Process.Pid)
+	cmd.Process.Kill() // SIGKILL: no cleanup of its own
+	cmd.Wait()
+	var left []int
+	for end := time.Now().Add(15 * time.Second); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
+		left = left[:0]
+		for pid, start := range procs {
+			if alive(pid, start) {
+				left = append(left, pid)
+			}
+		}
+		if len(left) == 0 {
+			break
+		}
+	}
+	if len(procs) < 4 {
+		t.Errorf("only %d processes under the test process: %v", len(procs), procs)
+	}
+	for _, pid := range left {
+		argv, _ := procArgv(pid)
+		t.Errorf("a process of %s survived: pid %d %.160s", lab, pid, strings.Join(argv, " "))
+	}
+	// Stop what this test started and what survived (each group once).
+	for _, pid := range left {
+		if alive(pid, procs[pid]) {
+			if pg, err := syscall.Getpgid(pid); err == nil && pg > 1 {
+				syscall.Kill(-pg, syscall.SIGKILL)
+			}
 		}
 	}
 }

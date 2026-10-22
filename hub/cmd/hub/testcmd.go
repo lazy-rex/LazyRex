@@ -421,6 +421,9 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 			return l, err
 		}
 	}
+	if err := o.startGuard(l); err != nil { // first: no lab process runs without the guard
+		return l, err
+	}
 	return l, l.startServer(ctx, o.rexBin)
 }
 

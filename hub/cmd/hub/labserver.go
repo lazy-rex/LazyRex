@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +40,8 @@ type lab struct {
 	watchRoots          map[string][]string          // plugin watch roots after expansion (manifest test.watch_roots)
 	profiles            string                       // LAB/profiles.json, the hub's profile file
 	restarts            int                          // hub:restart() calls (restartHub)
+	guard               *exec.Cmd                    // the lab guard (labguard.go); nil without o.self
+	guardIn             io.WriteCloser               // its stdin: closing it, or this process ending, starts its stop
 }
 
 // home is the lab HOME, the working directory of every lab process.
@@ -162,6 +165,7 @@ func (w *waiter) signal(sig syscall.Signal) bool {
 func (l *lab) track(pid int) {
 	if s := startTime(pid); s != "" {
 		l.tracked[pid] = s
+		l.guardGroup(pid, s) // each tracked root leads its own process group
 	}
 }
 
@@ -213,6 +217,45 @@ func (l *lab) snapshot() {
 	}
 }
 
+// startGuard starts the lab guard (labguard.go); lab.track reports each process group to it. The
+// guard runs in "/" with only PATH and its role in the environment.
+func (o *testOpts) startGuard(l *lab) error {
+	if o.self == "" {
+		return nil
+	}
+	g := exec.Command(o.self)
+	g.Env = []string{"PATH=" + os.Getenv("PATH"), labGuardEnv + "=1"}
+	g.Dir = "/"
+	g.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // a terminal's interrupt goes to the test process only
+	in, err := g.StdinPipe()
+	if err != nil {
+		return err
+	}
+	if err := g.Start(); err != nil {
+		return fmt.Errorf("lab guard: %w", err)
+	}
+	l.guard, l.guardIn = g, in
+	return nil
+}
+
+// stopGuard ends the guard after the lab's own stop: "release" (the guard signals nothing), then it
+// closes the pipe and waits up to 5 s.
+func (l *lab) stopGuard() []string {
+	if l.guard == nil {
+		return nil
+	}
+	l.guardIn.Write([]byte("release\n"))
+	l.guardIn.Close()
+	done := make(chan error, 1)
+	go func() { done <- l.guard.Wait() }()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return []string{fmt.Sprintf("lab guard pid %d did not end in 5 s after the lab stopped", l.guard.Process.Pid)}
+	}
+}
+
 // stop ends the hub, then the server, and checks that every tracked process is gone. A process
 // that survives makes the cleanup fail; it gets no signal.
 func (l *lab) stop() []string {
@@ -239,6 +282,7 @@ func (l *lab) stop() []string {
 	stopGroup(l.hubW, l.hubExit, "hub")
 	l.snapshot()
 	stopGroup(l.srvW, l.srvExit, "lab server")
+	problems = append(problems, l.stopGuard()...)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var alive []int

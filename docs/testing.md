@@ -50,9 +50,15 @@ first.
   has no `KEEP` file, is older than 24 hours, and has no server that accepts a connection on its
   `rex.sock`. It prints one line for each removal. (24 hours for the first release; then 1 hour.)
 - A killed run (SIGKILL) cannot clean up. Its lab directory waits for the sweep.
-- Give the tool call that runs `lazyrex-hub test` a time limit above `-timeout`, or run it in the
-  background. An agent tool's limit (for example 2 minutes) that kills the command first leaves the
-  lab server running: the server runs in its own process group.
+- The lab guard: for each lab, the run also starts a guard process (the same binary) with a pipe
+  from the run on its stdin. The run tells the guard each process group of the lab: the server,
+  the hub and the runner. After its own stop of the lab, the run writes `release` and the guard
+  ends without a signal (a survivor of that stop fails the run, and gets no signal). When the pipe
+  ends without `release` (the run was killed), the guard sends SIGTERM to each group that still
+  runs, then SIGKILL after 10 s. The lab panes end with the server. So a killed run leaves no lab
+  process; only its directory waits for the sweep.
+- Still give the tool call that runs `lazyrex-hub test` a time limit above `-timeout`, or run it in
+  the background: a killed run gives no result.
 - The hub's own lab tests set `LAZYREX_LAB_SWEEP_ROOT` to a test directory: a test never sweeps the
   real `/tmp`.
 
