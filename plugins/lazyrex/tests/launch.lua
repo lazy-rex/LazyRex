@@ -1,4 +1,4 @@
--- Ported from the Node test home.mjs (coverage map: tests/README.md): launching workers.
+-- Launching workers.
 -- Both paths: the user submits the Launch Profile… form (tool = 'hub.spawn'); an agent calls
 -- hub.spawn. The task profile writes its two args to LAB/home/task-args. The file stops the
 -- launcher stub first: the home plugin registers Launch Profile… only while no other plugin offers
