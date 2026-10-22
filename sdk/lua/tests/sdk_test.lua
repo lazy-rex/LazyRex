@@ -859,3 +859,34 @@ app.panel('Tx', function() app.db.transaction(function() end); return {} end, {i
   expect(t.error and t.error.message).to_be('A render cannot write: db.transaction runs in an action or a select handler')
   expect(s.sql.count('hub.sql.begin') - before, 'still no hub.sql.begin').to_be(0)
 end)
+
+test('open runs once per new view, in its own transaction, before the first render; the render stays read-only', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE frozen (id INTEGER PRIMARY KEY, view TEXT NOT NULL, dir TEXT NOT NULL)'}
+source = {dir = '/a'}
+app.action('p.cd', {dir = 'string'}, function(ctx, a) source.dir = a.dir; return {} end, {tx = false, store = false})
+app.form('/forms/start', {title = 'Start',
+  open = function(ctx)
+    if not app.db.first('SELECT dir FROM frozen WHERE view = ?', ctx.view_id) then
+      app.db.exec('INSERT INTO frozen (view, dir) VALUES (?, ?)', ctx.view_id, source.dir)
+    end
+  end,
+  fields = function(ctx)
+    local row = app.db.first('SELECT dir FROM frozen WHERE view = ?', ctx.view_id)
+    return {{id = 'dir', label = 'Directory', kind = 'text', value = row and row.dir or '?'}}
+  end,
+  on_submit = function() end})]])
+  local function dir(view_id)
+    local r = s:call('view.render', {route = '/forms/start', user = 'user', view_id = view_id})
+    expect(r.error, show(r)).to_be(nil)
+    return r.result.tree.nodes[1].fields[1].value
+  end
+  local begins = s.sql.count('hub.sql.begin')
+  expect(dir('v1'), 'the first render shows the value that open saved').to_be('/a')
+  expect(s.sql.count('hub.sql.begin') - begins, 'one transaction: open').to_be(1)
+  s:agent('p.cd', {dir = '/b'})
+  expect(dir('v1'), 'a later change of the source does not change it').to_be('/a')
+  expect(s.sql.count('hub.sql.begin') - begins, 'open ran once for v1; the render opened none').to_be(1)
+  expect(dir('v2'), 'a new view gets its own value').to_be('/b')
+  expect(#s.sql.rows('frozen')).to_be(2)
+end)

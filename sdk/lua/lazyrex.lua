@@ -536,7 +536,7 @@ function M.plugin(name)
   -- with ctx.key = the operation key. opts.store = false saves no reply; opts.tx = false runs each SQL
   -- call alone (long operations: use app.db.transaction for the steps).
   function app.view(route, handlers, opts)
-    views[#views + 1] = {route = route, prefix = route:sub(-1) == '*' and route:sub(1, -2) or nil, handlers = handlers, opts = opts or {}}
+    views[#views + 1] = {route = route, prefix = route:sub(-1) == '*' and route:sub(1, -2) or nil, handlers = handlers, opts = opts or {}, opened = {}}
   end
   -- app.command(spec): an extra hub.register command (a palette entry).
   function app.command(spec) commands[#commands + 1] = spec end
@@ -718,6 +718,7 @@ function M.plugin(name)
       return out
     end
     app.view(route, {
+      open = spec.open,
       render = function(ctx) return render_form(ctx) end,
       ['view.action'] = function(ctx, a)
         local submit = spec.submit or {}
@@ -800,7 +801,15 @@ function M.plugin(name)
         return sized({tree = run({tx = false, render = a.render, in_render = true}, function() return tree(panel, panel.fn(user_ctx(a))) end)})
       end
       local v = view_of(a.route)
-      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render, in_render = true}, v.handlers.render, user_ctx(a), a)}) end
+      if v and v.handlers.render then
+        -- open runs once for each new view_id, in its own transaction, before the render (the render
+        -- only reads). A plugin restart forgets the views, so open runs again: its write must be idempotent.
+        if v.handlers.open and not (a.view_id and v.opened[a.view_id]) then
+          run({tx = true}, v.handlers.open, user_ctx(a))
+          if a.view_id then v.opened[a.view_id] = true end
+        end
+        return sized({tree = run({tx = false, render = a.render, in_render = true}, v.handlers.render, user_ctx(a), a)})
+      end
       fail('not_found', 'Unknown route ' .. tostring(a.route))
     end
     local ctx = user_ctx(a)
