@@ -389,9 +389,7 @@ func TestPluginOpFetchHubKill(t *testing.T) {
 	hub := exec.Command(self)
 	hub.Env = append(os.Environ(), fetchOpSimEnv+"="+rec+"\t"+state+"\t"+r.url())
 	hub.Stderr = os.Stderr
-	if err := hub.Start(); err != nil {
-		t.Fatal(err)
-	}
+	retire := ownChild(t, hub)
 	git := waitPid(t, pidFile)
 	b, err := os.ReadFile(rec)
 	if err != nil {
@@ -400,8 +398,7 @@ func TestPluginOpFetchHubKill(t *testing.T) {
 	var w, g int
 	fmt.Sscanf(string(b), "%d %d", &w, &g)
 	psEvidence(t, "before the hub kill", hub.Process.Pid, w, g, git)
-	hub.Process.Signal(syscall.SIGKILL)
-	hub.Wait()
+	retire()
 	assertGone(t, "hub kill", w, g, git)
 	end := time.Now().Add(2 * time.Second)
 	for err := syscall.Kill(-g, 0); !errors.Is(err, syscall.ESRCH); err = syscall.Kill(-g, 0) {
@@ -411,6 +408,37 @@ func TestPluginOpFetchHubKill(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	psEvidence(t, "after the hub kill", w, g, git)
+}
+
+// ownChild starts cmd and registers its retirement: a SIGKILL and a reap of that child only. The
+// retirement also runs when the test ends early (a Fatal before the test calls retire), and a
+// second call does nothing.
+func ownChild(t testing.TB, cmd *exec.Cmd) (retire func()) {
+	t.Helper()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	retire = func() { once.Do(func() { cmd.Process.Kill(); cmd.Wait() }) }
+	t.Cleanup(retire)
+	return retire
+}
+
+// A test that ends before its own retire (here a SkipNow, which ends the test as a Fatal does)
+// leaves no child: the cleanup of ownChild kills and reaps it.
+func TestOwnChildEarlyEnd(t *testing.T) {
+	var cmd *exec.Cmd
+	t.Run("early", func(t *testing.T) {
+		cmd = exec.Command("sleep", "60")
+		ownChild(t, cmd)
+		t.SkipNow()
+	})
+	if cmd.ProcessState == nil {
+		t.Fatal("the child was not reaped")
+	}
+	if err := syscall.Kill(cmd.Process.Pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the child %d remains: %v", cmd.Process.Pid, err)
+	}
 }
 
 // fetchOpKillEnv makes TestPluginOpFetchKillChild a hub with an admitted add (the child of
@@ -467,9 +495,7 @@ func TestPluginOpFetchHubKillManager(t *testing.T) {
 	hub := exec.Command(self, "-test.run=^TestPluginOpFetchKillChild$", "-test.count=1")
 	hub.Env = append(os.Environ(), fetchOpKillEnv+"="+infoFile+"\t"+pids+"\t"+r.url())
 	hub.Stderr = os.Stderr
-	if err := hub.Start(); err != nil {
-		t.Fatal(err)
-	}
+	retire := ownChild(t, hub)
 	git := waitPid(t, pidFile)
 	b, err := os.ReadFile(pids)
 	if err != nil {
@@ -483,10 +509,9 @@ func TestPluginOpFetchHubKillManager(t *testing.T) {
 	if err != nil || json.Unmarshal(ib, &info) != nil {
 		t.Fatalf("the child's info: %q %v", ib, err)
 	}
-	t.Cleanup(func() { removeTree(info["state"]); os.RemoveAll(filepath.Dir(info["db"])) })
+	t.Cleanup(func() { retire(); removeTree(info["state"]); os.RemoveAll(filepath.Dir(info["db"])) }) // the state after the child
 	psEvidence(t, "before the hub kill", hub.Process.Pid, w, g, git)
-	hub.Process.Signal(syscall.SIGKILL)
-	hub.Wait()
+	retire()
 	assertGone(t, "hub kill", w, g, git)
 	end := time.Now().Add(2 * time.Second)
 	for err := syscall.Kill(-g, 0); !errors.Is(err, syscall.ESRCH); err = syscall.Kill(-g, 0) {
