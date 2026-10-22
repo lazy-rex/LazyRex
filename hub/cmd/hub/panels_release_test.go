@@ -22,44 +22,11 @@ func releaseTestHub(t *testing.T) *Hub {
 	return h
 }
 
-// An open view from an older hub (no attach_state) counts as attached before: a replacement does
-// not take it without its renderer.
-func TestAttachStateUpgradeKeepsLegacyViews(t *testing.T) {
-	h := releaseTestHub(t)
-	ctx := context.Background()
-	if _, err := h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status) VALUES ('legacy', 'p', ?, '/panels/a', 'open')`, formTab); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ { // every hub start runs it
-		if err := h.viewsAttachState(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var st string
-	h.db.QueryRow(`SELECT attach_state FROM views WHERE view_id = 'legacy'`).Scan(&st)
-	if st != "unknown" {
-		t.Fatalf("legacy attach_state %q", st)
-	}
-	h.db.Exec(`INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, state, created)
-		VALUES ('repl-up', 's', 'w', 'legacy', 'view-new', 'p', '/panels/b', '{}', 'releasing', '')`)
-	r, _ := h.slotRow(ctx, h.db, "repl-up")
-	if err := h.askRelease(ctx, r); err == nil || !strings.Contains(err.Error(), "try again in a moment") {
-		t.Fatalf("a legacy view was replaced: %v", err)
-	}
-	var status string
-	h.db.QueryRow(`SELECT status FROM views WHERE view_id = 'legacy'`).Scan(&status)
-	h.db.QueryRow(`SELECT attach_state FROM views WHERE view_id = 'legacy'`).Scan(&st)
-	if status != "open" || st != "unknown" {
-		t.Fatalf("legacy view %s %s", status, st)
-	}
-}
-
 // hub.view.replacement reads the named replacement of the caller's view, never another one, and
 // changes nothing.
 func TestViewReplacementReadsTheNamedReplacement(t *testing.T) {
 	h := releaseTestHub(t)
 	ctx := context.Background()
-	h.viewsAttachState(ctx)
 	h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, client_id, attachment, attach_state) VALUES ('v', 'p', ?, '/panels/a', 'open', 'c', 'att', 'attached')`, formTab)
 	h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, client_id, attachment, attach_state) VALUES ('closed', 'p', ?, '/panels/a', 'closed', 'c', 'att', 'attached')`, formTab)
 	for _, row := range [][]string{{"r-old", "v", "cancelled"}, {"r-new", "v", "opening"}, {"r-other", "other", "opening"}} {

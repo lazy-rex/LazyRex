@@ -17,7 +17,6 @@ func TestReleaseAnswerForAnEndedRowResumesOnce(t *testing.T) {
 			t.Run(answer+"/"+moved, func(t *testing.T) {
 				h := releaseTestHub(t)
 				ctx := context.Background()
-				h.viewsAttachState(ctx)
 				h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, client_id, attachment, attach_state) VALUES ('v', 'p', ?, '/panels/a', 'open', 'c', 'att', 'attached')`, formTab)
 				h.db.Exec(`INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, state, next_title, created)
 					VALUES ('R', 's', 'w', 'v', 'n', 'p', '/panels/b', '{}', 'releasing', 'Next', '')`)

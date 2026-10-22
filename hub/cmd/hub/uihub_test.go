@@ -240,3 +240,41 @@ func TestSettleLegacySessionLab(t *testing.T) {
 		h.db.Exec(`DELETE FROM ui_sessions WHERE session_id = ?`, sess)
 	})
 }
+
+// A new hub.db gets every UI column from the CREATE statements that uiStart runs, in its order: no
+// column upgrade adds them.
+func TestNewDatabaseHasTheUIColumns(t *testing.T) {
+	ctx := context.Background()
+	db, err := openDB(filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(uiSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := formsStart(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{ensuredSchema, panelSchema, homeSchema} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for table, cols := range map[string][]string{
+		"ui_tabs":         {"session_id", "revision", "closed_revision", "status", "layout"},
+		"ui_homes":        {"label_at"},
+		"ui_replacements": {"kept", "return_of"},
+		"views":           {"context", "layout", "attach_state"},
+	} {
+		for _, c := range cols {
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, c).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n == 0 {
+				t.Errorf("a new hub.db has no %s.%s", table, c)
+			}
+		}
+	}
+}

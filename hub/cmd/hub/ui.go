@@ -45,7 +45,10 @@ CREATE TABLE IF NOT EXISTS ui_tabs (plugin TEXT NOT NULL, tab TEXT NOT NULL, tit
 CREATE TABLE IF NOT EXISTS views (view_id TEXT PRIMARY KEY, plugin TEXT NOT NULL, tab TEXT NOT NULL, route TEXT NOT NULL,
   status TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', window_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '',
   child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL DEFAULT '',
-  attachment TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '');
+  attachment TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '',
+  attach_state TEXT NOT NULL DEFAULT 'unknown');
+-- attach_state (panels.go): never (a new view, no renderer yet), attached, or claimed (a replacement
+-- took the never-attached view). Every insert names it; 'unknown' counts as attached.
 `
 
 var errRetry = errors.New("retry")
@@ -155,31 +158,11 @@ func (h *Hub) uiStart(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, panelSchema); err != nil {
 		return err
 	}
-	if err := h.viewsAttachState(ctx); err != nil { // before slotStart, which reads it
-		return err
-	}
 	if err := h.slotStart(ctx); err != nil {
 		return err
 	}
 	if _, err := h.db.ExecContext(ctx, homeSchema); err != nil {
 		return err
-	}
-	for _, m := range []string{
-		`ALTER TABLE ui_tabs ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`, // hometabs.go
-		`ALTER TABLE ui_tabs ADD COLUMN revision TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE ui_tabs ADD COLUMN closed_revision TEXT NOT NULL DEFAULT ''`,
-		// 1: the row was written by a hub that knows revisions; 0: older, its close has no revision.
-		`ALTER TABLE ui_tabs ADD COLUMN rev_known INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE ui_homes ADD COLUMN label_at TEXT NOT NULL DEFAULT ''`,         // rememberHomeLabel
-		`ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`,            // tabstatus.go
-		`ALTER TABLE ui_replacements ADD COLUMN kept INTEGER NOT NULL DEFAULT 0`,    // panels.go: Keep editing
-		`ALTER TABLE ui_replacements ADD COLUMN return_of TEXT NOT NULL DEFAULT ''`, // panels.go: a closed form's return
-		`ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,            // pair.go
-		`ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,
-	} {
-		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return err
-		}
 	}
 	if err := h.pairStart(ctx); err != nil {
 		return err
@@ -1616,17 +1599,6 @@ func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
 	}
 	h.kickUI(plugin)
 	return map[string]any{"status": "accepted", "views": n}, nil
-}
-
-// viewsAttachState adds views.attach_state (panels.go): never (a new view, no renderer yet),
-// attached, claimed (a replacement took the never-attached view), or unknown. A row from an older
-// hub gets unknown, which counts as attached before: its renderer can hold input.
-func (h *Hub) viewsAttachState(ctx context.Context) error {
-	_, err := h.db.ExecContext(ctx, `ALTER TABLE views ADD COLUMN attach_state TEXT NOT NULL DEFAULT 'unknown'`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		return err
-	}
-	return nil
 }
 
 // viewAttach binds a renderer to its view. The caller must run in the view's pane.
