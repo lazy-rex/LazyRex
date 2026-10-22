@@ -22,10 +22,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // Exit statuses of status (stop uses 0, 1, 3 and 4 the same way; 0 also for "not running").
@@ -156,48 +157,50 @@ func (v *ctlView) rexCmdCtx(ctx context.Context, args ...string) ([]byte, error)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return out.Bytes(), &cliError{err: err, stderr: errb.String()}
+		return out.Bytes(), fmt.Errorf("%v: %s", err, strings.Join(strings.Fields(errb.String()), " "))
 	}
 	return out.Bytes(), nil
 }
 
-// cliError is a failed rex command: its error and the stderr it printed.
-type cliError struct {
-	err    error
-	stderr string
+// perform asks the hub of this config to perform action, through the hub's own Rex client: one
+// client.perform, never retried or sent again. Its answer keeps the hub's error code (a
+// *rex.RexError), which the rex CLI does not print. The dial, the hello and the call end at
+// deadline, and the connection closes at once (CloseNow), so nothing outlives the deadline.
+// timeout_ms is the time left, at most Rex's 30 s.
+func (v *ctlView) perform(deadline time.Time, action string, args map[string]any) (json.RawMessage, error) {
+	socket, err := rex.SocketPath(v.cfg.Server)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	r, err := rex.Dial(ctx, socket)
+	if err != nil {
+		return nil, err
+	}
+	defer r.CloseNow()
+	ms := min(max(time.Until(deadline).Milliseconds(), 1), 30000)
+	var res struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	err = r.Call(ctx, "client.perform", map[string]any{"client_id": v.own.ID, "action": action, "args": args, "timeout_ms": ms}, &res)
+	return res.Result, err
 }
 
-func (e *cliError) Error() string {
-	return fmt.Sprintf("%v: %s", e.err, strings.Join(strings.Fields(e.stderr), " "))
-}
-
-func (e *cliError) Unwrap() error { return e.err }
-
-// cliErrorLine is the last stderr line of a rex call that the target answered with an error
-// (Rex 0.0.1792158932, observed): Error: stream response "<id>" failed: <message> (status=<n> code=<code>).
-var cliErrorLine = regexp.MustCompile(`^Error: stream response "[^"]*" failed: (.*) \(status=(\d+) code=([a-z0-9_]+)\)$`)
-
-// cliOutcome classifies the failure of one rex call. definite: the target answered with a code in
-// refusals, so the request did not apply. Every other failure is unknown: a transport code, a code
-// not in refusals, output that is not the CLI error line, a killed rex. The request can then still
-// be delivered and apply (rex-protocol.md: a timeout does not cancel the action). code is the
-// answer's code, or "".
-func cliOutcome(err error, refusals []string) (code string, definite bool) {
-	var ce *cliError
-	if err == nil || !errors.As(err, &ce) {
+// performOutcome classifies the failure of one perform. definite: the hub answered with a code in
+// refusals, so the request did not apply. Every other failure is unknown, and the request can still
+// be delivered and apply (rex-protocol.md: a timeout does not cancel the action): a dial error, the
+// local deadline, a lost connection (the client's own "disconnected"), a Rex code such as
+// client_unavailable, and any code not in refusals. code is the answer's code, or "".
+func performOutcome(err error, refusals []string) (code string, definite bool) {
+	var re *rex.RexError
+	if !errors.As(err, &re) {
 		return "", false
 	}
-	last := ""
-	for _, l := range strings.Split(ce.stderr, "\n") {
-		if strings.TrimSpace(l) != "" {
-			last = strings.TrimSpace(l)
-		}
-	}
-	m := cliErrorLine.FindStringSubmatch(last)
-	if m == nil {
-		return "", false
-	}
-	return m[3], slices.Contains(refusals, m[3])
+	return re.Code, slices.Contains(refusals, re.Code)
 }
 
 // hubIDs lists the client IDs of the connected lazyrex-hub clients.
@@ -349,7 +352,7 @@ func (v *ctlView) statusText() (int, string) {
 
 // stop stops the hub of this config with hub.admin.shutdown and waits until it is gone (and its
 // wrapper, if one held the lock). It sends no signal, and it sends the request once: Rex can still
-// deliver a request whose call failed, so only the hub's refusal ends stop early (cliOutcome).
+// deliver a request whose call failed, so only the hub's refusal ends stop early (performOutcome).
 // Every other outcome waits for the hub to go, until the one deadline.
 func (v *ctlView) stop(stdout io.Writer) int {
 	code, text := v.statusText()
@@ -365,9 +368,9 @@ func (v *ctlView) stop(stdout io.Writer) int {
 	}
 	seen := stopSeen{listed: true, listedAt: time.Now()} // statusText saw the hub, before the send
 	deadline := time.Now().Add(ctlStopWait)              // one bound for all of stop
-	out, sendErr := v.rexCmd(deadline, "-C", v.own.ID, "do", "hub.admin.shutdown")
-	if _, refused := cliOutcome(sendErr, []string{"refused"}); refused {
-		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", sendErr, strings.TrimSpace(string(out)))
+	_, sendErr := v.perform(deadline, "hub.admin.shutdown", nil)
+	if _, refused := performOutcome(sendErr, []string{"refused"}); refused {
+		fmt.Fprintf(stdout, "hub.admin.shutdown: %v\n", sendErr)
 		return 1
 	}
 	wrapped := v.holder > 0 // a holder whose status file does not match still owns the state
@@ -376,7 +379,7 @@ func (v *ctlView) stop(stdout io.Writer) int {
 		// the hub: report from the last look instead.
 		if left := time.Until(deadline); left < ctlLookMin {
 			time.Sleep(left)
-			v.stopTimedOut(stdout, seen, sendErr, out)
+			v.stopTimedOut(stdout, seen, sendErr)
 			return 1
 		}
 		ids, err := v.hubIDs(deadline)
@@ -396,7 +399,7 @@ func (v *ctlView) stop(stdout io.Writer) int {
 			}
 		}
 		if time.Now().After(deadline) {
-			v.stopTimedOut(stdout, seen, sendErr, out)
+			v.stopTimedOut(stdout, seen, sendErr)
 			return 1
 		}
 	}
@@ -416,7 +419,7 @@ type stopSeen struct {
 }
 
 // stopTimedOut is what stop says at its deadline.
-func (v *ctlView) stopTimedOut(stdout io.Writer, seen stopSeen, sendErr error, out []byte) {
+func (v *ctlView) stopTimedOut(stdout io.Writer, seen stopSeen, sendErr error) {
 	fmt.Fprintf(stdout, "the hub did not stop within %g s; the shutdown request may still apply: run lazyrex-hub status\n", ctlStopWait.Seconds())
 	switch {
 	case seen.listed && seen.lastOK:
@@ -429,7 +432,7 @@ func (v *ctlView) stopTimedOut(stdout io.Writer, seen stopSeen, sendErr error, o
 		fmt.Fprintf(stdout, "the hub client is gone, but its restart lock cannot be read: %v\n", seen.lockErr)
 	}
 	if seen.listed && sendErr != nil {
-		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", sendErr, strings.TrimSpace(string(out)))
+		fmt.Fprintf(stdout, "hub.admin.shutdown: %v\n", sendErr)
 	}
 	if seen.seenErr != nil {
 		fmt.Fprintf(stdout, "the last failed look: %v\n", seen.seenErr)

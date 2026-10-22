@@ -88,6 +88,10 @@ func newPerformRex(t *testing.T, answer func(c performCall) (result any, code st
 			// Each answer runs on its own goroutine: an answer may wait without blocking the reads.
 			go func(id string) {
 				result, code := answer(pc)
+				if code == dropConnection {
+					c.CloseNow()
+					return
+				}
 				if code != "" {
 					write(map[string]any{"type": "response", "id": id, "error": map[string]any{"code": code, "message": "test"}})
 					return
@@ -100,6 +104,9 @@ func newPerformRex(t *testing.T, answer func(c performCall) (result any, code st
 	t.Cleanup(func() { srv.Close() })
 	return fr
 }
+
+// dropConnection, as an answer's code, closes the connection instead of answering.
+const dropConnection = "<drop>"
 
 // dial connects a hub-side Rex client to fr.
 func (fr *performRex) dial(t *testing.T) *rex.Rex {
