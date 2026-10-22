@@ -57,6 +57,7 @@ type restartLog struct {
 	tail      []byte // the end of the current run's output (tailMax)
 	tailCut   bool   // tail lost its start: its first line is incomplete
 	closed    bool
+	busy      bool // the writer writes chunks that it took from the queue
 	kick      chan struct{}
 
 	paneCh   chan string
@@ -279,11 +280,14 @@ func (l *restartLog) writer() {
 	for {
 		l.mu.Lock()
 		chunks, closed := l.queue, l.closed
-		l.queue, l.queued = nil, 0
+		l.queue, l.queued, l.busy = nil, 0, len(chunks) > 0
 		l.mu.Unlock()
 		for _, c := range chunks {
 			l.writeChunk(c)
 		}
+		l.mu.Lock()
+		l.busy = false
+		l.mu.Unlock()
 		if closed && len(chunks) == 0 {
 			if l.f != nil {
 				l.f.Close()
@@ -370,6 +374,29 @@ func (l *restartLog) put(b []byte) (int, bool) {
 }
 
 // close ends the log: the writer gets at most wait to write the queue, the pane the same.
+// flush waits at most wait until the writer wrote every queued chunk and the pane took every
+// queued line. The log stays open: a relaunch flushes before its exec (the exec closes the file),
+// and after a failed exec the same writer goes on. It reports whether everything was written.
+func (l *restartLog) flush(wait time.Duration) bool {
+	select {
+	case l.kick <- struct{}{}:
+	default:
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		l.mu.Lock()
+		idle := len(l.queue) == 0 && !l.busy
+		l.mu.Unlock()
+		if idle && len(l.paneCh) == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (l *restartLog) close(wait time.Duration) {
 	l.mu.Lock()
 	l.closed = true

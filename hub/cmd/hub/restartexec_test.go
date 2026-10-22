@@ -38,6 +38,17 @@ func TestFakeWrapper(t *testing.T) {
 		os.Exit(1)
 	}
 	w.backoff = func(time.Duration) <-chan time.Time { return time.After(0) }
+	// A stalled disk: the write of the relaunch line blocks until the test makes the gate.
+	if gate := os.Getenv("FAKE_LOG_STALL"); gate != "" {
+		w.logHook = func(l *restartLog) {
+			l.writeFile = func(f *os.File, b []byte) (int, error) {
+				for _, err := os.Stat(gate); err != nil && strings.Contains(string(b), "asked for a relaunch"); _, err = os.Stat(gate) {
+					time.Sleep(20 * time.Millisecond)
+				}
+				return f.Write(b)
+			}
+		}
+	}
 	os.Exit(w.main(state))
 }
 
@@ -186,14 +197,16 @@ func TestRelaunchHoldsTheLock(t *testing.T) {
 	}
 }
 
-// An exec that fails (the invoked link names a file that cannot run) starts the child again from
-// the resolved path, the old version: the same lock and exec 0, the log open again with the error,
-// and last_exec "failed" while that child is ready. A later relaunch through a good link works.
+// An exec that fails (the invoked link names a file that cannot run) while the disk stalls under
+// the log starts the child again from the resolved path, the old version: the same lock, log and
+// exec 0, and last_exec "failed" while that child is ready. After the disk comes back, the log has
+// the error, and a later relaunch through a good link works.
 func TestRelaunchExecFailureStartsTheOldHub(t *testing.T) {
 	dir := t.TempDir()
 	link := filepath.Join(dir, "current")
 	os.Symlink(os.Args[0], link)
-	r := startFakeWrapper(t, link, nil, "ready-gate-exit4", "ready-gate-exit4", "ready-exit0")
+	stall := filepath.Join(dir, "disk-back")
+	r := startFakeWrapper(t, link, []string{"FAKE_LOG_STALL=" + stall}, "ready-gate-exit4", "ready-gate-exit4", "ready-exit0")
 	r.wait(t, "first child", func() bool { return len(r.startLines()) == 1 })
 	bad := filepath.Join(dir, "bad")
 	os.WriteFile(bad, []byte("not a program\n"), 0o600) // no execute bit: the exec fails
@@ -211,9 +224,11 @@ func TestRelaunchExecFailureStartsTheOldHub(t *testing.T) {
 	if lines := r.startLines(); lines[1] != lines[0] {
 		t.Errorf("the second child ran %s, not the old %s", lines[1], lines[0])
 	}
-	if b, _ := os.ReadFile(filepath.Join(r.state, "hub.log")); !strings.Contains(string(b), "exec "+link+" failed") {
-		t.Errorf("no exec failure in the reopened log\n%s", r.text())
-	}
+	os.WriteFile(stall, nil, 0o600)
+	r.wait(t, "the exec failure in the log", func() bool {
+		b, _ := os.ReadFile(filepath.Join(r.state, "hub.log"))
+		return strings.Contains(string(b), "exec "+link+" failed")
+	})
 	os.Remove(link)
 	os.Symlink(os.Args[0], link)
 	os.WriteFile(r.starts+".go2", nil, 0o600)
@@ -375,4 +390,92 @@ func TestAdoptRestartLock(t *testing.T) {
 	}
 	f.Close() // f owns rw
 	syscall.Close(ro)
+}
+
+// A failed exec while the disk stalls: the old writer is blocked in a write when the exec fails.
+// The wrapper keeps that one log and writer (a flush, not a close, comes before the exec), so
+// hub.log never has a second writer, the size bound holds, and the bytes stay in order.
+func TestRelaunchFailureKeepsTheStalledWriter(t *testing.T) {
+	wr := newWrapperTest(t, "ready-exit4", "ready-exit0")
+	wr.w.invoked = "/nonexistent/wrapper"
+	wr.w.execFn = func(string, []string, []string) error { return syscall.ENOENT }
+	release := make(chan struct{})
+	var mu sync.Mutex
+	logs, active, most := 0, 0, 0
+	var tl *restartLog
+	wr.w.logHook = func(l *restartLog) {
+		mu.Lock()
+		logs++
+		mu.Unlock()
+		tl = l
+		l.fileMax = 1024
+		l.writeFile = func(f *os.File, b []byte) (int, error) {
+			mu.Lock()
+			active++
+			most = max(most, active)
+			mu.Unlock()
+			if strings.Contains(string(b), "asked for a relaunch") {
+				<-release // the disk stalls under this chunk
+			}
+			mu.Lock()
+			active--
+			mu.Unlock()
+			return f.Write(b)
+		}
+	}
+	if code := waitCode(t, wr.runAsync()); code != 0 {
+		t.Fatalf("exit %d\n%s", code, wr.text())
+	}
+	close(release)
+	select {
+	case <-tl.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the writer did not end after the release")
+	}
+	dir := filepath.Join(wr.dir, "state")
+	var all string
+	for _, name := range []string{"hub.log.3", "hub.log.2", "hub.log.1", "hub.log"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err == nil && len(b) > 1024 {
+			t.Errorf("%s is %d bytes, above 1024", name, len(b))
+		}
+		all += string(b)
+	}
+	i, j := strings.Index(all, "asked for a relaunch"), strings.Index(all, "exec /nonexistent/wrapper failed")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("log order: relaunch line at %d, failure line at %d:\n%s", i, j, all)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if logs != 1 || most != 1 {
+		t.Errorf("%d logs, %d writers at the same time; want 1 and 1", logs, most)
+	}
+	if s := wr.status(t); s.Exec != 0 || s.LastExec == nil || s.LastExec.Outcome != "failed" {
+		t.Errorf("status %+v, last_exec %+v", s, s.LastExec)
+	}
+}
+
+// A new exec attempt clears the outcome of the previous one: while the second attempt runs,
+// restart.json has phase exec and no last_exec, not the first attempt's failure.
+func TestRelaunchClearsTheLastOutcome(t *testing.T) {
+	wr := newWrapperTest(t, "ready-exit4", "ready-exit4", "ready-exit0")
+	wr.w.invoked = "/nonexistent/wrapper"
+	var seen []restartStatus
+	wr.w.execFn = func(string, []string, []string) error {
+		s, _ := readRestartStatus(filepath.Join(wr.dir, "state"))
+		seen = append(seen, s)
+		return syscall.ENOENT
+	}
+	if code := waitCode(t, wr.runAsync()); code != 0 {
+		t.Fatalf("exit %d\n%s", code, wr.text())
+	}
+	if len(seen) != 2 {
+		t.Fatalf("%d exec attempts, want 2", len(seen))
+	}
+	if s := seen[1]; s.Phase != "exec" || s.ExecTarget != 1 || s.LastExec != nil {
+		t.Errorf("during the second attempt: %+v, last_exec %+v", s, s.LastExec)
+	}
+	if s := wr.status(t); s.LastExec == nil || s.LastExec.Outcome != "failed" {
+		t.Errorf("after it: last_exec %+v", s.LastExec)
+	}
 }

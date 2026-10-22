@@ -223,20 +223,15 @@ func (w *wrapper) main(stateDir string) int {
 		w.exec = w.adopt.target
 		w.last = &lastExec{Target: w.exec, Outcome: "ok", At: w.now().UTC().Format(time.RFC3339)}
 	}
-	w.openLog()
-	defer func() { w.log.close(logEndWait) }() // a failed relaunch replaces w.log
-	return w.run()
-}
-
-// openLog opens the log and points the wrapper's lines at it. The log opens only under the lock:
-// the wrapper is the only writer of <state>/hub.log.
-func (w *wrapper) openLog() {
-	w.log = newRestartLog(w.state, w.pane)
+	// The log opens only under the lock: the wrapper is the only writer of <state>/hub.log.
+	w.log = newRestartLog(state, w.pane)
 	if w.logHook != nil {
 		w.logHook(w.log)
 	}
 	w.log.start()
+	defer w.log.close(logEndWait)
 	w.out = log.New(w.log, "", log.LstdFlags)
+	return w.run()
 }
 
 // takeRestartLock takes the write lock on <state>/restart.lock without waiting. A lock held by

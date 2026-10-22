@@ -14,15 +14,15 @@ package main
 //   - Adoption (adoptRestartLock): the new wrapper takes both variables as one state. It adopts only
 //     when the fd is restart.lock, read-write, and restart.json names this process (pid and start
 //     time) in phase "exec" with the same exec_target. Anything else is refused (exit 1).
-//   - An exec that fails: the old process keeps the lock and exec n, reopens its log, records the
-//     failure in last_exec, and starts the child again from its resolved path (the old version).
+//   - The log keeps its one writer across an exec attempt: a bounded flush, not a close, comes
+//     before the exec. An exec that fails: the old process keeps the lock, the log and exec n,
+//     records the failure in last_exec, and starts the child again from its resolved path.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -131,21 +131,23 @@ func fcntl(fd, cmd, arg int) (int, error) {
 }
 
 // relaunch runs the wrapper's invoked path again (A2). It returns only when the exec did not
-// happen: the log is open again, the lock and exec n are kept, and last_exec says why. The caller
-// then starts the child again from the resolved path.
+// happen: the lock, the log and exec n are kept, and last_exec says why. The caller then starts
+// the child again from the resolved path.
 func (w *wrapper) relaunch() {
 	target := w.exec + 1
+	w.last = nil // a new attempt: the outcome of the previous one ends here
 	w.out.Printf("restart: the hub asked for a relaunch: exec %d of %s", target, w.invoked)
 	if err := w.writeStatusErr("exec", target); err != nil {
-		w.execFailed(target, fmt.Errorf("status before the exec: %w", err), false)
+		w.execFailed(target, fmt.Errorf("status before the exec: %w", err))
 		return
 	}
-	// Nothing below may fail silently: the log closes, so each failure reopens it.
-	w.log.close(logEndWait)
-	w.out = log.New(w.pane, "", log.LstdFlags)
+	// The log stays open and keeps its one writer: the exec closes the file (close-on-exec), and a
+	// failed exec goes on with the same writer. A stalled disk delays the exec by at most
+	// logEndWait; lines that are not written by then are lost at the exec, as at the wrapper's exit.
+	w.log.flush(logEndWait)
 	fd := int(w.lock.Fd())
 	if _, err := fcntl(fd, syscall.F_SETFD, 0); err != nil {
-		w.execFailed(target, fmt.Errorf("clear close-on-exec of the lock: %w", err), true)
+		w.execFailed(target, fmt.Errorf("clear close-on-exec of the lock: %w", err))
 		return
 	}
 	env := []string{}
@@ -157,14 +159,11 @@ func (w *wrapper) relaunch() {
 	env = append(env, "LAZYREX_RESTART_LOCK_FD="+strconv.Itoa(fd), "LAZYREX_RESTART_EXEC="+strconv.Itoa(target))
 	err := w.execFn(w.invoked, append([]string{w.invoked}, w.argv...), env)
 	syscall.CloseOnExec(fd) // the exec failed: the fd is the wrapper's own again
-	w.execFailed(target, err, true)
+	w.execFailed(target, err)
 }
 
-// execFailed records a failed exec attempt and makes the wrapper ready to start its child again.
-func (w *wrapper) execFailed(target int, err error, reopen bool) {
-	if reopen {
-		w.openLog()
-	}
+// execFailed records a failed exec attempt. The wrapper then starts its child again.
+func (w *wrapper) execFailed(target int, err error) {
 	w.out.Printf("restart: exec %s failed: %v; the hub starts again from %s", w.invoked, err, w.bin)
 	w.last = &lastExec{Target: target, Outcome: "failed", Error: err.Error(), At: w.now().UTC().Format(time.RFC3339)}
 }
