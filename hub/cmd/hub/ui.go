@@ -82,6 +82,7 @@ type uiState struct {
 	spawned    int                       // views opened in this pass (worker only)
 	retire     map[string]time.Time      // attachment -> last view.retire request (worker only)
 	retryArmed bool                      // a delayed kick is scheduled (retryLater)
+	badHomes   map[string]bool           // tab homes reported as not a Rex session ID (worker only)
 	labeled    map[string]string         // session_id -> the label the worker last set
 	sess       map[string]string         // session_id -> ui_sessions key, for event routing
 	recorded   chan struct{}             // closed (and replaced) when a session is recorded (sessionRecorded)

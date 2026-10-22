@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,5 +91,39 @@ func TestOlderListDoesNotOverwriteARenameEvent(t *testing.T) {
 	h.db.QueryRowContext(ctx, `SELECT label FROM ui_homes WHERE session_id = 'session:a'`).Scan(&label)
 	if label != "newest" {
 		t.Fatalf("label %q: a newer list answer must apply", label)
+	}
+}
+
+// A tab home that is not a Rex session ID (session:<uuid>) can never name a session: Rex refuses
+// its attach with code internal, which is not a definite "not found". Before the fix that error
+// failed every reconcile pass, so no view opened (a Messaging fixture stored session:kv-home).
+// The home counts as gone: its tabs go to the app session, the other tabs go on, and the hub
+// reports the home once. The hub makes no Rex call for it (h.rex is nil here).
+func TestInvalidHomeGoesToTheAppSession(t *testing.T) {
+	h := testHomeHub(t)
+	ctx := context.Background()
+	tabs := []tab{{Key: "thread/a", Session: "session:kv-home"}, {Key: "thread/b"}, {Key: "thread/c", Session: "session:kv-home", Suppressed: true}}
+	for pass := 0; pass < 2; pass++ {
+		groups, err := h.tabGroups(ctx, "session:app", tabs, nil)
+		if err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+		if len(groups) != 1 || groups[0].sess != "session:app" || len(groups[0].tabs) != 3 {
+			t.Fatalf("pass %d: groups %+v, want every tab in the app session", pass, groups)
+		}
+	}
+	b, _ := os.ReadFile(h.ev.f.Name())
+	if n := strings.Count(string(b), `"event":"ui_home_invalid"`); n != 1 {
+		t.Fatalf("%d ui_home_invalid events, want 1:\n%s", n, b)
+	}
+	for _, id := range []string{"session:01a15601-5fca-744d-9590-fe16fd20a936", "session:01A15601-5FCA-744D-9590-FE16FD20A936"} {
+		if !rexSessionID(id) {
+			t.Errorf("%s is a Rex session ID", id)
+		}
+	}
+	for _, id := range []string{"session:kv-home", "session:", "01a15601-5fca-744d-9590-fe16fd20a936", "session:01a15601-5fca-744d-9590-fe16fd20a93", "session:01a15601x5fca-744d-9590-fe16fd20a936", "session:01a15601-5fca-744d-9590-fe16fd20a93g"} {
+		if rexSessionID(id) {
+			t.Errorf("%s is not a Rex session ID", id)
+		}
 	}
 }

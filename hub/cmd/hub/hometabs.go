@@ -130,6 +130,19 @@ func (h *Hub) resolveHome(ctx context.Context, sess string, need bool, list **se
 	if err != nil {
 		return "", err
 	}
+	if !rexSessionID(cur) {
+		// Never a session: Rex refuses the attach with code internal, not "not found", and that
+		// error failed every reconcile pass. The app session, reported once.
+		if !h.ui.badHomes[cur] {
+			if h.ui.badHomes == nil {
+				h.ui.badHomes = map[string]bool{}
+			}
+			h.ui.badHomes[cur] = true
+			log.Printf("ui: home %s is not a Rex session ID; its tabs use the app session", cur)
+			h.ev.emit("ui_home_invalid", map[string]any{"home": sess, "session_id": cur})
+		}
+		return "", nil
+	}
 	alive, err := h.homeAlive(ctx, cur)
 	if err != nil {
 		return "", err
@@ -241,6 +254,27 @@ func (h *Hub) homeRedirects(ctx context.Context) (map[string]string, error) {
 		out[a] = cur
 	}
 	return out, nil
+}
+
+// rexSessionID reports whether id has the form of a Rex session ID: "session:" and a UUID
+// (8-4-4-4-12 hex digits). Observed on Rex 0.0.1792158932-g88fd41: session.attach of
+// "session:kv-home" fails with status 500, code internal ("invalid session ID UUID").
+func rexSessionID(id string) bool {
+	u, ok := strings.CutPrefix(id, "session:")
+	if !ok || len(u) != 36 {
+		return false
+	}
+	for i, c := range u {
+		switch {
+		case i == 8 || i == 13 || i == 18 || i == 23:
+			if c != '-' {
+				return false
+			}
+		case !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'):
+			return false
+		}
+	}
+	return true
 }
 
 // homeAlive attaches the hub to a home session (its events then reach the hub) and reports

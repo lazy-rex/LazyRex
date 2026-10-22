@@ -990,6 +990,13 @@ Tab declarations include optional `session_id` and a `revision` string. The newe
 message ID is the revision; an empty thread uses an empty string. The hub owns
 manual-close suppression, reopening on a new revision, and navigation focus.
 
+A tab home must be a Rex session ID: `session:` and a UUID. `hub.ui.tabs` checks only the
+`session:` prefix. The reconcile treats any other stored home as gone, without a Rex call: its tabs
+use the app session, and the hub logs it and emits `ui_home_invalid` once per hub run. Observed on
+Rex `0.0.1792158932-g88fd41`: `session.attach` of `session:kv-home` fails with status 500, code
+`internal`, not `session_not_found`. Before this rule, that error failed every reconcile pass, so
+no view opened (`TestInvalidHomeGoesToTheAppSession`).
+
 Controlled Lua tests passed on Rex `0.0.1792158932-g88fd41`. Tests cover first-home
 preservation, concurrent creation, alias migration, old operation replay, session
 filtering, direct expansion, and revision stability across rename and acknowledgment.
