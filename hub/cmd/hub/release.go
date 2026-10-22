@@ -159,6 +159,8 @@ type releaser struct {
 	syncManifest func(source string) (string, []byte, error)
 	buildRecord  func(path string) ([]string, error) // the build record of a Go binary
 	argvOf       func(pid int) ([]string, error)     // the argv of a process
+	argvExactOf  func(pid int) ([]string, error)     // the exact argv of a process (the SDK check)
+	sdkTreeOf    func(commit string) (string, error) // the digest of <commit>:sdk/lua
 	// testStop allows RELEASE_TEST_STOP outside a proved lab (unit tests only).
 	testStop string
 	// rehearseLab and rehearseTier are the -lab and -tier flags of rehearse.

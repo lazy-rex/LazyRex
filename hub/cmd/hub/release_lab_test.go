@@ -40,6 +40,15 @@ func TestReleaseRehearseLab(t *testing.T) {
 	if !rec.Pass || rec.Tier != tierDefault {
 		t.Errorf("record: pass %v tier %s %v", rec.Pass, rec.Tier, rec.TierReasons)
 	}
+	// The SDK byte check: H's sdk/lua bytes in the forward hub, OLD's after the rollback.
+	if len(rec.SDK) != 2 || rec.SDK[0].Commit != labH || rec.SDK[1].Commit != labOld {
+		t.Errorf("record: SDK checks %+v; want the forward at H, then the rollback at OLD", rec.SDK)
+	}
+	for _, c := range rec.SDK {
+		if c.Expected == "" || c.Actual != c.Expected || !strings.HasPrefix(c.Path, "/") || c.PID == 0 || c.Seq == 0 {
+			t.Errorf("record: SDK check %+v", c)
+		}
+	}
 	// C-l1: the record passes the precheck gate of this run and this tool.
 	r, err := openRun(run, "precheck", &bytes.Buffer{})
 	if err != nil {

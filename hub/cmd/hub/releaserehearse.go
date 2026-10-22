@@ -93,6 +93,7 @@ type rehearsal struct {
 	mirrors    map[string]string     // the HEAD of each GitHub mirror, by owner/repo
 	commits    map[string][]string   // the commits that the mirrors must hold, by owner/repo
 	fileProbes map[string][]probeRow // the rows of the spec probe file, by table (full tier)
+	sdk        []relSDKCheck         // the SDK byte checks, in order
 	n          int                   // the number of child steps (log names)
 	stopped    bool                  // stopLab ran
 }
@@ -562,6 +563,9 @@ func (h *rehearsal) forwardChecks(name string) error {
 	if err := h.checkLabEnv(); err != nil {
 		return err
 	}
+	if err := h.checkSDK(name, relHubFile, h.r.spec.H); err != nil {
+		return err
+	}
 	if err := h.data(name); err != nil {
 		return err
 	}
@@ -985,7 +989,7 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 	if err != nil {
 		return err
 	}
-	rec := &relRehearsal{Pass: true, At: h.r.now().UTC().Format(time.RFC3339), Bound: bound, Tier: tier, TierReasons: reasons, Phases: h.phases, Lab: h.lab, Mirrors: h.mirrors, Commits: h.commits}
+	rec := &relRehearsal{Pass: true, At: h.r.now().UTC().Format(time.RFC3339), Bound: bound, Tier: tier, TierReasons: reasons, Phases: h.phases, Lab: h.lab, Mirrors: h.mirrors, Commits: h.commits, SDK: h.sdk}
 	if err := h.r.writeRehearsal(rec); err != nil {
 		return err
 	}

@@ -39,6 +39,7 @@ type relRehearsal struct {
 	Lab         string              `json:"lab"`               // the lab directory (deleted after a pass)
 	Mirrors     map[string]string   `json:"mirrors,omitempty"` // rehearse: the HEAD of each GitHub mirror of the lab
 	Commits     map[string][]string `json:"commits,omitempty"` // rehearse: the commits that the mirrors held, by owner/repo
+	SDK         []relSDKCheck       `json:"sdk,omitempty"`     // rehearse: the SDK byte check of each hub check point
 }
 
 type relPhase struct {

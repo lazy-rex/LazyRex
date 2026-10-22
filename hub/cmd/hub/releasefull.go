@@ -156,9 +156,12 @@ func (h *rehearsal) pinIs(want string) error {
 	})
 }
 
-// back checks a phase that ended with a rollback or a resume: the probe rows, the schema, the file
+// back checks a phase that ended with a rollback or a resume: the SDK bytes of OLD, the probe rows, the schema, the file
 // probe rows, the pins at OLD, the OLD checkout and the back verify list.
 func (h *rehearsal) back(name string) error {
+	if err := h.checkSDK(name, "", h.c.From.Commit); err != nil {
+		return err
+	}
 	if err := h.data(name); err != nil {
 		return err
 	}
