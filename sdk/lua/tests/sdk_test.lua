@@ -750,3 +750,17 @@ test('app.form: submit.refusal gives the stale-submit message; check = false tak
   expect(go('/forms/parts', {set = 'k1', mode = 'z'}).error.message, 'a checked select').to_be('Mode: choose one of the options')
   expect(go('/forms/parts', {set = 5, mode = 'a'}).error.message, 'the type is still checked').to_be('Set must be string')
 end)
+
+test('a plain form needs only title, fields and on_submit', function()
+  local s = plugin([[
+app.form('/forms/plain', {title = 'Plain', fields = {{id = 'text', label = 'Text', kind = 'text', required = true, value = ''}},
+  on_submit = function() end})]])
+  local tree = s:call('view.render', {route = '/forms/plain', user = 'user'}).result.tree
+  local ids = {}
+  for _, n in ipairs(tree.nodes) do ids[#ids + 1] = n.id end
+  expect(table.concat(ids, ' ')).to_be('form cancel')
+  expect(tree.nodes[1].submit_action).to_equal({name = 'submit', label = 'Submit', enabled = true, user_only = 'navigation'})
+  expect(tree.status.msg).to_be('Waiting for input')
+  local r = s:call('view.action', {route = '/forms/plain', node_id = 'form', action = 'submit', input = {values = {text = 'x'}}, user = 'user', operation_key = 'p1'})
+  expect(r.result).to_equal({close_form = true})
+end)

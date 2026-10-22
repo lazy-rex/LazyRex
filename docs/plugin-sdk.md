@@ -101,41 +101,55 @@ terminals.
 
 ## Forms
 
+A plain form has a title, fields and `on_submit`. Nothing else is required.
+
 ```lua
 app.form('/forms/add', {
   title = 'Add Item',
   fields = {{id = 'text', label = 'Text', kind = 'text', required = true, value = ''}},
-  submit = {label = 'Add', tool = 'todo.add'},
   on_submit = function(ctx, values) app.db.exec('INSERT INTO todos (text) VALUES (?)', values.text) end,
-  command = {id = 'add', title = 'Add Item…', description = 'Add an item'},
 })
 ```
 
-- `title`, `fields` and `intro` are values or functions of `ctx`. `intro` is a text, or a list of
-  `{id, text}` widgets. `id` and `label` set the form node ID (default `form`) and its label. `fields` runs at each render, and
-  again at the submit, in its transaction. Field kinds: `text`, `multiline`, `boolean`, `select`.
+- Field kinds: `text`, `multiline`, `boolean`, `select`. `title` and `fields` are values or
+  functions of `ctx`. `fields` runs at each render, and again at the submit, in its transaction.
 - The SDK checks the values before `on_submit`: a required field must be filled in (a required
   boolean must be true), a select value must be one of its options, and an unknown field is refused.
   `app.fail('invalid_input', '...')` in `on_submit` shows another message.
 - `on_submit` returns nothing to close the form, or a result: `{form = route}`, `{navigate = ...}`,
   `{status = 'running'}` (never saved: the hub calls again until the end).
-- An `app.fail` in `title`, `fields`, `intro`, `after` or `instead` shows its message in place of the form.
-- The form has Cancel (`cancel = false` removes it; `cancel = 'Close'` relabels it) and the status
-  "Waiting for input". `submit.tool` names the agent action that does the same (agent parity);
-  without one, `submit.user_only` gives the reason. `submit.enabled = false` (or a function) refuses a
-  stale submit with `conflict`; `submit.refusal` (a text or a function) gives its message.
+- An `app.fail` in `title` or `fields` shows its message in place of the form.
+- The form has Cancel and the status "Waiting for input".
+- A route can carry values: `app.route('/forms/release', {profile = p})` builds
+  `/forms/release?profile=p`, and the form gets them decoded as `ctx.query`. A form route matches
+  itself with any query.
+
+Common options:
+
+- `submit = {label = 'Add', tool = 'todo.add'}`: the button label, and the agent action that does
+  the same (agent parity). Without `tool`, `submit.user_only` gives the reason (default `navigation`).
+- `command = {id, title, description, keywords}`: a palette command that opens the form.
+- `intro`: a text above the form (a value or a function of `ctx`).
+- `cancel = 'Close'` relabels Cancel; `cancel = false` removes it.
+
+### Advanced
+
+Use these only when a plain form cannot do the job. If one plugin needs more, use a raw `app.view`.
+
+- `id` and `label`: the form node ID (default `form`) and its label.
+- `submit.enabled = false` (or a function) refuses a stale submit with `conflict`. `submit.refusal`
+  (a text or a function) gives its message.
 - More nodes: `intro` (above the form) and `after` (below it) take lists of nodes, or functions of
-  `ctx`. A node can be `app.ui.widget` or `app.ui.list` with `on_select` (and `tool` or `user_only`),
-  as in a panel. A click runs `on_select(ctx)` in its transaction, after the SDK evaluates the nodes
-  again.
+  `ctx`. A node can be `{id, text}`, `app.ui.widget` or `app.ui.list` with `on_select` (and `tool` or
+  `user_only`), as in a panel. A click runs `on_select(ctx)` in its transaction, after the SDK
+  evaluates the nodes again.
 - Another state of the route: `instead = function(ctx)` answers nil (show the form) or
   `{nodes, status}`. Those nodes replace the form; `intro`, `after` and Cancel stay. A submit then
   fails with `conflict`.
 - A value that the render fixed (form v1 has no hidden field): a select field with `check = false`
   takes any text. `on_submit` compares it with the current state.
-- A route can carry values: `app.route('/forms/release', {profile = p})` builds
-  `/forms/release?profile=p`, and the form gets them decoded as `ctx.query`. A form route matches
-  itself with any query.
+- `tx = false`, `store = false`: as for actions.
+- An `app.fail` in `intro`, `after` or `instead` also shows its message in place of the form.
 
 ## v0: the advanced surface
 
