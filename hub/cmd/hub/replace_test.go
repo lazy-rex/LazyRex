@@ -161,3 +161,17 @@ func TestExpectRunArguments(t *testing.T) {
 		t.Error("the exact run")
 	}
 }
+
+// A guarded start whose entry was removed after the resolution refuses before any write: the
+// desired state stays, and the nil db shows that nothing was saved (codex-23's regression).
+func TestExpectRunRemovedEntry(t *testing.T) {
+	h := &Hub{}
+	pl := &Plugin{Name: "p", Desired: "stopped"} // pl.entry is nil: the entry was removed
+	err := h.startExpected(context.Background(), pl, false, &expectRun{Source: "src/p"}, &configEntry{}, &pluginRun{Source: "src/p"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "refused: plugin p: its entry was removed during the start; nothing was retired or spawned") {
+		t.Fatalf("got %v", err)
+	}
+	if pl.Desired != "stopped" {
+		t.Fatalf("desired %q", pl.Desired)
+	}
+}
