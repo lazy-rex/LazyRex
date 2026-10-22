@@ -472,8 +472,14 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	}
 	server, err := e.endpoint(e.server)
 	if err != nil {
-		say("setup: no Rex server answered (%v).", err)
-		say("  Start Rex, then run setup again. Setup does not start a server.")
+		// The user text names the command that shows the cause, not the internal error: setup has
+		// no log (the onboarding dry run, 2026-10-22).
+		status := "rex server status"
+		if e.server != "" {
+			status = "rex -S " + shellWord(e.server) + " server status"
+		}
+		say("setup: no Rex server answered.")
+		say("  Start Rex, then run setup again. Setup does not start a server. To see the cause: %s", status)
 		return 1
 	}
 

@@ -117,10 +117,19 @@ func TestSetupPrerequisites(t *testing.T) {
 		t.Error("a missing renderer wrote")
 	}
 
-	e, out = setupTestEnv(t, "", true)
-	e.endpoint = func(string) (string, error) { return "", errors.New("no server") }
-	if runSetup(e, filepath.Join(e.home, ".lazyrex"), false) != 1 || !strings.Contains(out.String(), "Setup does not start a server") {
-		t.Errorf("no Rex:\n%s", out)
+	// No Rex: the user text has no internal error; it names the command that shows the cause, for
+	// the server that setup asked (the onboarding dry run, 2026-10-22).
+	for _, c := range []struct{ server, cmd string }{
+		{"", "To see the cause: rex server status\n"},
+		{"unix:///tmp/rexlab x/rex.sock", `To see the cause: rex -S "unix:///tmp/rexlab x/rex.sock" server status` + "\n"},
+	} {
+		e, out = setupTestEnv(t, "", true)
+		e.server = c.server
+		e.endpoint = func(string) (string, error) { return "", errors.New("rex server status: exit status 1") }
+		if runSetup(e, filepath.Join(e.home, ".lazyrex"), false) != 1 || !strings.Contains(out.String(), "setup: no Rex server answered.\n") ||
+			!strings.Contains(out.String(), "Setup does not start a server.") || !strings.Contains(out.String(), c.cmd) || strings.Contains(out.String(), "exit status") {
+			t.Errorf("no Rex, server %q:\n%s", c.server, out)
+		}
 	}
 
 	e, out = setupTestEnv(t, "", true)
