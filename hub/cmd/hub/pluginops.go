@@ -29,9 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
-	"os"
 	"strings"
 	"time"
 )
@@ -171,11 +169,8 @@ func fileEntry(e *configEntry) managedFileEntry {
 
 // readManaged reads and parses the managed file. A missing file has no entries and no bytes.
 func readManaged(path string) ([]byte, []*configEntry, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, nil
-	}
-	if err != nil {
+	b, err := readManagedBytes(path)
+	if err != nil || b == nil {
 		return nil, nil, err
 	}
 	list, err := parseManagedBytes(b)
