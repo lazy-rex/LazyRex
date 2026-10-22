@@ -935,7 +935,9 @@ another writer wrote later is then refused, not started.
   that candidate, as a replace does. A refusal leaves the desired state as it was. The start never
   enters `waiting`, also when a dependency stops after the admission, because a later wake would
   start the candidate of that time. A retained live instance is kept only when its run is the
-  expected run.
+  expected run. An entry that a reload removed after the resolution refuses the start (code
+  `refused`), and the kept record gets no desired state. (Today the hub serves one request at a
+  time, so a reload cannot come inside a start; the check guards a later concurrent writer.)
 - start of a running plugin: its run must be the expected run, else `candidate_changed`, "plugin
   <p> runs <run>, not <expected>; nothing was started". A run saved before the digest field has no
   digest, so it does not match a GitHub expectation: replace it.

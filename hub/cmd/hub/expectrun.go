@@ -80,7 +80,7 @@ func candidateChanged(name string, cand *pluginRun, x *expectRun, unchanged stri
 // after the resolution of the start path (checkStart): the candidate cand is the one that it
 // spawns. It admits once, in the order of a replace, and it never waits:
 //  1. cand must be x, else candidate_changed.
-//  2. In one h.mu section: each dependency must be registered, else dependency_not_ready; then the
+//  2. In one h.mu section: the entry must still be the resolved one (else refused); each dependency must be registered, else dependency_not_ready; then the
 //     record becomes desired running, and the save must succeed. A refusal or a failed save leaves
 //     the desired state as it was, and no waiting state.
 //  3. A retained live instance whose run is x is kept. Else the recorded instance is retired.
@@ -93,6 +93,13 @@ func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *e
 		return candidateChanged(pl.Name, cand, x, "nothing was retired or spawned")
 	}
 	h.mu.Lock()
+	if pl.entry != e {
+		// The entry was removed after the resolution. Nothing writes the kept record here, as in
+		// startOrWait. Today a removal is a hub.plugins.reload request, and the hub serves one request
+		// at a time, so this guards a later concurrent writer.
+		h.mu.Unlock()
+		return refuse("refused", "plugin %s: its entry was removed during the start; nothing was retired or spawned", pl.Name)
+	}
 	var missing string
 	for _, d := range cand.Depends {
 		if !h.registeredLocked(d) {
@@ -111,11 +118,8 @@ func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *e
 		h.mu.Unlock()
 		return fmt.Errorf("plugin %s: the desired state was not saved: %w; nothing was retired or spawned", pl.Name, err)
 	}
-	member := pl.entry == e
-	keep := keepLive && member && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && x.matches(&pl.run)
-	if member {
-		pl.state, pl.refusal, pl.waiting = "", "", nil // admitted: not refused, not waiting
-	}
+	keep := keepLive && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && x.matches(&pl.run)
+	pl.state, pl.refusal, pl.waiting = "", "", nil // admitted: not refused, not waiting
 	h.mu.Unlock()
 	if keep {
 		h.kickWaiting()
