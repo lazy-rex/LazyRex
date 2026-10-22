@@ -1286,6 +1286,7 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 			left++
 			continue
 		}
+		h.opFault("observe-before-proof") // a test: a resolution between the read and the write
 		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = '' AND resolved_by = ''`, proof+" (later)", a.attempt)
 		if err != nil {
 			left++
