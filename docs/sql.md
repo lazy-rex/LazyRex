@@ -177,7 +177,7 @@ authorized at CREATE.
   open render ID adds the tables that it read to the render: the authorizer READ actions, also
   through SQL views, joins, subqueries, CTEs and `count(*)` (observed with modernc.org/sqlite
   v1.61.0, renderreads_test.go). A `conflict` (`expect_rows`) adds its reads: the statement ran
-  fully. A view that opted in renders again only after a commit that changed a table that it read
+  fully. Any other error, also one before the statement runs, makes the render untracked. A view that opted in renders again only after a commit that changed a table that it read
   (the write candidates when `total_changes()` moved), or after DDL.
 
 ## 11. Rollback: hub.admin.sql_return (built)

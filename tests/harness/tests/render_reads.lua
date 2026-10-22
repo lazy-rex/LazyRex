@@ -77,6 +77,7 @@ test('without the opt-in, with an unknown value, or untracked: every SQL commit 
     unknown = open('e', 'some-new-mode'),
     untokened = open('f', 'reads', 'untokened'),
     store = open('g', 'reads', 'store'),
+    refused = open('i', 'reads', 'refused'),
   }
   settle()
   local before = {}

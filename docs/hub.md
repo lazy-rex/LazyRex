@@ -163,6 +163,11 @@ tree, and the renderer never sees it.
   render succeeded, stayed tracked, and read at least one table. Then a SQL commit renders the
   view again only when it changed one of those tables, or the schema. In every other case the
   view keeps the default.
+- `"reads"` is the plugin's statement that every hub call of that render reached the hub and
+  returned without error. A plugin that cannot say so (a call timed out, disconnected, or failed,
+  also when the plugin caught the error) sends no `refresh`. The SDK omits refresh when a hub call
+  failed during the render. The hub untracks the render for each `hub.sql.query` error that
+  reaches it; it cannot see a call that did not reach it.
 - Any other value counts as absent. The hub logs it once for each plugin and value (at most 64
   lines in all), and the render does not fail: a newer SDK can send a value that an older hub does
   not know.
@@ -175,8 +180,9 @@ same plugin instance (for example a query without `render`, a closed or unknown 
 plugin's ID, `hub.store.get`, `hub.store.scan`, `hub.store.ops_scan`, `hub.agents`). Each such
 call makes every open render of the plugin untracked; the views of renders that ended keep their
 tables. A new hub action counts as such a call unless it is a `hub.sql.query` with `render`. A
-render is also untracked after a query with its ID fails with an error other than `conflict`
-(the hub cannot know the tables), and after it reads a `sqlite_` table other than
+render is also untracked after a query with its ID fails with an error other than `conflict`,
+also before the statement runs (invalid arguments, a database that does not open): the hub cannot
+know the tables, and after it reads a `sqlite_` table other than
 `sqlite_schema` (`sqlite_sequence` and `sqlite_stat1` change without a mark).
 
 Marks and races (the rules of "Render dependencies" apply):

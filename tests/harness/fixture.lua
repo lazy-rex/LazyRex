@@ -248,8 +248,8 @@ local function view(action, args)
     end
     -- /lazy/reads-<x> (render_reads.lua): the SQL row reads_spec(<x>) gives the refresh value of the
     -- reply and the mode of the data read: 'tokened' (the query carries args.render), 'untokened'
-    -- (no render), 'store' (a tokened query, then a hub.store.get). The text counts the rows of
-    -- the table reads_<x>.
+    -- (no render), 'store' (a tokened query, then a hub.store.get), 'refused' (a tokened query, then a
+    -- tokened query with tx that the hub refuses). The text counts the rows of the table reads_<x>.
     local rname = args.route:match('^/lazy/reads%-(%w+)$')
     if rname then
       local function query(sql, tokened)
@@ -261,6 +261,12 @@ local function view(action, args)
       local refresh, mode = spec[1], spec[2]
       local n = query('SELECT count(*) FROM reads_' .. rname .. ' WHERE ? IS NOT NULL', mode ~= 'untokened')
       if mode == 'store' then get('reads/' .. rname) end
+      if mode == 'refused' then
+        -- A tokened query that the hub refuses (tx with render). rex.call returns the error; the
+        -- render goes on and still answers refresh: the hub must untrack it.
+        rex.call('client.perform', {client_id = hub_id, action = 'hub.sql.query', timeout_ms = 10000,
+          args = {sql = 'SELECT 1', render = args.render, tx = 'x'}})
+      end
       return {tree = {title = 'Reads', nodes = {{id = 'lazy', type = 'widget', text = tostring(n and n[1])}}},
         refresh = type(refresh) == 'string' and refresh or nil}
     end

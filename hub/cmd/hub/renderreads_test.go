@@ -230,10 +230,11 @@ func renderHub(t *testing.T) *Hub {
 // renderStep is what the test plugin does in one render of a view: the reads (each a set of
 // tables; nil: an untokened read), the refresh value of the reply, and an error.
 type renderStep struct {
-	reads   []map[string]bool
-	refresh any // nil: no field
-	err     error
-	during  func() // runs after the reads, before the reply
+	reads    []map[string]bool
+	failRead bool // after the reads, a tokened query that fails before it runs
+	refresh  any  // nil: no field
+	err      error
+	during   func() // runs after the reads, before the reply
 }
 
 // renderWith renders the marked views of p once; steps gives each view's render.
@@ -249,6 +250,10 @@ func renderWith(t *testing.T, h *Hub, steps map[string]renderStep) {
 			}
 			h.renderCall(plugin, "c1", "hub.sql.query", map[string]any{"render": id})
 			h.renderRead(plugin, "c1", id, reads, true)
+		}
+		if s.failRead {
+			h.renderCall(plugin, "c1", "hub.sql.query", map[string]any{"render": id})
+			h.renderRead(plugin, "c1", id, nil, false)
 		}
 		if s.during != nil {
 			s.during()
@@ -295,6 +300,7 @@ func TestRenderOptIn(t *testing.T) {
 		"unknown type":  {renderStep{reads: []map[string]bool{ta}, refresh: map[string]any{"x": 1}}, false},
 		"empty set":     {renderStep{refresh: "reads"}, false},
 		"untracked":     {renderStep{reads: []map[string]bool{ta, nil}, refresh: "reads"}, false},
+		"failed read":   {renderStep{reads: []map[string]bool{ta}, failRead: true, refresh: "reads"}, false},
 		"failed":        {renderStep{reads: []map[string]bool{ta}, refresh: "reads", err: &rex.RexError{Code: "boom", Message: "test"}}, false},
 		"transient":     {renderStep{reads: []map[string]bool{ta}, refresh: "reads", err: &rex.RexError{Code: "timeout", Message: "test"}}, false},
 	} {
@@ -407,7 +413,16 @@ func TestSQLRenderReads(t *testing.T) {
 	l.fails("conflict", "hub.sql.query", `{"sql":"SELECT x FROM a", "expect_rows":1, "render":"r-1"}`)
 	l.fails("sql_error", "hub.sql.query", `{"sql":"SELECT nope FROM a", "render":"r-1"}`)
 	l.must("hub.sql.query", `{"sql":"SELECT x FROM a"}`)
-	want := []report{{"r-1", "a,va", true}, {"r-1", "a,b", true}, {"r-1", "b", true}, {"r-1", "a", true}, {"r-1", "", false}}
+	// Errors before the statement runs (codex-29 review of 891aae8): each one reports a failed read.
+	l.fails("invalid_input", "hub.sql.query", `{"sql":"SELECT x FROM b", "expect_rows":-1, "render":"r-1"}`)
+	l.fails("invalid_input", "hub.sql.query", `{"render":"r-1"}`)
+	l.fails("invalid_input", "hub.sql.query", `{"sql":"SELECT x FROM b", "params":5, "render":"r-1"}`)
+	l.fails("refused", "hub.sql.query", `{"sql":"SELECT x FROM b", "tx":"x", "render":"r-1"}`)
+	if _, err := l.call("c-old", "hub.sql.query", `{"sql":"SELECT x FROM b", "render":"r-1"}`); err == nil {
+		t.Fatal("a stale instance read")
+	}
+	want := []report{{"r-1", "a,va", true}, {"r-1", "a,b", true}, {"r-1", "b", true}, {"r-1", "a", true}, {"r-1", "", false},
+		{"r-1", "", false}, {"r-1", "", false}, {"r-1", "", false}, {"r-1", "", false}, {"r-1", "", false}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("reports:\n got %v\nwant %v", got, want)
 	}

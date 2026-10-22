@@ -306,9 +306,20 @@ type sqlCall struct {
 }
 
 // dispatch runs one hub.sql action.
-func (s *sqlService) dispatch(ctx context.Context, action string, c sqlCall) (any, error) {
+func (s *sqlService) dispatch(ctx context.Context, action string, c sqlCall) (_ any, err error) {
 	if s == nil {
 		return nil, refuse("unavailable", "the hub has no SQL service")
+	}
+	// A hub.sql.query that names a render ID and fails, at any step, reports a failed read: the
+	// render becomes untracked (renderreads.go). A conflict is the exception: its statement ran,
+	// and query reported its reads.
+	if id, _ := c.args["render"].(string); action == "hub.sql.query" && id != "" {
+		defer func() {
+			var se *storeError
+			if err != nil && !(errors.As(err, &se) && se.code == "conflict") {
+				s.rendered(c.plugin, c.client, id, nil, false)
+			}
+		}()
 	}
 	render, err := renderArg(action, c.args)
 	if err != nil {
@@ -623,29 +634,17 @@ func (s *sqlService) query(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 		return nil, refuse("stale_instance", "the caller is not the plugin's registered instance")
 	}
 	if err := p.lockReader(); err != nil {
-		s.renderedRead(c, nil)
 		return nil, err
 	}
 	defer p.rmu.Unlock()
 	r, err := p.r.run(ctx, q, params, true, sqlReplyBudget)
-	s.renderedRead(c, r) // also before a conflict: that statement ran fully
 	if err != nil {
-		return nil, err
+		return nil, err // dispatch reports the failed read
+	}
+	if c.render != "" {
+		s.rendered(c.plugin, c.client, c.render, r.reads, true) // before the expect_rows check: a conflict keeps them
 	}
 	return reply(r)
-}
-
-// renderedRead reports the reads of a query with a render ID. r nil: the statement failed, so the
-// hub cannot know its reads.
-func (s *sqlService) renderedRead(c sqlCall, r *stmtResult) {
-	if c.render == "" {
-		return
-	}
-	if r == nil {
-		s.rendered(c.plugin, c.client, c.render, nil, false)
-		return
-	}
-	s.rendered(c.plugin, c.client, c.render, r.reads, true)
 }
 
 func (s *sqlService) batch(ctx context.Context, p *pluginSQL, c sqlCall) (any, error) {
