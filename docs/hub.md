@@ -197,9 +197,8 @@ Marks and races (the rules of "Render dependencies" apply):
 
 The home plugin reads no table: each render calls hub actions, so it is untracked. Its views
 render again through `hub.changed` marks (agents, workers, plugins, profiles). The launch notice
-is Lua state of the plugin, not hub data. The open Agents… panel shows it because the launch
-changes the workers. The lab test `plugins/lazyrex/tests/refresh.lua` checks each path without a
-render request. All of its cases fail when the hub does not mark views on `hub.changed`.
+is Lua state of the plugin: a change of it calls `hub.ui.invalidate` for the Agents… panel. The lab
+test `plugins/lazyrex/tests/refresh.lua` checks each path without a render request.
 
 ### Version 1 view tree
 
