@@ -36,6 +36,17 @@ M.normalize = normalize
 
 -- Values ------------------------------------------------------------------------------------------
 
+-- join is table.concat for a long list. Rex Lua fails table.concat of more than about 2559 items with
+-- "registry overflow" (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-22), so join concatenates
+-- blocks of 1000 items, then the blocks.
+local function join(list, sep)
+  sep = sep or ''
+  if #list <= 1000 then return table.concat(list, sep) end
+  local blocks = {}
+  for i = 1, #list, 1000 do blocks[#blocks + 1] = table.concat(list, sep, i, math.min(i + 999, #list)) end
+  return join(blocks, sep)
+end
+
 local NULL = {null = true}
 local b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 local function base64(s)
@@ -47,7 +58,7 @@ local function base64(s)
     out[#out + 1] = b64:sub(q[1] + 1, q[1] + 1) .. b64:sub(q[2] + 1, q[2] + 1)
       .. (b and b64:sub(q[3] + 1, q[3] + 1) or '=') .. (c and b64:sub(q[4] + 1, q[4] + 1) or '=')
   end
-  return table.concat(out)
+  return join(out)
 end
 local unb64 = {}
 for i = 1, 64 do unb64[b64:byte(i)] = i - 1 end
@@ -62,7 +73,7 @@ local function unbase64(s)
     if left > 2 then out[#out + 1] = string.char(math.floor(n / 256) % 256) end
     if left > 3 then out[#out + 1] = string.char(n % 256) end
   end
-  return table.concat(out)
+  return join(out)
 end
 M.base64, M.unbase64 = base64, unbase64
 
@@ -142,7 +153,7 @@ local function digest(text)
   end
   return string.format('%08x%08x%08x-%d', h[1], h[2], h[3], #text)
 end
-function M.fingerprint(v) return 'v1/' .. digest(table.concat(canonical(v, {}))) end
+function M.fingerprint(v) return 'v1/' .. digest(join(canonical(v, {}))) end
 
 -- Hub calls --------------------------------------------------------------------------------------
 

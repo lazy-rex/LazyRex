@@ -764,3 +764,25 @@ app.form('/forms/plain', {title = 'Plain', fields = {{id = 'text', label = 'Text
   local r = s:call('view.action', {route = '/forms/plain', node_id = 'form', action = 'submit', input = {values = {text = 'x'}}, user = 'user', operation_key = 'p1'})
   expect(r.result).to_equal({close_form = true})
 end)
+
+test('a 64 KB BLOB in a row decodes; a big blob parameter and a fingerprint of 5000 items work', function()
+  -- Rex Lua: table.concat of more than about 2559 items fails with "registry overflow" (observed on
+  -- Rex 0.0.1792158932-g88fd41, lab, 2026-10-22).
+  local bytes = {}
+  for i = 1, 65536 do bytes[i] = string.char(i % 256) end
+  local big = {}
+  for i = 1, 64 do big[i] = table.concat(bytes, '', (i - 1) * 1024 + 1, i * 1024) end
+  big = table.concat(big)
+  local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
+  local encoded = sdk.base64(big)
+  local s = plugin([[
+app.action('p.read', {}, function() local r = app.db.first('SELECT b FROM t'); return {n = #r.b, head = r.b:byte(1), tail = r.b:byte(-1)} end)]],
+    {hub = {['hub.sql.query'] = function() return {columns = {'b'}, rows = {{{blob = encoded}}}, complete = true} end}})
+  local r = s:agent('p.read', {})
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result).to_equal({n = 65536, head = 1, tail = 0})
+  expect(sdk.unbase64(encoded) == big, 'round trip').to_be(true)
+  local items = {}
+  for i = 1, 5000 do items[i] = i end
+  expect(sdk.fingerprint(items) ~= sdk.fingerprint({1}), 'a fingerprint of 5000 items').to_be(true)
+end)
