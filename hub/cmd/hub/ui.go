@@ -28,8 +28,7 @@ import (
 )
 
 const uiSchema = `
--- plugin '*' is the LazyRex session, which every plugin shares. Every other row is a legacy session of an
--- older build (one per plugin, or 'app:<plugin>'): its views retire, then settleLegacySession cleans it up.
+-- plugin '*' is the LazyRex session, which every plugin shares. It is the only row.
 CREATE TABLE IF NOT EXISTS ui_sessions (plugin TEXT PRIMARY KEY, session_id TEXT NOT NULL);
 -- key 'nav': the latest navigation target "<plugin>/<tab>", done when shown. It commits before any
 -- layout change. (key 'active' is from the single-session build and is not read.)
@@ -678,9 +677,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			}
 		}
 	}
-
-	// 6. Legacy sessions whose last view closed: release or destroy them.
-	h.settleLegacySessions(ctx)
 
 	// 7. Navigation: show the target tab on every connected app, once it is mounted. The intent
 	// is durable. A newer navigation replaces it; this pass then skips the stale target, and the
@@ -1754,91 +1750,6 @@ func (h *Hub) closeLegacy(ctx context.Context, v *view, why string) bool {
 	}
 	h.closeViewRow(ctx, v.ID, why)
 	h.ev.emit("view_retired", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "why": why})
-	h.kickUI(v.Plugin) // the pass settles the legacy session (settleLegacySessions)
+	h.kickUI(v.Plugin)
 	return true
-}
-
-// settleLegacySessions runs settleLegacySession for every session that has a legacy ui_sessions
-// row. The worker calls it once per pass, so a failed cleanup is tried again on the next pass.
-func (h *Hub) settleLegacySessions(ctx context.Context) {
-	rows, err := h.db.QueryContext(ctx, `SELECT DISTINCT session_id FROM ui_sessions WHERE plugin != ?`, uiSessionKey)
-	if err != nil {
-		log.Printf("ui: legacy sessions: %v", err)
-		return
-	}
-	var sessions []string
-	for rows.Next() {
-		var s string
-		if rows.Scan(&s) == nil {
-			sessions = append(sessions, s)
-		}
-	}
-	rows.Close()
-	for _, s := range sessions {
-		h.settleLegacySession(ctx, s)
-	}
-}
-
-// settleLegacySession cleans up a session of an older build after its last view row closed. It
-// waits until every view row in the session is closed. The reconcile loop retires the rows of loaded
-// plugins (closeLegacy); a row of a plugin that is not loaded keeps the cleanup pending. Then:
-//   - Rex has no such session: the hub forgets it.
-//   - The session has blocks (user panes): the hub deletes its legacy rows and stops managing it.
-//     The session and its panes stay with the user.
-//   - The session has no blocks: the hub destroys it, then forgets it. The legacy rows stay until
-//     the destroy succeeds, so a failed destroy is tried again on the next pass.
-//
-// The Rex calls run in the worker, outside any transaction or lock.
-func (h *Hub) settleLegacySession(ctx context.Context, sess string) {
-	var home, open int
-	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_sessions WHERE session_id = ? AND plugin = ?`, sess, uiSessionKey).Scan(&home); err != nil {
-		return
-	}
-	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM views WHERE session_id = ? AND status != 'closed'`, sess).Scan(&open); err != nil || open > 0 {
-		return
-	}
-	if home > 0 { // also the LazyRex session: never destroyed here
-		h.releaseLegacySession(ctx, sess, 0)
-		return
-	}
-	blocks, err := h.blocksIn(ctx, sess)
-	switch {
-	case err != nil && sessionGone(err):
-		h.forgetSession(ctx, sess, "legacy gone")
-	case err != nil:
-		h.legacyCleanupFailed(sess, "session.list_blocks", err)
-	case len(blocks) > 0:
-		h.releaseLegacySession(ctx, sess, len(blocks))
-	default:
-		if err := legacyDestroy(ctx, h, sess); err != nil && !sessionGone(err) {
-			h.legacyCleanupFailed(sess, "session.destroy", err)
-			return
-		}
-		h.forgetSession(ctx, sess, "legacy retired")
-	}
-}
-
-// legacyDestroy destroys a legacy session. Tests replace it to make the destroy fail.
-var legacyDestroy = func(ctx context.Context, h *Hub, sess string) error {
-	return h.rex.Call(ctx, "session.destroy", map[string]any{"session_id": sess}, nil)
-}
-
-// releaseLegacySession deletes a session's legacy rows and keeps the session.
-func (h *Hub) releaseLegacySession(ctx context.Context, sess string, blocks int) {
-	if _, err := h.db.ExecContext(ctx, `DELETE FROM ui_sessions WHERE session_id = ? AND plugin != ?`, sess, uiSessionKey); err != nil {
-		log.Printf("ui: release legacy session %s: %v", sess, err)
-		return
-	}
-	h.ui.mu.Lock()
-	if h.ui.sess[sess] != uiSessionKey {
-		delete(h.ui.sess, sess)
-	}
-	h.ui.mu.Unlock()
-	h.ev.emit("legacy_session_released", map[string]any{"session_id": sess, "blocks": blocks})
-}
-
-func (h *Hub) legacyCleanupFailed(sess, call string, err error) {
-	log.Printf("ui: legacy session %s: %s: %v", sess, call, err)
-	h.ev.emit("legacy_cleanup_failed", map[string]any{"session_id": sess, "call": call, "error": err.Error()})
-	h.retryLater()
 }
