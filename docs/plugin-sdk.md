@@ -1,9 +1,8 @@
 # Writing a LazyRex plugin
 
-Status: **v0, in progress** (2026-10-22). The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
-`sdk/lua/examples/todo`. Its tests run against a fake hub.sql (`sdk/lua/tests`); the lab run on the real
-hub waits for the hub branch `hub/sql`. A plugin author needs only this page. The details are in
-"Reference" (sql.md).
+Status: **v0** (2026-10-22). The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
+`sdk/lua/examples/todo`. It runs on the hub's SQL line (hub/sql-r2 c840c92, lab) and ships with
+release 4. A plugin author needs only this page. The details are in "Reference" (sql.md).
 
 A plugin is a Lua file that the hub starts. The SDK module `lazyrex` does the registration, the
 calls to the hub, the storage, the transactions and the view refresh for you.
@@ -13,11 +12,12 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 `lazyrex.json`:
 
 ```json
-{"name": "todo", "main": "main.lua", "sdk": "0"}
+{"name": "todo", "main": "main.lua", "sdk": "0", "test": {"agents": [{"id": "alice", "name": "Alice"}]}}
 ```
 
-`"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
-`require('lazyrex')` works.
+- `"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
+  `require('lazyrex')` works.
+- `test.agents` lists the agents that the lab tests can open with `agent('alice')`.
 
 `main.lua`:
 
@@ -25,30 +25,44 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 local app = require('lazyrex').plugin('todo')
 
 -- The schema. Each string is one version. The SDK runs the new ones once, in order.
+-- To change the schema later, add a string at the end; never edit an old one.
 app.db.migrate {
   'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)',
 }
 
--- An action: agents and the user can call it. The arguments are checked against the schema.
+local function toggle(id) app.db.exec('UPDATE todos SET done = 1 - done WHERE id = ?', id) end
+
+-- Actions: agents and the user can call them. The arguments are checked against the schema.
 app.action('todo.add', {text = 'string'}, function(ctx, args)
   local r = app.db.exec('INSERT INTO todos (text) VALUES (?)', args.text)
   return {id = r.id}
 end)
+app.action('todo.toggle', {id = 'integer'}, function(ctx, args) toggle(args.id); return {} end)
 
--- A panel: a tab in the LazyRex window. It shows again by itself after a write to a table that
--- it read.
+-- A panel: the palette command "Todos" opens it. It shows again by itself after a write.
 app.panel('Todos', function(view)
   local items = {}
   for _, t in ipairs(app.db.query('SELECT id, text, done FROM todos ORDER BY id')) do
     items[#items + 1] = {id = t.id, label = t.text, detail = t.done == 1 and 'done' or '',
-      on_select = function(ctx) app.db.exec('UPDATE todos SET done = 1 - done WHERE id = ?', t.id) end}
+      tool = 'todo.toggle', on_select = function(ctx) toggle(t.id) end}
   end
   return {app.ui.list('todos', items)}
 end)
 ```
 
 That is the whole plugin. An agent adds an item with `todo.add {text = "buy milk"}`; the user
-selects an item in the panel to toggle it.
+selects an item in the panel to toggle it. `detail` is the second line of an item.
+
+- **Agent parity.** Each thing that the user can do, an agent can do too. An item with `on_select`
+  names the agent action that does the same in `tool` (here `todo.toggle`); both call one function.
+  An item that only navigates gives `user_only = 'navigation'` instead.
+- **Names.** `app.panel('Todos')` gets the route `/panels/todos` and the palette command `todos`:
+  the title in lowercase, with `_` between words (`'My Notes'`: `/panels/my_notes`, `my_notes`).
+  `{id = 'x'}` as the third argument sets it. A command id uses only a-z, 0-9 and `_`; an action
+  name can have dots (`todo.add`).
+- **Schema types.** The short form takes the JSON Schema type names: `'string'`, `'integer'`,
+  `'number'`, `'boolean'`, `'object'`, `'array'`. A `?` at the end makes the argument optional
+  (`'string?'`).
 
 ## The rules
 
@@ -69,46 +83,84 @@ selects an item in the panel to toggle it.
 - **Big numbers.** Lua holds integers exactly only up to 2^53. A larger integer from the database
   comes back as a decimal string.
 - **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs
-  again after each write to a table that it read.
+  again after each write.
 - **A render only reads.** A panel, view or form render reads the committed state, with no
   transaction. A write (`db.exec`, `db.batch`, `db.transaction`, `app.notice`) in a render fails with `refused`.
   Write in an action or an `on_select` handler.
 - **Clicks.** An item's `on_select` runs when the user selects it. The SDK runs the panel function
   again first, so the handler sees the current row. An item that is gone gives a visible error.
+- **Empty lists.** An `app.ui.list` with no items renders as a widget with the text "Nothing here
+  yet." (`app.ui.list(id, items, {empty = 'No notes'})` sets the text). It has no `items` then.
 - **View size.** A rendered panel, view or form over 48 KiB (encoded, with its status) fails with
   `too_large`: Rex delivers no message over 64 KiB. Show fewer items, or page them.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
   run: `app.action(name, schema, fn, {user_only = true})`.
-- **Retries.** A UI action that the user's renderer sends again runs once. An agent that sends a call
-  again with the same `key` gets the first answer.
+- **Retries.** A UI action that the user's renderer sends again runs once. An agent gives a `key` in
+  the arguments (`todo.add {text = "buy milk", key = "k1"}`; the SDK adds `key` to every schema).
+  A call again with the same `key` and the same arguments gets the first answer and changes nothing.
 
 ## Test it
 
 `tests/todo.lua`:
 
 ```lua
-test('an added item shows in the panel', function()
-  local alice = agent('alice')
-  alice:call('todo.add', {text = 'buy milk'})
-  -- A panel opens from its palette command in a pane (it is not a tab).
+-- A panel opens from its palette command in a pane (it is not a tab).
+local function panel()
   local s = session('todo')
   local w = rex.call('session.new_window', {session_id = s, window_label = 'work',
     layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '600'}, login = false}}}})
   user:command('todos', {session = s, block = w.block_ids[1]})
-  local tree = user:view('/panels/todos', 'todo', s):render()
-  expect(node(tree, 'todos').items[1].label).to_be('buy milk')
+  return user:view('/panels/todos', 'todo', s)
+end
+
+test('an added item shows in the panel, and a select toggles it', function()
+  local alice = agent('alice')
+  local r = alice:call('todo.add', {text = 'buy milk', key = 'k1'})
+  local v = panel()
+  local item = node(v:render(), 'todos').items[1]
+  expect(item.label).to_be('buy milk')
+  local op = v:action('todos', 'select', {item_id = tostring(r.id)})
+  expect(op.status).to_be('succeeded')
+  expect(node(v:render(), 'todos').items[1].detail).to_be('done')
 end)
 ```
 
-The whole lab test of this plugin is `sdk/lua/examples/todo/tests/todo.lua`.
+Run `lazyrex-hub test` in the plugin directory (`-file todo.lua` runs one file, `-run <pattern>`
+some tests, `-lazyrex <dir>` names the LazyRex checkout when it is not `../LazyRex`). It starts its
+own lab; it never touches your terminals.
 
-Run `lazyrex-hub test .` in the plugin directory. It starts its own lab; it never touches your
-terminals.
+- **One lab per file.** Each `tests/*.lua` file gets a new lab and hub. The tests in one file share
+  it and run in order, so a later test sees the rows of an earlier one.
+- **Parity sweep.** Before the files, the run opens every palette command and renders every view.
+  Each command names `action` (an agent action) or `user_only`, and each item, widget and form
+  action names `tool` (an exported agent action) or `user_only`. A violation fails the run.
+- **The plugin does not start** (`plugin todo is not registered`): run with `-keep`, then read
+  `hub.log` in the kept lab directory that the output names. Delete the directory after.
+
+The test functions:
+
+| Call | What it does |
+|---|---|
+| `agent(id)` | An agent from `test.agents`. `a:call(action, args)` calls an action as that agent. |
+| `session(name)` | A new lab session; it returns its id. |
+| `user:command(id, {session, block})` | Runs a palette command from that pane, as the user does. |
+| `user:view(route, plugin, session)` | The open view of that route. |
+| `v:render()` | The current tree. `node(tree, id)` finds a node by id. |
+| `v:action(node_id, action, input, key)` | A user action. It returns `{status, result or error}` (`status`: `succeeded` or `failed`). |
+| `expect(x).to_be(y)`, `.to_equal(y)`, `expect_error(fn, pattern)` | Assertions. |
+
+- Select an item: `v:action('todos', 'select', {item_id = '1'})` (the list id and the item id).
+- Submit a form: `f:action('form', 'submit', {values = {text = 'eggs'}})` (`form` is the form node
+  id, `submit` its action name), where `f = user:view('/forms/add', 'todo', s)` after the command
+  that opens the form.
+
+The whole lab test of this plugin is `sdk/lua/examples/todo/tests/todo.lua`. All test functions:
+docs/testing.md.
 
 ## Start a new plugin
 
-`lazyrex-hub plugin new todo` writes `lazyrex.json`, `main.lua`, a passing test and a README.
-`lazyrex-hub plugin dev .` runs the plugin in a lab hub and loads it again on each save.
+Copy `sdk/lua/examples/todo` and change the name in `lazyrex.json`, in `lazyrex.plugin(...)` and in
+the action names. (Proposed, not built: `lazyrex-hub plugin new` and `plugin dev`.)
 
 ## Forms
 
