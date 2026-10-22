@@ -128,6 +128,7 @@ type Plugin struct {
 	refusal   string       // the error of the refused start (state refused or retained)
 	waiting   []string     // the dependencies that are not registered (state waiting)
 	attempted bool         // a start attempt (startPlugin) ran in this hub process: recovery skips the record
+	opAttempt string       // the bound op attempt of the running admin call (adminattempt.go); only under lifecycle
 	lifecycle sync.Mutex   // serializes replace, start and stop
 	writes    sync.RWMutex // the store fence: a store write holds it to read (fencedBatch)
 }
