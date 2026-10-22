@@ -42,7 +42,9 @@ func (h *Hub) viewAppAction(ctx context.Context, p perform, args map[string]any)
 		return nil, err
 	}
 	// The app opens the browser and answers at once; the path arrives later as typed input.
-	if err := appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": action, "args": map[string]any{}, "timeout_ms": 5000}, nil); err != nil {
+	err = appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": action, "args": map[string]any{}, "timeout_ms": 5000}, nil)
+	h.observeApp(app, action, err)
+	if err != nil {
 		return nil, err
 	}
 	h.ev.emit("view_app_action", map[string]any{"view_id": v.ID, "action": action, "client_id": app})
@@ -157,8 +159,10 @@ func (h *Hub) appSelectSession(ctx context.Context, p perform, args map[string]a
 	if err != nil {
 		return nil, err
 	}
-	if err := appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": "session.select",
-		"args": map[string]any{"session_id": target, "window_id": window}, "timeout_ms": 5000}, nil); err != nil {
+	err = appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": "session.select",
+		"args": map[string]any{"session_id": target, "window_id": window}, "timeout_ms": 5000}, nil)
+	h.observeApp(app, "session.select", err)
+	if err != nil {
 		return nil, err
 	}
 	h.ev.emit("app_select_session", map[string]any{"view_id": viewID, "plugin": pl.Name, "session_id": target, "window_id": window, "client_id": app})

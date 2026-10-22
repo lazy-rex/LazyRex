@@ -75,6 +75,10 @@ plugin installs; trusting a Codex hook is always yours:
 3. Codex: if setup says so, review and trust the new hook in Codex with `/hooks`.
 4. If setup printed `Install the plugins: ...`, run that command.
 
+Go to Session and Insert Path ask the Rex app to act. The app does that only with Remote Control
+on: in the Rex app, open Settings, Rex Server, and turn on Remote Control. Nothing checks the
+setting ahead of time. `lazyrex-hub status` shows what the hub last saw the app do.
+
 ## Start
 
 In the Rex palette, run **LazyRex: Start Hub**. A pane opens, and the hub runs in it. Closing the

@@ -728,6 +728,10 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	if syncCmd != "" {
 		say("Install the plugins: %s", syncCmd)
 	}
+	// Remote Control is a setting of the Rex app. Setup does not ask the app (no probe): the hub
+	// records what the app does with its actions (remotecontrol.go).
+	say("\nRemote Control: LazyRex asks the Rex app for Go to Session and Insert Path. The app runs them only " +
+		"with Remote Control on (Rex app: Settings, Rex Server, Remote Control). Hub Status shows what the hub last observed.")
 	// A blocked file, a failed write, a failed sync or a failed skill setup is an error; a declined
 	// file, sync or skill setup is the user's choice.
 	if len(failed) > 0 || len(blocked) > 0 || syncFailed || skillFailed {
