@@ -9,7 +9,7 @@ import (
 // Tab status: the program status a view shows on its Rex tab (OSC 7501, written by the
 // renderer). A plugin declares it per tab (hub.ui.tabs "status"); a view's render may return
 // tree.status, which overrides the declared status while it is present. The renderer reads only
-// the snapshot's top-level status (contract agreed with Codex, 2026-10-17).
+// the snapshot's top-level status.
 
 // parseTabStatus checks a declared status and returns it as stored JSON text. nil or null is no
 // status (""). Fields: state (idle, working, done, blocked, error), kind (blocked only:

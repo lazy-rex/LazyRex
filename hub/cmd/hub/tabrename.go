@@ -1,8 +1,7 @@
 package main
 
 // Tab rename: the user renames a plugin view's Rex tab, and the plugin gets view.rename
-// {route, user, title} with the new label, exactly as typed (the maintainer, 2026-10-17: rename a message
-// thread by renaming its tab). The plugin stores the title and declares its tabs again; the hub
+// {route, user, title} with the new label, exactly as typed. The plugin stores the title and declares its tabs again; the hub
 // then writes the declared title, which matches the new label.
 //
 // Loop suppression: each label the hub writes to a window expects exactly one window_label_changed

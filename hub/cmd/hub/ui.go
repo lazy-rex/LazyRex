@@ -70,8 +70,8 @@ func sessionGone(err error) bool {
 }
 
 // legacyView reports whether a view's session is not the LazyRex session, which every plugin
-// shares (the maintainer, 2026-10-17). The hub retires it, and its tab opens again in the LazyRex
-// session. A session of an older build (one per plugin, or app:<plugin>) is legacy.
+// shares. Callers also check notHome: a view outside the LazyRex session and outside its tab's
+// home retires, and its tab opens again in its target session.
 func (h *Hub) legacyView(sess string) bool {
 	h.ui.mu.Lock()
 	defer h.ui.mu.Unlock()
@@ -536,9 +536,8 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				}
 			}
 
-			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone. A view in any
-			// other session (an older hub's session, or the single LazyRex session of the build before
-			// app sessions) retires: its tab opens again here when it is gone.
+			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone. A view in a
+			// session that is not its tab's target retires: its tab opens again here when it is gone.
 			byTab := map[string]*view{}
 			legacyTab := map[string]bool{} // tabs whose legacy view still runs: no replacement yet
 			for _, v := range views {
@@ -1139,7 +1138,7 @@ func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool
 }
 
 // viewClose is the user's close from inside a view (Ctrl+Q in the renderer, hub.view.close): the
-// same as a close of the pane (the maintainer, 2026-10-17). The tab stays closed until a new revision or a
+// same as a close of the pane. The tab stays closed until a new revision or a
 // navigation; the hub then closes the pane. A renderer that quits without this call counts a crash.
 // The renderer checks its own draft and operation gate before the call (Codex's review).
 func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (any, error) {
@@ -1696,7 +1695,7 @@ func errString(err error) string {
 // viewCommand is the renderer's argv. -server is the hub's own endpoint (hub.json, as loaded): a
 // Linux pane has no REX_SERVER, and the renderer never guesses one. On an approved real-server run
 // the renderer must accept the real socket, so it gets -real-server too. The renderer argv is an
-// interface between two binaries of one release: an older renderer refuses -server.
+// interface between two binaries of one release.
 // flags go before the plugin and route (for example -transcript, pair.go).
 func (h *Hub) viewCommand(id, plugin, route string, flags ...string) []string {
 	cmd := []string{h.cfg.View, "-view-id", id, "-server", h.cfg.Server}
