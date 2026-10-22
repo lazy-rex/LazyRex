@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -432,5 +433,71 @@ func TestReleaseMainUsage(t *testing.T) {
 	}
 	if got := releaseMain([]string{"nosuchstep"}, &out, &errb); got != relUsage || !strings.Contains(errb.String(), "unknown step") {
 		t.Errorf("unknown step: %d %s", got, errb.String())
+	}
+}
+
+// Review R1: an ordinary failure of a mutation (for example a lost reply after a retirement) keeps
+// the mutation open with the expectation of its begin record. A later success closes it.
+func TestReleaseFailedMutationKeepsExpectation(t *testing.T) {
+	f := newRelFixture(t, "hub")
+	err := f.r.mutate("replace", map[string]string{"expect_instance": "A"}, func() (any, error) {
+		return nil, errors.New("reply lost after retirement")
+	})
+	if err == nil {
+		t.Fatal("the mutation did not fail")
+	}
+	data, open, err := f.r.lastBegin("replace")
+	if err != nil || !open || !strings.Contains(string(data), `"expect_instance":"A"`) {
+		t.Fatalf("the saved expectation after a failure: %s %v %v", data, open, err)
+	}
+	if err := f.r.mutate("replace", map[string]string{"expect_instance": "A"}, func() (any, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, open, _ := f.r.lastBegin("replace"); open {
+		t.Error("a success after the failure did not close the mutation")
+	}
+}
+
+// Review R2: a backup is checked against the sha256 of each file, written after the files. A
+// changed, missing or unlisted file fails the check, also for the hub.db copy and the listing.
+func TestReleaseBackupSums(t *testing.T) {
+	for _, kind := range []string{"plugin", "hub"} {
+		f := newRelFixture(t, kind)
+		if kind == "hub" {
+			db, _ := sql.Open("sqlite", "file:"+filepath.Join(f.r.cfg.state, "hub.db"))
+			db.Exec("CREATE TABLE t (k TEXT)")
+			db.Close()
+		}
+		names := []string{bakConfig, bakManaged, bakLock, bakBase()}
+		if kind == "hub" {
+			names = append(names, bakDB, bakSQLList)
+		}
+		for i, n := range names {
+			b, err := f.r.writeBackup(fmt.Sprintf("s%d", i))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.r.checkBackup(b); err != nil {
+				t.Fatalf("%s: an intact backup: %v", kind, err)
+			}
+			p := filepath.Join(b, n)
+			old, _ := os.ReadFile(p)
+			os.WriteFile(p, append(old, 'x'), 0o600)
+			if err := f.r.checkBackup(b); err == nil || !strings.Contains(err.Error(), n+" differs") {
+				t.Errorf("%s: %s changed: %v", kind, n, err)
+			}
+		}
+		b, _ := f.r.writeBackup("nosums")
+		os.Remove(filepath.Join(b, bakSums))
+		if err := f.r.checkBackup(b); err == nil {
+			t.Errorf("%s: a backup without SHA256SUMS passed", kind)
+		}
+		b, _ = f.r.writeBackup("short")
+		sums, _ := os.ReadFile(filepath.Join(b, bakSums))
+		lines := strings.SplitAfter(string(sums), "\n")
+		os.WriteFile(filepath.Join(b, bakSums), []byte(strings.Join(lines[1:], "")), 0o600)
+		if err := f.r.checkBackup(b); err == nil || !strings.Contains(err.Error(), "lists") {
+			t.Errorf("%s: a short SHA256SUMS: %v", kind, err)
+		}
 	}
 }

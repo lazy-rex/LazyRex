@@ -26,6 +26,7 @@ const (
 	bakLock    = "lock.json"
 	bakDB      = "hub.db"
 	bakSQLList = "sql-listing.txt"
+	bakSums    = "SHA256SUMS"
 )
 
 func bakBase() string { return peersPath(bakLock) }
@@ -159,7 +160,7 @@ func (r *releaser) writeBackup(stamp string) (string, error) {
 		}
 	}
 	if r.spec.Kind != "hub" {
-		return b, nil
+		return b, r.writeSums(b)
 	}
 	if err := backupDB(filepath.Join(r.cfg.state, "hub.db"), filepath.Join(b, bakDB)); err != nil {
 		return "", relFail("%v", err)
@@ -171,19 +172,61 @@ func (r *releaser) writeBackup(stamp string) (string, error) {
 	if err := os.WriteFile(filepath.Join(b, bakSQLList), []byte(list), 0o600); err != nil {
 		return "", err
 	}
-	return b, nil
+	return b, r.writeSums(b)
 }
 
-// checkBackup checks a backup that has a stamp: each file is there, and hub.db passes
-// integrity_check (a hub release).
-func (r *releaser) checkBackup(b string) error {
+// backupNames are the files that a backup of this kind holds.
+func (r *releaser) backupNames() []string {
 	names := []string{bakConfig, bakManaged, bakLock, bakBase()}
 	if r.spec.Kind == "hub" {
 		names = append(names, bakDB, bakSQLList)
 	}
-	for _, n := range names {
-		if _, err := os.Stat(filepath.Join(b, n)); err != nil {
+	return names
+}
+
+// writeSums writes <backup>/SHA256SUMS, the sha256 of each backup file, after every file is
+// written. checkBackup compares each file with it.
+func (r *releaser) writeSums(b string) error {
+	var sums strings.Builder
+	for _, n := range r.backupNames() {
+		h, err := sha256File(filepath.Join(b, n))
+		if err != nil {
 			return relFail("the backup %s: %v", b, err)
+		}
+		fmt.Fprintf(&sums, "%s  %s\n", h, n)
+	}
+	if err := replaceFile(filepath.Join(b, bakSums), []byte(sums.String())); err != nil {
+		return relFail("the backup %s: %v", b, err)
+	}
+	return nil
+}
+
+// checkBackup checks a backup: SHA256SUMS lists exactly the files of this kind, each file has its
+// listed sha256, and hub.db passes integrity_check (a hub release).
+func (r *releaser) checkBackup(b string) error {
+	raw, err := os.ReadFile(filepath.Join(b, bakSums))
+	if err != nil {
+		return relFail("the backup %s has no %s: %v", b, bakSums, err)
+	}
+	listed := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
+		h, n, ok := strings.Cut(line, "  ")
+		if !ok || len(h) != 64 {
+			return relFail("the backup %s: %s has a malformed line %q", b, bakSums, line)
+		}
+		listed[n] = h
+	}
+	names := r.backupNames()
+	if len(listed) != len(names) {
+		return relFail("the backup %s: %s lists %d files, not %d", b, bakSums, len(listed), len(names))
+	}
+	for _, n := range names {
+		h, err := sha256File(filepath.Join(b, n))
+		if err != nil {
+			return relFail("the backup %s: %v", b, err)
+		}
+		if listed[n] != h {
+			return relFail("the backup %s: %s differs from %s", b, n, bakSums)
 		}
 	}
 	if r.spec.Kind == "hub" {

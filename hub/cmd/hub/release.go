@@ -301,7 +301,9 @@ func (r *releaser) journal() ([]relRecord, error) {
 }
 
 // lastBegin returns the data of the last begin record of op that has no end record after it: the
-// saved expectation of an interrupted mutation. ok is false when every begin has its end.
+// saved expectation of an interrupted mutation. ok is false when every begin has its end. A failed
+// record does not end a mutation: its outcome can be unknown (a lost reply after a retirement), so
+// a rerun still needs the expectation of the begin record before it.
 func (r *releaser) lastBegin(op string) (data json.RawMessage, ok bool, err error) {
 	recs, err := r.journal()
 	if err != nil {
@@ -311,10 +313,12 @@ func (r *releaser) lastBegin(op string) (data json.RawMessage, ok bool, err erro
 		if recs[i].Op != op {
 			continue
 		}
-		if recs[i].Phase == "end" {
+		switch recs[i].Phase {
+		case "end":
 			return nil, false, nil
+		case "begin":
+			return recs[i].Data, true, nil
 		}
-		return recs[i].Data, true, nil
 	}
 	return nil, false, nil
 }
