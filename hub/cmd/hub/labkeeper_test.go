@@ -342,3 +342,26 @@ func TestKeeperGraceBounds(t *testing.T) {
 		}
 	}
 }
+
+// codex-21's regression TestReviewerKeeperRejectsMalformedProcessRows: a listing with the keeper's
+// row and a malformed row is an error, never a partial "empty". Blank lines are skipped. The fake ps
+// lists its parent (this test process) as the keeper.
+func TestKeeperRejectsMalformedProcessRows(t *testing.T) {
+	for _, extra := range []string{`echo "x y z"`, `echo "12"`, `echo "a 1"`} {
+		bin := t.TempDir()
+		script := "#!/bin/sh\necho\necho \"$PPID 1\"\n" + extra + "\n"
+		if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		if m, err := groupMembers(); err == nil {
+			t.Errorf("%s: members %v and no error", extra, m)
+		}
+	}
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "ps"), []byte("#!/bin/sh\necho\necho \"  $PPID 1\"\necho\n"), 0o700)
+	t.Setenv("PATH", bin)
+	if m, err := groupMembers(); err != nil || len(m) != 0 {
+		t.Errorf("blank lines only: %v, %v", m, err)
+	}
+}

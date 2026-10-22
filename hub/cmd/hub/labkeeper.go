@@ -187,8 +187,8 @@ func exitText(ps *os.ProcessState) string {
 
 // groupMembers lists the other processes of the keeper's group: "ps -eo pid=,pgid=" (the same with
 // BSD and procps ps), filtered here. The ps process is in the group too; it is excluded by its pid,
-// and Output reaps it first. A listing that fails, or that does not list the keeper, is an error:
-// a failure never means "empty".
+// and Output reaps it first. A listing that fails, has a row that is not "pid pgid" (blank lines
+// are skipped), or does not list the keeper, is an error: a failure never means "empty".
 func groupMembers() ([]int, error) {
 	ps := exec.Command("ps", "-eo", "pid=,pgid=")
 	out, err := ps.Output()
@@ -200,8 +200,11 @@ func groupMembers() ([]int, error) {
 	var members []int
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue // a blank line
+		}
 		if len(f) != 2 {
-			continue
+			return nil, fmt.Errorf("ps line %q", line)
 		}
 		pid, err1 := strconv.Atoi(f[0])
 		pgid, err2 := strconv.Atoi(f[1])
