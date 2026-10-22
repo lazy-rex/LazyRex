@@ -193,8 +193,8 @@ func (v *ctlView) hubIDsCtx(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). A hub that
-// does not answer hub.info (an older hub) is listed with an empty state.
+// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). A hub whose
+// hub.info fails or does not answer in 5 s is listed with an empty state.
 func (v *ctlView) hubs() ([]hubClient, error) {
 	ids, err := v.hubIDs(time.Now().Add(5 * time.Second))
 	if err != nil {
@@ -237,7 +237,7 @@ func (v *ctlView) othersText() string {
 	var parts []string
 	for _, h := range v.others {
 		if h.State == "" {
-			parts = append(parts, fmt.Sprintf("another hub runs on this Rex server (client %s, state unknown: no hub.info)", h.ID))
+			parts = append(parts, fmt.Sprintf("another hub runs on this Rex server (client %s, state unknown: hub.info failed)", h.ID))
 		} else {
 			parts = append(parts, fmt.Sprintf("another hub runs on this Rex server (state %s); not this config's hub", h.State))
 		}
