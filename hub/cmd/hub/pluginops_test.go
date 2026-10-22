@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,8 +46,11 @@ func opsTestHub(t *testing.T, managed string) (*Hub, *opsCalls, string) {
 	}
 	opsLoadEntries(t, h)
 	c := &opsCalls{}
-	admin, reload, call := opAdmin, opReload, changedCall
-	t.Cleanup(func() { opAdmin, opReload, changedCall = admin, reload, call })
+	admin, reload, call, blocks := opAdmin, opReload, changedCall, opSessionBlocks
+	t.Cleanup(func() { opAdmin, opReload, changedCall, opSessionBlocks = admin, reload, call, blocks })
+	opSessionBlocks = func(context.Context, *Hub, string) (map[string]bool, error) {
+		return nil, errors.New("this test has no Rex")
+	}
 	t.Cleanup(func() { waitIdle(t, h) }) // runs first: no delivery outlives the fake
 	changedCall = func(context.Context, *Hub, string, string) error { return nil }
 	opAdmin = func(ctx context.Context, h *Hub, action string, args map[string]any) (any, error) {
@@ -59,9 +63,9 @@ func opsTestHub(t *testing.T, managed string) (*Hub, *opsCalls, string) {
 		if attempt, _ := args["attempt"].(string); attempt != "" {
 			delete(logged, "attempt")
 			name, _ := args["plugin"].(string)
-			var instance, block string
-			h.db.QueryRowContext(ctx, `SELECT instance_id, block_id FROM plugins WHERE name = ?`, name).Scan(&instance, &block)
-			if err := h.bindAttempt(ctx, attempt, strings.TrimPrefix(action, "hub.admin."), instance, block); err != nil {
+			var instance, block, session string
+			h.db.QueryRowContext(ctx, `SELECT instance_id, block_id, session_id FROM plugins WHERE name = ?`, name).Scan(&instance, &block, &session)
+			if err := h.bindAttempt(ctx, attempt, strings.TrimPrefix(action, "hub.admin."), instance, block, session); err != nil {
 				return nil, err
 			}
 			if err := h.attemptSent(ctx, attempt); err != nil {
