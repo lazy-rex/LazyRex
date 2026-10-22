@@ -454,6 +454,14 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
 	h.sql = newSQLService(cfg.State, h.currentClient)
 	h.sql.committed = func(plugin string, marks []string) { h.kickViews(plugin, causeCommit) } // every view: render deps know no SQL table
+	h.sql.admitNotices = h.admitSQLNotices
+	h.sql.applyNotices = func(plugin string, rows []outboxRow) error {
+		return h.db.applySQLNotices(context.Background(), plugin, rows)
+	}
+	h.sql.dropReceipts = func(plugin string, seq int64) error {
+		return h.db.dropNoticeReceipts(context.Background(), plugin, seq)
+	}
+	h.sql.notified = h.kickNotices
 	for _, a := range cfg.Agents {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
 		h.agentOrder = append(h.agentOrder, a.ID)
@@ -538,6 +546,10 @@ func (h *Hub) run(ctx context.Context) {
 	go h.noticeLoop(ctx)
 	go h.resumeLoop(ctx)
 	h.kickNotices() // notices pending from before the start
+	go func() {
+		h.sql.drainAll(ctx) // hub.sql outboxes that a crash or a failed apply left
+		h.kickNotices()
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -964,6 +976,13 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.store.ops_scan":
 		return h.db.storeOpsScan(ctx, ns, args)
 	case "hub.store.batch":
+		if hasNotify(args) {
+			if moved, err := h.db.noticesMoved(ctx, ns); err != nil {
+				return nil, err
+			} else if moved {
+				return nil, refuse("notices_moved", "plugin %s sends its notices through hub.sql.commit now", ns)
+			}
+		}
 		out, err := h.fencedBatch(ctx, pl, p.Requester.ClientID, args)
 		if err != nil {
 			return nil, err
@@ -1118,4 +1137,32 @@ func (h *Hub) currentClient(plugin, client string) bool {
 	defer h.mu.Unlock()
 	pl := h.plugins[plugin]
 	return pl != nil && client != "" && pl.ClientID == client
+}
+
+// admitSQLNotices checks the notices of a hub.sql commit with the rules of a notify op of
+// hub.store.batch, then records that the plugin's notices moved to hub.sql.
+func (h *Hub) admitSQLNotices(plugin string, notes []noticeOp) error {
+	if !h.noticed(plugin) {
+		return refuse("no_notice", "plugin %s has no notice in its manifest", plugin)
+	}
+	h.mu.Lock()
+	roster := h.roster()
+	h.mu.Unlock()
+	for _, n := range notes {
+		if !roster[n.agent] {
+			return refuse("invalid_input", "notices: %q is not a known agent", n.agent)
+		}
+	}
+	return h.db.moveNotices(context.Background(), plugin)
+}
+
+// hasNotify reports whether a hub.store.batch has a notify op.
+func hasNotify(args map[string]any) bool {
+	ops, _ := asList(args["ops"])
+	for _, o := range ops {
+		if m, ok := o.(map[string]any); ok && m["notify"] != nil {
+			return true
+		}
+	}
+	return false
 }

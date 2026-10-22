@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,6 +35,14 @@ type sqlService struct {
 	// beforeCommit is a test fault point (testmode.go): an error fails the commit; with after, the
 	// commit happens first and the caller still gets the error (a lost reply).
 	beforeCommit func(plugin string, marks []string) (err error, after bool)
+	// The hub.db side of notices (sqlnotice.go). admitNotices checks a commit's notices (the
+	// manifest notice, known agents) and marks the plugin's notices as moved to hub.sql;
+	// applyNotices applies outbox rows with their receipts; dropReceipts deletes the receipts up
+	// to seq after the rows are gone.
+	admitNotices func(plugin string, notes []noticeOp) error
+	applyNotices func(plugin string, rows []outboxRow) error
+	dropReceipts func(plugin string, seq int64) error
+	notified     func() // after an apply: the notice loop can deliver
 	idle         time.Duration
 	total        time.Duration
 	queue        time.Duration
@@ -43,7 +52,10 @@ type sqlService struct {
 }
 
 func newSQLService(state string, current func(plugin, client string) bool) *sqlService {
-	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, beforeCommit: func(string, []string) (error, bool) { return nil, false }, idle: sqlTxIdle, total: sqlTxTotal,
+	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, beforeCommit: func(string, []string) (error, bool) { return nil, false },
+		admitNotices: func(string, []noticeOp) error { return refuse("no_notice", "the hub has no notice service") },
+		applyNotices: func(string, []outboxRow) error { return nil }, dropReceipts: func(string, int64) error { return nil },
+		notified: func() {}, idle: sqlTxIdle, total: sqlTxTotal,
 		queue: sqlQueueMax, dbs: map[string]*pluginSQL{}}
 }
 
@@ -56,10 +68,11 @@ type pluginSQL struct {
 	r    *sqlConn
 	rmu  sync.Mutex // serializes the reader
 
-	mu      sync.Mutex // guards tx and expired
-	tx      *sqlTx
-	expired map[string]string // token -> the code that later calls get
-	order   []string
+	mu       sync.Mutex // guards tx, expired and retrying
+	retrying bool       // a drainLater goroutine runs (sqlnotice.go)
+	tx       *sqlTx
+	expired  map[string]string // token -> the code that later calls get
+	order    []string
 }
 
 // sqlTx is an open handler transaction.
@@ -626,8 +639,14 @@ func (s *sqlService) commit(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 	if err != nil {
 		return nil, err
 	}
-	if n, ok := c.args["notices"].([]any); ok && len(n) > 0 {
-		return nil, refuse("invalid_input", "notices in hub.sql.commit are not implemented yet")
+	notes, err := noticeArgs(c.args["notices"])
+	if err != nil {
+		return nil, err
+	}
+	if len(notes) > 0 {
+		if err := s.admitNotices(c.plugin, notes); err != nil {
+			return nil, err
+		}
 	}
 	var reply []byte
 	if key != "" {
@@ -662,6 +681,10 @@ func (s *sqlService) commit(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 		for m := range tx.marks {
 			marks = append(marks, m)
 		}
+		if err := p.writeOutbox(ctx, notes); err != nil {
+			p.end(ctx, "tx_expired")
+			return nil, refuse("sql_error", "write the notices: %v; nothing was committed", err)
+		}
 		fault, after := s.beforeCommit(c.plugin, marks)
 		if fault != nil && !after {
 			p.end(ctx, "tx_expired")
@@ -672,6 +695,14 @@ func (s *sqlService) commit(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 			return nil, refuse("sql_error", "commit: %v; nothing was committed", err)
 		}
 		p.end(ctx, "")
+		if len(notes) > 0 {
+			// The commit stands; the apply can fail and retries later. The reply does not wait for it.
+			if err := s.drain(ctx, p); err != nil {
+				log.Printf("hub.sql notices of %s: %v", c.plugin, err)
+				s.drainLater(p)
+			}
+			s.notified()
+		}
 		if len(marks) > 0 {
 			s.committed(c.plugin, marks)
 		}

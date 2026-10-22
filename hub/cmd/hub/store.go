@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS notices (ns TEXT NOT NULL, agent TEXT NOT NULL, pendi
 -- notice_deliveries: the last nudge the hub wrote for a notice row, and the conversation it reached
 -- (block, child pid and start). A hub restart or a shim reconnect does not write it again.
 CREATE TABLE IF NOT EXISTS notice_deliveries (ns TEXT NOT NULL, agent TEXT NOT NULL, intent_rev INTEGER NOT NULL, at INTEGER NOT NULL, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL, repeated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (ns, agent));
+-- hub.sql notices (sqlnotice.go): a receipt for each applied outbox row, and the plugins whose notices moved to hub.sql.
+CREATE TABLE IF NOT EXISTS notice_receipts (plugin TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (plugin, seq));
+CREATE TABLE IF NOT EXISTS sql_notice_plugins (plugin TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
 -- status: prepared (request not sent), sending (outcome unknown until resolved), created, abandoned
@@ -665,4 +668,58 @@ func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge 
 		return false, false, at
 	}
 	return true, true, time.Time{}
+}
+// applySQLNotices applies hub.sql outbox rows of plugin (sqlnotice.go) in seq order, in one
+// transaction with a receipt for each row. A row with a receipt was applied before (a crash after
+// the apply and before the outbox delete): it is skipped. The rules are those of a notify op of
+// hub.store.batch.
+func (db *DB) applySQLNotices(ctx context.Context, plugin string, rows []outboxRow) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, r := range rows {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM notice_receipts WHERE plugin = ? AND seq = ?`, plugin, r.seq).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if r.pending {
+			rev, err := nextRev(tx)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO notices (ns, agent, pending, intent_rev, read) VALUES (?, ?, 1, ?, 0) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev, read = 0`, plugin, r.agent, rev); err != nil {
+				return err
+			}
+		} else if _, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, plugin, r.agent); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO notice_receipts VALUES (?, ?)`, plugin, r.seq); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// dropNoticeReceipts deletes the receipts of plugin up to seq, after the outbox rows are gone.
+func (db *DB) dropNoticeReceipts(ctx context.Context, plugin string, seq int64) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM notice_receipts WHERE plugin = ? AND seq <= ?`, plugin, seq)
+	return err
+}
+
+// moveNotices records that plugin sends its notices through hub.sql: from now on its
+// hub.store.batch notify ops are refused (notices_moved), so the two paths cannot reorder.
+func (db *DB) moveNotices(ctx context.Context, plugin string) error {
+	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO sql_notice_plugins VALUES (?)`, plugin)
+	return err
+}
+
+func (db *DB) noticesMoved(ctx context.Context, plugin string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx, `SELECT count(*) FROM sql_notice_plugins WHERE plugin = ?`, plugin).Scan(&n)
+	return n > 0, err
 }
