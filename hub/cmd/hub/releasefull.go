@@ -23,7 +23,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -417,8 +416,6 @@ func typedSQL(v any) string {
 	return fmt.Sprintf("%T:%v", v, v)
 }
 
-var probeInsert = regexp.MustCompile(`(?i)\binsert\s+(?:or\s+\w+\s+)?into\s+["\x60]?([A-Za-z_][A-Za-z0-9_]*)`)
-
 // probeRow is one row of the spec probe file: its rowid and its values (queryRows form).
 type probeRow struct {
 	rowid int64
@@ -444,11 +441,53 @@ func tableRows(db *sql.DB, t string) (map[int64]map[string]string, error) {
 	return out, nil
 }
 
+// dbSnapshot is the content of a hub.db: the schema objects, the rows of each rowid table by
+// rowid, and the sorted rows of each table without rowid.
+type dbSnapshot struct {
+	schema []string
+	rowid  map[string]map[int64]map[string]string
+	other  map[string][]string
+}
+
+// snapshotDB reads every table of db (the sqlite_ internal tables excepted).
+func snapshotDB(db *sql.DB) (*dbSnapshot, error) {
+	s := &dbSnapshot{rowid: map[string]map[int64]map[string]string{}, other: map[string][]string{}}
+	objs, err := queryRows(db, `SELECT type, name, ifnull(sql, '') AS sql FROM sqlite_master ORDER BY type, name`)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range objs {
+		s.schema = append(s.schema, o["type"]+" "+o["name"]+" "+o["sql"])
+		name, _ := strconv.Unquote(strings.TrimPrefix(o["name"], "text:"))
+		if o["type"] != `text:"table"` || strings.HasPrefix(name, "sqlite_") {
+			continue
+		}
+		if strings.Contains(strings.ToUpper(o["sql"]), "WITHOUT ROWID") {
+			rows, err := queryRows(db, `SELECT * FROM "`+name+`"`)
+			if err != nil {
+				return nil, relFail("the table %s: %v", name, err)
+			}
+			var enc []string
+			for _, r := range rows {
+				b, _ := json.Marshal(r)
+				enc = append(enc, string(b))
+			}
+			sort.Strings(enc)
+			s.other[name] = enc
+			continue
+		}
+		if s.rowid[name], err = tableRows(db, name); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
 // writeFileProbes runs the spec probe file (the SQL rows for the tables that H adds) in the lab
-// hub.db, while the hub is stopped. It reads each table that the file inserts into before and
-// after, and keeps every row that is new or changed, at any rowid. checkFileProbes compares them
-// after each later phase. A file that deletes a row, or that writes no row, fails: the check could
-// not see all of its effects.
+// hub.db, while the hub is stopped. It reads every table before and after the file, and tracks
+// every row that is new or changed, in any table and at any rowid. checkFileProbes compares them
+// after each later phase. A file that deletes a row, changes the schema or a table without rowid,
+// or writes no row refuses: the check could not see all of its effects.
 func (h *rehearsal) writeFileProbes() error {
 	if h.r.spec.Probes == "" {
 		h.say("the spec has no probe file: case 14 has no rows to check")
@@ -458,23 +497,14 @@ func (h *rehearsal) writeFileProbes() error {
 	if err != nil {
 		return err
 	}
-	tables := map[string]bool{}
-	for _, m := range probeInsert.FindAllStringSubmatch(string(b), -1) {
-		tables[m[1]] = true
-	}
-	if len(tables) == 0 {
-		return relFail("the probe file has no INSERT INTO")
-	}
 	db, err := h.hubDB(false)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	before := map[string]map[int64]map[string]string{}
-	for t := range tables {
-		if before[t], err = tableRows(db, t); err != nil {
-			return relFail("the probe table %s: %v", t, err)
-		}
+	before, err := snapshotDB(db)
+	if err != nil {
+		return relFail("the lab hub.db before the probe file: %v", err)
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -487,20 +517,28 @@ func (h *rehearsal) writeFileProbes() error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	after, err := snapshotDB(db)
+	if err != nil {
+		return relFail("the lab hub.db after the probe file: %v", err)
+	}
+	if strings.Join(before.schema, "\n") != strings.Join(after.schema, "\n") {
+		return relFail("the probe file changed the schema; a probe file may only insert or change rows")
+	}
+	for t, rows := range before.other {
+		if strings.Join(rows, "\n") != strings.Join(after.other[t], "\n") {
+			return relFail("the probe file changed the table %s, which has no rowid; the check cannot track its rows", t)
+		}
+	}
 	h.fileProbes = map[string][]probeRow{}
 	n := 0
-	for t := range tables {
-		after, err := tableRows(db, t)
-		if err != nil {
-			return relFail("the probe table %s: %v", t, err)
-		}
-		for id := range before[t] {
-			if _, ok := after[id]; !ok {
+	for t, rows := range after.rowid {
+		for id := range before.rowid[t] {
+			if _, ok := rows[id]; !ok {
 				return relFail("the probe file deleted the row %s rowid %d; a probe file may only insert or change rows", t, id)
 			}
 		}
-		for id, r := range after {
-			if old, ok := before[t][id]; !ok || !sameRow(old, r) {
+		for id, r := range rows {
+			if old, ok := before.rowid[t][id]; !ok || !sameRow(old, r) {
 				h.fileProbes[t] = append(h.fileProbes[t], probeRow{id, r})
 			}
 		}
@@ -510,7 +548,7 @@ func (h *rehearsal) writeFileProbes() error {
 	if n == 0 {
 		return relFail("the probe file wrote no row")
 	}
-	h.say("the probe file wrote %d rows in %d tables", n, len(tables))
+	h.say("the probe file wrote %d rows in %d tables", n, len(h.fileProbes))
 	return nil
 }
 

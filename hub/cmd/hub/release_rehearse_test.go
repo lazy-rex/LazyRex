@@ -531,7 +531,9 @@ func fullProbe(t *testing.T, script string) (*rehearsal, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`CREATE TABLE newer (value); INSERT INTO newer(rowid, value) VALUES (5, 'before')`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE newer (value); INSERT INTO newer(rowid, value) VALUES (5, 'before');
+		CREATE TABLE other (value); INSERT INTO other VALUES ('before');
+		CREATE TABLE wr (k TEXT PRIMARY KEY, v) WITHOUT ROWID`); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(h.lab, "probes.sql"), []byte(script), 0o600); err != nil {
@@ -540,8 +542,9 @@ func fullProbe(t *testing.T, script string) (*rehearsal, *sql.DB) {
 	return h, db
 }
 
-// R12 and R13: every row that the probe file writes is checked at any rowid, with each value's SQL
-// type; a probe file that deletes a row refuses.
+// R12 and R13: every row that the probe file writes, in any table and at any rowid, is checked with
+// each value's SQL type. A probe file that deletes a row, changes the schema or a table without
+// rowid, or writes no row refuses.
 func TestReleaseFileProbes(t *testing.T) {
 	for name, tc := range map[string]struct{ script, change string }{
 		"null to text":    {`INSERT INTO newer VALUES (NULL);`, `UPDATE newer SET value = 'NULL' WHERE rowid = 6`},
@@ -549,6 +552,7 @@ func TestReleaseFileProbes(t *testing.T) {
 		"text to blob":    {`INSERT INTO newer VALUES ('ab');`, `UPDATE newer SET value = CAST('ab' AS BLOB) WHERE rowid = 6`},
 		"negative rowid":  {`INSERT INTO newer(rowid, value) VALUES (-1, 'negative'), (1, 'positive');`, `DELETE FROM newer WHERE rowid = -1`},
 		"changed row":     {`UPDATE newer SET value = 'probe' WHERE rowid = 5; INSERT INTO newer VALUES ('x');`, `UPDATE newer SET value = 'before' WHERE rowid = 5`},
+		"updated table":   {`INSERT INTO newer VALUES ('x'); UPDATE other SET value = 'probe';`, `UPDATE other SET value = 'corrupted'`},
 	} {
 		h, db := fullProbe(t, tc.script)
 		if err := h.writeFileProbes(); err != nil {
@@ -567,6 +571,14 @@ func TestReleaseFileProbes(t *testing.T) {
 	h, _ := fullProbe(t, `DELETE FROM newer WHERE rowid = 5; INSERT INTO newer VALUES ('x');`)
 	if err := h.writeFileProbes(); err == nil || !strings.Contains(err.Error(), "deleted the row newer rowid 5") {
 		t.Errorf("a probe file that deletes a row: %v", err)
+	}
+	h, _ = fullProbe(t, `CREATE TABLE t2 (x); INSERT INTO newer VALUES ('x');`)
+	if err := h.writeFileProbes(); err == nil || !strings.Contains(err.Error(), "changed the schema") {
+		t.Errorf("a probe file that changes the schema: %v", err)
+	}
+	h, _ = fullProbe(t, `INSERT INTO wr VALUES ('a', 1); INSERT INTO newer VALUES ('x');`)
+	if err := h.writeFileProbes(); err == nil || !strings.Contains(err.Error(), "which has no rowid") {
+		t.Errorf("a probe file that changes a table without rowid: %v", err)
 	}
 	h, _ = fullProbe(t, `INSERT INTO newer SELECT value FROM newer WHERE 0;`)
 	if err := h.writeFileProbes(); err == nil || !strings.Contains(err.Error(), "wrote no row") {
