@@ -37,6 +37,11 @@ import (
 
 // manifest is lazyrex.json in a plugin repository: the runtime fields (sources.go pluginManifest,
 // the same rules) and the test section, which only the harness reads.
+// testFile is the entry of one file in test.files.
+type testFile struct {
+	Args map[string]map[string]string `json:"args"`
+}
+
 type manifest struct {
 	Name    string   `json:"name"`
 	Main    string   `json:"main"`
@@ -56,6 +61,9 @@ type manifest struct {
 		// plugins[].args), keyed by plugin name. Values may name ${LAB} and ${PLUGIN}.
 		Env  map[string]string            `json:"env"`
 		Args map[string]map[string]string `json:"args"`
+		// Files adds plugin args for one test file, keyed by its base name (as -file): args over
+		// Args, for that file's lab only.
+		Files map[string]testFile `json:"files"`
 		// WatchRoots are plugin watch roots (hub config plugins[].watch_roots), keyed by plugin name.
 		// Paths with ${LAB}; the harness creates each one before the hub starts.
 		WatchRoots map[string][]string `json:"watch_roots"`
@@ -182,6 +190,7 @@ func (m *manifest) checkPluginGraph(home *testDep) error {
 }
 
 type testOpts struct {
+	fileArgs map[string]map[string]string // test.files args of the file that runs now
 	dir, lazyrex, self, rexBin, run, file string
 	home                                  *testDep // the home plugin; nil when it is the plugin under test
 	keep, verbose                         bool
@@ -372,7 +381,7 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 		}
 	}
 	// The lab environment for every child (isolation.go): no inherited variables except PATH.
-	extra, err := o.m.labValues(o.dir, dir)
+	extra, err := o.m.labValues(o.dir, dir, o.fileArgs)
 	if err != nil {
 		return l, err
 	}
@@ -788,6 +797,10 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 // runFile runs one test file in its own lab and hub.
 func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileResult {
 	res := &fileResult{name: strings.TrimPrefix(file, o.dir+"/"), parity: parity}
+	o.fileArgs = nil
+	if !parity {
+		o.fileArgs = o.m.Test.Files[filepath.Base(file)].Args
+	}
 	l, err := o.startLab(ctx)
 	if l != nil {
 		res.labDir = l.dir
@@ -815,7 +828,7 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		return res
 	}
 	args := []string{"-S", l.server, "--autostart=false", "do", filepath.Join(o.lazyrex, "lab", "test", "runner.lua"), "-s", sess.SessionID,
-		"file=" + file, "lib=" + filepath.Join(o.lazyrex, "lab", "test"), "hub_bin=" + o.self, "plugin=" + o.m.Name, "tests_session=" + sess.SessionID,
+		"file=" + file, "lib=" + filepath.Join(o.lazyrex, "lab", "test"), "sdk=" + filepath.Join(o.lazyrex, "sdk", "lua"), "hub_bin=" + o.self, "plugin=" + o.m.Name, "tests_session=" + sess.SessionID,
 		"lab=" + l.dir, "profiles=" + l.profiles}
 	if o.run != "" && !parity {
 		args = append(args, "run="+o.run)
