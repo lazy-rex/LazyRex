@@ -97,8 +97,7 @@ func TestRelaunchLatch(t *testing.T) {
 }
 
 // An accepted relaunch stops the hub also when its reply is lost: a resend gets "relaunch in
-// progress" from this hub or "already restarted" from the new one, never a second relaunch. A
-// refused relaunch stops nothing.
+// progress" from this hub or "already restarted" from a new one. A refused relaunch stops nothing.
 func TestRelaunchStopsAlsoWhenItsReplyIsLost(t *testing.T) {
 	h := &Hub{}
 	stops := 0

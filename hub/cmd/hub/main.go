@@ -800,7 +800,8 @@ func (h *Hub) afterReply(action string, err, replyErr error) {
 		h.shutdown()
 	}
 	// An accepted relaunch always runs, also when its reply was lost: a resend with the same
-	// expect_exec gets "relaunch in progress" or "already restarted", never a second relaunch.
+	// expect_exec gets "relaunch in progress" from this hub or "already restarted" from a new one.
+	// After a failed exec, the old version runs again at the same exec and accepts it (relaunch.go).
 	if action == "hub.admin.relaunch" && err == nil && h.shutdown != nil {
 		h.shutdown()
 	}

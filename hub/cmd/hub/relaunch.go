@@ -2,7 +2,10 @@ package main
 
 // hub.admin.relaunch (docs/hub.md, "Restart wrapper", "Relaunch"): the hub stops as for
 // hub.admin.shutdown and exits 4, and its restart wrapper execs itself, so a new binary runs in the
-// same wrapper process. expect_exec makes the request apply at most once for each exec generation.
+// same wrapper process. A hub process relaunches at most once (the latch). expect_exec makes a
+// request apply only to the exec count that the caller saw. After a failed exec, the wrapper starts
+// the old version again at the same exec count, and that new hub accepts the same expect_exec: the
+// restart command never resends, so only a new command retries.
 
 // adminRelaunch accepts a relaunch. The admin guard and the latch check run before it (main.go).
 // Once accepted, the latch refuses every later admin call until the hub exits, and the relaunch
