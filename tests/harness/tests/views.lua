@@ -204,3 +204,90 @@ test('a palette form freezes the source pane directory in its context', function
   expect(plain.context.source_pwd_error:find('did not report its folder', 1, true) ~= nil, plain.context.source_pwd_error).to_be(true)
   close_session(s)
 end)
+
+-- shell_pane makes a session with one shell pane (no view in it) and returns the session, the
+-- pane and its window.
+local function shell_pane(label)
+  local created, err = rex.call('session.create', {label = label, initial_windows = {{window_label = label,
+    layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '100000'}, login = false}}}}}})
+  if err then error(err_of(err), 0) end
+  local w = created.initial_windows[1]
+  return created.session_id, w.block_ids[1], w.window_id
+end
+
+-- open_ids is the set of open view IDs.
+local function open_ids()
+  local set = {}
+  for _, w in ipairs(views()) do set[w.view_id] = true end
+  return set
+end
+
+test('a palette run from a shell pane: the reply selects its window; the form has no source view', function()
+  local s, b, win = shell_pane('palette-shell')
+  local out = user:command('fix_form', {session = s, block = b})
+  expect(out.status).to_be('opened')
+  expect(out.select.session_id).to_be(s)
+  expect(out.select.window_id).to_be(win)
+  local f = user:view('/forms/fix', nil, s)
+  expect(f.window).to_be(win)
+  expect(f.context.source_view_id, 'no source view').to_be('')
+  expect(f.context.source_block_id).to_be(b)
+  cancel(f)
+  close_session(s)
+end)
+
+test('a palette run from a tab: that view is the source; the tab stays open after the form ends', function()
+  local home = user:view('home')
+  user:command('fix_form', home)
+  local f = user:view('/forms/fix', nil, home.session)
+  expect(f.window).to_be(home.window)
+  expect(f.context.source_view_id).to_be(home.id)
+  expect(f.context.source_route).to_be('/home')
+  cancel(f)
+  rex.sleep(1)
+  local w = open_view(home.id)
+  expect(w ~= nil, 'the home view still open').to_be(true)
+  expect(w.attached, 'the home view still attached').to_be(true)
+end)
+
+test('a palette run from a form: the new form takes that form\'s own source', function()
+  local home, a = form_from_home()
+  local before = open_ids()
+  user:command('fix_form', a)
+  local b = wait('the new form', function()
+    for _, w in ipairs(views()) do
+      if w.route == '/forms/fix' and not before[w.view_id] and w.attached then return w end
+    end
+    return nil
+  end)
+  expect(b.session_id).to_be(a.session)
+  expect(b.window_id).to_be(a.window)
+  local ctx = b.context
+  expect(ctx.source_view_id, 'the source of form A, not form A').to_be(home.id)
+  expect(ctx.source_route).to_be('/home')
+  expect(ctx.source_block_id, 'the source pane of form A').to_be(a.context.source_block_id)
+  wait('form A closed', function() return open_view(a.id) == nil end)
+  local closed = events('form_closed', a.id)
+  expect(#closed, 'form_closed of form A').to_be(1)
+  expect(closed[1].by).to_be('hub')
+  expect(closed[1].why).to_be('replaced')
+  local bv = user:view('/forms/fix', nil, a.session) -- form A is closed: this is form B
+  expect(bv.id).to_be(b.view_id)
+  cancel(bv)
+end)
+
+test('a palette run is refused: unknown command, another or no client, no session, a block outside the session', function()
+  local s, b = shell_pane('palette-refused')
+  local before = open_ids()
+  local other = rex.call('session.list_blocks', {session_id = H.args.tests_session}).blocks[1].block_id
+  local command = H.args.plugin .. '.fix_form'
+  expect_error(function() user:command('nope') end, 'unknown command')
+  expect_error(function() H.hub('hub.palette.run', {command = command,
+    ctx = {client_id = 'client:not-the-runner', session_id = s, block_id = b}}) end, 'not the calling client')
+  expect_error(function() H.hub('hub.palette.run', {command = command, ctx = {session_id = s, block_id = b}}) end,
+    'not the calling client')
+  expect_error(function() user:command('fix_form', {}) end, 'needs a session')
+  expect_error(function() user:command('fix_form', {session = s, block = other}) end, 'is not shown in session')
+  expect(open_ids(), 'no view opened').to_equal(before)
+  close_session(s)
+end)
