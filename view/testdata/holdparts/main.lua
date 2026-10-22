@@ -1,7 +1,7 @@
 -- A plugin for TestReplyPartsHoldLab (chunk_lab_test.go). Its form /forms/parts renders about
 -- 150 KiB in reply parts (docs/hub.md "Reply parts"). The SQL row hold(gen, release) drives it: the
 -- first and the last node show gen; when release is 0, the render stops before its last part, sets
--- held(n) to 1 and waits until a writer sets release to 1 (at most 30 s). The render reads hold with
+-- held(n) to 1 and waits until a writer sets release to 1 (at most 8 s: the hub's render timeout is 10 s). The render reads hold with
 -- its token (a write renders the view again) and reads release and held without it.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
@@ -58,7 +58,7 @@ local function render(args)
   return send_parts({tree = {title = 'Parts', nodes = nodes}}, function()
     if release ~= 0 then return end
     hub('hub.sql.exec', {sql = 'UPDATE held SET n = 1'})
-    for _ = 1, 600 do
+    for _ = 1, 160 do
       local r = query('SELECT release FROM hold')
       if r and r[1] == 1 then return end
       wait_ms(50)
