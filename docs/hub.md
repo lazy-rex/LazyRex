@@ -868,7 +868,8 @@ A plugin with a `notice` in its manifest sets a pending notice for an agent with
 - `{notify: {agent, pending: true, once: true}}`: one nudge until a read (the user's rule,
   2026-10-22). The revision is new only if the row is not pending, or the agent read since the last
   revision. Otherwise the row stays as it is and no nudge follows.
-- `{notify: {agent, read: true}}`: the agent read. The next `once` op gives a nudge again, and the
+- `{notify: {agent, read: true}}`: the agent read. The next `once` op gives a nudge again. The
+  read also ends the nudge of the current revision: one not written yet is not written, and the
   repeat (below) is cancelled. `pending` does not change. A read for an agent with no row does
   nothing. `read` takes no `pending` and no `once`.
 - `{notify: {agent, pending: false}}`: no pending notice.
@@ -886,7 +887,8 @@ nudge with no read and no new revision for 30 minutes is written once more (`not
 `repeat: true`), then not again until a read or a new revision. The loop arms its own wake for the
 repeat when it writes the first nudge, so the repeat needs no other event. In test mode,
 `hub.test.notice_renudge {ms}` sets the repeat time for the hub run. A failed store write of the delivery
-leaves only the memory record, so a restart can give the nudge once more: never fewer nudges.
+leaves only the memory record (also of a repeat), so only a restart can give the nudge once more:
+never fewer nudges.
 Tests: `TestNoticeOnceUntilRead`, `TestNoticeOpForms`, `TestNoticeDue`, `TestNoticeDeliveryStored`,
 `tests/harness/tests/notice_once.lua`.
 
