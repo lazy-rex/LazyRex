@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ownedInstance returns the instance that the record owns: the recorded instance while it has a
@@ -174,6 +175,10 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 		return nil, refuse("dependency_not_ready", "plugin %s: dependency %s is not registered; the running instance %s is unchanged", name, missing, owned)
 	}
 
+	// A local source runs its snapshot; a failure leaves the running instance.
+	if cand, err = h.publishLocal(e, cand); err != nil {
+		return nil, refuse("refused", "%s; the running instance %s is unchanged", strings.TrimPrefix(err.Error(), "refused: "), owned)
+	}
 	// Retirement begins: from here the old instance can be gone or partly stopped.
 	ok, err := h.retire(ctx, pl)
 	if err != nil {
