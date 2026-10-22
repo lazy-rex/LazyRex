@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -38,10 +39,14 @@ func setupTestEnv(t *testing.T, answers string, tty bool) (setupEnv, *strings.Bu
 		endpoint: func(string) (string, error) { return setupLabServer, nil },
 		isReal:   func(string) bool { return false },
 		tags:     func(string) ([]string, error) { return []string{"v0.9.0", "v0.10.0", "v1.0.0-rc1", "nightly"}, nil },
-		in:       bufio.NewReader(strings.NewReader(answers)),
-		tty:      tty,
-		out:      out,
-		now:      func() time.Time { return setupNow },
+		// No test runs git: the plugins are not installed, and a sync is a failure unless a test
+		// sets its own (setupsync_test.go).
+		installed: func(string) bool { return false },
+		sync:      func(string, io.Writer) error { return errors.New("no sync in this test") },
+		in:        bufio.NewReader(strings.NewReader(answers)),
+		tty:       tty,
+		out:       out,
+		now:       func() time.Time { return setupNow },
 	}, out
 }
 
@@ -175,6 +180,7 @@ func TestSetupAllYes(t *testing.T) {
 
 	e2, out2 := setupTestEnv(t, "", true)
 	e2.home, e2.exe, e2.lookPath = e.home, e.exe, e.lookPath
+	e2.installed = func(string) bool { return true } // the plugin sync is setupsync_test.go
 	if got := runSetup(e2, dir, false); got != 0 || !strings.Contains(out2.String(), "Nothing to write.") || strings.Contains(out2.String(), "[y/N]") {
 		t.Fatalf("second run: exit %d\n%s", got, out2)
 	}

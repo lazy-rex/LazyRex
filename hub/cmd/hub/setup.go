@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -17,10 +18,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -48,10 +51,14 @@ type setupEnv struct {
 	endpoint func(server string) (string, error) // the server's own address, from Rex
 	tags     func(repo string) ([]string, error) // a lazy-rex repository's tag names
 	isReal   func(server string) bool            // isRealServer: the hub controls need -real-server
-	in       *bufio.Reader                       // the answers
-	tty      bool                                // in is a terminal
-	out      io.Writer
-	now      func() time.Time
+	// installed reports that every plugin of a hub.json is installed (plugin status, no network);
+	// sync installs them (plugin sync) and prints a line for each change to w.
+	installed func(config string) bool
+	sync      func(config string, w io.Writer) error
+	in        *bufio.Reader // the answers
+	tty       bool          // in is a terminal
+	out       io.Writer
+	now       func() time.Time
 }
 
 func setupMain(args []string) int {
@@ -76,6 +83,12 @@ func setupMain(args []string) int {
 	env := setupEnv{
 		home: home, getenv: os.Getenv, exe: exe, lookPath: exec.LookPath,
 		server: *server, endpoint: rexEndpoint, tags: lazyRexTags, isReal: isRealServer,
+		installed: func(cfg string) bool { ok, err := runPluginStatus(cfg, io.Discard); return err == nil && ok },
+		sync: func(cfg string, w io.Writer) error {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return runPluginCmd(ctx, "sync", cfg, nil, pluginCmdOpts{}, w)
+		},
 		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now,
 	}
 	if *dir == "" {
@@ -548,13 +561,45 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	if len(written)+len(declined)+len(blocked)+len(failed) == 0 {
 		say("Nothing to write.")
 	}
+	// The plugins of hub.json: the hub refuses a plugin that is not installed, so setup offers the
+	// sync last, with a question like the files (the coordinator, 2026-10-22). Only for a hub.json
+	// that the hub controls can use: one that exists now and names a server.
+	syncCmd, syncFailed := "", false
+	if _, err := os.Stat(hub.path); err == nil && ctl.err == "" {
+		switch {
+		case e.installed(hub.path):
+			say("\nPlugins: installed.")
+		case eof:
+			syncCmd = shellWord(e.exe) + " plugin sync -config " + shellWord(hub.path)
+		default:
+			fmt.Fprintf(e.out, "\nInstall the plugins of %s now (lazyrex-hub plugin sync)? [y/N] ", hub.path)
+			line, err := e.in.ReadString('\n')
+			if err != nil {
+				say("")
+			}
+			syncCmd = shellWord(e.exe) + " plugin sync -config " + shellWord(hub.path)
+			if a := strings.ToLower(strings.TrimSpace(line)); err == nil && (a == "y" || a == "yes") {
+				if err := e.sync(hub.path, e.out); err != nil {
+					say("Plugin sync failed: %v", err)
+					syncFailed = true
+				} else {
+					say("Plugins: installed.")
+					syncCmd = ""
+				}
+			}
+		}
+	}
 	say("\nNext: run `rex skill setup` to install Rex's own skill and hooks. Setup does not run it.")
 	if rexWritten {
 		// The server that setup configured: a bare `rex config reload` would reach the caller's.
 		say("Load the LazyRex palette entries: rex -S %s config reload", shellWord(server))
 	}
-	// A blocked file or a failed write is an error; a declined file is the user's choice.
-	if len(failed) > 0 || len(blocked) > 0 {
+	if syncCmd != "" {
+		say("Install the plugins: %s", syncCmd)
+	}
+	// A blocked file, a failed write or a failed sync is an error; a declined file or sync is the
+	// user's choice.
+	if len(failed) > 0 || len(blocked) > 0 || syncFailed {
 		return 1
 	}
 	return 0

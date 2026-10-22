@@ -536,10 +536,19 @@ Exit status:
 | --- | --- |
 | Every file was written, unchanged, or declined | 0 |
 | A file is blocked, or a write failed (also with `-print`, for a blocked file) | 1 |
+| The plugin sync failed | 1 |
 | A prerequisite is missing | 1 |
 | Standard input is not a terminal (without `-print`) | 2 |
 
 A decline is the user's choice, not an error. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
+
+Plugins. The hub refuses a plugin of hub.json that is not installed ("is not installed: run lazyrex-hub plugin sync"), so setup ends with the plugin sync (the coordinator, 2026-10-22). After the files, and only for a hub.json that exists and names a server (the one that the hub controls read):
+
+- If `plugin status` finds every plugin installed, setup says `Plugins: installed.` and asks nothing.
+- Otherwise it asks `Install the plugins of <hub.json> now (lazyrex-hub plugin sync)? [y/N]`. On `y` it runs `plugin sync` (git, with network) and shows its lines, then `Plugins: installed.` A failed sync prints `Plugin sync failed: <error>`, and setup exits 1.
+- On no, no answer, or a failed sync, setup prints the exact command as a next step: `Install the plugins: <binary> plugin sync -config <hub.json>`, each path quoted for a shell.
+
+No sync, no question and no command when hub.json was declined, is blocked, or names no server, and never with `-print` or without a terminal. Tests: `TestSetupOffersThePluginSync` (yes, yes with another `-dir`, no, no answer, a failed sync), `TestSetupSkipsTheSyncWhenInstalled`, `TestSetupNoSyncWithoutAUsableConfig`.
 
 The boot file has the palette entries that work without a running hub. **LazyRex: Set Up** opens a new window in the caller's session, with a pane that runs the same setup command: the same binary, `-dir`, and `-server` if it was given. The pane stays open after setup ends, so the user can read the report. After setup writes the boot file or the Rex config, it prints `rex -S <server> config reload` as the next step, with the server that it configured (a bare `rex config reload` would reach the caller's server). The Rex config loads both files with `pcall`, so a missing file is not an error.
 

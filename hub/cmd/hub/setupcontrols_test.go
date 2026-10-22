@@ -57,6 +57,7 @@ func TestSetupControlsFollowTheConfigFile(t *testing.T) {
 		dir := filepath.Join(e.home, ".lazyrex")
 		var asked []string
 		e.isReal = func(s string) bool { asked = append(asked, s); return s == other }
+		e.installed = func(string) bool { return true } // the plugin sync is setupsync_test.go
 		if c.existing != "" {
 			os.MkdirAll(dir, 0o755)
 			os.WriteFile(filepath.Join(dir, "hub.json"), []byte(c.existing), 0o600)

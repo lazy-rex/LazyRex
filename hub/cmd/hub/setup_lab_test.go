@@ -172,9 +172,17 @@ func TestSetupLab(t *testing.T) {
 		}
 		cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], a.answer+"\r")
 	}
+	// The plugin sync comes last. The lab's git is a fake that only prints tags, so the test
+	// declines it, and setup prints the exact command.
+	syncPrompt := "Install the plugins of " + filepath.Join(dir, "hub.json") + " now (lazyrex-hub plugin sync)? [y/N] "
+	waitFor(syncPrompt, func(s string) bool { return strings.HasSuffix(s, syncPrompt) })
+	cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], "n\r")
 	got := waitFor("the report", func(s string) bool {
 		return strings.Contains(s, "Load the LazyRex palette entries: rex -S "+shellWord(socket)+" config reload")
 	})
+	if want := "Install the plugins: " + shellWord(bin) + " plugin sync -config " + shellWord(filepath.Join(dir, "hub.json")); !strings.Contains(got, want) {
+		t.Fatalf("no %q:\n%s", want, got)
+	}
 	if strings.Count(got, "Written:") != 5 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
 		t.Fatalf("report:\n%s", got)
 	}
