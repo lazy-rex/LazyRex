@@ -345,6 +345,37 @@ func TestSQLReturningReplyBudget(t *testing.T) {
 	}
 }
 
+// A query's row budget counts the column names too: with a long alias, the page ends earlier
+// (complete false) and its reply passes the reply guard. Before, the rows filled the budget and
+// the reply guard refused the reply. hub.sql.test reads the same way.
+func TestSQLQueryBudgetCountsColumns(t *testing.T) {
+	l := newSQLLab(t)
+	l.must("hub.sql.exec", `{"sql":"CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)"}`)
+	l.must("hub.sql.exec", `{"sql":"WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) INSERT INTO t SELECT i, printf('%.345000c', 'x') FROM n"}`)
+	alias := `"` + strings.Repeat("a", 16000) + `"`
+	page := func(after int) map[string]any {
+		q := l.must("hub.sql.query", js(map[string]any{"sql": "SELECT id, s AS " + alias + " FROM t WHERE id > ? ORDER BY id", "params": []any{after}}))
+		if _, ok := guardReply("hub.sql.query", map[string]any{"call_id": "c1", "result": q}, (1<<20)-replyMargin); !ok {
+			t.Fatalf("a query page after id %d exceeds the reply guard", after)
+		}
+		return q
+	}
+	first := page(0)
+	if first["complete"] != false || len(first["rows"].([]any)) != 2 {
+		t.Fatalf("first page: complete %v, %d rows", first["complete"], len(first["rows"].([]any)))
+	}
+	if rest := page(2); rest["complete"] != true || len(rest["rows"].([]any)) != 1 {
+		t.Fatalf("second page: complete %v, %d rows", rest["complete"], len(rest["rows"].([]any)))
+	}
+	out, err := l.s.test(context.Background(), "p", map[string]any{"sql": "SELECT id, s AS " + alias + " FROM t ORDER BY id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := guardReply("hub.sql.test", map[string]any{"call_id": "c1", "result": out}, (1<<20)-replyMargin); !ok {
+		t.Error("a hub.sql.test read exceeds the reply guard")
+	}
+}
+
 // Notices of a commit go through the outbox: a rollback has none; a failed apply keeps the rows,
 // and the retry applies them; the outbox is empty after an apply.
 func TestSQLNoticesOutbox(t *testing.T) {
