@@ -86,7 +86,7 @@ func setupMain(args []string) int {
 	_, terr := unix.IoctlGetTermios(int(os.Stdin.Fd()), ioctlGetTermios)
 	env := setupEnv{
 		home: home, getenv: os.Getenv, exe: exe, lookPath: exec.LookPath,
-		server: *server, endpoint: rexEndpoint, tags: lazyRexTags, isReal: isRealServer,
+		server: *server, endpoint: rexEndpoint, tags: lazyRexTags, isReal: func(s string) bool { return isRealServer(context.Background(), s) },
 		installed: func(cfg string) bool { ok, err := runPluginStatus(cfg, io.Discard); return err == nil && ok },
 		sync: func(cfg string, w io.Writer) error {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

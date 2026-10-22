@@ -120,22 +120,22 @@ func SameEndpoint(a, b string) bool {
 //
 // Observed on Rex 0.0.1792158932-g88fd41: with no default server, server status exits 1 with
 // "Error: rex server is not running".
-func IsReal(s string) bool {
+func IsReal(ctx context.Context, s string) bool {
 	if KnownDefault(s) {
 		return true
 	}
-	def, err := status("")
+	def, err := status(ctx, "")
 	if err != nil {
 		if !strings.Contains(err.Error(), "rex server is not running") {
 			return true
 		}
-		_, err := status(s)
+		_, err := status(ctx, s)
 		return err != nil
 	}
 	if def.InstanceID == "" || def.Endpoint == "" || SameEndpoint(def.Endpoint, s) {
 		return true // a default answer without its identity proves nothing (Codex review of a87d0ee)
 	}
-	cfg, err := status(s)
+	cfg, err := status(ctx, s)
 	if err != nil {
 		var ce *cliError
 		return !errors.As(err, &ce) // only a failed rex call is an absent server; bad JSON is uncertain
@@ -145,8 +145,8 @@ func IsReal(s string) bool {
 
 // DefaultEndpoint is the endpoint of Rex's default server, for a caller without a server (a Linux
 // pane has no REX_SERVER). An answer without an endpoint or an instance_id is an error.
-func DefaultEndpoint() (string, error) {
-	def, err := status("")
+func DefaultEndpoint(ctx context.Context) (string, error) {
+	def, err := status(ctx, "")
 	if err != nil {
 		return "", err
 	}
@@ -163,13 +163,15 @@ type serverStatus struct {
 
 // status runs "rex server status --json" for server s, or for the default server when s is "".
 // REX_SERVER is removed, so the default is the CLI's own; no server starts.
-func status(s string) (serverStatus, error) {
+// A canceled parent (a signal during the hub start) gives its own error, never a cliError: a
+// stopped call proves nothing about s, and IsReal treats any such doubt as real.
+func status(parent context.Context, s string) (serverStatus, error) {
 	var st serverStatus
 	args := []string{"--autostart=false", "--timeout", "5s"}
 	if s != "" {
 		args = append(args, "-S", s)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "rex", append(args, "server", "status", "--json")...)
 	for _, e := range os.Environ() {
@@ -180,6 +182,9 @@ func status(s string) (serverStatus, error) {
 	var errOut bytes.Buffer
 	cmd.Stderr = &errOut
 	out, err := cmd.Output()
+	if err != nil && parent.Err() != nil {
+		return st, parent.Err()
+	}
 	if err != nil {
 		return st, &cliError{err: err, stderr: strings.TrimSpace(errOut.String())}
 	}

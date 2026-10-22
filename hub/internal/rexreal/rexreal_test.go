@@ -1,10 +1,12 @@
 package rexreal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The known default sockets of both systems count on either host: a false answer means only "not
@@ -86,7 +88,7 @@ func TestDefaultEndpoint(t *testing.T) {
 		{"down", "", false},
 	} {
 		fakeStatusRex(t, c.def, "")
-		got, err := DefaultEndpoint()
+		got, err := DefaultEndpoint(context.Background())
 		if got != c.want || (err == nil) != c.ok {
 			t.Errorf("default %q: %q, %v", c.def, got, err)
 		}
@@ -95,7 +97,8 @@ func TestDefaultEndpoint(t *testing.T) {
 
 // fakeStatusRex puts a rex on PATH that answers "server status --json" as cmd/hub's test of the
 // same name does: the default server answers DEF ("down" = not running); any -S server answers
-// CFG ("" = refused). It records whether it saw REX_SERVER or --autostart=false.
+// CFG ("" = refused); with FAKE_CFG_HOLD set, it creates that file and does not answer for 5 s. It
+// records whether it saw REX_SERVER or --autostart=false.
 func fakeStatusRex(t *testing.T, def, cfg string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -109,6 +112,7 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$s" ] && s="$REX_SERVER"
 if [ -n "$s" ]; then
+  [ -n "$FAKE_CFG_HOLD" ] && { : >"$FAKE_CFG_HOLD"; exec sleep 5; }
   [ -z "$FAKE_CFG" ] && { echo "Error: connecting to Rex server $s: refused" >&2; exit 1; }
   echo "$FAKE_CFG"; exit 0
 fi
@@ -130,11 +134,50 @@ echo "$FAKE_DEF"
 // The default query removes REX_SERVER and never starts a server.
 func TestDefaultQueryHasNoServer(t *testing.T) {
 	log := fakeStatusRex(t, `{"endpoint":"unix:///run/user/501/rex/server.sock","instance_id":"i1"}`, "")
-	if _, err := DefaultEndpoint(); err != nil {
+	if _, err := DefaultEndpoint(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
 	if s := string(b); !strings.HasPrefix(s, "REX_SERVER= ") || !strings.Contains(s, "--autostart=false") || strings.Contains(s, "-S") {
 		t.Errorf("the default query: %q", s)
+	}
+}
+
+// A cancel while the configured server's query runs (the default server answered) is doubt, so
+// real: a stopped call is not an absent server. The call ends at once.
+func TestIsRealCanceledBetweenQueries(t *testing.T) {
+	fakeStatusRex(t, `{"endpoint":"unix:///run/user/501/rex/server.sock","instance_id":"i1"}`, "")
+	hold := filepath.Join(t.TempDir(), "held")
+	t.Setenv("FAKE_CFG_HOLD", hold)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for {
+			if _, err := os.Stat(hold); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	start := time.Now()
+	if !IsReal(ctx, "unix:///tmp/rexlab-x/rex.sock") {
+		t.Error("a canceled query of the configured server proved \"not real\"")
+	}
+	if _, err := os.Stat(hold); err != nil {
+		t.Errorf("the configured server was not asked: %v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("IsReal returned after %v, not at the cancel", d)
+	}
+}
+
+// A context canceled before the call is doubt too: real.
+func TestIsRealCanceledBefore(t *testing.T) {
+	fakeStatusRex(t, `{"endpoint":"unix:///run/user/501/rex/server.sock","instance_id":"i1"}`, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !IsReal(ctx, "unix:///tmp/rexlab-x/rex.sock") {
+		t.Error("a canceled context proved \"not real\"")
 	}
 }

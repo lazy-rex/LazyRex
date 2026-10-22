@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,7 +69,7 @@ func TestIsRealServer(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fakeStatusRex(t, c.def, c.cfg)
-			if got := isRealServer(c.server); got != c.want {
+			if got := isRealServer(context.Background(), c.server); got != c.want {
 				t.Fatalf("isRealServer(%s) = %v, want %v", c.server, got, c.want)
 			}
 		})
@@ -79,26 +80,26 @@ func TestIsRealServer(t *testing.T) {
 // -real-server must match the answer.
 func TestCheckServer(t *testing.T) {
 	fakeStatusRex(t, "fail", "")
-	if err := checkServer("unix:///tmp/rexlab-x/rex.sock", false, true); err != nil {
+	if err := checkServer(context.Background(), "unix:///tmp/rexlab-x/rex.sock", false, true); err != nil {
 		t.Fatalf("test mode asked Rex: %v", err)
 	}
-	if err := checkServer("unix:///Users/u/Library/Application%20Support/rex/server.sock", false, true); err == nil {
+	if err := checkServer(context.Background(), "unix:///Users/u/Library/Application%20Support/rex/server.sock", false, true); err == nil {
 		t.Fatal("test mode accepted the macOS real server")
 	}
-	if err := checkServer("unix:///tmp/rexlab-x/rex.sock", false, false); err == nil {
+	if err := checkServer(context.Background(), "unix:///tmp/rexlab-x/rex.sock", false, false); err == nil {
 		t.Fatal("a failed default query is not a proof")
 	}
 	fakeStatusRex(t, `{"endpoint":"unix:///run/user/1000/rex/server.sock","instance_id":"i-real"}`, `{"instance_id":"i-lab"}`)
-	if err := checkServer("unix:///tmp/rexlab-x/rex.sock", false, false); err != nil {
+	if err := checkServer(context.Background(), "unix:///tmp/rexlab-x/rex.sock", false, false); err != nil {
 		t.Fatalf("a lab server: %v", err)
 	}
-	if err := checkServer("unix:///tmp/rexlab-x/rex.sock", true, false); err == nil {
+	if err := checkServer(context.Background(), "unix:///tmp/rexlab-x/rex.sock", true, false); err == nil {
 		t.Fatal("-real-server accepted a lab server")
 	}
-	if err := checkServer("unix:///run/user/1000/rex/server.sock", false, false); err == nil {
+	if err := checkServer(context.Background(), "unix:///run/user/1000/rex/server.sock", false, false); err == nil {
 		t.Fatal("refused nothing on the Linux real server")
 	}
-	if err := checkServer("unix:///run/user/1000/rex/server.sock", true, false); err != nil {
+	if err := checkServer(context.Background(), "unix:///run/user/1000/rex/server.sock", true, false); err != nil {
 		t.Fatalf("-real-server on the Linux real server: %v", err)
 	}
 }
@@ -112,7 +113,7 @@ func TestTestModeRefusesTheLinuxRealServer(t *testing.T) {
 		"unix:///run/user/4242/rex/server.sock",
 		"unix:///run/user/" + strconv.Itoa(os.Getuid()) + "/rex/server.sock",
 	} {
-		if err := checkServer(s, false, true); err == nil || !strings.Contains(err.Error(), "refuses the real") {
+		if err := checkServer(context.Background(), s, false, true); err == nil || !strings.Contains(err.Error(), "refuses the real") {
 			t.Errorf("checkServer(%s, test): %v", s, err)
 		}
 		if err := checkLabProof(s); err == nil || !strings.Contains(err.Error(), "refuses the real") {

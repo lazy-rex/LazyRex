@@ -241,13 +241,13 @@ func resolveServer(flagServer, env string, realServer bool) (string, error) {
 		server = env
 	}
 	if server == "" {
-		def, err := rexreal.DefaultEndpoint()
+		def, err := rexreal.DefaultEndpoint(context.Background())
 		if err != nil {
 			return "", fmt.Errorf("no -server, no REX_SERVER, and Rex's default server is not known: %w", err)
 		}
 		server = def
 	}
-	if rexreal.IsReal(server) != realServer {
+	if rexreal.IsReal(context.Background(), server) != realServer {
 		return "", fmt.Errorf("server %s and -real-server=%v disagree; the real Rex server needs -real-server", server, realServer)
 	}
 	return server, nil

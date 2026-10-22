@@ -94,9 +94,14 @@ func TestHubShutdownExitStatusLab(t *testing.T) {
 }
 
 // A signal while the hub starts is also a deliberate stop: exit 0. The test pauses its own lab
-// server (SIGSTOP), so the hub waits in start for the Rex connection, then sends SIGTERM to the
-// hub. Lab only: SHUTDOWN_LAB=1.
-func TestHubSignalDuringStartLab(t *testing.T) {
+// server (SIGSTOP), so the hub waits on Rex (the real-server check, then the connection), then
+// sends SIGTERM to the hub. Lab only: SHUTDOWN_LAB=1.
+func TestHubSignalDuringStartLab(t *testing.T) { signalDuringStart(t) }
+
+// The same with -restart: the wrapper stops before its first child, exit 0.
+func TestHubRestartSignalDuringStartLab(t *testing.T) { signalDuringStart(t, "-restart") }
+
+func signalDuringStart(t *testing.T, args ...string) {
 	if os.Getenv("SHUTDOWN_LAB") != "1" {
 		t.Skip("set SHUTDOWN_LAB=1 to run the shutdown lab test (it starts its own lab server)")
 	}
@@ -123,7 +128,7 @@ func TestHubSignalDuringStartLab(t *testing.T) {
 	}
 
 	server.Process.Signal(syscall.SIGSTOP)
-	hub, exit := startShutdownHub(t, bin, cfg, filepath.Join(tmp, "hub.log"))
+	hub, exit := startShutdownHub(t, bin, cfg, filepath.Join(tmp, "hub.log"), args...)
 	if hubExited(exit, time.Second) {
 		t.Fatalf("the hub exited before the signal:\n%s", readLog(tmp, "hub.log"))
 	}
@@ -174,13 +179,13 @@ func startLabServer(t *testing.T, root, lab string) *exec.Cmd {
 }
 
 // startShutdownHub starts the hub binary; exit receives its exit status once.
-func startShutdownHub(t *testing.T, bin, cfg, logPath string) (*exec.Cmd, chan int) {
+func startShutdownHub(t *testing.T, bin, cfg, logPath string, args ...string) (*exec.Cmd, chan int) {
 	t.Helper()
 	logf, err := os.Create(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "-config", cfg)
+	cmd := exec.Command(bin, append([]string{"-config", cfg}, args...)...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

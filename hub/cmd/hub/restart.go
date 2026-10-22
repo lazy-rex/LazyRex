@@ -69,10 +69,18 @@ type restartStatus struct {
 	Since     string `json:"since"`
 }
 
-// restartMain runs the wrapper. args are the hub's arguments without -restart.
-func restartMain(cfg Config, args []string) int {
+// restartMain runs the wrapper. args are the hub's arguments without -restart. ctx ends at the
+// first SIGTERM or SIGINT since main installed its handler: main's handler stays until sigs
+// receives too, so a signal in between is in ctx, and the wrapper stops before the first start.
+func restartMain(ctx context.Context, cfg Config, args []string) int {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	if ctx.Err() != nil {
+		select { // run stops before the first start (the signal may also have been SIGINT)
+		case sigs <- syscall.SIGTERM:
+		default: // a later signal is in sigs already
+		}
+	}
 	bin, err := os.Executable()
 	if err != nil {
 		log.Print(err)
