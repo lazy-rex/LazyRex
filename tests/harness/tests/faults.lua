@@ -131,7 +131,7 @@ test('a wrong plugin is not affected', function()
   local id = fault({point = 'action', action = 'hub.workers', when = 'before', mode = 'fail', plugin = 'lazyrex'})
   expect(hubcall('hub.workers', {}).result).to_be_truthy()
   expect(fault_fired(id)).to_be(false)
-  user:open('home', 'lazyrex'):render()
+  user:panel('agents', {plugin = 'lazyrex'}):render()
   wait('the home plugin call fires the fault', function() return fault_fired(id) end)
 end)
 

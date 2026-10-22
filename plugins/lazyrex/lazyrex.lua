@@ -1,4 +1,7 @@
--- LazyRex home. The hub owns profiles, workers, and navigation.
+-- LazyRex home. The hub owns profiles, workers, and navigation. Home has no tab: its palette
+-- entries are "Agents…" (a panel), "Stop Worker…" and, while no Profiles plugin is registered,
+-- "Launch Profile…" (forms). A view at '/' is the retired home tab; it renders the panel until the
+-- hub retires it.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 local navigation_notice
@@ -36,6 +39,9 @@ local function action(name, label, parity)
   return a
 end
 local navigation = {user_only = 'navigation'}
+local function cancel_node(label)
+  return {id = 'cancel', type = 'widget', text = '', action = {name = '$cancel', label = label or 'Cancel', enabled = true}}
+end
 local function find(list, field, value)
   for _, item in ipairs(list or {}) do if item[field] == value then return item end end
   fail('not_found', 'The selected item is no longer available. Refresh the view.')
@@ -43,6 +49,7 @@ end
 local function active(worker)
   return worker.state == 'starting' or worker.state == 'running' or worker.state == 'exited'
 end
+local function worker_label(worker) return worker.title or worker.agent_id or worker.spawn_id end
 local function worker_detail(worker)
   local detail = worker.state or 'Unknown'
   if type(worker.status) == 'table' then
@@ -52,22 +59,18 @@ local function worker_detail(worker)
   if type(worker.error) == 'string' and worker.error ~= '' then detail = detail .. ' · ' .. worker.error end
   return detail
 end
-local function render()
-  local profiles_ok, profile_result = pcall(hub, 'hub.profiles')
-  local profiles = profiles_ok and (profile_result.profiles or {}) or {}
+local function registered(id)
+  for _, plugin in ipairs(hub('hub.plugins').plugins or {}) do if plugin.id == id then return true end end
+  return false
+end
+
+-- /panels/agents: what runs and what the user can talk to. One action per list item.
+local function panel_tree()
   local workers = hub('hub.workers').workers or {}
-  local plugins = hub('hub.plugins').plugins or {}
   local agents = hub('hub.agents').agents or {}
-  local has_messages = false
-  for _, plugin in ipairs(plugins) do if plugin.id == 'messaging' then has_messages = true end end
-  local nodes, plugin_items, agent_items, worker_items, stop_options = {}, {}, {}, {}, {}
-  for _, plugin in ipairs(plugins) do
-    if plugin.id ~= 'lazyrex' and (plugin.panel or plugin.tab) then
-      plugin_items[#plugin_items + 1] = {id = plugin.id, label = plugin.name or plugin.id, action = action('open', 'Open', navigation)}
-    end
-  end
+  local has_messages = registered('messaging')
+  local nodes, agent_items, worker_items = {}, {}, {}
   if navigation_notice then nodes[#nodes + 1] = {id = 'navigation_notice', type = 'widget', text = navigation_notice} end
-  nodes[#nodes + 1] = {id = 'plugins', type = 'list', label = 'Plugins', items = plugin_items}
   for _, agent in ipairs(agents) do
     if agent.id ~= 'user' then
       agent_items[#agent_items + 1] = {id = agent.id, label = agent.name or agent.id,
@@ -77,14 +80,63 @@ local function render()
   end
   nodes[#nodes + 1] = {id = 'agents', type = 'list', label = 'Agents', items = agent_items}
   for _, worker in ipairs(workers) do
-    local label = worker.title or worker.agent_id or worker.spawn_id
-    local item_label = worker.state == 'failed' and (label .. ' · Dismiss') or label
-    worker_items[#worker_items + 1] = {id = worker.spawn_id, label = item_label, detail = worker_detail(worker),
-      action = worker.state == 'failed' and action('dismiss', 'Dismiss', {tool = 'hub.stop'})
-        or worker.window_id and worker.state ~= 'closed' and action('open', 'Open', navigation) or nil}
-    if active(worker) then stop_options[#stop_options + 1] = {value = worker.spawn_id, label = label} end
+    local label = worker_label(worker)
+    local item_action
+    if worker.state == 'failed' then
+      label, item_action = label .. ' · Dismiss', action('dismiss', 'Dismiss', {tool = 'hub.stop'})
+    elseif active(worker) then
+      item_action = action('manage', 'Manage…', navigation)
+    elseif worker.window_id and worker.state ~= 'closed' then
+      item_action = action('open', 'Open', navigation)
+    end
+    worker_items[#worker_items + 1] = {id = worker.spawn_id, label = label, detail = worker_detail(worker), action = item_action}
   end
   nodes[#nodes + 1] = {id = 'workers', type = 'list', label = 'Workers and accessories', items = worker_items}
+  return {title = 'Agents', nodes = nodes}
+end
+
+-- /forms/worker/<spawn_id>: the menu of one active worker.
+local function worker_tree(spawn_id)
+  local worker
+  for _, w in ipairs(hub('hub.workers').workers or {}) do if w.spawn_id == spawn_id then worker = w end end
+  if not worker then
+    return {title = 'Worker', menu = true, nodes = {
+      {id = 'gone', type = 'widget', text = 'This worker is no longer listed.'}, cancel_node('Close')}}
+  end
+  local nodes = {{id = 'detail', type = 'widget', text = worker_detail(worker)}}
+  if worker.window_id and worker.state ~= 'closed' then
+    nodes[#nodes + 1] = {id = 'open', type = 'widget', text = '', action = action('open', 'Open', navigation)}
+  end
+  if active(worker) then
+    nodes[#nodes + 1] = {id = 'stop', type = 'widget', text = '', action = action('stop', 'Stop', {tool = 'hub.stop'})}
+  end
+  nodes[#nodes + 1] = cancel_node('Close')
+  return {title = worker_label(worker), menu = true, nodes = nodes}
+end
+
+-- /forms/stop: the keyboard path, a select of the active workers.
+local function stop_tree()
+  local options = {}
+  for _, worker in ipairs(hub('hub.workers').workers or {}) do
+    if active(worker) then options[#options + 1] = {value = worker.spawn_id, label = worker_label(worker)} end
+  end
+  local nodes = {}
+  if #options == 0 then
+    nodes[1] = {id = 'no_workers', type = 'widget', text = 'No worker or accessory runs.'}
+  else
+    nodes[1] = {id = 'stop', type = 'form', label = 'Stop a worker or accessory', fields = {
+      {id = 'worker', label = 'Worker', kind = 'select', required = true, value = options[1].value, options = options}
+    }, submit_action = action('stop', 'Stop', {tool = 'hub.stop'})}
+  end
+  nodes[#nodes + 1] = cancel_node()
+  return {title = 'Stop Worker', nodes = nodes}
+end
+
+-- /forms/launch: one launch form per profile (registered only while no Profiles plugin is).
+local function launch_tree()
+  local profiles_ok, profile_result = pcall(hub, 'hub.profiles')
+  local profiles = profiles_ok and (profile_result.profiles or {}) or {}
+  local nodes = {}
   for _, profile in ipairs(profiles) do
     local fields = {{id = 'title', label = 'Tab title (optional)', kind = 'text', required = false, value = ''}}
     for _, arg in ipairs(profile.args or {}) do
@@ -100,39 +152,52 @@ local function render()
   elseif #profiles == 0 then
     nodes[#nodes + 1] = {id = 'no_profiles', type = 'widget', text = 'No profiles are configured.'}
   end
-  if #stop_options > 0 then
-    nodes[#nodes + 1] = {id = 'stop', type = 'form', label = 'Stop a worker or accessory', fields = {
-      {id = 'worker', label = 'Worker', kind = 'select', required = true, value = stop_options[1].value, options = stop_options}
-    }, submit_action = action('stop', 'Stop', {tool = 'hub.stop'})}
-  end
-  return {title = 'LazyRex', nodes = nodes}
+  nodes[#nodes + 1] = cancel_node()
+  return {title = 'Launch Profile', nodes = nodes}
+end
+
+local function render(route)
+  if route == '/panels/agents' or route == '/' then return panel_tree() end
+  if route == '/forms/stop' then return stop_tree() end
+  if route == '/forms/launch' then return launch_tree() end
+  return worker_tree(route:match('^/forms/worker/(.+)$'))
+end
+
+local function stop(spawn_id, key)
+  -- The hub owns stop retries, including a retry after the worker disappears.
+  return hub('hub.stop', {spawn_id = spawn_id, key = key, ['for'] = 'user'})
+end
+local function closing(result)
+  result.close_form = true
+  return result
 end
 local function perform(args)
   local input = type(args.input) == 'table' and args.input or {}
-  if args.node_id == 'plugins' and args.action == 'open' then
-    local plugin = find(hub('hub.plugins').plugins, 'id', input.item_id)
-    if plugin.id == 'lazyrex' or not (plugin.panel or plugin.tab) then fail('invalid_input', 'This plugin has no landing view') end
-    if plugin.panel then return {panel = {plugin = plugin.id, command = plugin.panel}} end
-    -- A navigate effect: the hub's view worker navigates and records success or failure on this
-    -- operation. hub.ui.navigate from here would answer "pending" for a lazy tab and lose the outcome.
-    return {navigate = {plugin = plugin.id, tab = plugin.tab}}
-  end
   if args.node_id == 'agents' and args.action == 'message' then
     local agent = find(hub('hub.agents').agents, 'id', input.item_id)
     if agent.id == 'user' then fail('invalid_input', 'Select an agent') end
     return {navigate = {plugin = 'messaging', tab = 'thread/' .. agent.id}}
   end
-  if args.node_id == 'workers' and args.action == 'open' then
+  if args.node_id == 'workers' and (args.action == 'open' or args.action == 'manage') then
     local worker = find(hub('hub.workers').workers, 'spawn_id', input.item_id)
+    if args.action == 'manage' then return {form = '/forms/worker/' .. worker.spawn_id} end
     return hub('hub.navigate.worker', {spawn_id = worker.spawn_id})
+  end
+  local menu_id = args.route:match('^/forms/worker/(.+)$')
+  if menu_id and args.node_id == 'open' and args.action == 'open' then
+    local worker = find(hub('hub.workers').workers, 'spawn_id', menu_id)
+    return closing(hub('hub.navigate.worker', {spawn_id = worker.spawn_id}))
   end
   if type(args.operation_key) ~= 'string' or args.operation_key == '' then fail('invalid_input', 'An operation key is required') end
   if args.node_id == 'workers' and args.action == 'dismiss' then
     if type(input.item_id) ~= 'string' or input.item_id == '' then fail('invalid_input', 'Select a worker') end
-    return hub('hub.stop', {spawn_id = input.item_id, key = args.operation_key, ['for'] = 'user'})
+    return stop(input.item_id, args.operation_key)
+  end
+  if menu_id and args.node_id == 'stop' and args.action == 'stop' then
+    return closing(stop(menu_id, args.operation_key))
   end
   local values = type(input.values) == 'table' and input.values or {}
-  if type(args.node_id) == 'string' and string.sub(args.node_id, 1, 7) == 'launch/' and args.action == 'launch' then
+  if args.route == '/forms/launch' and type(args.node_id) == 'string' and string.sub(args.node_id, 1, 7) == 'launch/' and args.action == 'launch' then
     local profile = string.sub(args.node_id, 8)
     if profile == '' then fail('invalid_input', 'Select a profile') end
     if type(values.title) ~= 'string' then fail('invalid_input', 'The title must be text') end
@@ -150,36 +215,73 @@ local function perform(args)
     navigation_notice = nil
     if result.status == 'open' and type(result.spawn_id) == 'string' then
       local shown = pcall(hub, 'hub.navigate.worker', {spawn_id = result.spawn_id})
-      if not shown then navigation_notice = 'The worker started. Select the worker in the list to show its tab.' end
+      if not shown then navigation_notice = 'The worker started. Select the worker in Agents… to show its tab.' end
+      return closing(result)
     end
-    return result
+    return result -- a failed launch keeps the form, with its values
   end
-  if args.node_id == 'stop' and args.action == 'stop' then
-    -- The hub owns stop retries, including a retry after the worker disappears.
+  if args.route == '/forms/stop' and args.node_id == 'stop' and args.action == 'stop' then
     if type(values.worker) ~= 'string' or values.worker == '' then fail('invalid_input', 'Select a worker') end
-    return hub('hub.stop', {spawn_id = values.worker, key = args.operation_key, ['for'] = 'user'})
+    return closing(stop(values.worker, args.operation_key))
   end
   fail('invalid_input', 'Unknown home action')
 end
+
+-- The palette entries. "Launch Profile…" only while no Profiles plugin is registered: Profiles
+-- has its own Start Agent… and Start Accessory… (decision Q1 A, 2026-10-22).
+local function commands()
+  local list = {
+    {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
+    {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'},
+  }
+  if not registered('profiles') then
+    list[#list + 1] = {id = 'launch', title = 'Launch Profile…', route = '/forms/launch', action = 'hub.spawn'}
+  end
+  return list
+end
+-- sync registers again only when the command set changed. A registration makes the hub send
+-- hub.changed (plugins) again, which then finds no change: no loop. Each call reads the current
+-- plugin list, so the last of a burst of changes wins.
+local registered_ids
+local function sync()
+  local list = commands()
+  local ids = {}
+  for _, c in ipairs(list) do ids[#ids + 1] = c.id end
+  ids = table.concat(ids, ',')
+  if ids == registered_ids then return end
+  hub('hub.register', {plugin = 'lazyrex', instance_id = instance_id, exports = {}, commands = list})
+  registered_ids = ids
+end
+
+local routes = {['/'] = true, ['/panels/agents'] = true, ['/forms/stop'] = true, ['/forms/launch'] = true}
+local function known_route(route)
+  return type(route) == 'string' and (routes[route] or route:match('^/forms/worker/.+$') ~= nil)
+end
 local handlers = {
-  ['view.render'] = function(args) return {tree = render()} end,
+  ['view.render'] = function(args) return {tree = render(args.route)} end,
   ['view.action'] = perform,
   ['view.seen'] = function(args) return {} end,
-  ['hub.changed'] = function(args) return {} end,
+  ['hub.changed'] = function(args) sync(); return {} end,
 }
 local actions = {}
 for name in pairs(handlers) do actions[#actions + 1] = {name = name, kind = 'client', title = name,
   args = {type = 'object', additionalProperties = true}} end
 rex.call('client.keymap', {actions = actions})
-hub('hub.register', {plugin = 'lazyrex', instance_id = instance_id, exports = {}})
-hub('hub.ui.tabs', {tabs = {{key = 'home', title = 'LazyRex', route = '/'}}})
+-- The first registration names the base commands, so the hub knows the plugin; sync then adds
+-- Launch Profile… when no Profiles plugin is registered.
+hub('hub.register', {plugin = 'lazyrex', instance_id = instance_id, exports = {}, commands = {
+  {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
+  {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'}}})
+registered_ids = 'agents,stop'
+sync()
+hub('hub.ui.tabs', {tabs = {}})
 rex.on('client_perform_requested', function(ctx, ev)
   local ok, result = pcall(function()
     if not ev.requester or ev.requester.client_id ~= hub_id then fail('refused', 'Only the hub calls home actions') end
     local handler = handlers[ev.action]
     if not handler then fail('not_supported', 'Unknown home action') end
     local args = ev.args or {}
-    if ev.action ~= 'hub.changed' and (args.route ~= '/' or args.user ~= 'user') then fail('refused', 'Unknown home route or user') end
+    if ev.action ~= 'hub.changed' and (not known_route(args.route) or args.user ~= 'user') then fail('refused', 'Unknown home route or user') end
     return handler(args)
   end)
   if ok then rex.call('client.reply', {call_id = ev.call_id, result = result})

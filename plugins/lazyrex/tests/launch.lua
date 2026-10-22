@@ -1,15 +1,33 @@
 -- Ported from the Node test home.mjs (coverage map: tests/README.md): launching workers.
--- Both paths: the user submits a launch form (tool = 'hub.spawn'); an agent calls hub.spawn.
--- The task profile writes its two args to LAB/home/task-args.
+-- Both paths: the user submits the Launch Profile… form (tool = 'hub.spawn'); an agent calls
+-- hub.spawn. The task profile writes its two args to LAB/home/task-args. The file stops the
+-- profiles stub first: the home plugin registers Launch Profile… only while no Profiles plugin is
+-- registered.
 
 local codex = agent('codex')
 local args_file = H.args.lab .. '/home/task-args'
 
-local function home()
-  local v = user:open('home')
-  v:render()
-  return v
-end
+H.hub('hub.admin.stop', {plugin = 'profiles'})
+wait('the home plugin registers Launch Profile…', function()
+  for _, c in ipairs(H.hub('hub.test.commands', {plugin = 'lazyrex'}).commands or {}) do
+    if c.id == 'launch' then return true end
+  end
+end)
+
+local function home() return user:panel('launch') end
+
+test('the form has one launch form per profile, with the profile args', function()
+  local tree = home():render()
+  expect(tree.title).to_be('Launch Profile')
+  local task = H.node(tree, 'launch/task')
+  expect(task.label).to_be('Launch Task')
+  expect(task.fields[1]).to_equal({id = 'title', label = 'Tab title (optional)', kind = 'text', required = false, value = ''})
+  expect(task.fields[2]).to_equal({id = 'arg/task', label = 'Task', kind = 'multiline', required = true, value = 'Inspect changes'})
+  expect(task.fields[3].value).to_be('review')
+  expect(task.submit_action.tool).to_be('hub.spawn')
+  expect(#H.node(tree, 'launch/shell').fields, 'no args: only the title').to_be(1)
+  expect(H.node(tree, 'cancel').action.name).to_be('$cancel')
+end)
 local function find(list, id)
   for _, x in ipairs(list or {}) do if x.spawn_id == id then return x end end
 end
@@ -33,7 +51,7 @@ test('user path: a launch starts the worker with its title and shows its tab', f
   local w = find(workers(), user_spawn)
   expect(w.title).to_be('Test')
   expect(w.parent, 'the plugin launched it for the user').to_be('user')
-  expect(H.node(home():render(), 'navigation_notice'), 'the hub showed the tab').to_be(nil)
+  expect(H.node(user:panel('agents'):render(), 'navigation_notice'), 'the hub showed the tab').to_be(nil)
 end)
 
 test('agent path: hub.spawn starts the same profile', function()
@@ -108,4 +126,51 @@ test('launch inputs must be text', function()
   op = v:action('launch/shell', 'launch', {values = {title = '', ['arg/task'] = 42}}, 'launch-bad-arg')
   expect(op.status).to_be('failed')
   expect(op.error.message).to_match('must be text')
+end)
+
+test('a successful launch closes the form; a failed launch keeps it', function()
+  local v = home()
+  local op = v:action('launch/shell', 'launch', {values = {title = 'Closes'}}, 'launch-closes')
+  expect(op.result.close_form).to_be(true)
+  wait('the form closes', function()
+    for _, w in ipairs(views()) do if w.view_id == v.id then return false end end
+    return true
+  end)
+  fault({point = 'spawn-create', mode = 'refuse', op = 'launch-keeps'})
+  local kept = home()
+  local failed = kept:action('launch/shell', 'launch', {values = {title = 'Keeps'}}, 'launch-keeps')
+  expect(failed.result.status).to_be('failed')
+  expect(failed.result.close_form).to_be(nil)
+  kept:render() -- still open
+end)
+
+test('a profile error keeps the form with its message', function()
+  write_profiles('{"profiles": [')
+  local tree = home():render()
+  expect(H.node(tree, 'profiles_error').text).to_match('Profiles could not be loaded')
+  expect(H.node(tree, 'profiles_error').text).to_match('profiles.json')
+  expect(H.node(tree, 'launch/shell'), 'no launch form without profiles').to_be(nil)
+  expect(H.node(user:panel('agents'):render(), 'workers'), 'profile errors keep the panel').to_be_truthy()
+end)
+
+test('without profile files only the builtin shell profile remains', function()
+  write_profiles('{"profiles":[]}')
+  local tree = home():render()
+  expect(H.node(tree, 'launch/shell').label, 'the builtin shell').to_be('Launch Shell')
+  expect(H.node(tree, 'launch/task')).to_be(nil)
+  expect(H.node(tree, 'no_profiles'), 'the hub always has the builtin shell').to_be(nil)
+  expect(H.node(tree, 'profiles_error')).to_be(nil)
+end)
+
+test('a launch whose navigation fails still reports the launch; the panel shows a notice', function()
+  write_profiles('{"profiles":[]}')
+  local id = fault({point = 'action', action = 'hub.navigate.worker', when = 'before', mode = 'fail'})
+  local op = home():action('launch/shell', 'launch', {values = {title = 'No navigation'}}, 'nav-launch-fail')
+  expect(fault_fired(id)).to_be(true)
+  expect(op.status).to_be('succeeded')
+  expect(op.result.status, 'a navigation failure does not report a failed launch').to_be('open')
+  expect(H.node(user:panel('agents'):render(), 'navigation_notice').text).to_match('worker started')
+  local again = home():action('launch/shell', 'launch', {values = {title = 'Navigated'}}, 'nav-launch-ok')
+  expect(again.status).to_be('succeeded')
+  expect(H.node(user:panel('agents'):render(), 'navigation_notice'), 'the next launch clears the notice').to_be(nil)
 end)

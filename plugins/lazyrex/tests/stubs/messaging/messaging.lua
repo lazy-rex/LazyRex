@@ -24,8 +24,12 @@ rex.on('client_perform_requested', function(ctx, ev)
     if ev.action == 'view.open' then
       local id = ev.args.route:match('^/thread/(.+)$')
       if id then
-        tabs[#tabs + 1] = {key = 'thread/' .. id, title = 'Thread ' .. id, route = ev.args.route}
-        hub('hub.ui.tabs', {tabs = tabs})
+        -- A declaration that failed is sent again in full: the list never holds a key twice.
+        local list = {}
+        for _, t in ipairs(tabs) do if t.key ~= 'thread/' .. id then list[#list + 1] = t end end
+        list[#list + 1] = {key = 'thread/' .. id, title = 'Thread ' .. id, route = ev.args.route}
+        hub('hub.ui.tabs', {tabs = list})
+        tabs = list
       end
       return {}
     end

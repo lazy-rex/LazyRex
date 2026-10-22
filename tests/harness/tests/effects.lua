@@ -14,7 +14,7 @@ test('a navigate effect to another plugin succeeds', function()
   expect(op.status).to_be('succeeded')
   expect(op.effects).to_be('done')
   local navs = committed()
-  expect(navs[#navs]).to_be('lazyrex/home')
+  expect(navs[#navs]).to_be('tabfix/home')
 end)
 
 test('a navigate effect to a missing plugin fails the effect', function()
@@ -47,14 +47,14 @@ test('a cross-plugin navigate effect closes the form that ran it', function()
     return true
   end)
   local navs = committed()
-  expect(navs[#navs]).to_be('lazyrex/home')
+  expect(navs[#navs]).to_be('tabfix/home')
 end)
 
 -- Reviewer probe (Codex, reviewer_navigation.lua): the LazyRex home plugin navigates through the
 -- effect path, so a failed target reaches the durable operation. This hub has no messaging plugin.
 test('the home plugin reports a failed navigation target on the operation', function()
   agent('alice')
-  local home = user:open('home', 'lazyrex')
+  local home = user:panel('agents', {plugin = 'lazyrex'})
   home:render()
   local op = home:action('agents', 'message', {item_id = 'alice'}, 'home-missing-target')
   expect(op.status).to_be('succeeded')

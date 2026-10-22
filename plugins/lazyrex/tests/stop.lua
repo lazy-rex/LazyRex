@@ -1,26 +1,66 @@
--- Ported from the Node test home.mjs (coverage map: tests/README.md): stopping and dismissing
--- workers, and the caller checks. Both paths: the stop form and the dismiss action
--- (tool = 'hub.stop'); an agent calls hub.stop. Hub rule (workers.go stop): an agent stops only
--- workers that it started; the user may stop any worker.
+-- Stopping and dismissing workers, and the caller checks. User paths: the Stop Worker… form, the
+-- worker menu's Stop and the panel's Dismiss (tool = 'hub.stop'); an agent calls hub.stop. Hub
+-- rule (workers.go stop): any agent may stop any worker (decision "Agents may act on anything").
 
 local codex = agent('codex')
 
-local function home()
-  local v = user:open('home')
-  v:render()
-  return v
-end
 local function listed(id)
   for _, w in ipairs(codex:call('hub.workers', {}).workers or {}) do if w.spawn_id == id then return w end end
 end
 local function gone(id) wait(id .. ' leaves the worker list', function() return listed(id) == nil end) end
+local function open_view(id)
+  for _, w in ipairs(views()) do if w.view_id == id then return w end end
+end
+local function stop_form()
+  local v = user:panel('stop')
+  v:render()
+  return v
+end
 
-test('user path: the stop form stops a worker that an agent started', function()
+test('user path: the Stop Worker… form stops a worker that an agent started, then closes', function()
   local w = codex:call('hub.spawn', {profile = 'shell', key = 'stop-by-user', title = 'Agent worker'})
-  local v = home()
+  local v = stop_form()
   local op = v:action('stop', 'stop', {values = {worker = w.spawn_id}}, 'stop-form-1')
   expect(op.status).to_be('succeeded')
+  expect(op.result.close_form).to_be(true)
   gone(w.spawn_id)
+  wait('the form closes', function() return open_view(v.id) == nil end)
+end)
+
+test('user path: the worker menu Stop stops it and returns to the panel', function()
+  local w = codex:call('hub.spawn', {profile = 'shell', key = 'stop-menu', title = 'Menu worker'})
+  local p = user:panel('agents')
+  p:render()
+  expect(p:action('workers', 'manage', {item_id = w.spawn_id}, 'stop-menu-manage').status).to_be('succeeded')
+  local m = user:view('/forms/worker/' .. w.spawn_id, nil, p.session)
+  m:render()
+  local op = m:action('stop', 'stop', {}, 'stop-menu-run')
+  expect(op.status).to_be('succeeded')
+  expect(op.result.close_form).to_be(true)
+  gone(w.spawn_id)
+  wait('the menu closes', function() return open_view(m.id) == nil end)
+  user:view('/panels/agents', nil, p.session):render()
+end)
+
+test('a duplicate Stop with the same key replays its result; a Stop of a gone worker answers again', function()
+  -- The same key on the same view: the hub answers the stored operation (the panel's Dismiss
+  -- stays open after it, so it can repeat; the Stop forms close).
+  fault({point = 'spawn-create', mode = 'refuse', op = 'stop-dup'})
+  local f = codex:call('hub.spawn', {profile = 'shell', key = 'stop-dup', title = 'Duplicate'})
+  local p = user:panel('agents')
+  p:render()
+  local first = p:action('workers', 'dismiss', {item_id = f.spawn_id}, 'stop-dup-key')
+  expect(first.status).to_be('succeeded')
+  gone(f.spawn_id)
+  local again = p:action('workers', 'dismiss', {item_id = f.spawn_id}, 'stop-dup-key')
+  expect(again.result).to_equal(first.result)
+  expect_error(function() p:action('workers', 'dismiss', {item_id = 'other'}, 'stop-dup-key') end, 'different arguments')
+  -- A new Stop of a worker that is already gone: hub.stop is idempotent by spawn_id.
+  local w = codex:call('hub.spawn', {profile = 'shell', key = 'stop-dup-run', title = 'Twice'})
+  expect(stop_form():action('stop', 'stop', {values = {worker = w.spawn_id}}, 'stop-twice-1').status).to_be('succeeded')
+  gone(w.spawn_id)
+  local late = codex:call('hub.stop', {spawn_id = w.spawn_id, key = 'stop-twice-agent'})
+  expect(late.status).to_be('closed')
 end)
 
 test('agent path: an agent stops its own worker; a replay under the same key is the same', function()
@@ -30,39 +70,25 @@ test('agent path: an agent stops its own worker; a replay under the same key is 
   expect(codex:call('hub.stop', {spawn_id = w.spawn_id, key = 'stop-own-1'})).to_equal(first)
 end)
 
-test('an agent can stop a worker that the user started', function()
-  -- Any agent may stop any worker (decision "Agents may act on anything", 2026-10-19).
-  local op = home():action('launch/shell', 'launch', {values = {title = 'User worker'}}, 'stop-user-launch')
-  local id = op.result.spawn_id
-  expect(codex:call('hub.stop', {spawn_id = id, key = 'stop-not-mine'}).status).to_be('closed')
-  gone(id)
-  -- A repeat through the user's stop form is closed again (stop is idempotent by spawn_id).
-  local after = home():action('stop', 'stop', {values = {worker = id}}, 'stop-form-2')
-  expect(after.status).to_be('succeeded')
-  -- hub.stop ignores its key (idempotent by spawn_id). The operation key is checked at the view
-  -- boundary: the same key with another request is refused there.
-  local other = codex:call('hub.spawn', {profile = 'shell', key = 'stop-other', title = 'Other'})
-  expect_error(function() home():action('stop', 'stop', {values = {worker = other.spawn_id}}, 'stop-form-2') end, 'different arguments')
-  expect(listed(other.spawn_id), 'the refused request stopped nothing').to_be_truthy()
-end)
-
 test('a failed launch is dismissed on both paths', function()
   fault({point = 'spawn-create', mode = 'refuse', op = 'stop-failed-user'})
   fault({point = 'spawn-create', mode = 'refuse', op = 'stop-failed-agent'})
-  local launch = home():action('launch/shell', 'launch', {values = {title = 'Fails'}}, 'stop-failed-user')
-  expect(launch.result.status).to_be('failed')
-  local mine = codex:call('hub.spawn', {profile = 'shell', key = 'stop-failed-agent', title = 'Fails too'})
+  local mine = codex:call('hub.spawn', {profile = 'shell', key = 'stop-failed-user', title = 'Fails'})
   expect(mine.status).to_be('failed')
-  local op = home():action('workers', 'dismiss', {item_id = launch.result.spawn_id}, 'stop-dismiss')
+  local theirs = codex:call('hub.spawn', {profile = 'shell', key = 'stop-failed-agent', title = 'Fails too'})
+  expect(theirs.status).to_be('failed')
+  local p = user:panel('agents')
+  p:render()
+  local op = p:action('workers', 'dismiss', {item_id = mine.spawn_id}, 'stop-dismiss')
   expect(op.status).to_be('succeeded')
-  gone(launch.result.spawn_id)
-  codex:call('hub.stop', {spawn_id = mine.spawn_id, key = 'stop-dismiss-agent'})
   gone(mine.spawn_id)
+  codex:call('hub.stop', {spawn_id = theirs.spawn_id, key = 'stop-dismiss-agent'})
+  gone(theirs.spawn_id)
 end)
 
-test('the stop form needs a worker', function()
+test('the Stop Worker… form needs a worker', function()
   codex:call('hub.spawn', {profile = 'shell', key = 'stop-keep-form', title = 'Keeps the form'})
-  local op = home():action('stop', 'stop', {values = {worker = ''}}, 'stop-empty')
+  local op = stop_form():action('stop', 'stop', {values = {worker = ''}}, 'stop-empty')
   expect(op.status).to_be('failed')
   expect(op.error.message).to_match('Select a worker')
 end)
@@ -70,6 +96,6 @@ end)
 test('only the hub may call the home plugin', function()
   local client = H.hub('hub.test.status', {}).plugins.lazyrex.client_id
   for _, action in ipairs({'view.render', 'view.action'}) do
-    expect_error(function() H.perform(client, action, {route = '/', user = 'user'}) end, 'Only the hub')
+    expect_error(function() H.perform(client, action, {route = '/panels/agents', user = 'user'}) end, 'Only the hub')
   end
 end)

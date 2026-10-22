@@ -159,7 +159,7 @@ local function home_tree()
       action = {name = 'count', label = 'Count', enabled = true, tool = 'fix.put'}},
     {id = 'bad_nav', type = 'widget', text = 'Navigate to a missing tab',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
-    {id = 'cross_nav', type = 'widget', text = 'Navigate to the LazyRex home',
+    {id = 'cross_nav', type = 'widget', text = 'Navigate to the tab fixture',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
     {id = 'cross_missing', type = 'widget', text = 'Navigate to a plugin that is not there',
       action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
@@ -181,7 +181,7 @@ local function form_tree()
   return {title = 'Fixture form', nodes = {
     {id = 'form', type = 'form', fields = {{id = 'value', label = 'Value', kind = 'text', value = ''}},
       submit_action = {name = 'submit', label = 'Save', enabled = true, tool = 'fix.put'}},
-    {id = 'go_home', type = 'widget', text = 'LazyRex home', action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+    {id = 'go_home', type = 'widget', text = 'Tab fixture home', action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
     {id = 'cancel', type = 'widget', text = 'Cancel', action = {name = '$cancel', label = 'Cancel', enabled = true}},
   }}
 end
@@ -285,7 +285,7 @@ local function view(action, args)
       put('count', n + 1)
       return {count = n + 1}
     end
-    if args.route == '/home' and args.node_id == 'cross_nav' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
+    if args.route == '/home' and args.node_id == 'cross_nav' then return {navigate = {plugin = 'tabfix', tab = 'home'}} end
     if args.route == '/home' and args.node_id == 'cross_missing' then return {navigate = {plugin = 'nope', tab = 'x'}} end
     if args.route == '/home' and args.node_id == 'bad_target' then
       local kind = args.input and args.input.kind
@@ -295,7 +295,7 @@ local function view(action, args)
     end
     if args.route == '/home' and args.node_id == 'gated_nav' then return {navigate = {plugin = 'harnessfix', tab = 'gated/a'}} end
     if args.route:match('^/lazy/deps%-') and args.node_id == 'lazy' then return {} end -- the tree stays the same
-    if args.route == '/forms/fix' and args.node_id == 'go_home' then return {navigate = {plugin = 'lazyrex', tab = 'home'}} end
+    if args.route == '/forms/fix' and args.node_id == 'go_home' then return {navigate = {plugin = 'tabfix', tab = 'home'}} end
     if args.route == '/forms/fix' and args.node_id == 'form' then
       put('form', {value = args.input and args.input.values and args.input.values.value or ''})
       return {close_form = true}
