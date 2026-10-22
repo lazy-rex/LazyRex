@@ -56,6 +56,9 @@ func TestFakeHub(t *testing.T) {
 	exe, _ := os.Executable()
 	f.WriteString("start " + exe + "\n")
 	f.Close()
+	execs, _ := os.OpenFile(os.Getenv("FAKE_HUB_STARTS")+".execs", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	execs.WriteString(strconv.Itoa(env.exec) + "\n") // the LAZYREX_EXEC that this start got
+	execs.Close()
 	steps, _ := os.ReadFile(plan)
 	lines := strings.Fields(string(steps))
 	step := lines[min(n, len(lines)-1)]

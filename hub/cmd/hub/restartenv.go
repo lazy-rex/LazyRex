@@ -1,13 +1,15 @@
 package main
 
 // The hub side of the restart wrapper (docs/hub.md, "Restart wrapper"). The wrapper gives its child
-// two environment variables. main reads and unsets both first, so no process that the hub starts
+// three environment variables. main reads and unsets them first, so no process that the hub starts
 // inherits them:
 //   - LAZYREX_READY_FD: the write end of the readiness pipe. After hub_started, the hub writes
 //     "ready <canonical state>\n" once and closes it. Ready means the hub runs; it does not mean
 //     that the plugins are healthy.
 //   - LAZYREX_EXPECT_STATE: the canonical state that the wrapper owns. A hub whose config names
 //     another state (or a state that does not exist) exits 3 before any side effect of start.
+//   - LAZYREX_EXEC: the wrapper's exec count (restartexec.go). hub.info reports it, and
+//     hub.admin.relaunch compares its expect_exec with it.
 
 import (
 	"fmt"
@@ -24,6 +26,7 @@ const exitStateMismatch = 3
 type restartEnv struct {
 	readyFD     int // -1: no readiness pipe
 	expectState string
+	exec        int // the wrapper's exec count; 0 without a wrapper
 }
 
 // takeRestartEnv reads and unsets the wrapper's variables. It sets FD_CLOEXEC on the ready fd, so
@@ -31,8 +34,17 @@ type restartEnv struct {
 func takeRestartEnv() (restartEnv, error) {
 	e := restartEnv{readyFD: -1, expectState: os.Getenv("LAZYREX_EXPECT_STATE")}
 	s, ok := os.LookupEnv("LAZYREX_READY_FD")
+	execText, hasExec := os.LookupEnv("LAZYREX_EXEC")
 	os.Unsetenv("LAZYREX_READY_FD")
 	os.Unsetenv("LAZYREX_EXPECT_STATE")
+	os.Unsetenv("LAZYREX_EXEC")
+	if hasExec {
+		n, err := strconv.Atoi(execText)
+		if err != nil || n < 0 {
+			return e, fmt.Errorf("LAZYREX_EXEC %q is not an exec count", execText)
+		}
+		e.exec = n
+	}
 	if !ok {
 		return e, nil
 	}

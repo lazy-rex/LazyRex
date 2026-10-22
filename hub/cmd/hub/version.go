@@ -11,25 +11,30 @@ var version = "dev"
 // no commit.
 func versionText() string {
 	s := version
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		return s
-	}
-	var rev, modified string
-	for _, kv := range bi.Settings {
-		switch kv.Key {
-		case "vcs.revision":
-			rev = kv.Value
-		case "vcs.modified":
-			modified = kv.Value
-		}
-	}
-	if rev != "" {
+	if rev, modified := buildCommit(); rev != "" {
 		s += " (commit " + rev
-		if modified == "true" {
+		if modified {
 			s += ", modified"
 		}
 		s += ")"
 	}
 	return s
+}
+
+// buildCommit is the commit that the Go toolchain stamped (vcs.revision) and whether the checkout
+// had changes (vcs.modified). A build outside a git checkout has no commit: "".
+func buildCommit() (rev string, modified bool) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", false
+	}
+	for _, kv := range bi.Settings {
+		switch kv.Key {
+		case "vcs.revision":
+			rev = kv.Value
+		case "vcs.modified":
+			modified = kv.Value == "true"
+		}
+	}
+	return rev, modified
 }

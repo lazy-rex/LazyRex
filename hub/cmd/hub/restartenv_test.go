@@ -14,27 +14,35 @@ import (
 	"testing"
 )
 
-// main reads and unsets both variables, so no process that the hub starts inherits them. A ready
-// fd that is not a number above 2 is an error.
+// main reads and unsets the three variables, so no process that the hub starts inherits them. A
+// ready fd that is not a number above 2 is an error, and so is an exec count that is not a number
+// of 0 or more.
 func TestTakeRestartEnv(t *testing.T) {
 	t.Setenv("LAZYREX_READY_FD", "7")
 	t.Setenv("LAZYREX_EXPECT_STATE", "/s")
+	t.Setenv("LAZYREX_EXEC", "3")
 	e, err := takeRestartEnv()
-	if err != nil || e.readyFD != 7 || e.expectState != "/s" {
+	if err != nil || e.readyFD != 7 || e.expectState != "/s" || e.exec != 3 {
 		t.Fatalf("%+v, %v", e, err)
 	}
-	for _, v := range []string{"LAZYREX_READY_FD", "LAZYREX_EXPECT_STATE"} {
+	for _, v := range []string{"LAZYREX_READY_FD", "LAZYREX_EXPECT_STATE", "LAZYREX_EXEC"} {
 		if _, ok := os.LookupEnv(v); ok {
 			t.Errorf("%s is still set", v)
 		}
 	}
-	if e, err := takeRestartEnv(); err != nil || e.readyFD != -1 || e.expectState != "" {
+	if e, err := takeRestartEnv(); err != nil || e.readyFD != -1 || e.expectState != "" || e.exec != 0 {
 		t.Errorf("without the variables: %+v, %v", e, err)
 	}
 	for _, bad := range []string{"x", "2", "-1"} {
 		t.Setenv("LAZYREX_READY_FD", bad)
 		if _, err := takeRestartEnv(); err == nil {
 			t.Errorf("LAZYREX_READY_FD=%s: no error", bad)
+		}
+	}
+	for _, bad := range []string{"x", "-1", "1.5", ""} {
+		t.Setenv("LAZYREX_EXEC", bad)
+		if _, err := takeRestartEnv(); err == nil {
+			t.Errorf("LAZYREX_EXEC=%q: no error", bad)
 		}
 	}
 }
@@ -91,16 +99,19 @@ func TestSignalReady(t *testing.T) {
 	signalReady(-1, "/x") // must not panic
 }
 
-// hub.info: the canonical state, the pid and the generation, for any client; an argument is
-// refused.
+// hub.info: the canonical state, the pid, the generation, the wrapper's exec count and the build
+// commit, for any client; an argument is refused.
 func TestHubInfo(t *testing.T) {
 	h, _ := workerTestHub(t)
+	h.exec = 2
 	call := func(args string) (any, error) {
 		var p perform
 		json.Unmarshal([]byte(fmt.Sprintf(`{"action":"hub.info","args":%s,"requester":{"client_id":"c9","principal":{"pid":40}}}`, args)), &p)
 		return h.dispatch(context.Background(), p)
 	}
-	want := map[string]any{"state": h.cfg.State, "pid": os.Getpid(), "generation": revString(h.generation)}
+	commit, modified := buildCommit()
+	want := map[string]any{"state": h.cfg.State, "pid": os.Getpid(), "generation": revString(h.generation),
+		"exec": 2, "commit": commit, "modified": modified}
 	if out, err := call(`{}`); err != nil || !reflect.DeepEqual(out, want) {
 		t.Fatalf("%v, %v; want %v", out, err, want)
 	}

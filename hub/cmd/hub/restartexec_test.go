@@ -102,6 +102,12 @@ func (r *execRun) startLines() []string {
 	return strings.Fields(strings.ReplaceAll(string(b), "start ", ""))
 }
 
+// execs is the LAZYREX_EXEC value of each start, in order.
+func (r *execRun) execs() string {
+	b, _ := os.ReadFile(r.starts + ".execs")
+	return strings.Join(strings.Fields(string(b)), " ")
+}
+
 func (r *execRun) status(t *testing.T) restartStatus {
 	t.Helper()
 	s, err := readRestartStatus(r.state)
@@ -143,6 +149,9 @@ func TestRelaunchExecsTheWrapper(t *testing.T) {
 	}
 	if n := len(r.startLines()); n != 6 {
 		t.Errorf("%d starts, want 6\n%s", n, r.text())
+	}
+	if got := r.execs(); got != "0 1 2 3 4 5" {
+		t.Errorf("LAZYREX_EXEC of the starts: %q, want the exec count of each generation", got)
 	}
 	s := r.status(t)
 	if s.PID != r.cmd.Process.Pid || s.Exec != 5 || s.Phase != "stopped" || s.LastExec == nil || s.LastExec.Target != 5 || s.LastExec.Outcome != "ok" {
@@ -223,6 +232,9 @@ func TestRelaunchExecFailureStartsTheOldHub(t *testing.T) {
 	}
 	if lines := r.startLines(); lines[1] != lines[0] {
 		t.Errorf("the second child ran %s, not the old %s", lines[1], lines[0])
+	}
+	if got := r.execs(); got != "0 0" {
+		t.Errorf("LAZYREX_EXEC of the starts: %q; a failed exec keeps exec 0", got)
 	}
 	os.WriteFile(stall, nil, 0o600)
 	r.wait(t, "the exec failure in the log", func() bool {

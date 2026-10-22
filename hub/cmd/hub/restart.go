@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -429,7 +430,7 @@ func (w *wrapper) runChild() childEnd {
 	// Its own process group: Ctrl-C or a closed pane signals only the wrapper, which stops the child.
 	// Otherwise a SIGHUP death of the child would count as a failure and look like a restart.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "LAZYREX_READY_FD=3", "LAZYREX_EXPECT_STATE="+w.state)
+	cmd.Env = append(os.Environ(), "LAZYREX_READY_FD=3", "LAZYREX_EXPECT_STATE="+w.state, "LAZYREX_EXEC="+strconv.Itoa(w.exec))
 	err = cmd.Start()
 	wr.Close()
 	ow.Close()
