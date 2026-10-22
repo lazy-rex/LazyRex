@@ -106,6 +106,27 @@ func TestSQLWireLab(t *testing.T) {
 	if rows := ok("hub.sql.query", `{"sql":"SELECT count(*) FROM t"}`)["rows"]; fmt.Sprint(rows) != "[[4]]" {
 		t.Fatalf("after the faults (one row committed): %v", rows)
 	}
+	// Another writer at begin: the injected row commits before the plugin transaction begins, so the
+	// transaction sees it.
+	s.must("hub.test.inject", map[string]any{"plugin": "sq", "match": map[string]any{"sql_begin": true},
+		"sql": []any{map[string]any{"sql": "INSERT INTO t VALUES (?, ?, ?)", "params": []any{10, 10, 10}}}})
+	tx = ok("hub.sql.begin", `{}`)["tx"].(string)
+	if rows := ok("hub.sql.query", `{"sql":"SELECT count(*) FROM t WHERE a = 10", "tx":"`+tx+`"}`)["rows"]; fmt.Sprint(rows) != "[[1]]" {
+		t.Fatalf("the injected writer: %v", rows)
+	}
+	ok("hub.sql.rollback", `{"tx":"`+tx+`"}`)
+	// A commit fault for one parameter: only the commit that inserts x1 fails.
+	s.must("hub.test.inject", map[string]any{"plugin": "sq", "match": map[string]any{"sql_commit_writes": "t", "sql_param": "x1"}, "fail": "x1 fails"})
+	ok("hub.sql.exec", `{"sql":"INSERT INTO t VALUES (?, 0, 0)", "params":["x0"]}`)
+	if r := s.sqlCall("sq", "hub.sql.exec", `{"sql":"INSERT INTO t VALUES (?, 0, 0)", "params":["x1"]}`); !strings.Contains(r.Error, "x1 fails") {
+		t.Fatalf("the parameter fault: %+v", r)
+	}
+	// An action fault for one parameter.
+	s.must("hub.test.fault", map[string]any{"point": "action", "action": "hub.sql.query", "when": "before", "mode": "fail", "sql_param": "k9", "plugin": "sq"})
+	ok("hub.sql.query", `{"sql":"SELECT count(*) FROM t WHERE a = ?", "params":["k8"]}`)
+	if r := s.sqlCall("sq", "hub.sql.query", `{"sql":"SELECT count(*) FROM t WHERE a = ?", "params":["k9"]}`); r.Error == "" {
+		t.Fatalf("the action fault for k9: %+v", r)
+	}
 	// The rollback: hub.admin.sql_return refuses a running plugin; after a stop it moves the file
 	// aside, and the next start has a new, empty file.
 	if _, err := s.call("hub.admin.sql_return", map[string]any{"plugin": "sq"}); err == nil || !strings.Contains(err.Error(), "stop it first") {

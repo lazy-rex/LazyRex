@@ -265,6 +265,16 @@ Injected commits never match an injection.
 table name is not case sensitive. `fail` is required; `ops` and `replay` are refused. Without
 `after`, nothing is committed. With `after = true`, the commit happens, and the plugin gets the
 error anyway, as after a lost reply. `skip` and `times` work as for batches.
+With `sql_param = <value>` beside `sql_commit_writes` (a nonempty string or an integer), the
+injection matches only a commit whose transaction ran a statement with a parameter equal to the
+value (in `params`, an array or an object). For example, the commit that inserts the run of one
+date.
+
+`inject{match = {sql_begin = true}, sql = {{sql, params?}, ...}, skip?, times?}` acts at the
+plugin's next `hub.sql.begin`: the hub first commits the statements in a transaction of their own,
+as another writer (no commit fault applies to it), and then begins the plugin transaction. So the
+other writer commits after the plugin's last read outside the transaction and before its write
+transaction. A failed statement fails the begin, and nothing of the injection commits.
 
 `skip = n` lets the first `n` matching batches pass unchanged; the injection acts from the next
 one. For example, `{match = {updates = key}, skip = 1}` acts on the second change of a record.
@@ -369,7 +379,7 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 | `{point = 'spawn-create', mode = 'refuse', op = key}` | No create request; Rex error `refused`. The spawn fails. |
 | `{point = 'spawn-create', mode = 'lose-answer', op = key}` | The create request runs. If Rex answers yes, the answer becomes `disconnected`: the pane exists and the spawn stays pending. An accessory pane is not adopted by its label, so it stays pending (resolveSpawns only counts candidate panes). If Rex answers with an error, that error stays and the fault stays armed. |
 | `{point = 'spawn-create', mode = 'fail-sending', op = key}` | The commit of the sending state fails, so the hub sends no create request. The spawn fails with an error that starts with `not_created`. Also for `hub.spawn_window`: `op` then matches a leaf key (`window/<key>/<n>`), and every leaf of the window fails. |
-| `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
+| `{point = 'action', action, when = 'before', mode, key, plugin}` | A call of `action` from `plugin` (default: the plugin under test) with `args.key == key` (if given) runs no handler. `sql_param` (any action point): only a call whose `args.params` has a parameter equal to it, for example `hub.sql.query` with an op key. `fail` replies code `failed`, or `fail_code` if given; `lose-reply` always replies code `disconnected`. |
 | `{point = 'action', action, when = 'after', mode, key, plugin}` | The handler runs once. If it succeeds, its reply is replaced (`failed` or `disconnected`). If it fails, its own error is the reply and the fault stays armed. |
 | `{point = 'watch-nudge', mode = 'drop', key, plugin}` | The hub does not send the next `hub.changed` nudge of that plugin's watch `key` (any watch if `key` is not given). The repeat schedule continues (docs/hub.md, "Nudges"). |
 | `{point = 'status-read', mode = 'fail', key = session}` | The next read of a pane's program status in that session (any session if `key` is not given) fails after the hub attaches the session. The hub then treats the state as unknown. |

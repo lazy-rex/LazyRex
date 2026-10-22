@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -90,6 +91,13 @@ type injection struct {
 	// the caller gets the error, as after a lost reply. It never matches a store batch.
 	SQLCommitWrites string
 	After           bool
+	// SQLParam: with SQLCommitWrites, match only a commit whose transaction ran a statement with
+	// a parameter equal to this (sqlParamsHave).
+	SQLParam string
+	// SQLBegin: match the plugin's next hub.sql.begin. The hub first commits SQL (statements
+	// {sql, params}) as another writer, then begins the plugin transaction.
+	SQLBegin bool
+	SQL      []map[string]any
 }
 
 type renderOutcome struct {
@@ -597,7 +605,7 @@ func (in *injection) remaining() any {
 }
 
 func (in *injection) matches(plugin string, args map[string]any) bool {
-	if in.Window != "" || in.Reads != "" || in.SQLCommitWrites != "" || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
+	if in.Window != "" || in.Reads != "" || in.SQLCommitWrites != "" || in.SQLBegin || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
 		return false
 	}
 	opKey := ""
@@ -649,8 +657,22 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	in.Updates, _ = match["updates"].(string)
 	in.Reads, _ = match["reads"].(string)
 	in.SQLCommitWrites, _ = match["sql_commit_writes"].(string)
-	if _, ok := match["sql_commit_writes"]; ok && (in.SQLCommitWrites == "" || len(match) != 1) {
-		return nil, bad("invalid: match.sql_commit_writes must be a nonempty table name, alone in match")
+	keys := 1 // sql_commit_writes, and sql_param if set
+	if v, ok := match["sql_param"]; ok {
+		text, isText := sqlParamText(v)
+		if !isText || text == "" || in.SQLCommitWrites == "" {
+			return nil, bad("invalid: match.sql_param must be a nonempty string or an integer, with sql_commit_writes")
+		}
+		in.SQLParam, keys = text, 2
+	}
+	if _, ok := match["sql_commit_writes"]; ok && (in.SQLCommitWrites == "" || len(match) != keys) {
+		return nil, bad("invalid: match.sql_commit_writes must be a nonempty table name, alone in match (or with sql_param)")
+	}
+	if v, ok := match["sql_begin"]; ok {
+		if v != true || len(match) != 1 {
+			return nil, bad("invalid: match.sql_begin must be true, alone in match")
+		}
+		return h.testSQLBeginInject(in, args)
 	}
 	in.SQLCommitWrites = strings.ToLower(in.SQLCommitWrites)
 	in.After, _ = args["after"].(bool)
@@ -1285,14 +1307,14 @@ func procArgs(pid int) []string {
 
 // testBeforeSQLCommit is the hub.sql commit fault point: the first live injection with
 // sql_commit_writes for a changed table fails the commit (or, with after, its reply).
-func (h *Hub) testBeforeSQLCommit(plugin string, marks []string) (error, bool) {
+func (h *Hub) testBeforeSQLCommit(plugin string, marks []string, params []any) (error, bool) {
 	h.test.mu.Lock()
 	var in *injection
 	for _, c := range h.test.injections {
 		if c.SQLCommitWrites == "" || c.Plugin != plugin || c.Times >= 0 && c.Consumed >= c.Times {
 			continue
 		}
-		if !slices.Contains(marks, c.SQLCommitWrites) {
+		if !slices.Contains(marks, c.SQLCommitWrites) || c.SQLParam != "" && !sqlParamsHave(params, c.SQLParam) {
 			continue
 		}
 		if c.Skipped < c.Skip {
@@ -1313,4 +1335,112 @@ func (h *Hub) testBeforeSQLCommit(plugin string, marks []string) (error, bool) {
 		code = "injected_failure"
 	}
 	return refuse(code, "%s", in.Fail), in.After
+}
+
+// testSQLBeginInject arms an injection at the plugin's next hub.sql.begin: sql = {{sql, params?},
+// ...} commits first, as another writer. skip and times apply.
+func (h *Hub) testSQLBeginInject(in *injection, args map[string]any) (any, error) {
+	for k := range args {
+		if k != "plugin" && k != "match" && k != "sql" && k != "skip" && k != "times" {
+			return nil, bad("invalid: field %s does not apply to a sql_begin injection", k)
+		}
+	}
+	list, _ := args["sql"].([]any)
+	if len(list) == 0 {
+		return nil, bad("invalid: a sql_begin injection needs sql = {{sql, params?}, ...}")
+	}
+	for i, x := range list {
+		m, ok := x.(map[string]any)
+		if q, _ := m["sql"].(string); !ok || q == "" {
+			return nil, bad("invalid: sql[%d] must be {sql, params?}", i+1)
+		}
+		in.SQL = append(in.SQL, m)
+	}
+	in.SQLBegin = true
+	if v, ok := args["skip"]; ok {
+		n, ok := v.(float64)
+		if !ok || n < 0 || n != float64(int(n)) {
+			return nil, bad("invalid: skip must be a count")
+		}
+		in.Skip = int(n)
+	}
+	switch t := args["times"].(type) {
+	case nil:
+	case string:
+		if t != "always" {
+			return nil, bad("invalid: times must be a positive integer or \"always\"")
+		}
+		in.Times = -1
+	case float64:
+		if t < 1 || t != float64(int(t)) {
+			return nil, bad("invalid: times must be a positive integer or \"always\"")
+		}
+		in.Times = int(t)
+	default:
+		return nil, bad("invalid: times must be a positive integer or \"always\"")
+	}
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	in.ID = len(h.test.injections) + 1
+	h.test.injections = append(h.test.injections, in)
+	return map[string]any{"id": in.ID}, nil
+}
+
+// testBeforeSQLBegin is the hub.sql.begin test point: the statements of the first live sql_begin
+// injection of the plugin.
+func (h *Hub) testBeforeSQLBegin(plugin string) []map[string]any {
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	for _, c := range h.test.injections {
+		if !c.SQLBegin || c.Plugin != plugin || c.Times >= 0 && c.Consumed >= c.Times {
+			continue
+		}
+		if c.Skipped < c.Skip {
+			c.Skipped++
+			return nil
+		}
+		c.Consumed++
+		h.ev.emit("test_injection", map[string]any{"id": c.ID, "plugin": plugin, "sql_begin": true})
+		return c.SQL
+	}
+	return nil
+}
+
+// sqlParamText is the text of a parameter value for a match: a string, an integer, or an int tag.
+func sqlParamText(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		return t, true
+	case float64:
+		if t == float64(int64(t)) {
+			return strconv.FormatInt(int64(t), 10), true
+		}
+	case map[string]any:
+		if s, ok := t["int"].(string); ok && len(t) == 1 {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// sqlParamsHave reports a parameter equal to want in any of the params values (an array or an
+// object of parameters, as in hub.sql args).
+func sqlParamsHave(params []any, want string) bool {
+	for _, p := range params {
+		var values []any
+		switch t := p.(type) {
+		case []any:
+			values = t
+		case map[string]any:
+			for _, v := range t {
+				values = append(values, v)
+			}
+		}
+		for _, v := range values {
+			if text, ok := sqlParamText(v); ok && text == want {
+				return true
+			}
+		}
+	}
+	return false
 }
