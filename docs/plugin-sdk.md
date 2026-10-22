@@ -77,10 +77,17 @@ selects an item in the panel to toggle it.
 test('an added item shows in the panel', function()
   local alice = agent('alice')
   alice:call('todo.add', {text = 'buy milk'})
-  local tree = user:open('todos'):render()
-  expect(H.node(tree, 'todos').items[1].label).to_be('buy milk')
+  -- A panel opens from its palette command in a pane (it is not a tab).
+  local s = session('todo')
+  local w = rex.call('session.new_window', {session_id = s, window_label = 'work',
+    layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '600'}, login = false}}}})
+  user:command('todos', {session = s, block = w.block_ids[1]})
+  local tree = user:view('/panels/todos', 'todo', s):render()
+  expect(node(tree, 'todos').items[1].label).to_be('buy milk')
 end)
 ```
+
+The whole lab test of this plugin is `sdk/lua/examples/todo/tests/todo.lua`.
 
 Run `lazyrex-hub test .` in the plugin directory. It starts its own lab; it never touches your
 terminals.
