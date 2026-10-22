@@ -1337,8 +1337,8 @@ func (h *Hub) testBeforeSQLCommit(plugin string, marks []string, params []any) (
 	return refuse(code, "%s", in.Fail), in.After
 }
 
-// testSQLBeginInject arms an injection at the plugin's next hub.sql.begin: sql = {{sql, params?},
-// ...} commits first, as another writer. skip and times apply.
+// testSQLBeginInject arms an injection at the plugin's next hub.sql.begin: the entries of sql
+// ({sql = ..., params = ...?}) commit first, as another writer. skip and times apply.
 func (h *Hub) testSQLBeginInject(in *injection, args map[string]any) (any, error) {
 	for k := range args {
 		if k != "plugin" && k != "match" && k != "sql" && k != "skip" && k != "times" {
@@ -1347,7 +1347,7 @@ func (h *Hub) testSQLBeginInject(in *injection, args map[string]any) (any, error
 	}
 	list, _ := args["sql"].([]any)
 	if len(list) == 0 {
-		return nil, bad("invalid: a sql_begin injection needs sql = {{sql, params?}, ...}")
+		return nil, bad("invalid: a sql_begin injection needs sql = {{sql = ..., params = ...?}, ...}")
 	}
 	for i, x := range list {
 		m, ok := x.(map[string]any)

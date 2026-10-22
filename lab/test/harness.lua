@@ -313,7 +313,7 @@ function H.operation(key, plugin) return hub('hub.test.operation', {plugin = plu
 -- error (a lost reply).
 function H.inject(spec)
   local a = {plugin = spec.plugin or A.plugin, match = spec.match, ops = spec.ops, replay = spec.replay, times = spec.times,
-    fail = spec.fail, fail_code = spec.fail_code, skip = spec.skip, hold = spec.hold, after = spec.after}
+    fail = spec.fail, fail_code = spec.fail_code, skip = spec.skip, hold = spec.hold, after = spec.after, sql = spec.sql}
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end

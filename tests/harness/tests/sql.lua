@@ -21,3 +21,9 @@ end)
 test('H.args.sdk is the SDK directory of the checkout', function()
   expect(H.args.sdk).to_be(H.args.lib:gsub('/lab/test$', '') .. '/sdk/lua')
 end)
+
+test('inject passes sql to a sql_begin injection', function()
+  local id = inject{match = {sql_begin = true}, sql = {{sql = 'INSERT INTO notes (text) VALUES (?)', params = {'x'}}}}
+  expect(type(id)).to_be('number')
+  cancel_injection(id)
+end)
