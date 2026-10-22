@@ -185,7 +185,7 @@ func TestSlotLateAttachAfterClaimIsResumedLab(t *testing.T) {
 	h.db.QueryRow(`SELECT child_pid FROM views WHERE view_id = ?`, old).Scan(&pid)
 	var attached map[string]any
 	orig := slotSplit
-	slotSplit = func(h *Hub, ctx context.Context, args map[string]any, out any) error {
+	slotSplit = func(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
 		slotSplit = orig
 		var p perform
 		p.Requester.ClientID, p.Requester.Principal.PID = lr.id, pid
@@ -225,7 +225,7 @@ func TestSlotRefusedClaimIsUndoneLab(t *testing.T) {
 	h, _, sess, win := panelsLabHub(t)
 	old := openFirstPanel(t, h, sess, win)
 	orig := slotSplit
-	slotSplit = func(h *Hub, ctx context.Context, args map[string]any, out any) error {
+	slotSplit = func(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
 		slotSplit = orig
 		return &rex.RexError{Code: "refused", Message: "lab: the split is refused"}
 	}

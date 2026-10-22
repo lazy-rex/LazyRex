@@ -71,9 +71,9 @@ func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 // loseSplitAnswer makes the next new_split reach Rex, but drops its answer (an unknown outcome).
 func loseSplitAnswer(t *testing.T) {
 	orig := slotSplit
-	slotSplit = func(h *Hub, ctx context.Context, args map[string]any, out any) error {
+	slotSplit = func(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
 		slotSplit = orig
-		orig(h, ctx, args, out)
+		orig(h, ctx, method, args, out)
 		return &rex.RexError{Code: "disconnected", Message: "lab: the answer is lost"}
 	}
 	t.Cleanup(func() { slotSplit = orig })
@@ -214,5 +214,73 @@ func TestSlotReturnOccupiedAndNoFocusLab(t *testing.T) {
 	h.db.QueryRow(`SELECT state, focus FROM ui_replacements WHERE repl_id = 'return-view-closed-2'`).Scan(&st, &focus)
 	if st != "done" || focus {
 		t.Fatalf("return into the empty slot: state %s, focus %v", st, focus)
+	}
+}
+
+// floatingLayers gives the block IDs of each floating layer of the session's windows.
+func floatingLayers(t *testing.T, r *rex.Rex, sess string) [][]string {
+	t.Helper()
+	var sv struct {
+		Windows []struct {
+			Layers []struct {
+				Kind   string     `json:"kind"`
+				Layout layoutNode `json:"layout"`
+			} `json:"layers"`
+		} `json:"windows"`
+	}
+	if err := r.Call(context.Background(), "session.view", map[string]any{"session_id": sess}, &sv); err != nil {
+		t.Fatal(err)
+	}
+	var leaves func(n layoutNode) []string
+	leaves = func(n layoutNode) []string {
+		if n.Split == nil {
+			return []string{n.BlockID}
+		}
+		return append(leaves(n.Split.Before), leaves(n.Split.After)...)
+	}
+	var out [][]string
+	for _, w := range sv.Windows {
+		for _, l := range w.Layers {
+			if l.Kind == "floating" {
+				out = append(out, leaves(l.Layout))
+			}
+		}
+	}
+	return out
+}
+
+// With ui_slot "layer", a panel opens as one floating layer, a replacement leaves one layer (the
+// new pane's), and the close of the last view removes the layer.
+func TestSlotLayerLab(t *testing.T) {
+	h, r, sess, win := panelsLabHub(t)
+	h.cfg.UISlot = "layer"
+	ctx := context.Background()
+	if out, err := h.openSlot(ctx, slotRequest{ReplID: "repl-l1", Plugin: "p", Route: "/panels/one", Ctx: panel(sess, win)}); err != nil || out["status"] != "opened" {
+		t.Fatalf("first panel: %v %v", out, err)
+	}
+	one := formPanes(t, r, sess)[slotViewID("repl-l1")]
+	if layers := floatingLayers(t, r, sess); len(layers) != 1 || len(layers[0]) != 1 || layers[0][0] != one {
+		t.Fatalf("one floating layer with the panel %s: %v", one, layers)
+	}
+	if out, err := h.openSlot(ctx, slotRequest{ReplID: "repl-l2", Plugin: "p", Route: "/panels/two", Ctx: panel(sess, win)}); err != nil || out["status"] != "opened" {
+		t.Fatalf("replacement: %v %v", out, err)
+	}
+	panes := formPanes(t, r, sess)
+	two := panes[slotViewID("repl-l2")]
+	if _, old := panes[slotViewID("repl-l1")]; old || two == "" {
+		t.Fatalf("the replacement closed the old pane: %v", panes)
+	}
+	if layers := floatingLayers(t, r, sess); len(layers) != 1 || len(layers[0]) != 1 || layers[0][0] != two {
+		t.Fatalf("one floating layer with the new panel %s: %v", two, layers)
+	}
+	if err := h.closeForm(ctx, slotViewID("repl-l2"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(floatingLayers(t, r, sess)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the close left a floating layer: %v", floatingLayers(t, r, sess))
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

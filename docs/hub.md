@@ -1071,6 +1071,15 @@ and their lifetime. The plugin owns form contents and thread changes. The
 renderer owns popup menus and local field visibility. Thread menus open through
 right-click or Ctrl+O. Menu items use the existing view action protocol.
 
+Where forms and panels open (an experiment, the user, 2026-10-22). The hub config key `ui_slot`
+is `"split"` (the default: a right split of the window, ratio 0.55) or `"layer"` (a frontmost
+floating layer in the same window, bounds `[0.15, 0.15, 0.7, 0.6]`, with focus). Any other value
+stops the config load. Both modes use the same block, label, rows and recovery; only the Rex call
+differs (`slotPane`). A replacement in layer mode opens a new layer, then closes the old pane, and
+its layer goes with it. A transcript pair inside a layer is checked in that layer (`wrapPair`).
+The key goes away when the user decides. Tests: `TestUISlotConfig`, `TestSlotPaneLayer`,
+`TestSlotLayerLab` (`PANELS_LAB_SOCKET`).
+
 The hub stores `{session_id, window_id, source_view_id, source_route,
 source_block_id, source_pwd, source_pwd_error}` as form context. Every form
 render and action receives this object in `args.context`. The plugin does not

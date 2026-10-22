@@ -265,6 +265,14 @@ func pairShape(n layoutNode, transcript, composer string) (paired bool, panes in
 	return paired || p1 || p2, n1 + n2
 }
 
+// hasBlock reports whether the layout tree n has the leaf block.
+func hasBlock(n layoutNode, block string) bool {
+	if n.Split == nil {
+		return n.BlockID == block
+	}
+	return hasBlock(n.Split.Before, block) || hasBlock(n.Split.After, block)
+}
+
 // pairMove is session.move_block for wrapPair; lab tests replace it to lose the answer.
 var pairMove = func(h *Hub, ctx context.Context, args map[string]any) error {
 	return h.rex.Call(ctx, "session.move_block", args, nil)
@@ -296,11 +304,17 @@ func (h *Hub) wrapPair(ctx context.Context, sess string, v *view, tr *transcript
 			return false, false, err
 		}
 		for _, w := range sv.Windows {
-			if w.WindowID != v.Window || len(w.Layers) == 0 {
+			if w.WindowID != v.Window {
 				continue
 			}
-			paired, panes := pairShape(w.Layers[0].Layout, tr.Block, v.Block)
-			return sv.Active == w.WindowID, !paired && panes > 2, nil
+			// The layer that holds the composer: the tiled layer, or a floating layer (ui_slot "layer").
+			for _, l := range w.Layers {
+				if !hasBlock(l.Layout, v.Block) {
+					continue
+				}
+				paired, panes := pairShape(l.Layout, tr.Block, v.Block)
+				return sv.Active == w.WindowID, !paired && panes > 2, nil
+			}
 		}
 		return false, false, nil
 	}

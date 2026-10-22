@@ -50,7 +50,11 @@ type Config struct {
 	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
 	// pane (pair.go). Off: those tabs open as one view, as before.
 	Transcript bool `json:"transcript"`
-	Agents     []struct {
+	// UISlot is where forms and panels open, for an experiment (the user, 2026-10-22): "split" (the
+	// window's right split, the default) or "layer" (a floating layer in the same window). It goes
+	// away when the user decides.
+	UISlot string `json:"ui_slot"`
+	Agents []struct {
 		ID           string `json:"id"`
 		Name         string `json:"name"`
 		StatusRecord string `json:"status_record"`
@@ -228,6 +232,9 @@ func loadConfig(path string) (Config, error) {
 	json.Unmarshal(b, &keys)
 	if _, ok := keys["session"]; ok {
 		return c, fmt.Errorf("%s: remove \"session\": the hub uses its own LazyRex session", path)
+	}
+	if c.UISlot != "" && c.UISlot != "split" && c.UISlot != "layer" {
+		return c, fmt.Errorf("%s: ui_slot is \"split\" or \"layer\", not %q", path, c.UISlot)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {

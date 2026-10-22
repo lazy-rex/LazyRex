@@ -478,7 +478,7 @@ func (h *Hub) spawnSlot(ctx context.Context, r *slotRow) error {
 		BlockIDs []string `json:"block_ids"`
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err := slotSplit(h, cctx, args, &out)
+	err := h.slotPane(cctx, r.Window, args, &out, slotSplit)
 	cancel()
 	var re *rex.RexError
 	if err != nil && errors.As(err, &re) && re.Code != "disconnected" && !transient(err) {
@@ -499,9 +499,34 @@ func (h *Hub) spawnSlot(ctx context.Context, r *slotRow) error {
 	return nil // a moved row (superseded) closes the new pane in advanceSlot
 }
 
-// slotSplit sends the one new_split of a replacement. Lab tests replace it to lose the answer.
-var slotSplit = func(h *Hub, ctx context.Context, args map[string]any, out any) error {
-	return h.rex.Call(ctx, "session.new_split", args, out)
+// slotSplit sends the one pane request of a replacement. Lab tests replace it to lose the answer.
+var slotSplit = func(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
+	return h.rex.Call(ctx, method, args, out)
+}
+
+// slotLayerBounds is the floating layer of a form or panel with ui_slot "layer": [x, y, w, h],
+// normalized (the bounds that the user checked on the Rex app, build 1347).
+var slotLayerBounds = []float64{0.15, 0.15, 0.7, 0.6}
+
+// slotPane opens the pane of a form or panel with call: the split of args (ui_slot "split", the
+// default), or with ui_slot "layer" a frontmost floating layer in window, with the same block and
+// focus. Observed on Rex 0.0.1792158932-g88fd41 (lab, 2026-10-22): block.close of a layer's only
+// block, or the block's exit, removes the layer, and focus goes back to the block under it; with
+// two layers, focus goes to the other layer's block. So a form's close closes its layer, and a
+// replacement (a new layer, then the old block closes) needs no layer call. The answer of
+// new_layer has block_ids, as new_split, and no anchor_block_id.
+func (h *Hub) slotPane(ctx context.Context, window string, args map[string]any, out any, call func(*Hub, context.Context, string, map[string]any, any) error) error {
+	if h.cfg.UISlot != "layer" {
+		return call(h, ctx, "session.new_split", args, out)
+	}
+	layer := map[string]any{"session_id": args["session_id"], "window_id": window, "bounds": slotLayerBounds,
+		"focus": args["focus"], "layout": args["layout"]}
+	return call(h, ctx, "session.new_layer", layer, out)
+}
+
+// slotDirect is a slotPane call without a test hook.
+func slotDirect(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
+	return h.rex.Call(ctx, method, args, out)
 }
 
 func (h *Hub) slotRefused(ctx context.Context, r *slotRow, cause error) error {

@@ -503,7 +503,7 @@ func (h *Hub) openForm(ctx context.Context, id, plugin, route string, fc formCon
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	err = h.rex.Call(cctx, "session.new_split", map[string]any{
+	err = h.slotPane(cctx, fc.WindowID, map[string]any{
 		"session_id": fc.SessionID, "window_id": fc.WindowID, "direction": "horizontal", "side": "after", "ratio": 0.55, "focus": true,
 		"layout": map[string]any{"block": map[string]any{
 			"flavor": "com.superlogical.terminal.shell",
@@ -515,7 +515,7 @@ func (h *Hub) openForm(ctx context.Context, id, plugin, route string, fc formCon
 				"exit": map[string]any{"on_completion": true},
 			},
 		}},
-	}, &out)
+	}, &out, slotDirect)
 	if err != nil && transient(err) {
 		// Rex may have made the pane. Its label is unique: look once now. Without a complete
 		// inventory the row stays 'sending', and a later try (or the start sweep) looks again.
@@ -532,14 +532,18 @@ func (h *Hub) openForm(ctx context.Context, id, plugin, route string, fc formCon
 	if err != nil || len(out.BlockIDs) != 1 {
 		h.closeViewRow(ctx, id, "abandoned")
 		if err == nil {
-			err = fmt.Errorf("new_split gave %d blocks", len(out.BlockIDs))
+			err = fmt.Errorf("the form pane request gave %d blocks", len(out.BlockIDs))
 		}
 		return nil, fmt.Errorf("open form %s: %w", route, err)
 	}
 	if err := h.adoptForm(ctx, v, fc, out.BlockIDs[0]); err != nil {
 		return v, err
 	}
-	go h.refocusForm(fc.SessionID, fc.WindowID, out.BlockIDs[0], out.AnchorBlockID)
+	anchor := out.AnchorBlockID
+	if h.cfg.UISlot == "layer" {
+		anchor = fc.SourceBlock // a layer has no anchor: the pane where the command ran had focus
+	}
+	go h.refocusForm(fc.SessionID, fc.WindowID, out.BlockIDs[0], anchor)
 	return v, nil
 }
 
