@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS notices (ns TEXT NOT NULL, agent TEXT NOT NULL, pendi
 CREATE TABLE IF NOT EXISTS notice_deliveries (ns TEXT NOT NULL, agent TEXT NOT NULL, intent_rev INTEGER NOT NULL, at INTEGER NOT NULL, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL, repeated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (ns, agent));
 -- hub.sql notices (sqlnotice.go): a receipt for each applied outbox row, and the plugins whose notices moved to hub.sql.
 CREATE TABLE IF NOT EXISTS notice_receipts (plugin TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (plugin, seq));
+CREATE TABLE IF NOT EXISTS sql_returns (plugin TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sql_notice_plugins (plugin TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
