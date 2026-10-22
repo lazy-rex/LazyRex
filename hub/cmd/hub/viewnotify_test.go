@@ -411,3 +411,31 @@ func TestViewChangedConcurrentStart(t *testing.T) {
 	hr.waitSent(t, "att-c", 1)
 	hr.settle(t, map[string]int{"att-c": 1})
 }
+
+// A render that comes just as the sender ends is still sent: the end and the removal of the
+// sender are one step (Codex review of 8025d6b). Before, the sender decided to stop, released
+// the lock, and removed itself later; a render in between raised its revision, and nothing
+// sent it.
+func TestViewChangedEndHandoff(t *testing.T) {
+	h, hr := notifyHub(t)
+	h.db.Exec(`DELETE FROM view_transcripts`)
+	var once sync.Once
+	ended := make(chan struct{})
+	senderEndHook = func(k notifyKey) {
+		once.Do(func() {
+			h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 99)
+			close(ended)
+		})
+	}
+	defer func() { senderEndHook = nil }()
+	h.renderOnce(t)
+	hr.waitSent(t, "att-c", 1)
+	hr.release(t, "att-c", "")
+	<-ended
+	hr.waitSent(t, "att-c", 2)
+	if got := hr.sent("att-c")[1].revision; got != "99" {
+		t.Errorf("the render at the end tells revision %s, want 99", got)
+	}
+	hr.release(t, "att-c", "")
+	hr.settle(t, map[string]int{"att-c": 2})
+}

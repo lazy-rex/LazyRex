@@ -119,26 +119,32 @@ func (vs *viewSvc) pruneNotifiers(plugin string, composers map[string]string, pr
 }
 
 // notifySender sends the requests of one key, one at a time, until no newer revision is waiting.
+// Each exit decides to stop and removes the sender under one h.vs.mu lock. So tellViewChanged
+// either raises want before that lock, and the sender sends it, or finds no sender after it and
+// starts a new one (Codex review of 8025d6b: a gap between the two lost a revision).
 func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
 	vs := h.vs
 	defer func() {
-		vs.mu.Lock()
-		vs.retireLocked(k, n)
-		vs.mu.Unlock()
+		if hook := senderEndHook; hook != nil {
+			hook(k)
+		}
 		close(n.done)
 	}()
+	// stopLocked ends the sender. h.vs.mu must be held; it is released.
+	stopLocked := func() {
+		vs.retireLocked(k, n)
+		vs.mu.Unlock()
+	}
 	current := h.composerAttachment
 	if k.role == rolePrinter {
 		current = h.transcriptAttachment
 	}
 	for {
 		// The attachment is read outside h.vs.mu: the database has one connection.
-		if current(n.ctx, k.view) != k.attachment {
-			return
-		}
+		moved := current(n.ctx, k.view) != k.attachment
 		vs.mu.Lock()
-		if n.ctx.Err() != nil {
-			vs.mu.Unlock()
+		if moved || n.ctx.Err() != nil {
+			stopLocked()
 			return
 		}
 		n.sent = n.want
@@ -147,39 +153,33 @@ func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
 		err := viewChangedCall(n.ctx, h, n.client, k.view, k.attachment, rev)
 		vs.mu.Lock()
 		switch {
-		case n.ctx.Err() != nil:
-			vs.mu.Unlock()
+		case n.ctx.Err() != nil, err != nil && targetGone(err):
+			stopLocked()
 			return
+		case n.want > n.sent:
+			n.attempts = 0 // a newer revision: a success, or a fresh count after a failure
+			vs.mu.Unlock()
+			continue
 		case err == nil:
-			n.attempts = 0
-			if n.want <= n.sent {
-				vs.mu.Unlock()
-				return
-			}
-			vs.mu.Unlock()
-			continue
-		case targetGone(err):
-			vs.mu.Unlock()
+			stopLocked()
 			return
-		}
-		if n.want > n.sent {
-			n.attempts = 0 // a new revision starts a fresh count
-			vs.mu.Unlock()
-			continue
 		}
 		n.attempts++
 		attempts := n.attempts
-		vs.mu.Unlock()
 		if attempts >= viewChangedAttempts {
+			stopLocked()
 			return
 		}
+		vs.mu.Unlock()
 		select {
 		case <-n.ctx.Done():
-			return
 		case <-time.After(time.Duration(attempts) * viewChangedRetry):
 		}
 	}
 }
+
+// senderEndHook is a test hook: it runs after a sender has ended, before its done channel closes.
+var senderEndHook func(notifyKey)
 
 // targetGone reports whether Rex says that the renderer's client is gone.
 func targetGone(err error) bool {
