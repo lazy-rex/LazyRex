@@ -554,6 +554,14 @@ func keptExit(k *kept, deadline time.Time) error {
 
 // keptExit gives the command's own status: an exit other than 0 is an error, also when the keeper
 // stopped cleanly (codex-27, plugins-c2-source-findings-1).
+// OLD starts under the H binary's keeper, answers, and stops with exit status 0. Before the fix,
+// startLab.start used OLD's binary as the keeper too, and OLD (which has no keeper role) printed its
+// usage: "hub keeper: no command report".
+func TestB8OldStartLab(t *testing.T) {
+	b := newB8Life(t, "old-start")
+	b.runOld(func() {})
+}
+
 func TestKeptExit(t *testing.T) {
 	k := &kept{done: make(chan struct{})}
 	k.status = exitStatus("7")
