@@ -40,7 +40,7 @@ hub.
 | `hub.sql.exec` | `{sql, params?, tx?, expect_changes?}` | `{changes, id}`; with RETURNING also `{columns, rows}` |
 | `hub.sql.query` | `{sql, params?, tx?, expect_rows?}` | `{columns, rows, complete}` |
 | `hub.sql.batch` | `{statements = [{sql, params?, expect_changes?}], tx?}` | `{results = [<exec reply>]}` |
-| `hub.sql.commit` | `{tx, key?, fingerprint?, reply?, notices?}` | `{}`, or `{replayed = true, reply}` |
+| `hub.sql.commit` | `{tx, key?, fingerprint?, reply? or reply_parts?, notices?}` | `{}`, or `{replayed = true, reply}` |
 | `hub.sql.rollback` | `{tx}` | `{}` (also for an unknown or ended token) |
 | `hub.sql.replay` | `{key, fingerprint}` | `{found = false}` or `{found = true, reply}` |
 | `hub.store.ops_scan` | `{after?, limit? (1 to 500)}` | `{ops = [{key, fingerprint, result}], next?}` |
@@ -158,6 +158,9 @@ authorized at CREATE.
   transaction. A later commit with the key gets `{replayed = true, reply}`, and its own work is
   rolled back. `hub.sql.replay` reads a saved reply without a transaction. The same key with
   another fingerprint: `operation_conflict`.
+- A reply over 64 KiB comes as reply parts: `reply_parts = {id, count, bytes}` in place of
+  `reply` names a part set that the plugin sent first (docs/hub.md "Reply parts"). The hub joins
+  it, saves the joined value, and keeps the set for the reply stub with the same id.
 - The hub keeps a reply 7 days and the plugin's last 10 000 keys; the eviction runs in the commit.
 - The SDK decides what to save: never a `running` reply. A plugin that needs a permanent replay keeps
   its own table with `store = false` (coordinator decision).

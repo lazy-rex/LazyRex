@@ -36,6 +36,9 @@ type sqlService struct {
 	// rendered reports a hub.sql.query with a render ID (renderreads.go): the tables that it read, and
 	// ok false when the hub cannot know them (an error other than conflict).
 	rendered func(plugin, client, render string, reads map[string]bool, ok bool)
+	// replyParts joins the reply part set of a client for hub.sql.commit reply_parts and keeps it
+	// for the reply stub (replyparts.go).
+	replyParts func(client string, stub map[string]any) ([]byte, error)
 	// beforeCommit is a test fault point (testmode.go): an error fails the commit; with after, the
 	// commit happens first and the caller still gets the error (a lost reply).
 	beforeCommit func(plugin string, marks []string, params []any) (err error, after bool)
@@ -63,7 +66,10 @@ type sqlService struct {
 }
 
 func newSQLService(state string, current func(plugin, client string) bool) *sqlService {
-	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, rendered: func(string, string, string, map[string]bool, bool) {}, beforeCommit: func(string, []string, []any) (error, bool) { return nil, false },
+	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, rendered: func(string, string, string, map[string]bool, bool) {},
+		replyParts: func(string, map[string]any) ([]byte, error) {
+			return nil, refuse("parts_invalid", "the hub has no reply parts")
+		}, beforeCommit: func(string, []string, []any) (error, bool) { return nil, false },
 		beforeBegin:  func(string) []map[string]any { return nil },
 		admitNotices: func(string, []noticeOp) error { return refuse("no_notice", "the hub has no notice service") },
 		applyNotices: func(string, []outboxRow) error { return nil }, dropReceipts: func(string, int64) error { return nil },
@@ -763,7 +769,19 @@ func (s *sqlService) commit(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 		}
 	}
 	var reply []byte
-	if key != "" {
+	if parts, ok := c.args["reply_parts"]; ok && parts != nil {
+		stub, isMap := parts.(map[string]any)
+		switch {
+		case c.args["reply"] != nil:
+			return nil, refuse("invalid_input", "reply and reply_parts cannot both be set")
+		case !isMap:
+			return nil, refuse("invalid_input", "reply_parts is {id, count, bytes}")
+		case key != "":
+			if reply, err = s.replyParts(c.client, stub); err != nil {
+				return nil, err
+			}
+		}
+	} else if key != "" {
 		if reply, err = json.Marshal(c.args["reply"]); err != nil {
 			return nil, refuse("invalid_input", "reply: %v", err)
 		}

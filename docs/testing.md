@@ -254,6 +254,7 @@ Methods:
 | Method | Path |
 | --- | --- |
 | `a:call(action, args)` | Through the agent face (`rex -C lazyrex`, the MCP path) to the plugin. The caller's timeout is 10 s, so a "timed out" from `a:call` can be the caller's own, not the hub's. |
+| `a:call_short(action, args)` | `call` for a result over 48 KiB: `{bytes, value}`, as `v:get_short()`. |
 | `a:call_raw(action, json)` | `call` with the arguments as JSON text, for an empty array: Rex Lua encodes `{}` as an object. |
 | `a:direct(action, args)` | To the plugin client itself. |
 | `a:hub(action, args)` | To the hub. |
@@ -292,6 +293,7 @@ operations, effects and retries.
 | `user:plugin_view(action, args)` | Calls the plugin's `view.*` from the runner, which is not the hub: for refusals. |
 | `v:render()` | Asks for a new render and returns the tree. Fails if that render failed, even when the hub kept an older tree. |
 | `v:get()` | The snapshot that the renderer gets (`hub.view.get`). The hub moves a tree's `status` here. |
+| `v:get_short()` | `v:get()` for a snapshot over 48 KiB: `{bytes, value}`; each string over 64 bytes of the value is `{len, sha256}`. |
 | `v:try_render()` | `{status = 'ok', tree}` or `{status = 'failed', error}`. |
 | `v:action(node, action, input, key)` | A view action. Returns the final operation: `{status, result or error, effects, effects_error}`. |
 | `v:draft(node, text, base_revision, key)`, `v:send(node, text, draft_revision, key)` | Draft save and send. |
@@ -314,7 +316,7 @@ does not hide the result.
 | `batches()` | The number of `hub.store.batch` calls of the plugin. |
 | `invalidates(plugin?)` | The number of `hub.ui.invalidate` calls of the plugin. A count that stays the same over an interval proves only that the plugin made no `hub.ui.invalidate` call in that interval. It does not prove that no other idle render loop runs. |
 | `calls(action, {after?, plugin?})` | The recorded hub service calls of the plugin (`hub.test.calls`): a list of `{seq, action, instance_id, args}`, oldest first, and the full reply `{calls, next, dropped}`. The hub records each call of the registered current instance, except `hub.test.*`, once, when it arrives: before the action faults run. A call that fails (also by a fault or a closed gate) is recorded too. `args` is the call's args object as the hub received it: for `hub.store.scan`, no `prefix` means a scan of all records. `after` returns only later calls. `next` is the highest `seq` that the hub gave, for any plugin: keep it as a baseline (`local _, base = calls('none')`, then `base.next`). A `seq` belongs to one hub process: a hub restart starts again from 1 with an empty record, so a cursor does not cross a restart. `after` must be a whole number from 0. An unknown plugin is refused. The hub keeps the last 1000 calls of each plugin. `dropped` is true when it dropped a call after `after`; a test that proves "never" checks that `dropped` is false. |
-| `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared}`, in `view_id` order. `declared` is the declaration that the view has now (`{prefixes, changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
+| `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared, sql_tracked, last_call_ms}`, in `view_id` order. `last_call_ms` is the time of the last `view.render` call, with its reply parts. `declared` is the declaration that the view has now (`{prefixes, changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
 | `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
 | `H.args.lab` | The lab dir. |
 | `H.args.sdk` | The SDK directory that the hub gets (`<checkout>/sdk/lua`), for a sandbox test that loads the SDK itself. |

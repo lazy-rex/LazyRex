@@ -28,9 +28,49 @@ local function put(key, value, if_rev)
   return hub('hub.store.batch', {ops = {{key = key, value = value, if_rev = if_rev}}})
 end
 
+-- send_parts sends a reply in parts, as the SDK does (docs/hub.md "Reply parts"), and returns the
+-- stub. A slice ends at a UTF-8 character boundary. The real encoded hub.reply.part request is the
+-- check: at most 60 KiB, else the slice shrinks in proportion and is encoded again. mode 'gap'
+-- skips the second part; 'bytes' sends a wrong byte count.
+local part_seq = 0
+local function send_parts(value, mode)
+  local text = rex.json.encode(value)
+  part_seq = part_seq + 1
+  local id = 'fx-' .. instance_id:gsub('[^%w._:-]', '') .. '-' .. part_seq
+  local slices, i = {}, 1
+  while i <= #text do
+    local j = math.min(i + 57343, #text)
+    while true do
+      while j < #text and text:byte(j + 1) >= 0x80 and text:byte(j + 1) < 0xC0 do j = j - 1 end
+      local size = #rex.json.encode({client_id = hub_id, action = 'hub.reply.part', timeout_ms = 10000,
+        args = {id = id, index = 64, count = 64, data = text:sub(i, j)}})
+      if size <= 60 * 1024 then break end
+      j = i + math.floor((j - i) * (58 * 1024) / size)
+    end
+    slices[#slices + 1] = text:sub(i, j)
+    i = j + 1
+  end
+  for k, s in ipairs(slices) do
+    if not (mode == 'gap' and k == 2) then
+      hub('hub.reply.part', {id = id, index = k - 1, count = #slices, data = s})
+    end
+  end
+  return {lazyrex_parts = {id = id, count = #slices, bytes = mode == 'bytes' and #text - 1 or #text}}
+end
+
+-- filler returns about kb KiB of view nodes n1..nN, with quotes, backslashes, <, & and multibyte
+-- characters in each text.
+local function filler(kb)
+  local text = string.rep('aé"\\<&日', 60)
+  local per = #rex.json.encode({id = 'n1000', type = 'widget', text = text}) + 1
+  local nodes = {}
+  for k = 1, math.floor(kb * 1024 / per) do nodes[k] = {id = 'n' .. k, type = 'widget', text = text} end
+  return nodes
+end
+
 local obj = {type = 'object'}
 local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub',
-  'fix.measure', 'fix.register'}
+  'fix.measure', 'fix.register', 'fix.big'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -47,6 +87,8 @@ local actions = {
   {name = 'fix.fill', kind = 'client', title = 'Write a record of n copies of text',
     args = {type = 'object', properties = {key = {type = 'string'}, text = {type = 'string'}, n = {type = 'integer'}}, required = {'key', 'text', 'n'}}},
   {name = 'fix.echo', kind = 'client', title = 'Echo', args = obj},
+  {name = 'fix.big', kind = 'client', title = 'A reply of kb KiB, sent in parts',
+    args = {type = 'object', properties = {kb = {type = 'integer'}}, required = {'kb'}}},
   {name = 'fix.op', kind = 'client', title = 'Read a saved operation', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
   {name = 'fix.invalidate', kind = 'client', title = 'Call hub.ui.invalidate', args = obj},
   {name = 'fix.grant', kind = 'client', title = 'Make a grant for the caller (on_behalf = as_pid or the caller pid)',
@@ -120,6 +162,8 @@ local function domain(action, args, pid)
     return {scheduled = true}
   elseif action == 'fix.spawn' then
     return {spawn = hub('hub.spawn', {profile = 'shell', key = args.key, on_behalf = args.as_pid or pid}), pid = pid}
+  elseif action == 'fix.big' then
+    return send_parts({kb = args.kb, data = string.rep('b', args.kb * 1024)})
   elseif action == 'fix.register' then
     register()
     return {}
@@ -272,6 +316,26 @@ local function view(action, args)
       end
       return {tree = {title = 'Reads', nodes = {{id = 'lazy', type = 'widget', text = tostring(n and n[1])}}},
         refresh = type(refresh) == 'string' and refresh or nil}
+    end
+    -- /lazy/parts-<x> (reply_parts.lua): the SQL row parts_spec(<x>) gives kb, the mode of the parts
+    -- ('ok', 'gap', 'bytes', 'inline') and the refresh value. Over 44 KiB the reply goes in parts.
+    -- The node count shows the rows of the table parts_<x>; the node last ends the tree.
+    local pname = args.route:match('^/lazy/parts%-(%w+)$')
+    if pname then
+      local function query(sql)
+        return hub('hub.sql.query', {sql = sql, params = {pname}, render = args.render}).rows[1]
+      end
+      local spec = query('SELECT kb, mode, refresh FROM parts_spec WHERE name = ?') or {}
+      local n = query('SELECT count(*) FROM parts_' .. pname .. ' WHERE ? IS NOT NULL')
+      local nodes = spec[2] == 'ascii' and {{id = 'big', type = 'widget', text = ''}} or filler(spec[1] or 1)
+      nodes[#nodes + 1] = {id = 'count', type = 'widget', text = tostring(n and n[1])}
+      nodes[#nodes + 1] = {id = 'last', type = 'widget', text = 'end'}
+      local reply = {tree = {title = 'Parts', nodes = nodes}, refresh = type(spec[3]) == 'string' and spec[3] or nil}
+      if spec[2] == 'ascii' then -- an ASCII reply of exactly 50000 bytes: one part
+        nodes[1].text = string.rep('a', 50000 - #rex.json.encode(reply))
+      end
+      if spec[2] == 'inline' or #rex.json.encode(reply) <= 45056 then return reply end
+      return send_parts(reply, spec[2])
     end
     if args.route:match('^/lazy/') then return {tree = {title = 'Lazy', nodes = {{id = 'lazy', type = 'widget', text = args.route}}}} end
     return {tree = {title = 'Unknown', nodes = {{id = 'unknown', type = 'error', text = 'no route ' .. tostring(args.route)}}}}
