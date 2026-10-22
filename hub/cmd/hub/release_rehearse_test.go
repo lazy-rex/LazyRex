@@ -519,3 +519,57 @@ func TestReleaseFailGo(t *testing.T) {
 		t.Errorf("the build calls: %v (log %q)", got, mustRead(calls))
 	}
 }
+
+// fullProbe is a lab hub.db with the table newer (one row before the probe file) and the probe
+// file script (codex-26's review fixture, R12 and R13).
+func fullProbe(t *testing.T, script string) (*rehearsal, *sql.DB) {
+	t.Helper()
+	h := &rehearsal{lab: t.TempDir(), r: &releaser{spec: &relSpec{Probes: "probes.sql"}, out: &bytes.Buffer{}}}
+	os.MkdirAll(filepath.Join(h.lab, relLabState), 0o700)
+	db, err := h.hubDB(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`CREATE TABLE newer (value); INSERT INTO newer(rowid, value) VALUES (5, 'before')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.lab, "probes.sql"), []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return h, db
+}
+
+// R12 and R13: every row that the probe file writes is checked at any rowid, with each value's SQL
+// type; a probe file that deletes a row refuses.
+func TestReleaseFileProbes(t *testing.T) {
+	for name, tc := range map[string]struct{ script, change string }{
+		"null to text":    {`INSERT INTO newer VALUES (NULL);`, `UPDATE newer SET value = 'NULL' WHERE rowid = 6`},
+		"integer to text": {`INSERT INTO newer VALUES (1);`, `UPDATE newer SET value = '1' WHERE rowid = 6`},
+		"text to blob":    {`INSERT INTO newer VALUES ('ab');`, `UPDATE newer SET value = CAST('ab' AS BLOB) WHERE rowid = 6`},
+		"negative rowid":  {`INSERT INTO newer(rowid, value) VALUES (-1, 'negative'), (1, 'positive');`, `DELETE FROM newer WHERE rowid = -1`},
+		"changed row":     {`UPDATE newer SET value = 'probe' WHERE rowid = 5; INSERT INTO newer VALUES ('x');`, `UPDATE newer SET value = 'before' WHERE rowid = 5`},
+	} {
+		h, db := fullProbe(t, tc.script)
+		if err := h.writeFileProbes(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := h.checkFileProbes("forward"); err != nil {
+			t.Fatalf("%s: before the change: %v", name, err)
+		}
+		if _, err := db.Exec(tc.change); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.checkFileProbes("rollback"); err == nil {
+			t.Errorf("%s: the changed probe row passed", name)
+		}
+	}
+	h, _ := fullProbe(t, `DELETE FROM newer WHERE rowid = 5; INSERT INTO newer VALUES ('x');`)
+	if err := h.writeFileProbes(); err == nil || !strings.Contains(err.Error(), "deleted the row newer rowid 5") {
+		t.Errorf("a probe file that deletes a row: %v", err)
+	}
+	h, _ = fullProbe(t, `INSERT INTO newer SELECT value FROM newer WHERE 0;`)
+	if err := h.writeFileProbes(); err == nil || !strings.Contains(err.Error(), "wrote no row") {
+		t.Errorf("a probe file that writes no row: %v", err)
+	}
+}

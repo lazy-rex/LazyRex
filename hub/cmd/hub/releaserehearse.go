@@ -89,12 +89,12 @@ type rehearsal struct {
 	live       relLiveFiles
 	start      map[string]string // the live inputs and bindings at the start
 	phases     []relPhase
-	schemas    map[string][]string            // the hub.db schema items by phase
-	mirrors    map[string]string              // the HEAD of each GitHub mirror, by owner/repo
-	commits    map[string][]string            // the commits that the mirrors must hold, by owner/repo
-	fileProbes map[string][]map[string]string // the rows of the spec probe file, by table (full tier)
-	n          int                            // the number of child steps (log names)
-	stopped    bool                           // stopLab ran
+	schemas    map[string][]string   // the hub.db schema items by phase
+	mirrors    map[string]string     // the HEAD of each GitHub mirror, by owner/repo
+	commits    map[string][]string   // the commits that the mirrors must hold, by owner/repo
+	fileProbes map[string][]probeRow // the rows of the spec probe file, by table (full tier)
+	n          int                   // the number of child steps (log names)
+	stopped    bool                  // stopLab ran
 }
 
 func (h *rehearsal) say(format string, args ...any) { h.r.say(format, args...) }

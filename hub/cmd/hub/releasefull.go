@@ -16,6 +16,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -314,7 +316,7 @@ func (h *rehearsal) spawnUnderOld() (string, map[string]string, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if row == nil || row["status"] != "open" {
+	if row == nil || row["status"] != typedSQL("open") {
 		return "", nil, relFail("the spawns row of %s by OLD is %v, not an open row", s.SpawnID, row)
 	}
 	return s.SpawnID, row, nil
@@ -364,7 +366,8 @@ func (h *rehearsal) checkSpawn(sp string, old map[string]string, when string) er
 	return nil
 }
 
-// queryRows reads every row of a query as column -> text (NULL is "NULL", a blob is its bytes).
+// queryRows reads every row of a query as column -> typedSQL: each value keeps its SQL type, so a
+// NULL, a text, an integer, a real and a blob never compare equal.
 func queryRows(db *sql.DB, q string, args ...any) ([]map[string]string, error) {
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -387,25 +390,65 @@ func queryRows(db *sql.DB, q string, args ...any) ([]map[string]string, error) {
 		}
 		m := map[string]string{}
 		for i, c := range cols {
-			switch v := vals[i].(type) {
-			case nil:
-				m[c] = "NULL"
-			case []byte:
-				m[c] = string(v)
-			default:
-				m[c] = fmt.Sprint(v)
-			}
+			m[c] = typedSQL(vals[i])
 		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
+// typedSQL is a scanned SQL value with its type: null, integer:<n>, real:<x>, text:<quoted> or
+// blob:<hex>. Another driver type keeps its Go type name.
+func typedSQL(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "null"
+	case int64:
+		return "integer:" + strconv.FormatInt(x, 10)
+	case float64:
+		return "real:" + strconv.FormatFloat(x, 'g', -1, 64)
+	case string:
+		return "text:" + strconv.Quote(x)
+	case []byte:
+		return "blob:" + hex.EncodeToString(x)
+	case time.Time:
+		return "time:" + x.Format(time.RFC3339Nano)
+	}
+	return fmt.Sprintf("%T:%v", v, v)
+}
+
 var probeInsert = regexp.MustCompile(`(?i)\binsert\s+(?:or\s+\w+\s+)?into\s+["\x60]?([A-Za-z_][A-Za-z0-9_]*)`)
 
+// probeRow is one row of the spec probe file: its rowid and its values (queryRows form).
+type probeRow struct {
+	rowid int64
+	vals  map[string]string
+}
+
+// tableRows reads every row of table t by rowid. A table without rowid fails: its rows cannot be
+// found again by rowid.
+func tableRows(db *sql.DB, t string) (map[int64]map[string]string, error) {
+	rows, err := queryRows(db, `SELECT rowid AS relprobe_rowid, * FROM "`+t+`"`)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]map[string]string{}
+	for _, r := range rows {
+		s, ok := strings.CutPrefix(r["relprobe_rowid"], "integer:")
+		id, err := strconv.ParseInt(s, 10, 64)
+		if !ok || err != nil {
+			return nil, relFail("the table %s: the rowid %s", t, r["relprobe_rowid"])
+		}
+		out[id] = r
+	}
+	return out, nil
+}
+
 // writeFileProbes runs the spec probe file (the SQL rows for the tables that H adds) in the lab
-// hub.db, while the hub is stopped, and keeps the new rows of each table that it inserts into (by
-// rowid). checkFileProbes compares them after each later phase. A file that inserts no row fails.
+// hub.db, while the hub is stopped. It reads each table that the file inserts into before and
+// after, and keeps every row that is new or changed, at any rowid. checkFileProbes compares them
+// after each later phase. A file that deletes a row, or that writes no row, fails: the check could
+// not see all of its effects.
 func (h *rehearsal) writeFileProbes() error {
 	if h.r.spec.Probes == "" {
 		h.say("the spec has no probe file: case 14 has no rows to check")
@@ -427,13 +470,11 @@ func (h *rehearsal) writeFileProbes() error {
 		return err
 	}
 	defer db.Close()
-	before := map[string]int64{}
+	before := map[string]map[int64]map[string]string{}
 	for t := range tables {
-		var n int64
-		if err := db.QueryRow(`SELECT ifnull(max(rowid), 0) FROM "` + t + `"`).Scan(&n); err != nil {
+		if before[t], err = tableRows(db, t); err != nil {
 			return relFail("the probe table %s: %v", t, err)
 		}
-		before[t] = n
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -446,24 +487,35 @@ func (h *rehearsal) writeFileProbes() error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	h.fileProbes = map[string][]map[string]string{}
+	h.fileProbes = map[string][]probeRow{}
 	n := 0
 	for t := range tables {
-		rows, err := queryRows(db, `SELECT rowid AS relprobe_rowid, * FROM "`+t+`" WHERE rowid > ? ORDER BY rowid`, before[t])
+		after, err := tableRows(db, t)
 		if err != nil {
 			return relFail("the probe table %s: %v", t, err)
 		}
-		h.fileProbes[t] = rows
-		n += len(rows)
+		for id := range before[t] {
+			if _, ok := after[id]; !ok {
+				return relFail("the probe file deleted the row %s rowid %d; a probe file may only insert or change rows", t, id)
+			}
+		}
+		for id, r := range after {
+			if old, ok := before[t][id]; !ok || !sameRow(old, r) {
+				h.fileProbes[t] = append(h.fileProbes[t], probeRow{id, r})
+			}
+		}
+		sort.Slice(h.fileProbes[t], func(i, j int) bool { return h.fileProbes[t][i].rowid < h.fileProbes[t][j].rowid })
+		n += len(h.fileProbes[t])
 	}
 	if n == 0 {
-		return relFail("the probe file inserted no row")
+		return relFail("the probe file wrote no row")
 	}
 	h.say("the probe file wrote %d rows in %d tables", n, len(tables))
 	return nil
 }
 
-// checkFileProbes checks that each row of the probe file is the same, by rowid.
+// checkFileProbes checks that each row of the probe file is the same, by rowid, with each value's
+// SQL type.
 func (h *rehearsal) checkFileProbes(phase string) error {
 	if len(h.fileProbes) == 0 {
 		return nil
@@ -476,12 +528,12 @@ func (h *rehearsal) checkFileProbes(phase string) error {
 	n := 0
 	for t, rows := range h.fileProbes {
 		for _, want := range rows {
-			got, err := queryRows(db, `SELECT rowid AS relprobe_rowid, * FROM "`+t+`" WHERE rowid = ?`, want["relprobe_rowid"])
+			got, err := queryRows(db, `SELECT rowid AS relprobe_rowid, * FROM "`+t+`" WHERE rowid = ?`, want.rowid)
 			if err != nil {
 				return relFail("phase %s: the probe table %s: %v", phase, t, err)
 			}
-			if len(got) != 1 || !sameRow(got[0], want) {
-				return relFail("phase %s: the probe row %s rowid %s is %v, not %v", phase, t, want["relprobe_rowid"], got, want)
+			if len(got) != 1 || !sameRow(got[0], want.vals) {
+				return relFail("phase %s: the probe row %s rowid %d is %v, not %v", phase, t, want.rowid, got, want.vals)
 			}
 			n++
 		}
