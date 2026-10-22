@@ -249,6 +249,20 @@ func hashBytes(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
+// readBack is the hash of the file at path after a failed rename of call: the managed file is read
+// within its limit (managedFileLimit+1 bytes; a larger file is not the op's output), the lock as a
+// stream. A file that cannot be read gives "".
+func readBack(call, path string) string {
+	if call != "write:managed" {
+		return hashFile(path)
+	}
+	b, err := readManagedBytes(path)
+	if err != nil || b == nil {
+		return ""
+	}
+	return hashBytes(b)
+}
+
 // hashFile is hashBytes of the file at path, read as a stream, so its memory does not grow with
 // the file. A file that cannot be read gives "".
 func hashFile(path string) string {
@@ -1001,7 +1015,7 @@ func (h *Hub) renameAttempt(ctx context.Context, op *pluginOp, call, path string
 		if !errors.As(err, &re) {
 			// The writer returned, under both flocks: the file shows whether the rename happened.
 			proof, outcome := "not_applied: the writer returned, and the file is not its output", "not written: "+err.Error()
-			if hashFile(path) == out {
+			if readBack(call, path) == out {
 				proof, outcome = "applied: the writer returned, and the file is its output", "written"
 			}
 			if e := h.finishFileAttempt(ctx, attempt, outcome, proof); e != nil {
