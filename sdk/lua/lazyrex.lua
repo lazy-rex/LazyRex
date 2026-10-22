@@ -588,7 +588,8 @@ function M.plugin(name)
     return v == 'reads' and v or nil
   end
 
-  -- app.panel(title, fn, opts): a tab in the LazyRex window. fn(view) answers a list of nodes
+  -- app.panel(title, fn, opts): a palette command (surface panel) that the hub opens in its side slot
+  -- (a split, or a floating layer); it makes no tab. fn(view) answers a list of nodes
   -- (app.ui.*). opts: id (default from the title), description, keywords, landing (default true).
   function app.panel(title, fn, opts)
     opts = opts or {}
