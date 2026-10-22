@@ -425,31 +425,13 @@ func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, 
 	if err != nil {
 		return err
 	}
-	if x != nil {
-		if !x.matches(cand) {
-			return candidateChanged(pl.Name, cand, x, "nothing was retired or spawned")
-		}
-		h.mu.Lock()
-		var missing string
-		for _, d := range cand.Depends {
-			if !h.registeredLocked(d) {
-				missing = d
-				break
-			}
-		}
-		if missing == "" {
-			pl.Desired = "running"
-			h.savePlugin(ctx, pl)
-		}
-		h.mu.Unlock()
-		if missing != "" {
-			return refuse("dependency_not_ready", "plugin %s: dependency %s is not registered; nothing was retired or spawned", pl.Name, missing)
-		}
-	}
 	h.startFault(pl.Name, "hold-after")
+	if x != nil {
+		return h.startExpected(ctx, pl, keepLive, x, e, cand, lease)
+	}
 	if keepLive {
 		h.mu.Lock()
-		live := pl.entry == e && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && (x == nil || x.matches(&pl.run))
+		live := pl.entry == e && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
 		if live {
 			pl.state, pl.refusal, pl.waiting = "", "", nil // the check passed: ready again
 		}

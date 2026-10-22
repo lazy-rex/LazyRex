@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Lab tests of expect_run (docs/plugin-sources.md, section 14). Lab only: HARNESS_LAB=1.
@@ -126,4 +128,69 @@ func TestExpectRunSubdirLab(t *testing.T) {
 	}
 	s.must("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": exact})
 	s.wait("gh registers", func() bool { st := s.status("gh"); return st.Registered && st.InstanceID != id })
+
+	// A run saved before the digest field (no "digest" in the run JSON) is not the exact run: a
+	// start of the running plugin with the exact expectation is candidate_changed.
+	db, err := openDB(filepath.Join(s.l.dir, "hub", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE plugins SET run = json_remove(run, '$.digest') WHERE name = 'gh'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.call("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": exact})
+	s.refusedWith("a running run without a digest", err, "candidate_changed", "plugin gh runs "+src+" at "+commit+" ()", "nothing was started")
+}
+
+// A guarded start admits once, at its final admission: a dependency that was registered at the
+// resolution and stops before the final admission (the start is held after the resolution) is
+// dependency_not_ready (a crashes, and its respawn is refused). b stays desired stopped, not waiting, with no intent. When a registers
+// again, no wake starts b.
+func TestExpectRunDependencyStopsLab(t *testing.T) {
+	s := newStartLab(t, "a", "b")
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+	s.writeSource("b", `{"name":"b","main":"main.lua","depends":["a"]}`, "b")
+	s.start()
+	s.startRun("a")
+	s.startRun("b")
+	s.must("hub.admin.stop", map[string]any{"plugin": "b"})
+	intents := s.intents("b")
+
+	// The hub serves one request of this client at a time, so the hold window has no hub call: a
+	// ends through its own client, and the test reads its pid. Its respawn is refused (a missing
+	// dependency), so a is not registered at the final admission of b.
+	a := s.status("a")
+	aStart := startTime(a.ChildPID)
+	s.must("hub.test.fault", map[string]any{"point": "start-admission", "mode": "hold-after", "key": "b", "plugin": "b", "hold_ms": 6000})
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.call("hub.admin.start", map[string]any{"plugin": "b", "expect_run": map[string]any{"source": "src/b"}})
+		done <- err
+	}()
+	time.Sleep(time.Second) // the start of b reaches its hold
+	s.writeSource("a", `{"name":"a","main":"main.lua","depends":["missing"]}`, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	s.c.perform(ctx, a.ClientID, "fix.exit", nil) // the reply may not arrive: the process ends
+	cancel()
+	for end := time.Now().Add(4 * time.Second); alive(a.ChildPID, aStart) && time.Now().Before(end); {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if alive(a.ChildPID, aStart) {
+		t.Fatal("a did not end during the hold")
+	}
+	err := <-done
+	inOrder(t, s.order(), "fault b", 1, "plugin_exited a", 1)
+	s.refusedWith("a dependency that stopped before the final admission", err, "dependency_not_ready", "plugin b: dependency a is not registered; nothing was retired or spawned")
+	if e := s.expectEntry("b"); e["desired"] != "stopped" || e["state"] == "waiting" || s.intents("b") != intents {
+		t.Errorf("b after the refusal: %v, %d intents (want desired stopped, not waiting, %d)", e, s.intents("b"), intents)
+	}
+
+	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "")
+	s.must("hub.admin.start", map[string]any{"plugin": "a"})
+	s.registered("a")
+	time.Sleep(2 * time.Second) // a wake, if any, runs now
+	if e := s.expectEntry("b"); e["desired"] != "stopped" || s.intents("b") != intents {
+		t.Errorf("b after a registered again: %v, %d intents (want desired stopped, %d)", e, s.intents("b"), intents)
+	}
 }

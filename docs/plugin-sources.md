@@ -929,10 +929,13 @@ another writer wrote later is then refused, not started.
   <id> is unchanged; nothing was retired or spawned".
 - start of a stopped plugin: the start path runs its resolution; the candidate must be the expected
   run (else `candidate_changed`, "...; nothing was retired or spawned"), and each dependency must be
-  registered (else `dependency_not_ready`). Only then the record becomes desired running and the
-  hub spawns from that candidate. A refusal leaves the desired state as it was. The start never
-  enters `waiting`, because a later wake would start the candidate of that time. A retained live
-  instance is kept only when its run is the expected run.
+  registered (else `dependency_not_ready`). Both checks are one final admission, after the
+  resolution and before any retirement; in the same `h.mu` section the record becomes desired
+  running, and a failed save refuses. Then the hub retires the recorded instance and spawns from
+  that candidate, as a replace does. A refusal leaves the desired state as it was. The start never
+  enters `waiting`, also when a dependency stops after the admission, because a later wake would
+  start the candidate of that time. A retained live instance is kept only when its run is the
+  expected run.
 - start of a running plugin: its run must be the expected run, else `candidate_changed`, "plugin
   <p> runs <run>, not <expected>; nothing was started". A run saved before the digest field has no
   digest, so it does not match a GitHub expectation: replace it.
@@ -940,7 +943,8 @@ another writer wrote later is then refused, not started.
 
 Tests: `replace_test.go` (TestExpectRunArguments) and `expectrun_lab_test.go` (local sources:
 replace and stopped start, refused and accepted, a running start, `dependency_not_ready`; a GitHub
-source: the same commit in another subdir, on replace and on a stopped start).
+source: the same commit in another subdir, on replace and on a stopped start; a dependency that
+stops between the resolution and the final admission: `dependency_not_ready`, and no later start).
 
 Locks: `reloadMu`, then the plugin's lifecycle lock, then `entriesMu` only to resolve. A reload
 cannot swap the entries during a replace, so the candidate and the entry membership stay stable

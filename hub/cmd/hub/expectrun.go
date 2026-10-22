@@ -9,6 +9,7 @@ package main
 // start a candidate that another writer put in the lock after its write.
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -73,4 +74,62 @@ func parseExpectRun(args map[string]any) (*expectRun, error) {
 // candidateChanged is the refusal of a candidate that is not the expected run.
 func candidateChanged(name string, cand *pluginRun, x *expectRun, unchanged string) error {
 	return refuse("candidate_changed", "plugin %s: the candidate is %s, not %s; %s", name, runText(cand), x, unchanged)
+}
+
+// startExpected is the admission of a start with an expected run x (hub.admin.start expect_run),
+// after the resolution of the start path (checkStart): the candidate cand is the one that it
+// spawns. It admits once, in the order of a replace, and it never waits:
+//  1. cand must be x, else candidate_changed.
+//  2. In one h.mu section: each dependency must be registered, else dependency_not_ready; then the
+//     record becomes desired running, and the save must succeed. A refusal or a failed save leaves
+//     the desired state as it was, and no waiting state.
+//  3. A retained live instance whose run is x is kept. Else the recorded instance is retired.
+//  4. Spawn from cand. A dependency that stops after step 2 does not make this start wait (as in a
+//     replace): no later wake starts another candidate.
+//
+// The caller holds pl.lifecycle and the start lease.
+func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *expectRun, e *configEntry, cand *pluginRun, lease *startLease) error {
+	if !x.matches(cand) {
+		return candidateChanged(pl.Name, cand, x, "nothing was retired or spawned")
+	}
+	h.mu.Lock()
+	var missing string
+	for _, d := range cand.Depends {
+		if !h.registeredLocked(d) {
+			missing = d
+			break
+		}
+	}
+	if missing != "" {
+		h.mu.Unlock()
+		return refuse("dependency_not_ready", "plugin %s: dependency %s is not registered; nothing was retired or spawned", pl.Name, missing)
+	}
+	prev := pl.Desired
+	pl.Desired = "running"
+	if err := h.savePlugin(ctx, pl); err != nil {
+		pl.Desired = prev
+		h.mu.Unlock()
+		return fmt.Errorf("plugin %s: the desired state was not saved: %w; nothing was retired or spawned", pl.Name, err)
+	}
+	member := pl.entry == e
+	keep := keepLive && member && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && x.matches(&pl.run)
+	if member {
+		pl.state, pl.refusal, pl.waiting = "", "", nil // admitted: not refused, not waiting
+	}
+	h.mu.Unlock()
+	if keep {
+		h.kickWaiting()
+		go h.changed("plugins")
+		return nil
+	}
+	if pl.BlockID != "" {
+		ok, err := h.retire(ctx, pl)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
+		}
+	}
+	return h.spawn(ctx, pl, cand, lease)
 }
