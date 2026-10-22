@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,5 +53,68 @@ func TestProfileResumeTemplate(t *testing.T) {
 	os.WriteFile(path, []byte(`{"profiles":[{"id":"x","name":"x","kind":"accessory","command":["x"],"resume":["x","${conversation_id}"]}]}`), 0o600)
 	if _, _, err := h.loadProfiles(); err == nil {
 		t.Error("an accessory profile has a resume template")
+	}
+}
+
+// resumeTestHub is a store-only hub with a resumable profile and one source spawn in block:old.
+func resumeTestHub(t *testing.T) *Hub {
+	t.Helper()
+	h, src := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.workersSchemaStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.cfg.Profiles = filepath.Join(cwd, "profiles.json")
+	os.WriteFile(h.cfg.Profiles, []byte(`{"profiles":[{"id":"agent","name":"Agent","kind":"agent","command":["/bin/echo"],"resume":["/bin/echo","${conversation_id}"]}]}`), 0o600)
+	if _, err := h.db.Exec(`UPDATE spawns SET cwd = ?, session_id = 'session:test', effective_args = '{}', block_id = 'block:old', status = 'closed' WHERE spawn_id = ?`, cwd, src.ID); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// A queued target launches only if its identity is still detached in the generation that was
+// admitted. A manual resume in between refuses the target; the frozen list stays.
+func TestResumeLaunchRechecksTheIdentity(t *testing.T) {
+	h := resumeTestHub(t)
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if _, err := h.db.Exec(`INSERT INTO identities VALUES (?, 'codex', ?, 'detached', 'block:old', '', '', 't0', 't0')`, "codex:"+id, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.adminResume(ctx, map[string]any{"key": "k", "kind": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	// A manual resume makes a current before the driver runs.
+	h.db.Exec(`UPDATE identities SET state = 'current', block_id = 'block:manual', updated = 't1' WHERE identity = 'codex:a'`)
+	old := spawnCreate
+	defer func() { spawnCreate = old }()
+	var creates []string
+	spawnCreate = func(_ context.Context, _ *Hub, _ string, req map[string]any, _ any) error {
+		creates = append(creates, fmt.Sprint(req))
+		return errors.New("injected: no answer")
+	}
+	if _, err := h.resumeStep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(creates) != 1 {
+		t.Fatalf("created %d panes, want 1 (only codex:b)", len(creates))
+	}
+	r, err := h.adminResume(ctx, map[string]any{"key": "k", "kind": "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, x := range r.(map[string]any)["targets"].([]any) {
+		e := x.(map[string]any)
+		got[e["agent"].(string)] = fmt.Sprint(e["phase"], " ", e["detail"])
+	}
+	if len(got) != 2 || !strings.HasPrefix(got["codex:a"], "refused ") || !strings.Contains(got["codex:a"], "changed after admission") ||
+		!strings.HasPrefix(got["codex:b"], "unknown ") {
+		t.Fatalf("targets: %v", got)
 	}
 }

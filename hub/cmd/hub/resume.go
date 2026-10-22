@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS agent_ops (op_id TEXT PRIMARY KEY, caller TEXT NOT NU
 CREATE TABLE IF NOT EXISTS agent_op_targets (op_id TEXT NOT NULL, identity TEXT NOT NULL, seq INTEGER NOT NULL,
   phase TEXT NOT NULL, source_spawn TEXT NOT NULL DEFAULT '', spawn_id TEXT NOT NULL DEFAULT '',
   block_id TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL,
+  admitted TEXT NOT NULL DEFAULT '', -- identities.updated at admission: the generation that may launch
   PRIMARY KEY (op_id, identity));
 -- One active target for each identity, across operations and keys.
 CREATE UNIQUE INDEX IF NOT EXISTS agent_op_active ON agent_op_targets (identity)
@@ -97,7 +98,7 @@ const (
 var activePhases = []string{"admitted", "launching", "launched", "prompt_sending", "prompt_sent", "unknown"}
 
 type opTarget struct {
-	op, identity, phase, sourceSpawn, spawn, block, detail, updated string
+	op, identity, phase, sourceSpawn, spawn, block, detail, updated, admitted string
 	seq                                                             int
 }
 
@@ -164,8 +165,8 @@ func (h *Hub) adminResume(ctx context.Context, args map[string]any) (any, error)
 				t.phase, t.detail = "refused", "busy: operation "+other+" is active for this agent"
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_op_targets (op_id, identity, seq, phase, source_spawn, detail, updated) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			opID, t.identity, i, t.phase, t.sourceSpawn, t.detail, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_op_targets (op_id, identity, seq, phase, source_spawn, detail, updated, admitted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			opID, t.identity, i, t.phase, t.sourceSpawn, t.detail, now, t.admitted); err != nil {
 			return nil, err
 		}
 	}
@@ -221,7 +222,7 @@ func (h *Hub) resumeTargets(ctx context.Context, req map[string]any) ([]opTarget
 	for _, id := range ids {
 		t := opTarget{identity: id, phase: "refused"}
 		var state, block string
-		h.db.QueryRowContext(ctx, `SELECT state, block_id FROM identities WHERE identity = ?`, id).Scan(&state, &block)
+		h.db.QueryRowContext(ctx, `SELECT state, block_id, updated FROM identities WHERE identity = ?`, id).Scan(&state, &block, &t.admitted)
 		src, err := h.sourceSpawn(ctx, id, block)
 		switch {
 		case state != "detached":
@@ -288,7 +289,7 @@ func (h *Hub) releaseTarget(ctx context.Context, key, request, identity string) 
 }
 
 func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTarget, error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated
+	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted
 		FROM agent_op_targets WHERE `+where+` ORDER BY updated, seq`, args...)
 	if err != nil {
 		return nil, err
@@ -297,7 +298,7 @@ func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTar
 	var out []opTarget
 	for rows.Next() {
 		var t opTarget
-		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated); err != nil {
+		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -518,6 +519,16 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 	}
 	defer tx.Rollback()
 	why := ""
+	// The identity must still be detached in the generation that was admitted: a manual resume, or
+	// any report, since then refuses this target (the frozen list is not resolved again). The store
+	// has one connection, so no identity report commits between this check and the spawn row.
+	var state, updated string
+	tx.QueryRowContext(ctx, `SELECT state, updated FROM identities WHERE identity = ?`, t.identity).Scan(&state, &updated)
+	if state != "detached" || updated != t.admitted {
+		tx.Rollback()
+		h.setPhase(ctx, t, "admitted", "refused", fmt.Sprintf("the agent changed after admission (now %s)", state), nil)
+		return nil
+	}
 	if path, owner, err := lockedPath(ctx, tx, s.Cwd); err != nil {
 		return err
 	} else if path != "" {
