@@ -424,9 +424,18 @@ type pullResult struct {
 // pullPlan is what a merge decides, before any fetch: one result for each source, the imported
 // pins to fetch, and the base of the peer after a successful pull.
 type pullPlan struct {
-	results []pullResult
-	take    map[string]pinEntry
-	base    map[string]basePin
+	results  []pullResult
+	take     map[string]pinEntry
+	base     map[string]basePin
+	warnings []string // for standard error: a taken release tag lower than the local one
+}
+
+// lower reports whether the release tag a is lower than the release tag b. A missing tag is not
+// lower and has nothing lower.
+func lower(a, b string) bool {
+	va, okA := parseVersionTag(a)
+	vb, okB := parseVersionTag(b)
+	return okA && okB && compareVersions(va, vb) < 0
 }
 
 // mergePins merges the document doc into the lock for the GitHub sources keys of this config and
@@ -453,7 +462,7 @@ func mergePins(keys []string, lock *pluginLock, base map[string]basePin, doc *pi
 	}
 	resolved := map[string]bool{}
 	for _, p := range doc.Entries {
-		r := pullResult{Source: p.Source, Peer: basePin{Commit: p.Commit, Digest: p.Digest}}
+		r := pullResult{Source: p.Source, Peer: basePin{Commit: p.Commit, Digest: p.Digest, Tag: p.Tag}}
 		if !local[p.Source] {
 			r.Outcome = pullIgnored
 			plan.results = append(plan.results, r)
@@ -462,7 +471,7 @@ func mergePins(keys []string, lock *pluginLock, base map[string]basePin, doc *pi
 		le := lock.Plugins[p.Source]
 		b, hasBase := base[p.Source]
 		if le != nil {
-			r.Local = basePin{Commit: le.Commit, Digest: le.Digest}
+			r.Local = basePin{Commit: le.Commit, Digest: le.Digest, Tag: le.Tag}
 		}
 		switch {
 		case le == nil:
@@ -484,6 +493,10 @@ func mergePins(keys []string, lock *pluginLock, base map[string]basePin, doc *pi
 		case pullTaken, pullResolvedTake:
 			plan.take[p.Source] = p
 			plan.base[p.Source] = r.Peer
+			if lower(r.Peer.Tag, r.Local.Tag) {
+				// The merge follows a peer that went back on purpose; stdout keeps its tokens.
+				plan.warnings = append(plan.warnings, fmt.Sprintf("plugin pull: warning: %s: lower version %s than the local %s", p.Source, r.Peer.Tag, r.Local.Tag))
+			}
 		case pullUnchanged, pullResolvedKeep:
 			plan.base[p.Source] = r.Peer
 		}
@@ -677,6 +690,15 @@ func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []strin
 	// The lock and the base are written, so an output error claims no unchanged lock.
 	if err := plan.write(w); err != nil {
 		return false, fmt.Errorf("plugin pull: the lock and the base are written, but the result lines are not: %w", err)
+	}
+	if o.warn != nil {
+		var lines []string
+		for _, l := range plan.warnings {
+			lines = append(lines, l+"\n")
+		}
+		if err := writeLines(o.warn, lines); err != nil {
+			return false, fmt.Errorf("plugin pull: the lock and the base are written, but the warnings are not: %w", err)
+		}
 	}
 	return plan.conflicts(), nil
 }

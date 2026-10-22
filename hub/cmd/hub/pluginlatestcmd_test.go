@@ -308,3 +308,141 @@ func TestLatestIgnoredOnUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// setTag replaces the tag of the latest entry in the lock of env (a hand edit; the commit stays).
+func (env *cmdEnv) setTag(tag string) {
+	env.t.Helper()
+	l := env.lock()
+	l.Plugins[srcLatest].Tag = tag
+	if err := writeLock(filepath.Join(env.dir, "hub.lock.json"), l); err != nil {
+		env.t.Fatal(err)
+	}
+}
+
+// pullWarn runs plugin pull like env.pull, and also gives the warning lines.
+func (env *cmdEnv) pullWarn(cfg, doc string, take, keep []string) (string, string, error) {
+	env.t.Helper()
+	var warn bytes.Buffer
+	env.opts.warn = &warn
+	defer func() { env.opts.warn = nil }()
+	out, _, err := env.pull(cfg, doc, take, keep)
+	return out, warn.String(), err
+}
+
+// The merge compares commit, digest and tag. The same commit with a higher tag is taken, and the
+// lock and the base advance to the tag. A lower tag is taken too (the peer went back on purpose),
+// with a warning on standard error only: the result lines keep their form. A conflict with tags
+// resolves with -take and -keep.
+func TestLatestPull(t *testing.T) {
+	a, b := machines(t)
+	r := a.repo("lazy-rex", "Messaging", "messaging")
+	c1 := r.git("rev-parse", "HEAD")
+	r.git("tag", "v1.0.0")
+	cfgA, cfgB := a.config(srcLatest), b.config(srcLatest)
+	if err := a.sync(cfgA); err != nil {
+		t.Fatal(err)
+	}
+	line := func(outcome, local, peer string) string {
+		return outcome + "\t" + srcLatest + "\tlocal " + local + "\tpeer " + peer + "\n"
+	}
+	if out, warn, err := b.pullWarn(cfgB, a.mustExport(cfgA), nil, nil); err != nil || out != line("taken", "-", c1) || warn != "" {
+		t.Fatalf("b takes: %q %q %v", out, warn, err)
+	}
+	if out, _, err := a.pullWarn(cfgA, b.mustExport(cfgB), nil, nil); err != nil || out != line("unchanged", c1, c1) {
+		t.Fatalf("a unchanged: %q %v", out, err)
+	}
+
+	// The same commit, a higher tag.
+	r.git("tag", "v1.1.0")
+	if err := b.update(cfgB); err != nil || b.lock().Plugins[srcLatest].Tag != "v1.1.0" {
+		t.Fatalf("b update: %v", err)
+	}
+	if out, warn, err := a.pullWarn(cfgA, b.mustExport(cfgB), nil, nil); err != nil || out != line("taken", c1, c1) || warn != "" {
+		t.Fatalf("higher tag: %q %q %v", out, warn, err)
+	}
+	if le := a.lock().Plugins[srcLatest]; le.Tag != "v1.1.0" || le.Commit != c1 {
+		t.Fatalf("a after the higher tag: %+v", le)
+	}
+	peers, err := readPeers(filepath.Join(a.dir, "hub.lock.json"))
+	if err != nil || len(peers.Peers) != 1 {
+		t.Fatalf("base: %+v %v", peers, err)
+	}
+	for _, pins := range peers.Peers {
+		if p := pins[srcLatest]; p.Tag != "v1.1.0" || p.Commit != c1 {
+			t.Fatalf("base pin %+v", p)
+		}
+	}
+	if pb, _ := os.ReadFile(filepath.Join(a.dir, "hub.lock.json.peers.json")); !bytes.HasPrefix(pb, []byte("{\n  \"version\": 2,")) {
+		t.Fatalf("base file:\n%s", pb)
+	}
+
+	// The peer goes back to v1.0.0 on purpose.
+	b.setTag("v1.0.0")
+	out, warn, err := a.pullWarn(cfgA, b.mustExport(cfgB), nil, nil)
+	if err != nil || out != line("taken", c1, c1) || warn != "plugin pull: warning: "+srcLatest+": lower version v1.0.0 than the local v1.1.0\n" {
+		t.Fatalf("lower tag: %q %q %v", out, warn, err)
+	}
+	if le := a.lock().Plugins[srcLatest]; le.Tag != "v1.0.0" {
+		t.Fatalf("a after the lower tag: %+v", le)
+	}
+
+	// Both sides changed: a conflict; -take and -keep resolve it.
+	a.setTag("v1.1.0")
+	c2 := r.commit(map[string]string{"main.lua": "2"})
+	r.git("tag", "v1.2.0")
+	if err := b.update(cfgB); err != nil {
+		t.Fatal(err)
+	}
+	doc := b.mustExport(cfgB)
+	before := a.lockBytes()
+	if out, _, err := a.pullWarn(cfgA, doc, nil, nil); err != nil || out != line("conflict", c1, c2) || !bytes.Equal(before, a.lockBytes()) {
+		t.Fatalf("conflict: %q %v", out, err)
+	}
+	if out, warn, err := a.pullWarn(cfgA, doc, nil, []string{srcLatest}); err != nil || out != line("resolved-keep", c1, c2) || warn != "" ||
+		!bytes.Equal(before, a.lockBytes()) {
+		t.Fatalf("-keep: %q %q %v", out, warn, err)
+	}
+	// After -keep the base is the peer pin: the peer moves again, and the local pin differs from
+	// the base, so it is a conflict again.
+	c3 := r.commit(map[string]string{"main.lua": "3"})
+	r.git("tag", "v1.3.0")
+	if err := b.update(cfgB); err != nil {
+		t.Fatal(err)
+	}
+	doc = b.mustExport(cfgB)
+	if out, warn, err := a.pullWarn(cfgA, doc, []string{srcLatest}, nil); err != nil || out != line("resolved-take", c1, c3) || warn != "" {
+		t.Fatalf("-take: %q %q %v", out, warn, err)
+	}
+	if la, lb := a.lock().Plugins[srcLatest], b.lock().Plugins[srcLatest]; la.lockPin != lb.lockPin || la.Tag != "v1.3.0" {
+		t.Fatalf("-take: %+v, want %+v", la.lockPin, lb.lockPin)
+	}
+
+	// A warning that cannot be written is an error, after the lock and the base are written.
+	b.setTag("v1.1.0")
+	a.opts.warn = failWriter{}
+	_, _, err = a.pull(cfgA, b.mustExport(cfgB), nil, nil)
+	a.opts.warn = nil
+	if err == nil || !strings.HasPrefix(err.Error(), "plugin pull: the lock and the base are written, but the warnings are not: ") {
+		t.Fatalf("warning output: %v", err)
+	}
+	if le := a.lock().Plugins[srcLatest]; le.Tag != "v1.1.0" || le.Commit != c3 {
+		t.Fatalf("after the warning failure: %+v", le)
+	}
+}
+
+// The tag alone is a difference: the same commit and digest with another tag, and no base, is a
+// conflict, not unchanged.
+func TestLatestMergeComparesTag(t *testing.T) {
+	p := testLatestPin()
+	lock := &pluginLock{Version: 2, Plugins: map[string]*lockEntry{p.Source: {lockPin: p.lockPin}}}
+	other := p
+	other.Tag = "v1.3.0"
+	plan, err := mergePins([]string{p.Source}, lock, nil, &pinDoc{Hub: pinHub, Entries: []pinEntry{other}}, nil, nil)
+	if err != nil || len(plan.results) != 1 || plan.results[0].Outcome != pullConflict {
+		t.Fatalf("got %+v %v", plan, err)
+	}
+	plan, err = mergePins([]string{p.Source}, lock, nil, &pinDoc{Hub: pinHub, Entries: []pinEntry{p}}, nil, nil)
+	if err != nil || plan.results[0].Outcome != pullUnchanged || plan.base[p.Source].Tag != "v1.2.0" {
+		t.Fatalf("got %+v %v", plan, err)
+	}
+}

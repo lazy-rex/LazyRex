@@ -29,6 +29,8 @@ type pluginCmdOpts struct {
 	// afterResolve runs after update resolves the ref of source and before it fetches, so a test
 	// can move the ref between the two. nil in production.
 	afterResolve func(source string)
+	// warn takes the warning lines of a command (standard error). nil: no warnings.
+	warn io.Writer
 }
 
 func (o pluginCmdOpts) url(r githubRef) string {
@@ -682,7 +684,7 @@ func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 		err = pluginExport(*cfgPath, stdout)
 	case "pull":
 		var conflict bool
-		conflict, err = pluginPull(ctx, *cfgPath, docPath, take, keep, pluginCmdOpts{}, stdout)
+		conflict, err = pluginPull(ctx, *cfgPath, docPath, take, keep, pluginCmdOpts{warn: stderr}, stdout)
 		if err == nil && conflict {
 			return 1
 		}
