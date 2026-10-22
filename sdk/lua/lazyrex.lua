@@ -446,8 +446,8 @@ function M.plugin(name)
   end
   -- app.command(spec): an extra hub.register command (a palette entry).
   function app.command(spec) commands[#commands + 1] = spec end
-  -- app.start(fn, opts): runs once at start, after the migrations, in one transaction, before the
-  -- registration. opts.after_register = true runs it after hub.register.
+  -- app.start(fn, opts): runs once at start, after the registration and the migrations, in one
+  -- transaction. opts.after_register = true runs it after the other start functions.
   function app.start(fn, opts) starts[#starts + 1] = {fn = fn, opts = opts or {}} end
 
   -- Callbacks: each run is a frame with one transaction (opts.tx = false: each SQL call alone). An
@@ -648,9 +648,11 @@ function M.plugin(name)
       if have < #migrations then db.exec('PRAGMA user_version = ' .. #migrations) end
     end)
   end
+  -- The hub refuses hub.sql from an instance that is not registered (hub/sql 07049a7, observed by
+  -- Profiles in a lab), so the registration comes first. Then the migrations and the start code run in
+  -- the same timer callback: Rex runs one handler at a time, so a call that arrives meanwhile waits
+  -- until they end (docs/rex-protocol.md).
   function S.register()
-    migrate()
-    for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
     local keymap, exports, seen = {}, {}, {}
     local function hub_call(n)
       if seen[n] then return end
@@ -681,7 +683,8 @@ function M.plugin(name)
     if #commands > 0 then reg.commands = commands end
     hub('hub.register', reg)
     rex.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
-    -- Start code that needs a registered plugin (for example hub.ui.tabs).
+    migrate()
+    for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
     for _, s in ipairs(starts) do if s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
   end
   rex.after(0, function()

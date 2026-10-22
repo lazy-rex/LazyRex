@@ -52,7 +52,7 @@ test('a database with a newer schema stops the start', function()
   local ok, err = pcall(function() s:start() end)
   expect(ok, tostring(err)).to_be(true)
   expect(s.exited).to_be(1)
-  expect(s.registered, 'not registered').to_be(nil)
+  expect(s.registered ~= nil, 'registered first: the hub refuses SQL before it').to_be(true)
   expect(s.printed[1]).to_match('schema version 2')
 end)
 
@@ -529,4 +529,18 @@ app.start(function() order[#order + 1] = 'after:' .. tostring(registered_seen) e
 app.action('p.order', {}, function() return {order = order} end, {store = false})]],
     {hub = {['hub.register'] = function(a) registered_seen = true; return {} end}})
   expect(s:agent('p.order', {}).result.order).to_equal({'before', 'after:true'})
+end)
+
+test('the SDK registers before its first SQL call (the hub refuses SQL from an unregistered instance)', function()
+  local seen = {}
+  local s = sandbox(sdk_dir, base, {main = TODO, hub = {['hub.sql.begin'] = function(a)
+    if not seen.registered then return nil, {code = 'refused', message = 'only a registered plugin instance may call hub.sql.begin'} end
+    seen.begins = (seen.begins or 0) + 1
+    return {tx = 'tx-r'}
+  end, ['hub.register'] = function() seen.registered = true; return {} end,
+  ['hub.sql.commit'] = function() return {} end, ['hub.sql.query'] = function() return {columns = {'user_version'}, rows = {{0}}, complete = true} end,
+  ['hub.sql.exec'] = function() return {changes = 0, id = 0} end}})
+  s:start()
+  expect(s.exited, show(s.printed)).to_be(nil)
+  expect(seen.begins, 'the migration ran').to_be(1)
 end)
