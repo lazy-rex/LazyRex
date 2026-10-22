@@ -485,9 +485,12 @@ func (h *Hub) childIn(ctx context.Context, sess, blockID string) (int, error) {
 	return out.Child.PID, nil
 }
 
-// uiPlugins returns the plugins with declared tabs, the home plugin first.
+// uiPlugins returns the plugins with declared tabs or a live tab view (the views that loadViews
+// reads), the home plugin first. A plugin that declares no tabs keeps its pass while a view of it
+// is live, so that view closes (or retires) and is not stranded.
 func (h *Hub) uiPlugins(ctx context.Context) ([]string, error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT DISTINCT plugin FROM ui_tabs ORDER BY plugin`)
+	rows, err := h.db.QueryContext(ctx, `SELECT plugin FROM ui_tabs UNION
+		SELECT plugin FROM views WHERE status != 'closed' AND tab != '`+formTab+`' ORDER BY plugin`)
 	if err != nil {
 		return nil, err
 	}
