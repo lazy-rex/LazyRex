@@ -34,7 +34,7 @@ func TestLayoutFitsAndPinsComposer(t *testing.T) {
 				m.dark = dark
 				m.status = "Connected"
 				m.apply(conversationSnapshot(8))
-				m.editors["composer"].Area.SetValue("A draft ready to send")
+				m.editors["composer"].setText("A draft ready to send")
 				view := m.View()
 				lines := strings.Split(view.Content, "\n")
 				if len(lines) != size[1] {

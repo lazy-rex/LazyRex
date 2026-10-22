@@ -183,21 +183,22 @@ func TestBrowseTargetIsOneRow(t *testing.T) {
 	m.apply(flowSnapshot())
 	browse := controlRows(m, "browse:start/dir")
 	edit := controlRows(m, "edit:start/dir")
-	if len(browse) != 1 || len(edit) != 3 || browse[0] != edit[1] {
-		t.Fatalf("Browse rows %v, text box rows %v", browse, edit)
+	// huh's Input shape: the input is one row, and Browse… sits on it.
+	if len(browse) != 1 || len(edit) != 1 || browse[0] != edit[0] {
+		t.Fatalf("Browse rows %v, text input rows %v", browse, edit)
 	}
 	c := controlAt(m, browse[0], "browse:start/dir")
 	x := m.leftMargin() + c.Left
 	if hit, ok := m.hitControl(x, browse[0]); !ok || hit.ID != c.ID {
 		t.Fatal("Browse has no target")
 	}
-	for _, y := range []int{edit[0], edit[2]} {
+	for _, y := range []int{edit[0] - 1, edit[0] + 1} {
 		if hit, ok := m.hitControl(x, y); ok && hit.ID == c.ID {
-			t.Fatalf("Border row %d hits Browse", y)
+			t.Fatalf("Row %d hits Browse", y)
 		}
 	}
 	if !strings.Contains(ansi.Strip(m.screenRows()[browse[0]].Text), "  Browse…  ") {
-		t.Fatal("Browse… is not on the text row")
+		t.Fatal("Browse… is not on the input row")
 	}
 }
 

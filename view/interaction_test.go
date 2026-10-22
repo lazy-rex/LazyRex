@@ -32,7 +32,7 @@ func TestEditorWheelPreservesTextAndCursor(t *testing.T) {
 	m.apply(conversationSnapshot(20))
 	e := m.editors["composer"]
 	text := strings.Repeat("draft line\n", 30) + "last"
-	e.Area.SetValue(text)
+	e.setText(text)
 	e.Area.CursorEnd()
 	if e.Area.Height() <= m.editorHeight(e) {
 		t.Fatal("Long draft did not grow")
@@ -54,7 +54,7 @@ func TestEditorWheelPreservesTextAndCursor(t *testing.T) {
 	if e.Scroll >= offset || !e.Reviewing {
 		t.Fatal("Wheel did not scroll editor")
 	}
-	if e.Area.Value() != text || e.Area.Line() != before || m.scroll != history {
+	if e.text() != text || e.Area.Line() != before || m.scroll != history {
 		t.Fatal("Editor wheel changed text, cursor, or history")
 	}
 	m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp, X: m.leftMargin() + 2, Y: 4})
@@ -65,7 +65,7 @@ func TestEditorWheelPreservesTextAndCursor(t *testing.T) {
 func TestHoverDoesNotChangeFocusAndDragOutCancels(t *testing.T) {
 	m := testModel()
 	m.apply(conversationSnapshot(1))
-	m.editors["composer"].Area.SetValue("draft")
+	m.editors["composer"].setText("draft")
 	var target control
 	y := -1
 	for i, r := range m.screenRows() {
@@ -173,7 +173,7 @@ func TestPaddedSendTargetsMatchVisibleRows(t *testing.T) {
 		m := testModel()
 		m.width = width
 		m.apply(conversationSnapshot(2))
-		m.editors["composer"].Area.SetValue("draft")
+		m.editors["composer"].setText("draft")
 		count := 0
 		for y, r := range m.screenRows() {
 			if r.Control == nil || r.Control.Kind != "send" {
@@ -264,7 +264,7 @@ func TestFormShortcutFromComposer(t *testing.T) {
 		t.Fatalf("Ctrl+N focus=%q", m.focus)
 	}
 	m.Update(tea.KeyPressMsg{Code: 'A', Text: "Ada"})
-	if m.editors["form/name"].Area.Value() != "Ada" || m.editors["composer"].Area.Value() != "" {
+	if m.editors["form/name"].text() != "Ada" || m.editors["composer"].text() != "" {
 		t.Fatal("Typing did not stay in form field")
 	}
 }
@@ -274,7 +274,7 @@ func TestButtonHoverChangesTheButton(t *testing.T) {
 		m := testModel()
 		m.dark = dark
 		m.apply(conversationSnapshot(2))
-		m.editors["composer"].Area.SetValue("draft")
+		m.editors["composer"].setText("draft")
 		m.View()
 		x, y := -1, -1
 		for i, r := range m.visibleRows {

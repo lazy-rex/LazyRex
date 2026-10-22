@@ -83,7 +83,7 @@ func (m *model) browseInput(id string, msg tea.Msg) {
 			m.endBrowse()
 		}
 	case tea.PasteMsg:
-		m.editors[id].Area.SetValue("")
+		m.editors[id].setText("")
 		m.endBrowse()
 	}
 }

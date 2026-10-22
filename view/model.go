@@ -9,13 +9,16 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 )
 
 type editor struct {
-	Area                                        textarea.Model
+	Area textarea.Model
+	// Input holds the value of a field of kind text. Other kinds use Area.
+	Input                                       textinput.Model
 	Saved, Revision, RemoteText, RemoteRevision string
 	Pending                                     string
 	WantSend                                    bool
@@ -123,7 +126,14 @@ func newEditor(text, rev, kind string) *editor {
 	a.SetWidth(70)
 	a.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "ctrl+j"))
 	a.SetValue(plain(text))
-	return &editor{Area: a, Saved: text, Revision: rev, RemoteText: text, RemoteRevision: rev, Kind: kind}
+	e := &editor{Area: a, Saved: text, Revision: rev, RemoteText: text, RemoteRevision: rev, Kind: kind}
+	if kind == "text" {
+		e.Input = textinput.New()
+		e.setText(text)
+		// The input changes newlines and tabs to spaces. A field shows its normalized value clean.
+		e.Saved = e.text()
+	}
+	return e
 }
 
 // Keep a valid choice. Otherwise, use the first option or an empty value.
@@ -220,10 +230,6 @@ func (m *model) apply(s Snapshot) {
 					e.SavedChoice = f.Value
 					e.Area.Placeholder = ""
 					m.editors[id] = e
-					if f.Kind == "text" {
-						e.Area.SetHeight(1)
-						e.Area.KeyMap.InsertNewline.SetEnabled(false)
-					}
 				} else if m.fieldRevisionChanged(n.ID, f) || (!old.dirty() && (m.browse == nil || m.browse.Editor != id) && m.fieldValueChanged(n.ID, f)) {
 					if m.browse != nil && m.browse.Editor == id {
 						m.endBrowse()
@@ -232,8 +238,11 @@ func (m *model) apply(s Snapshot) {
 						old.Choice, old.SavedChoice = f.Value, f.Value
 					} else {
 						value, _ := f.Value.(string)
-						old.Area.SetValue(plain(value))
+						old.setText(value)
 						old.Saved = value
+						if f.Kind == "text" {
+							old.Saved = old.text()
+						}
 					}
 				}
 				if f.Kind == "select" {
@@ -337,6 +346,11 @@ func (m *model) resizeEditors() {
 		styles.Focused.CursorLine = styles.Focused.Text
 		styles.Blurred.CursorLine = styles.Blurred.Text
 		e.Area.SetStyles(styles)
+		if e.Kind == "text" {
+			// The bar, the prompt and the cell for the cursor after the last character.
+			e.Input.SetWidth(max(1, width-inputBar-lipgloss.Width(e.Input.Prompt)-1))
+			e.Input.SetStyles(m.inputStyles())
+		}
 	}
 }
 func (m *model) setFocus(id string) tea.Cmd {
@@ -349,10 +363,14 @@ func (m *model) setFocus(id string) tea.Cmd {
 	m.focus = id
 	var cmds []tea.Cmd
 	for key, e := range m.editors {
-		if id == "edit:"+key {
-			cmds = append(cmds, e.Area.Focus())
-		} else {
+		switch {
+		case id != "edit:"+key:
 			e.Area.Blur()
+			e.Input.Blur()
+		case e.Kind == "text":
+			cmds = append(cmds, e.Input.Focus())
+		default:
+			cmds = append(cmds, e.Area.Focus())
 		}
 	}
 	return tea.Batch(cmds...)
@@ -614,7 +632,7 @@ func (m *model) activate(c control) tea.Cmd {
 			if f.Kind == "boolean" || f.Kind == "select" {
 				values[f.ID] = e.Choice
 			} else {
-				values[f.ID] = e.Area.Value()
+				values[f.ID] = e.text()
 			}
 			if m.fieldVisible(c.Node, f) && f.Required && (values[f.ID] == nil || values[f.ID] == "") {
 				m.status = "Complete " + f.Label
@@ -822,26 +840,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+t":
 			m.selectText = !m.selectText
 			return m, nil
-		case "tab", "shift+tab":
-			cs := m.controls()
-			if len(cs) == 0 {
-				return m, nil
-			}
-			idx := 0
-			for i, c := range cs {
-				if c.ID == m.focus {
-					idx = i
-					break
-				}
-			}
-			if msg.String() == "tab" {
-				idx = (idx + 1) % len(cs)
-			} else {
-				idx = (idx + len(cs) - 1) % len(cs)
-			}
-			cmd := m.setFocus(cs[idx].ID)
-			m.revealFocus()
-			return m, cmd
+		case "tab":
+			return m, m.moveFocus(1)
+		case "shift+tab":
+			return m, m.moveFocus(-1)
 		case "pgup":
 			m.scroll = max(0, m.scroll-m.bodyHeight())
 			return m, nil
@@ -872,6 +874,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if n := m.node(c.Node); n != nil && n.Type == "composer" {
 							return m, m.activate(control{Node: c.Node, Kind: "send"})
 						}
+						// Enter in a one-line text field moves to the next control, as in huh.
+						if e := m.editors[editorID(c.Node, c.Field)]; e != nil && e.Kind == "text" {
+							return m, m.moveFocus(1)
+						}
 						break
 					}
 					return m, m.activate(c)
@@ -884,14 +890,18 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		e := m.editors[id]
 		if e != nil {
 			m.browseInput(id, msg)
-			old := e.Area.Value()
+			old := e.text()
 			var cmd tea.Cmd
-			e.Area, cmd = e.Area.Update(msg)
+			if e.Kind == "text" {
+				e.Input, cmd = e.Input.Update(msg)
+			} else {
+				e.Area, cmd = e.Area.Update(msg)
+			}
 			switch msg.(type) {
 			case tea.KeyPressMsg, tea.PasteMsg:
 				e.Reviewing = false
 			}
-			if e.Area.Value() != old && e.Kind == "composer" {
+			if e.text() != old && e.Kind == "composer" {
 				return m, tea.Batch(cmd, m.save(id))
 			}
 			return m, cmd
@@ -948,4 +958,22 @@ func (m *model) setDark(dark bool) {
 	m.dark = dark
 	m.markdown = nil
 	m.resizeEditors()
+}
+
+// moveFocus moves the focus by delta controls, wrapping at the ends, and reveals the control.
+func (m *model) moveFocus(delta int) tea.Cmd {
+	cs := m.controls()
+	if len(cs) == 0 {
+		return nil
+	}
+	idx := 0
+	for i, c := range cs {
+		if c.ID == m.focus {
+			idx = i
+			break
+		}
+	}
+	cmd := m.setFocus(cs[(idx+delta+len(cs))%len(cs)].ID)
+	m.revealFocus()
+	return cmd
 }

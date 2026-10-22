@@ -68,7 +68,7 @@ func TestTypingAfterMotionBurst(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	frame := m.View()
 	elapsed := time.Since(start)
-	if e.Area.Value() != "x" || !strings.Contains(frame.Content, "x") {
+	if e.text() != "x" || !strings.Contains(frame.Content, "x") {
 		t.Fatal("Key did not reach editor and frame")
 	}
 	// This budget includes race instrumentation and a burst of 256 pointer events.

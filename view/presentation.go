@@ -278,6 +278,28 @@ func (m *model) bodyRows() []row {
 					} else {
 						button(value+" ▾", id, choiceControl)
 					}
+				} else if f.Kind == "text" {
+					// huh's Input shape: one row with a bar and a prompt. Browse… sits beside it, or
+					// under it in a narrow pane.
+					c := &control{ID: "edit:" + id, Node: n.ID, Field: f.ID, Kind: "edit", HitWidth: m.controlWidth()}
+					bw := browseWidth(f, m.controlWidth())
+					if bw > 0 && browseBeside(m.controlWidth()) {
+						c.HitWidth = m.controlWidth() - bw - 1
+					}
+					line := m.inputView(c.ID, e, c.HitWidth)
+					if bw > 0 {
+						bc := control{ID: "browse:" + id, Node: n.ID, Field: f.ID, Kind: "browse", HitWidth: bw}
+						b := m.buttonView(bc.ID, "Browse…", bw, false, m.ready && len(m.operations) == 0)
+						if browseBeside(m.controlWidth()) {
+							bc.Left = c.HitWidth + 1
+							add(line+" "+b, id, c, bc)
+						} else {
+							add(line, id, c)
+							add(b, id+":browse", &bc)
+						}
+					} else {
+						add(line, id, c)
+					}
 				} else {
 					c := &control{ID: "edit:" + id, Node: n.ID, Field: f.ID, Kind: "edit", HitWidth: m.controlWidth()}
 					border := p.control

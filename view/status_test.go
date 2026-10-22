@@ -67,7 +67,7 @@ func TestClosingActionWaitsForUnsavedDraft(t *testing.T) {
 	if composer == "" {
 		t.Fatal("no composer in the test snapshot")
 	}
-	m.editors[composer].Area.SetValue("unsaved text")
+	m.editors[composer].setText("unsaved text")
 	m.activate(control{Kind: "action", Node: "archive", Action: archive})
 	save := m.editors[composer].Pending
 	if len(m.operations) != 1 || !m.operations[save] || m.afterSave == nil {

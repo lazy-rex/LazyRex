@@ -1,6 +1,7 @@
 package main
 
 import (
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"strings"
@@ -53,4 +54,37 @@ func (m *model) buttonView(id, text string, width int, primary, enabled bool) st
 		return stripe(left) + style.Render(label) + stripe(remaining-left)
 	}
 	return style.Width(width).Align(lipgloss.Center).Render(text)
+}
+
+// inputBar is the width of the bar before a text input: the bar and one space.
+const inputBar = 2
+
+// inputStyles are the text input styles of huh's ThemeCharm in our roles: the prompt has the
+// highlight role while the input has focus.
+func (m *model) inputStyles() textinput.Styles {
+	p := m.palette()
+	s := textinput.DefaultStyles(m.dark)
+	s.Focused.Text = lipgloss.NewStyle().Foreground(p.text)
+	s.Focused.Placeholder = lipgloss.NewStyle().Foreground(p.muted)
+	s.Focused.Prompt = lipgloss.NewStyle().Foreground(p.highlight)
+	s.Blurred = s.Focused
+	s.Blurred.Prompt = lipgloss.NewStyle().Foreground(p.control)
+	s.Cursor.Color = p.accent
+	return s
+}
+
+// inputView is one row of exactly width cells: huh's thick bar while the input has focus or the
+// pointer, then the input with its prompt.
+func (m *model) inputView(id string, e *editor, width int) string {
+	bar := strings.Repeat(" ", inputBar)
+	if m.focus == id || m.hover == id {
+		bar = lipgloss.NewStyle().Foreground(m.palette().control).Render("┃") + " "
+	}
+	line := bar + e.Input.View()
+	if w := ansi.StringWidth(line); w > width {
+		line = ansi.Truncate(line, width, "")
+	} else {
+		line += strings.Repeat(" ", width-w)
+	}
+	return line
 }

@@ -18,7 +18,7 @@ func TestMenuOpensSidePaneWithNormalAction(t *testing.T) {
 		s.Tree.Nodes = append([]Node{{ID: "thread-menu", Type: "menu", Label: "Thread…", Action: &Action{Name: "open", Enabled: true}}}, s.Tree.Nodes...)
 		m.apply(s)
 		m.setFocus("edit:composer")
-		m.editors["composer"].Area.SetValue("unsaved draft")
+		m.editors["composer"].setText("unsaved draft")
 		_, cmd := m.Update(event)
 		runMenuCmd(cmd)
 		select {
@@ -29,7 +29,7 @@ func TestMenuOpensSidePaneWithNormalAction(t *testing.T) {
 		default:
 			t.Fatal("menu action missing")
 		}
-		if m.editors["composer"].Area.Value() != "unsaved draft" {
+		if m.editors["composer"].text() != "unsaved draft" {
 			t.Fatal("opening the menu changed the draft")
 		}
 	}
@@ -91,7 +91,7 @@ func TestFormCancelBeforeFirstSnapshot(t *testing.T) {
 func TestFormCancelDiscardsOnlyUnsubmittedValues(t *testing.T) {
 	m := testModel()
 	m.snapshot.Route = "/forms/new-thread"
-	m.editors["composer"].Area.SetValue("local form value")
+	m.editors["composer"].setText("local form value")
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Fatal("Cancel did not exit")
@@ -172,9 +172,9 @@ func TestSpaceTogglesChoiceAndRemainsTextInEditor(t *testing.T) {
 		t.Fatal("Space toggle did not show remote field")
 	}
 	m.setFocus("edit:composer")
-	before := m.editors["composer"].Area.Value()
+	before := m.editors["composer"].text()
 	m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	if len(m.editors["composer"].Area.Value()) != len(before)+1 {
+	if len(m.editors["composer"].text()) != len(before)+1 {
 		t.Fatal("Space was consumed in composer")
 	}
 }
@@ -185,7 +185,7 @@ func TestFailedEffectKeepsSavedValuesAndRetriesOnlyEffect(t *testing.T) {
 	s.Route = "/forms/new-thread"
 	s.Tree.Nodes = []Node{{ID: "new", Type: "form", Fields: []Field{{ID: "title", Kind: "text", Value: ""}}, SubmitAction: &Action{Name: "submit", Enabled: true}}}
 	m.apply(s)
-	m.editors[editorID("new", "title")].Area.SetValue("Review")
+	m.editors[editorID("new", "title")].setText("Review")
 	req := request(t, m, m.activate(control{Kind: "submit", Node: "new", Action: s.Tree.Nodes[0].SubmitAction}))
 	m.finish(completed{Request: req, Outcome: operationResult{Status: "succeeded", Effects: "failed", EffectsError: "Target unavailable"}})
 	if m.editors[editorID("new", "title")].dirty() {

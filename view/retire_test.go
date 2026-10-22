@@ -8,7 +8,7 @@ import (
 
 func TestRetireWaitsForSaveAndDoesNotReload(t *testing.T) {
 	m := testModel()
-	m.editors["composer"].Area.SetValue("keep this")
+	m.editors["composer"].setText("keep this")
 	req := request(t, m, m.save("composer"))
 	m.Update(reloadRequested{})
 	m.Update(retireRequested{})
@@ -30,7 +30,7 @@ func TestRetirePreservesUnsafeState(t *testing.T) {
 		"recovery": func(m *model) { m.recovery["removed"] = "keep" },
 		"form": func(m *model) {
 			e := newEditor("original", "", "text")
-			e.Area.SetValue("changed")
+			e.setText("changed")
 			m.editors["form/text"] = e
 		},
 		"operation":    func(m *model) { m.operations["unknown"] = true },

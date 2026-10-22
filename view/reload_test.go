@@ -7,7 +7,7 @@ import (
 
 func TestReloadWaitsForSaveResult(t *testing.T) {
 	m := testModel()
-	m.editors["composer"].Area.SetValue("keep this")
+	m.editors["composer"].setText("keep this")
 	req := request(t, m, m.save("composer"))
 	m.Update(reloadRequested{})
 	if m.reloadReady {
@@ -28,7 +28,7 @@ func TestReloadPreservesUnsafeState(t *testing.T) {
 		"removed":  func(m *model) { m.recovery["removed"] = "keep" },
 		"form text": func(m *model) {
 			e := newEditor("original", "", "text")
-			e.Area.SetValue("changed")
+			e.setText("changed")
 			m.editors["form/text"] = e
 		},
 		"form choice": func(m *model) {

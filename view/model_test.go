@@ -39,10 +39,10 @@ func request(t *testing.T, m *model, cmd tea.Cmd) mutation {
 func TestSnapshotDoesNotOverwriteDirtyTextOrCursor(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
-	e.Area.SetValue("local text")
+	e.setText("local text")
 	e.Area.SetCursorColumn(3)
 	m.apply(testSnapshot("remote text", "2"))
-	if e.Area.Value() != "local text" || e.Revision != "1" || e.Area.Column() != 3 {
+	if e.text() != "local text" || e.Revision != "1" || e.Area.Column() != 3 {
 		t.Fatalf("Local state changed: %#v", e)
 	}
 	if e.RemoteText != "remote text" || e.RemoteRevision != "2" {
@@ -53,15 +53,15 @@ func TestSnapshotDoesNotOverwriteDirtyTextOrCursor(t *testing.T) {
 func TestSaveCoalescesEditsAndPreservesNewerText(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
-	e.Area.SetValue("first")
+	e.setText("first")
 	a := request(t, m, m.save("composer"))
-	e.Area.SetValue("second")
+	e.setText("second")
 	if m.save("composer") != nil {
 		t.Fatal("A second save ran while the first was pending")
 	}
 	cmd := m.finish(completed{a, operationResult{Status: "succeeded", Result: map[string]any{"draft_revision": "2", "text": "first"}}})
 	b := request(t, m, cmd)
-	if b.Args["base_revision"] != "2" || b.Args["text"] != "second" || e.Area.Value() != "second" {
+	if b.Args["base_revision"] != "2" || b.Args["text"] != "second" || e.text() != "second" {
 		t.Fatal("The newer edit was lost or saved against the wrong revision")
 	}
 }
@@ -70,14 +70,14 @@ func TestSendKeepsTextTypedBeforeReply(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
 	e.WantSend = true
-	e.SendText = e.Area.Value()
+	e.SendText = e.text()
 	send := request(t, m, m.save("composer"))
 	if send.Method != "hub.view.send" {
 		t.Fatal("Expected send")
 	}
-	e.Area.SetValue("next message")
+	e.setText("next message")
 	m.apply(testSnapshot("", "2"))
-	if e.Area.Value() != "next message" {
+	if e.text() != "next message" {
 		t.Fatal("The send snapshot erased newer text")
 	}
 	cmd := m.finish(completed{send, operationResult{Status: "succeeded", Result: map[string]any{"draft_revision": "2", "cleared_draft_revision": "1", "message_id": "m1"}}})
@@ -90,11 +90,11 @@ func TestSendKeepsTextTypedBeforeReply(t *testing.T) {
 func TestConflictNeedsExplicitResolution(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
-	e.Area.SetValue("mine")
+	e.setText("mine")
 	req := request(t, m, m.save("composer"))
 	m.apply(testSnapshot("theirs", "2"))
 	m.finish(completed{req, operationResult{Status: "failed", Error: &wireError{Code: "draft_conflict", Message: "Draft changed"}}})
-	if m.save("composer") != nil || e.Area.Value() != "mine" {
+	if m.save("composer") != nil || e.text() != "mine" {
 		t.Fatal("The conflict overwrote text or retried automatically")
 	}
 	next := request(t, m, m.activate(control{Node: "composer", Kind: "keep_local"}))
@@ -106,10 +106,10 @@ func TestConflictNeedsExplicitResolution(t *testing.T) {
 func TestEnterFreezesTextWhileDraftSaveIsPending(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
-	e.Area.SetValue("send this")
+	e.setText("send this")
 	save := request(t, m, m.save("composer"))
 	m.activate(control{Node: "composer", Kind: "send"})
-	e.Area.SetValue("this is later text")
+	e.setText("this is later text")
 	cmd := m.finish(completed{save, operationResult{Status: "succeeded", Result: map[string]any{"draft_revision": "2", "text": "send this"}}})
 	send := request(t, m, cmd)
 	if send.Method != "hub.view.send" || send.Args["text"] != "send this" {
@@ -126,7 +126,7 @@ func TestOldSnapshotCannotRestoreSentDraft(t *testing.T) {
 	m.finish(completed{send, operationResult{Status: "succeeded", Result: map[string]any{"draft_revision": "2", "message_id": "m1"}}})
 	m.apply(testSnapshot("saved", "1"))
 	e := m.editors["composer"]
-	if e.Area.Value() != "" || e.Revision != "2" {
+	if e.text() != "" || e.Revision != "2" {
 		t.Fatal("A stale snapshot restored a sent draft")
 	}
 }
@@ -136,7 +136,7 @@ func TestShiftEnterEditsAndEnterSends(t *testing.T) {
 	e := m.editors["composer"]
 	e.Area.CursorEnd()
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
-	if !strings.Contains(e.Area.Value(), "\n") {
+	if !strings.Contains(e.text(), "\n") {
 		t.Fatal("Shift+Enter did not insert a newline")
 	}
 	// Bubble Tea executes the edit command asynchronously. The pending save already owns its key.
@@ -144,7 +144,7 @@ func TestShiftEnterEditsAndEnterSends(t *testing.T) {
 		t.Fatal("The newline did not schedule a draft save")
 	}
 	_, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !e.WantSend || e.SendText != e.Area.Value() {
+	if !e.WantSend || e.SendText != e.text() {
 		t.Fatal("Enter did not freeze the current text for sending")
 	}
 }
@@ -173,7 +173,7 @@ func TestMouseSendUsesVisibleButton(t *testing.T) {
 func TestLoadingSnapshotPreservesComposerDuringReconnect(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
-	e.Area.SetValue("pending text")
+	e.setText("pending text")
 	s := testSnapshot("", "0")
 	s.Tree.Nodes = []Node{{ID: "loading", Type: "loading", Text: "Loading"}}
 	m.apply(s)
@@ -185,17 +185,17 @@ func TestLoadingSnapshotPreservesComposerDuringReconnect(t *testing.T) {
 func TestSaveReplayWithDifferentTextCannotAdvanceRevision(t *testing.T) {
 	m := testModel()
 	e := m.editors["composer"]
-	e.Area.SetValue("mine")
+	e.setText("mine")
 	req := request(t, m, m.save("composer"))
 	m.finish(completed{req, operationResult{Status: "succeeded", Result: map[string]any{"draft_revision": "9", "text": "someone else's newer draft"}}})
-	if !e.Conflict || e.Revision != "1" || e.Area.Value() != "mine" {
+	if !e.Conflict || e.Revision != "1" || e.text() != "mine" {
 		t.Fatal("The malformed replay advanced the draft revision")
 	}
 }
 
 func TestRemovedDirtyComposerRetainsRecoveryText(t *testing.T) {
 	m := testModel()
-	m.editors["composer"].Area.SetValue("do not lose")
+	m.editors["composer"].setText("do not lose")
 	s := testSnapshot("", "2")
 	s.Tree.Nodes = nil
 	m.apply(s)
@@ -267,7 +267,7 @@ func TestPopulatedSnapshotClearsOnlyLoadingStatus(t *testing.T) {
 		t.Fatal("Loading snapshot did not retain the tree and set its loading status")
 	}
 	m.apply(testSnapshot("updated", "3"))
-	if m.status != "" || m.editors["composer"].Area.Value() != "updated" {
+	if m.status != "" || m.editors["composer"].text() != "updated" {
 		t.Fatal("Populated snapshot did not clear the loading status")
 	}
 	m.status = "Could not save"
@@ -281,7 +281,7 @@ func TestPopulatedSnapshotClearsOnlyLoadingStatus(t *testing.T) {
 // and the unsaved draft stays.
 func TestSnapshotLayoutTogglesHistoryInPlace(t *testing.T) {
 	m := testModel()
-	m.editors["composer"].Area.SetValue("unsaved draft")
+	m.editors["composer"].setText("unsaved draft")
 	snap := func(layout string) Snapshot {
 		s := testSnapshot("", "1")
 		s.Revision = "2"
@@ -299,8 +299,8 @@ func TestSnapshotLayoutTogglesHistoryInPlace(t *testing.T) {
 		if strings.Contains(out, "message from the agent") != step.history {
 			t.Fatalf("layout %q: history shown = %v, want %v", step.layout, !step.history, step.history)
 		}
-		if m.editors["composer"].Area.Value() != "unsaved draft" {
-			t.Fatalf("layout %q: the draft changed to %q", step.layout, m.editors["composer"].Area.Value())
+		if m.editors["composer"].text() != "unsaved draft" {
+			t.Fatalf("layout %q: the draft changed to %q", step.layout, m.editors["composer"].text())
 		}
 	}
 }

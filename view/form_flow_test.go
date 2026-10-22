@@ -264,13 +264,13 @@ func TestCtrlUClearsAFormTextField(t *testing.T) {
 	}}})
 	m.setFocus("edit:start/dir")
 	e := m.editors[editorID("start", "dir")]
-	e.Area.CursorEnd()
+	e.Input.CursorEnd()
 	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
-	if got := e.Area.Value(); got != "" {
+	if got := e.text(); got != "" {
 		t.Fatalf("Ctrl+U left %q", got)
 	}
 	m.Update(tea.KeyPressMsg{Code: 'w', Text: "/work"})
-	if got := e.Area.Value(); got != "/work" {
+	if got := e.text(); got != "/work" {
 		t.Fatalf("Typing after Ctrl+U gave %q", got)
 	}
 }

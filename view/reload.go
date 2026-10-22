@@ -19,14 +19,31 @@ func (e *editor) dirty() bool {
 	if e.Kind == "boolean" || e.Kind == "select" {
 		return !reflect.DeepEqual(e.Choice, e.SavedChoice)
 	}
-	return e.Area.Value() != e.Saved
+	return e.text() != e.Saved
 }
 
 func (e *editor) recoveryText() string {
 	if e.Kind == "boolean" || e.Kind == "select" {
 		return fmt.Sprint(e.Choice)
 	}
+	return e.text()
+}
+
+// text is the value of a text editor: the input of a field of kind text, otherwise the area.
+func (e *editor) text() string {
+	if e.Kind == "text" {
+		return e.Input.Value()
+	}
 	return e.Area.Value()
+}
+
+// setText replaces the value. A field of kind text changes newlines and tabs to spaces.
+func (e *editor) setText(s string) {
+	if e.Kind == "text" {
+		e.Input.SetValue(plain(s))
+		return
+	}
+	e.Area.SetValue(plain(s))
 }
 
 // Update checks reload safety after each model change.

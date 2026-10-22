@@ -109,11 +109,12 @@ func (m *model) wheel(msg tea.MouseWheelMsg) tea.Cmd {
 		return nil
 	}
 	if c, ok := m.hitControl(msg.X, msg.Y); ok && c.Kind == "edit" {
-		if e := m.editors[editorID(c.Node, c.Field)]; e != nil {
+		// A one-line text field cannot scroll. The wheel scrolls the form under it.
+		if e := m.editors[editorID(c.Node, c.Field)]; e != nil && e.Kind != "text" {
 			e.Scroll = max(0, min(m.editorOffset(e)+delta, e.Area.Height()-m.editorHeight(e)))
 			e.Reviewing = true
+			return nil
 		}
-		return nil
 	}
 	if msg.X >= m.leftMargin() && msg.X < m.leftMargin()+m.contentWidth() && msg.Y >= headerRows && msg.Y < headerRows+m.bodyHeight() {
 		m.scroll = max(0, min(m.scroll+delta, len(m.bodyRows())-m.bodyHeight()))

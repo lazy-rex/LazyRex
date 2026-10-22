@@ -9,7 +9,7 @@ import (
 
 func TestCloseWaitsForSavedDraft(t *testing.T) {
 	m := testModel()
-	m.editors["composer"].Area.SetValue("keep this draft")
+	m.editors["composer"].setText("keep this draft")
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
 	runMenuCmd(cmd)
 	if !m.closePending || m.closeRunning {
@@ -24,7 +24,7 @@ func TestCloseWaitsForSavedDraft(t *testing.T) {
 		t.Fatal("close did not start after the save")
 	}
 	m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
-	if m.editors["composer"].Area.Value() != "keep this draft" {
+	if m.editors["composer"].text() != "keep this draft" {
 		t.Fatal("input changed a draft after close admission")
 	}
 	// A failed close keeps the view. A later Ctrl+Q retries it.

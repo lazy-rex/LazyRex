@@ -266,7 +266,7 @@ Choices also use three rows, without an additional gap.
 
 Send is a one-row, ten-column button on the first footer row of the composer. Its hint
 remains outside that region. Narrow panes show the newline hint on a second footer row.
-Browse… is on the text row of its box, and only that row is its target. Send and form submission use the primary style. Other buttons use a muted
+Browse… is on the row of its text input. Send and form submission use the primary style. Other buttons use a muted
 style. Keyboard focus and pointer feedback remain visible.
 
 These changes apply the ui.sh button and form guidance in terminal cells. The
@@ -386,9 +386,15 @@ heading. A list with details keeps the four-row targets.
 Form layout:
 - Each field has one blank row after it. A run of checkboxes stays together, with one blank row
   after the last checkbox.
-- Browse… sits to the right of its text box, on the same three rows. The text box is narrower by
-  the button width plus one cell. When the text box would be narrower than 20 cells, Browse…
-  goes under the text box.
+- A field of kind `text` is one row in the shape of huh's Input: a bar while the input has
+  focus or the pointer, then the `> ` prompt (highlight role while focused) and the Bubbles
+  textinput. The input scrolls long text sideways and has no length limit. Newlines and tabs in
+  a value or a paste become spaces; a value normalized this way is not an unsaved change.
+  Enter moves to the next control, as Tab does. It never submits. The wheel over the input
+  scrolls the form. A `multiline` field keeps the growing textarea in a box.
+- Browse… sits to the right of its text input, on the same row. The input is narrower by
+  the button width plus one cell. When the input would be narrower than 20 cells, Browse…
+  goes under the input.
 - The submit button and the plain button nodes after the form (a `widget` with no text and an
   action, such as Cancel) share one row, two cells apart. They stack when the row does not fit.
 - A row can hold more than one control (`row.Extra`). Each control has its own `Left` and

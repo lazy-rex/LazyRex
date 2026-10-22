@@ -83,9 +83,9 @@ func isResume(msg tea.Msg) bool {
 // edits reports whether a paste reaches the composer.
 func (r *recovery) edits(text string) bool {
 	r.m.focus = "edit:composer"
-	before := r.m.editors["composer"].Area.Value()
+	before := r.m.editors["composer"].text()
 	r.m.Update(tea.PasteMsg{Content: text})
-	return r.m.editors["composer"].Area.Value() != before
+	return r.m.editors["composer"].text() != before
 }
 
 func (r *recovery) sendResume(f *protocolFixture, id string) {

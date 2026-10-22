@@ -37,7 +37,7 @@ func TestReleaseFreezesBeforeReply(t *testing.T) {
 		t.Fatalf("Release: %q", answer)
 	}
 	m.Update(tea.PasteMsg{Content: "lost input"})
-	if m.editors["field"].Area.Value() != "saved" {
+	if m.editors["field"].text() != "saved" {
 		t.Fatal("Frozen editor accepted input")
 	}
 	if releasePanel(m, "r2") != "conflict" {
@@ -47,7 +47,7 @@ func TestReleaseFreezesBeforeReply(t *testing.T) {
 func TestReplacementConfirmPreservesInput(t *testing.T) {
 	m := panelModel()
 	e := newEditor("saved", "1", "text")
-	e.Area.SetValue("unsaved")
+	e.setText("unsaved")
 	m.editors["field"] = e
 	m.focus = "edit:field"
 	if releasePanel(m, "r1") != "confirm" {
@@ -62,7 +62,7 @@ func TestReplacementConfirmPreservesInput(t *testing.T) {
 		t.Fatal("An unrelated result resumed the editor")
 	}
 	m.Update(replacementRecovered{ID: "r1", State: replacementState{State: "cancelled"}})
-	if m.replacement != nil || m.focus != "edit:field" || e.Area.Value() != "unsaved" {
+	if m.replacement != nil || m.focus != "edit:field" || e.text() != "unsaved" {
 		t.Fatal("Keep editing did not preserve the editor")
 	}
 }
@@ -138,7 +138,7 @@ func TestRestartedRendererRecoversActiveReplacement(t *testing.T) {
 func TestRecoveredReleaseStillChecksUnsavedInput(t *testing.T) {
 	m := panelModel()
 	e := newEditor("saved", "1", "text")
-	e.Area.SetValue("unsaved")
+	e.setText("unsaved")
 	m.editors["field"] = e
 	m.Update(replacementRecovered{ID: "r1", Initial: true, State: replacementState{ID: "r1", State: "releasing", NextTitle: "Worktrees"}})
 	if releasePanel(m, "r1") != "confirm" {
@@ -150,9 +150,9 @@ func TestReplacementAfterSourceActionPreservesLaterInput(t *testing.T) {
 	for _, later := range []bool{false, true} {
 		m := panelModel()
 		e := newEditor("", "1", "text")
-		e.Area.SetValue("submitted")
+		e.setText("submitted")
 		if later {
-			e.Area.SetValue("typed after submission")
+			e.setText("typed after submission")
 		}
 		m.editors[editorID("form", "title")] = e
 		m.operations["submit"] = true
@@ -162,7 +162,7 @@ func TestReplacementAfterSourceActionPreservesLaterInput(t *testing.T) {
 		req := mutation{Method: "hub.view.action", Key: "submit", Node: "form", Args: map[string]any{"input": map[string]any{"values": map[string]any{"title": "submitted"}}}}
 		_, cmd := m.Update(completed{Request: req, Outcome: operationResult{Status: "succeeded", Effects: "done"}})
 		if later {
-			if m.replacement.State != "confirming" || e.Area.Value() != "typed after submission" {
+			if m.replacement.State != "confirming" || e.text() != "typed after submission" {
 				t.Fatal("Completion discarded later input")
 			}
 		} else if m.replacement.State != "deciding" || cmd == nil {
@@ -174,7 +174,7 @@ func TestReplacementAfterSourceActionPreservesLaterInput(t *testing.T) {
 func TestPanelCloseDiscardsLocalValuesButWaitsForOperations(t *testing.T) {
 	m := panelModel()
 	e := newEditor("", "1", "text")
-	e.Area.SetValue("local input")
+	e.setText("local input")
 	m.editors["field"] = e
 	m.operations["pending"] = true
 	if m.closePanel() != nil || m.closeRunning {
