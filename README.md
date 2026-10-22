@@ -43,17 +43,16 @@ profiles, the LazyRex palette entries for Rex, and the agent hooks and skill. De
 
 - Setup makes a profile only for an agent CLI that is on `PATH`, and it never changes an existing
   `profiles.json`. A CLI that you install later gets no profile by itself.
+- Last, setup asks to install the plugins of `hub.json` (`lazyrex-hub plugin sync`). Answer `y`:
+  git fetches each plugin, and setup says `Plugins: installed.` If you answer no, or the sync
+  fails, setup prints the exact command to run later.
 
 Then, in this order:
 
 1. Run the `rex -S <server> config reload` line that setup prints. It loads the palette entries.
 2. Run `rex skill setup`, as setup prints. It installs Rex's own skill and hooks.
 3. Codex: if setup says so, review and trust the new hook in Codex with `/hooks`.
-4. Install the plugins of `hub.json`. Setup does not do this:
-
-   ```sh
-   ~/.lazyrex/bin/lazyrex-hub plugin sync -config ~/.lazyrex/hub.json
-   ```
+4. If setup printed `Install the plugins: ...`, run that command.
 
 ## Start
 
@@ -80,7 +79,8 @@ Start Hub runs this command, which you can also run in a terminal:
 - A LazyRex pane shows "No hub: run LazyRex: Start Hub.": this pane found no connected hub on its Rex server.
 - **LazyRex: Hub Status** says whether the hub runs.
 - The hub's log is `~/.lazyrex/state/hub.log`. "is not installed: run lazyrex-hub plugin sync"
-  there means step 4 of "Set up" did not run.
+  there means that the plugins are not installed: run
+  `~/.lazyrex/bin/lazyrex-hub plugin sync -config ~/.lazyrex/hub.json`, then Start Hub again.
 
 ## Developing LazyRex
 
