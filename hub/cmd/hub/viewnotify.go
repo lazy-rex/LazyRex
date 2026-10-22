@@ -1,0 +1,194 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
+)
+
+// view.changed delivery. Rex delivers client.perform requests to a client one at a time, and
+// timeout_ms starts at the delivery (rex-protocol.md). So a renderer that is busy holds every
+// request sent to it. One request per render filled its queue: 20 renders while the renderer
+// was busy were 20 requests (timeout audit, row 10, 2026-10-22).
+//
+// The hub keeps at most one view.changed request outstanding for each view, role (composer or
+// printer) and attachment. A render during that request raises want: when the request ends, one
+// more request tells the latest revision, however many renders came. timeout_ms is the only
+// bound: the hub sets no shorter local deadline. A failed request is tried again (three attempts
+// in total), because the renderer can refuse a request just before it records its attachment
+// (requestClose). A success, or a new revision after a failure, starts a fresh count.
+//
+// A view close (forgetView), a new attachment of the role, a render pass that no longer finds the
+// attachment, and the hub stop cancel the notifier: its outstanding call returns at once and it
+// sends nothing more. Rex can still deliver a queued request later; its reply has no receiver.
+
+const (
+	roleComposer = "composer"
+	rolePrinter  = "printer"
+)
+
+type notifyKey struct{ view, role, attachment string }
+
+// viewNotifier is the delivery of one key. h.vs.mu guards want, sent and attempts.
+type viewNotifier struct {
+	plugin, client string
+	want, sent     int64 // want: the latest revision to tell; sent: the revision of the current request
+	attempts       int   // failed attempts for sent
+	ctx            context.Context
+	cancel         context.CancelFunc
+	done           chan struct{} // closed when the sender has ended
+}
+
+// viewChangedRetry is the wait after each failed attempt.
+var viewChangedRetry = 300 * time.Millisecond
+
+// viewChangedAttempts is the number of attempts for one revision.
+const viewChangedAttempts = 3
+
+// tellViewChanged tells the renderer of the role that the view has a new revision. It starts the
+// sender of the key, or raises the revision of the running one.
+func (h *Hub) tellViewChanged(plugin, role, client, viewID, attachment string, rev int64) {
+	k := notifyKey{viewID, role, attachment}
+	vs := h.vs
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if n, ok := vs.senders[k]; ok {
+		if rev > n.want {
+			n.want = rev
+		}
+		return
+	}
+	// A new attachment of the role replaces the old one: its request no longer waits for the old.
+	for old, n := range vs.senders {
+		if old.view == viewID && old.role == role {
+			vs.retireLocked(old, n)
+		}
+	}
+	if vs.senders == nil {
+		vs.senders = map[notifyKey]*viewNotifier{}
+	}
+	parent := vs.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	n := &viewNotifier{plugin: plugin, client: client, want: rev, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	// The sender owns the key before it starts: a second tellViewChanged raises want.
+	vs.senders[k] = n
+	go h.notifySender(k, n)
+}
+
+// retireLocked cancels the notifier and removes it. h.vs.mu must be held.
+func (vs *viewSvc) retireLocked(k notifyKey, n *viewNotifier) {
+	n.cancel()
+	if vs.senders[k] == n {
+		delete(vs.senders, k)
+	}
+}
+
+// retireNotifiers cancels every notifier of the view: the view closed.
+func (vs *viewSvc) retireNotifiers(viewID string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	for k, n := range vs.senders {
+		if k.view == viewID {
+			vs.retireLocked(k, n)
+		}
+	}
+}
+
+// pruneNotifiers cancels the notifiers of the plugin whose attachment the render pass did not
+// find: composers lists the view's attachment, printers the printer's.
+func (vs *viewSvc) pruneNotifiers(plugin string, composers map[string]string, printers map[string][2]string) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	for k, n := range vs.senders {
+		if n.plugin != plugin {
+			continue
+		}
+		current := composers[k.view]
+		if k.role == rolePrinter {
+			current = printers[k.view][1]
+		}
+		if current != k.attachment {
+			vs.retireLocked(k, n)
+		}
+	}
+}
+
+// notifySender sends the requests of one key, one at a time, until no newer revision is waiting.
+func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
+	vs := h.vs
+	defer func() {
+		vs.mu.Lock()
+		vs.retireLocked(k, n)
+		vs.mu.Unlock()
+		close(n.done)
+	}()
+	current := h.composerAttachment
+	if k.role == rolePrinter {
+		current = h.transcriptAttachment
+	}
+	for {
+		// The attachment is read outside h.vs.mu: the database has one connection.
+		if current(n.ctx, k.view) != k.attachment {
+			return
+		}
+		vs.mu.Lock()
+		if n.ctx.Err() != nil {
+			vs.mu.Unlock()
+			return
+		}
+		n.sent = n.want
+		rev := n.sent
+		vs.mu.Unlock()
+		err := viewChangedCall(n.ctx, h, n.client, k.view, k.attachment, rev)
+		vs.mu.Lock()
+		switch {
+		case n.ctx.Err() != nil:
+			vs.mu.Unlock()
+			return
+		case err == nil:
+			n.attempts = 0
+			if n.want <= n.sent {
+				vs.mu.Unlock()
+				return
+			}
+			vs.mu.Unlock()
+			continue
+		case targetGone(err):
+			vs.mu.Unlock()
+			return
+		}
+		if n.want > n.sent {
+			n.attempts = 0 // a new revision starts a fresh count
+			vs.mu.Unlock()
+			continue
+		}
+		n.attempts++
+		attempts := n.attempts
+		vs.mu.Unlock()
+		if attempts >= viewChangedAttempts {
+			return
+		}
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-time.After(time.Duration(attempts) * viewChangedRetry):
+		}
+	}
+}
+
+// targetGone reports whether Rex says that the renderer's client is gone.
+func targetGone(err error) bool {
+	var re *rex.RexError
+	return errors.As(err, &re) && re.Code == "not_found"
+}
+
+// viewChangedCall sends one view.changed. A test replaces it.
+var viewChangedCall = func(ctx context.Context, h *Hub, client, viewID, attachment string, rev int64) error {
+	return h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "view.changed",
+		"args": map[string]any{"view_id": viewID, "attachment": attachment, "revision": revString(rev)}, "timeout_ms": 5000}, nil)
+}

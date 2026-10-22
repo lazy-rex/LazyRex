@@ -52,6 +52,8 @@ type viewSvc struct {
 	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
 	renders map[string]*openRender           // render ID -> a view.render call that has not returned (renderreads.go)
 	logged  map[string]bool                  // plugin + "\x00" + view: a view whose unknown refresh value is already logged (renderreads.go)
+	senders map[notifyKey]*viewNotifier      // the view.changed deliveries with a request outstanding (viewnotify.go)
+	ctx     context.Context                  // the hub run context: its end stops every delivery
 }
 
 // historyFetch is one view.history call that runs outside the hub's request queue.
@@ -65,7 +67,7 @@ type historyFetch struct {
 func (h *Hub) viewsStart(ctx context.Context) error {
 	h.vs = &viewSvc{snaps: map[string]*snapshot{}, dirty: map[string]bool{}, notify: map[string]bool{}, workers: map[string]chan struct{}{}, seen: map[string]map[string]string{},
 		history: map[string]*historyFetch{}, views: map[string]map[string]*viewState{}, all: map[string]renderCause{}, loose: map[string]renderCause{},
-		epoch: map[string]int64{}}
+		epoch: map[string]int64{}, senders: map[notifyKey]*viewNotifier{}, ctx: ctx}
 	if _, err := h.db.ExecContext(ctx, viewOpsSchema); err != nil {
 		return err
 	}
@@ -617,6 +619,11 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 	}
 	rows.Close()
 	printers := h.transcriptTargets(ctx, plugin)
+	composers := map[string]string{}
+	for _, t := range targets {
+		composers[t.id] = t.attachment
+	}
+	h.vs.pruneNotifiers(plugin, composers, printers)
 	if renderPruneHook != nil {
 		renderPruneHook()
 	}
@@ -739,9 +746,9 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		h.vs.mu.Unlock()
 		h.testRenderDone(t.id, gen, renderErr == "", renderErr, rev, tree)
 		if send {
-			go h.viewChanged(ctx, t.client, t.id, t.attachment, rev, h.composerAttachment)
+			h.tellViewChanged(plugin, roleComposer, t.client, t.id, t.attachment, rev)
 			if pr, ok := printers[t.id]; ok {
-				go h.viewChanged(ctx, pr[0], t.id, pr[1], rev, h.transcriptAttachment)
+				h.tellViewChanged(plugin, rolePrinter, pr[0], t.id, pr[1], rev)
 			}
 		}
 	}
@@ -752,22 +759,6 @@ func (h *Hub) composerAttachment(ctx context.Context, viewID string) string {
 	var att string
 	h.db.QueryRowContext(ctx, `SELECT attachment FROM views WHERE view_id = ? AND status = 'open'`, viewID).Scan(&att)
 	return att
-}
-
-// viewChanged tells a renderer to fetch. It retries a few times; a new attachment replaces it.
-// current reads the attachment of the renderer's role now.
-func (h *Hub) viewChanged(ctx context.Context, client, viewID, attachment string, rev int64, current func(context.Context, string) string) {
-	for i := 0; i < 3; i++ {
-		err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "view.changed",
-			"args": map[string]any{"view_id": viewID, "attachment": attachment, "revision": revString(rev)}, "timeout_ms": 5000}, nil)
-		if err == nil {
-			return
-		}
-		if current(ctx, viewID) != attachment {
-			return
-		}
-		time.Sleep(time.Duration(i+1) * 300 * time.Millisecond)
-	}
 }
 
 // listFields are the view-tree fields that must be JSON arrays. Rex Lua encodes an empty table

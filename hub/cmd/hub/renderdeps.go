@@ -150,6 +150,7 @@ func (h *Hub) clearDeclarations(plugin string) {
 // forgetView deletes the render state of a closed view. A render of it that is in flight then
 // installs nothing.
 func (h *Hub) forgetView(id string) {
+	h.vs.retireNotifiers(id)
 	h.vs.mu.Lock()
 	for _, m := range h.vs.views {
 		delete(m, id)
