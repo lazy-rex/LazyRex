@@ -631,7 +631,7 @@ func TestReleaseHubForwardRollback(t *testing.T) {
 	w := newRelWorld(t)
 	w.freeze()
 	c := mustCandidate(t, w)
-	if c.From != pinOld || c.To != pinH || !c.OldExpectRun || !c.OldSDK || c.Peer != pinHub || len(c.Inherited) != 2 {
+	if c.From != pinOld || c.To != pinH || c.Peer != pinHub || len(c.Inherited) != 2 {
 		t.Fatalf("candidate: %+v", c)
 	}
 	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
@@ -670,18 +670,22 @@ func mustCandidate(t *testing.T, w *relWorld) *relCandidate {
 	return c
 }
 
-// Freeze refuses an H that is not on origin/main, a git grep error in the OLD tree, and
-// an OLD tree without the hub; no match gives old_expect_run false.
+// Freeze refuses an H that is not on origin/main, a git grep error in the OLD tree, an OLD tree
+// without the hub, and an OLD that takes no expect_run or cannot run SDK plugins. A refusal
+// writes no candidate.
 func TestReleaseHubFreezeRefusals(t *testing.T) {
 	for name, tc := range map[string]struct {
 		mod  func(w *relWorld)
 		want string
 	}{
-		"not on main":  {func(w *relWorld) { w.commits[commitH].onMain = false }, "not on origin/main"},
-		"grep error":   {func(w *relWorld) { w.grepErr = "fatal: unable to read blob" }, "git grep in the OLD tree failed"},
-		"no main.go":   {func(w *relWorld) { w.commits[commitOld].mainGo = false }, "has no hub/cmd/hub/main.go"},
-		"dirty clone":  {func(w *relWorld) { w.dirty = true }, "local changes"},
-		"lock not OLD": {func(w *relWorld) { w.writePins(pinH, pinH) }, "not at OLD"},
+		"not on main":   {func(w *relWorld) { w.commits[commitH].onMain = false }, "not on origin/main"},
+		"grep error":    {func(w *relWorld) { w.grepErr = "fatal: unable to read blob" }, "git grep in the OLD tree failed"},
+		"no main.go":    {func(w *relWorld) { w.commits[commitOld].mainGo = false }, "has no hub/cmd/hub/main.go"},
+		"dirty clone":   {func(w *relWorld) { w.dirty = true }, "local changes"},
+		"lock not OLD":  {func(w *relWorld) { w.writePins(pinH, pinH) }, "not at OLD"},
+		"no expect_run": {func(w *relWorld) { w.commits[commitOld].expectRun = false }, "takes no expect_run"},
+		"no -sdk":       {func(w *relWorld) { w.commits[commitOld].devsh = "python3 -c x; hub" }, "cannot run SDK plugins"},
+		"no sdk/lua":    {func(w *relWorld) { w.commits[commitOld].sdkLua = false }, "cannot run SDK plugins"},
 		"H is OLD": {func(w *relWorld) {
 			var s map[string]any
 			json.Unmarshal(mustRead(w.specP), &s)
@@ -696,12 +700,9 @@ func TestReleaseHubFreezeRefusals(t *testing.T) {
 		if err := w.step("freeze"); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
-	}
-	w := newRelWorld(t)
-	w.commits[commitOld].expectRun = false
-	w.freeze()
-	if c := mustCandidate(t, w); c.OldExpectRun {
-		t.Error("no expect_run match gave old_expect_run true")
+		if _, err := os.Stat(filepath.Join(w.run, relCandidateFile)); !os.IsNotExist(err) {
+			t.Errorf("%s: a refused freeze wrote a candidate (%v)", name, err)
+		}
 	}
 }
 
@@ -738,28 +739,6 @@ func TestReleaseHubPrecheckRefusals(t *testing.T) {
 }
 
 func mustRead(p string) []byte { b, _ := os.ReadFile(p); return b }
-
-// The SDK rollback boundary (coordinator decision): an OLD that cannot run SDK plugins refuses the
-// precheck and the rollback while a configured plugin uses the SDK, and lists them.
-func TestReleaseHubSDKBoundary(t *testing.T) {
-	w := newRelWorld(t)
-	w.commits[commitOld].devsh = "python3 -c x; hub" // no -sdk: OLD cannot run SDK plugins
-	w.freeze()
-	l, _ := readLock(lockPath(w.cfg, ""))
-	w.manifest(l.Plugins[otherSrc], "0")
-	if err := w.step("precheck"); err == nil || !strings.Contains(err.Error(), "these plugins use the SDK: other") {
-		t.Fatalf("precheck: %v", err)
-	}
-	w.manifest(l.Plugins[otherSrc], "")
-	os.WriteFile(filepath.Join(w.run, relRehearsalFile), mustRead(filepath.Join(w.run, relRehearsalFile)), 0o600)
-	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
-	l, _ = readLock(lockPath(w.cfg, "")) // the start fetched new cache dirs
-	w.manifest(l.Plugins[otherSrc], "0")
-	if err := w.step("rollback"); err == nil || !strings.Contains(err.Error(), "newest release first") {
-		t.Fatalf("rollback: %v", err)
-	}
-	w.wantPins(pinH, pinH) // nothing moved
-}
 
 // Checkout refuses an H whose dev.sh passes -sdk without sdk/lua, and changes nothing.
 func TestReleaseHubCheckoutNeedsSDK(t *testing.T) {

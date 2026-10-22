@@ -193,20 +193,19 @@ func hubFreeze(r *releaser) error {
 	}
 	// The capability probe of OLD: git grep exits 1 for no match, and also for an unreadable blob
 	// (with an error text). Any error text stops: a failure is never read as a missing capability.
+	// A release and its rollback need an OLD that takes expect_run and runs SDK plugins.
 	argv := []string{"git", "-C", r.relClone(), "grep", "-q", "-F", `"expect_run"`, old, "--", "hub/cmd/hub"}
 	_, e, gerr := r.runCmd(relCmd{Argv: argv})
-	var oldExpect bool
 	switch {
 	case gerr == nil:
-		oldExpect = true
 	case len(strings.TrimSpace(string(e))) > 0:
 		return relFail("git grep in the OLD tree failed: %s", strings.TrimSpace(string(e)))
 	case exitCode(gerr) == 1:
-		oldExpect = false
+		return relFail("OLD %s takes no expect_run: a release from it is not supported", old)
 	default:
 		return relFail("git grep in the OLD tree failed: %v", gerr)
 	}
-	c := &relCandidate{Kind: "hub", OldExpectRun: oldExpect}
+	c := &relCandidate{Kind: "hub"}
 	for _, commit := range []string{old, h} {
 		dev, err := r.fileAt(commit, "dev.sh")
 		if err != nil {
@@ -215,8 +214,8 @@ func hubFreeze(r *releaser) error {
 		if strings.Contains(dev, "python3") {
 			c.Inherited = append(c.Inherited, "python3 (dev.sh at "+commit+")")
 		}
-		if commit == old {
-			c.OldSDK = strings.Contains(dev, "-sdk") && r.treeHas(old, "sdk/lua") == "tree"
+		if commit == old && (!strings.Contains(dev, "-sdk") || r.treeHas(old, "sdk/lua") != "tree") {
+			return relFail("OLD %s cannot run SDK plugins (its dev.sh passes no -sdk, or it has no sdk/lua): a release from it is not supported", old)
 		}
 	}
 	l, err := readLock(r.cfg.lock)
@@ -272,7 +271,7 @@ func hubFreeze(r *releaser) error {
 	if err := writeJSON(filepath.Join(r.run, relCandidateFile), c); err != nil {
 		return err
 	}
-	r.say("frozen: OLD %s, H %s, home %s (%s -> %s), old_expect_run %v, old_sdk %v, inherited %v", old, h, src, c.From.Digest, c.To.Digest, c.OldExpectRun, c.OldSDK, c.Inherited)
+	r.say("frozen: OLD %s, H %s, home %s (%s -> %s), inherited %v", old, h, src, c.From.Digest, c.To.Digest, c.Inherited)
 	return nil
 }
 
@@ -392,51 +391,6 @@ func (r *releaser) toolPath() (string, error) {
 	return os.Executable()
 }
 
-// sdkPlugins lists the configured plugins whose manifest (in their locked cache entry) has an sdk
-// field. A hub that cannot run SDK plugins refuses them, so a rollback to it must first roll back
-// each of them.
-func (r *releaser) sdkPlugins() ([]string, error) {
-	l, err := readLock(r.cfg.lock)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for src, e := range l.Plugins {
-		b, err := readManifestBytes(filepath.Join(r.cfg.state, "plugins", e.Dir, e.Subdir))
-		if err != nil {
-			return nil, relFail("the manifest of %s: %v", src, err)
-		}
-		var m struct {
-			SDK string `json:"sdk"`
-		}
-		if err := json.Unmarshal(b, &m); err != nil {
-			return nil, relFail("the manifest of %s: %v", src, err)
-		}
-		if m.SDK != "" {
-			out = append(out, e.Name)
-		}
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
-// sdkBoundary refuses a hub rollback (and its precheck) to an OLD that cannot run SDK plugins while
-// a configured plugin uses the SDK.
-func (r *releaser) sdkBoundary(c *relCandidate) error {
-	if c.OldSDK {
-		return nil
-	}
-	sdk, err := r.sdkPlugins()
-	if err != nil {
-		return err
-	}
-	if len(sdk) == 0 {
-		return nil
-	}
-	return relFail("OLD cannot run SDK plugins, and these plugins use the SDK: %s. A rollback to OLD first needs a plugin rollback of each of them, newest release first (hub.admin.stop; hub.admin.sql_return; the pin back; hub.admin.start), then the hub rollback",
-		strings.Join(sdk, ", "))
-}
-
 func hubPrecheck(r *releaser) error {
 	c, err := r.readCandidate()
 	if err != nil {
@@ -479,9 +433,6 @@ func hubPrecheck(r *releaser) error {
 		}
 	}
 	if _, err := r.goBinDir(); err != nil {
-		return err
-	}
-	if err := r.sdkBoundary(c); err != nil {
 		return err
 	}
 	r.say("OK: OLD checked out, every pin and file as frozen, one dev pane, rehearsal record matches")
@@ -796,13 +747,12 @@ func relExpectRun(c *relCandidate, p relPin) map[string]string {
 // relReplaceSaved is the begin record of a replace: the expectation that a rerun reuses.
 type relReplaceSaved struct {
 	ExpectInstance string            `json:"expect_instance"`
-	ExpectRun      map[string]string `json:"expect_run,omitempty"`
+	ExpectRun      map[string]string `json:"expect_run"`
 }
 
 // replacePlugin makes the plugin of c run the pin to on the hub client, from the pin from.
-// expectRun false is the form of a hub without expect_run (the commit is then the only
-// check of a run). A pending intent always stops: do not retry.
-func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin, expectRun bool) error {
+// A pending intent always stops: do not retry.
+func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin) error {
 	op := "replace-" + to.Commit[:12]
 	var e *relEntryState
 	for i := 0; ; i++ {
@@ -827,14 +777,10 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 		return relFail("plugin %s has an unresolved spawn intent; do not retry: wait for the reconciliation, or report", c.Name)
 	}
 	if e.State == "crashing" {
-		return r.startCrashing(c, client, from, to, e, expectRun)
+		return r.startCrashing(c, client, from, to, e)
 	}
 	xrun := relExpectRun(c, to)
 	if e.Commit == to.Commit && e.State == "running" && e.Registered != nil && *e.Registered {
-		if !expectRun {
-			r.say("%s already runs %s", c.Name, to.Commit)
-			return nil
-		}
 		// The hub checks the full run (source, commit, digest). It changes nothing when the run
 		// matches; a mismatch is candidate_changed.
 		return r.mutate("start-expected", map[string]any{"plugin": c.Name, "expect_run": xrun}, func() (any, error) {
@@ -851,10 +797,7 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 	}
 	call := func(saved relReplaceSaved) error {
 		return r.mutate(op, saved, func() (any, error) {
-			args := map[string]any{"plugin": c.Name, "expect_instance": saved.ExpectInstance}
-			if saved.ExpectRun != nil {
-				args["expect_run"] = saved.ExpectRun
-			}
+			args := map[string]any{"plugin": c.Name, "expect_instance": saved.ExpectInstance, "expect_run": saved.ExpectRun}
 			out, err := r.hubDo(client, "hub.admin.replace", args)
 			if err == nil {
 				r.say("hub.admin.replace -> %s", strings.TrimSpace(string(out)))
@@ -867,11 +810,14 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 		if err := json.Unmarshal(data, &saved); err != nil {
 			return relFail("the saved replace expectation: %v", err)
 		}
+		if saved.ExpectRun == nil {
+			return relFail("the saved replace expectation has no expect_run; report")
+		}
 		switch {
 		case e.InstanceID == saved.ExpectInstance && e.Commit == from.Commit:
 			r.say("a replace of this run was interrupted; the hub still has instance %s: replace again with it", saved.ExpectInstance)
 			return call(saved)
-		case e.InstanceID == "" && e.Desired == "running" && saved.ExpectRun != nil:
+		case e.InstanceID == "" && e.Desired == "running":
 			r.say("the old instance is retired and nothing runs (spawn_failed): start with the saved expect_run")
 			return r.mutate("start-"+to.Commit[:12], saved, func() (any, error) {
 				out, err := r.hubDo(client, "hub.admin.start", map[string]any{"plugin": c.Name, "expect_run": saved.ExpectRun})
@@ -884,11 +830,7 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 	if e.Commit != from.Commit || e.InstanceID == "" {
 		return relFail("%s runs %q (instance %q, state %s), not %s", c.Name, e.Commit, e.InstanceID, e.State, from.Commit)
 	}
-	saved := relReplaceSaved{ExpectInstance: e.InstanceID}
-	if expectRun {
-		saved.ExpectRun = xrun
-	}
-	return call(saved)
+	return call(relReplaceSaved{ExpectInstance: e.InstanceID, ExpectRun: xrun})
 }
 
 // startCrashing makes a crashing plugin (desired running, its recorded instance exited, a respawn
@@ -901,11 +843,9 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 // runs another run; a start that passes its refusals cancels the respawn. A refusal stops the step
 // with its code, and the respawn stays due: there is no retry here. A rerun reads hub.plugins
 // again, so a registered instance of to then takes the running path.
-func (r *releaser) startCrashing(c *relCandidate, client string, from, to relPin, e *relEntryState, expectRun bool) error {
+func (r *releaser) startCrashing(c *relCandidate, client string, from, to relPin, e *relEntryState) error {
 	rollback := to.Commit == c.From.Commit
 	switch {
-	case !expectRun:
-		return relFail("plugin %s is crashing, and this hub takes no expect_run for a guarded start; nothing is changed; stop and report", c.Name)
 	case e.Commit == to.Commit && !rollback:
 		return relFail("plugin %s is crashing at TO %s: the target failed; nothing is changed; run rollback", c.Name, to.Commit)
 	case e.Commit != from.Commit && e.Commit != to.Commit:
@@ -941,7 +881,7 @@ func hubReplace(r *releaser) error {
 	if err != nil {
 		return err
 	}
-	return r.replacePlugin(c, h.Client, c.From, c.To, true)
+	return r.replacePlugin(c, h.Client, c.From, c.To)
 }
 
 func hubVerify(r *releaser) error {
@@ -986,9 +926,6 @@ func hubRollback(r *releaser) error {
 		return err
 	}
 	if err := r.checkBackup(b); err != nil {
-		return err
-	}
-	if err := r.sdkBoundary(c); err != nil {
 		return err
 	}
 	if err := r.othersEqual(c, b); err != nil {
@@ -1069,7 +1006,7 @@ func hubRollback(r *releaser) error {
 	// (a failed build or start, or H ended) gets no hub call: step 3 closes it.
 	if h := r.readHub(relHubFile); r.running(h) {
 		r.say("the H hub runs (pid %d, %s)", h.PID, h.Client)
-		if err := r.replacePlugin(c, h.Client, c.To, c.From, true); err != nil {
+		if err := r.replacePlugin(c, h.Client, c.To, c.From); err != nil {
 			return err
 		}
 	} else {
@@ -1110,10 +1047,9 @@ func hubRollback(r *releaser) error {
 }
 
 // rollbackFinish is step 4 of the rollback, under the OLD hub h. A home run at H here means that H
-// stopped before step 2: OLD replaces it, in the form of the frozen candidate. No other form is
-// tried after a failure.
+// stopped before step 2: OLD replaces it with expect_run FROM. A failure stops: there is no retry.
 func (r *releaser) rollbackFinish(c *relCandidate, h *relHub) error {
-	if err := r.replacePlugin(c, h.Client, c.To, c.From, c.OldExpectRun); err != nil {
+	if err := r.replacePlugin(c, h.Client, c.To, c.From); err != nil {
 		return err
 	}
 	if err := r.verifyList(relVerifyBack); err != nil {

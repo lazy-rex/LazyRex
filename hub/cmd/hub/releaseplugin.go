@@ -605,7 +605,7 @@ func relPluginReplace(r *releaser) error {
 	if err != nil {
 		return err
 	}
-	return r.replacePlugin(c, h.Client, c.From, c.To, true)
+	return r.replacePlugin(c, h.Client, c.From, c.To)
 }
 
 func relPluginVerify(r *releaser) error {
@@ -754,7 +754,7 @@ func (r *releaser) pluginBack(c *relCandidate, client string) error {
 		})
 	}
 	// Rows a and b, and an interrupted replace of this rollback (its saved expectation).
-	return r.replacePlugin(c, client, c.To, c.From, true)
+	return r.replacePlugin(c, client, c.To, c.From)
 }
 
 // relKinds runs the step of the run's kind. A nil step of a kind is refused.
