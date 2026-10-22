@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -172,5 +174,48 @@ func TestPluginOpsPinColumn(t *testing.T) {
 	}
 	if err := h.pluginOpsSchemaUp(ctx); err != nil {
 		t.Fatalf("a second schema run: %v", err)
+	}
+}
+
+// An add admission reads the hub's entries while a reload updates them in place (updateManaged
+// under entriesMu): every read of a shared entry is under entriesMu. -race finds a read outside it.
+func TestPluginOpAddAdmissionReloadRace(t *testing.T) {
+	h, _, dir := opsTestHub(t, "")
+	writeManaged(t, dir, `{"plugins":[]}`)
+	first, second := &configEntry{Source: "github:acme/tools@v1"}, &configEntry{Source: "github:acme/tools@v2"}
+	for _, e := range []*configEntry{first, second} {
+		if err := e.checkSource(""); err != nil {
+			t.Fatal(err)
+		}
+		e.managed = "tools"
+	}
+	h.entriesMu.Lock()
+	h.entries = []*configEntry{first}
+	h.entriesMu.Unlock()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			h.entriesMu.Lock()
+			updateManaged(first, second)
+			h.entriesMu.Unlock()
+		}
+	}()
+	defer func() { close(stop); wg.Wait() }()
+	for i := range 200 {
+		// The same repository: the conflict text reads the shared entry too.
+		if _, err := userAdmit(h, fmt.Sprintf("race-%d", i), opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/tools@v3", "id": "t2"})}); !isRefusal(err, "conflict") {
+			t.Fatalf("the same repository: %v", err)
+		}
+		if _, err := userAdmit(h, fmt.Sprintf("race-ok-%d", i), opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@v1", "id": fmt.Sprintf("n%d", i)})}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
