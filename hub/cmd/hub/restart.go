@@ -44,7 +44,7 @@ type wrapper struct {
 	pane     io.Writer   // the wrapper's pane (its stderr)
 	out      *log.Logger // the wrapper's own lines: the pane, and the log once it is open
 	log      *restartLog
-	logHook  func(*restartLog) // a test changes the log (sizes, a stalled disk) before it starts
+	logHook  func(*restartLog) // a test replaces the log's file write (a stalled disk) before the log starts
 	now      func() time.Time
 	after    func(time.Duration) <-chan time.Time // the stop wait and the ready pipe wait
 	backoff  func(time.Duration) <-chan time.Time // the delay before a restart
