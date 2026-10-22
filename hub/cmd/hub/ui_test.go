@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -141,5 +142,27 @@ func TestEmptyThreadClosedReopensOnFirstMessage(t *testing.T) {
 	}
 	if declare("m1") {
 		t.Fatal("the first message reopens an empty thread the user closed")
+	}
+}
+
+// The home plugin declares no tabs: a non-empty list is refused and stores nothing, and the empty
+// list is valid.
+// Another plugin declares tabs as before.
+func TestHomePluginDeclaresNoTabs(t *testing.T) {
+	h := testUIHub(t)
+	ctx := context.Background()
+	one := map[string]any{"tabs": []any{map[string]any{"key": "home", "title": "Home", "route": "/"}}}
+	if _, err := h.uiTabs(ctx, "lazyrex", one); err == nil || !strings.Contains(err.Error(), "the home plugin declares no tabs") {
+		t.Fatalf("home tabs: %v", err)
+	}
+	var n int
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_tabs WHERE plugin = 'lazyrex'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a refused list stored %d home tabs (%v)", n, err)
+	}
+	if _, err := h.uiTabs(ctx, "lazyrex", map[string]any{"tabs": []any{}}); err != nil {
+		t.Fatalf("home, no tabs: %v", err)
+	}
+	if _, err := h.uiTabs(ctx, "messaging", one); err != nil {
+		t.Fatalf("another plugin: %v", err)
 	}
 }

@@ -974,8 +974,9 @@ Status: code with tests; next hub release (coord-parallel-push-1, item 2; decisi
 2026-10-22). The home plugin has no tab. Every LazyRex command comes from the palette and its
 popups.
 
-- Any plugin may declare no tabs; the home plugin then has only its panel and forms (`hub.ui.tabs
-  {tabs = {}}`; the hub no longer refuses it from the home plugin).
+- Any plugin may declare no tabs (`hub.ui.tabs {tabs = {}}`). The home plugin declares none: it has
+  only its panel and forms, and the hub refuses a non-empty list from it ("the home plugin declares
+  no tabs"). The hub never orders tabs. It writes each open tab's declared title to its label.
 - The home plugin's palette entries:
   - "Agents…" (panel `/panels/agents`, the landing). It lists the agents (Message, only while the
     messaging plugin is registered) and the workers and accessories. An active worker has
@@ -1000,8 +1001,7 @@ popups.
 - Reconciliation covers every plugin with a declared tab or a live tab view (`uiPlugins`). A
   non-home plugin that declares no tabs gets a pass, so its open tab view closes as undeclared.
 
-Tests: `tests/harness/tests/no_tabs.lua`, `tests/harness/tests/home_retire.lua` (the fixture as
-home: a view retires, a view with unsaved text waits, a restart resumes the retirement),
+Tests: `tests/harness/tests/no_tabs.lua`, `TestHomePluginDeclaresNoTabs`,
 `TestUIPluginsIncludesLiveTabViews`, `TestHomeRouteRefusedLab` (lab: a home view at `/` in the
 LazyRex session gets the refused render, then retires, closes once and its pane goes), and
 `plugins/lazyrex/tests` (README coverage table).

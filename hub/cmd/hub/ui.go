@@ -210,7 +210,8 @@ func (h *Hub) workSession() string {
 	return ""
 }
 
-// homePlugin is the plugin whose tabs are always mounted (config "home", default "lazyrex").
+// homePlugin is the plugin whose pass runs first (config "home", default "lazyrex"). It declares
+// no tabs (uiTabs).
 func (h *Hub) homePlugin() string {
 	if h.cfg.Home != "" {
 		return h.cfg.Home
@@ -595,13 +596,12 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				byTab[v.Tab] = v
 			}
 
-			// 2. Close views whose tab is no longer wanted, or whose route changed. A user close does
-			// not remove a home tab; the crash limit still does (no endless respawn).
+			// 2. Close views whose tab is no longer wanted, or whose route changed.
 			want := map[string]tab{}
 			declared := map[string]bool{}
 			for _, t := range tabs {
 				declared[t.Key] = true
-				if !t.Suppressed || (plugin == home && t.Crashes < maxCrashes) {
+				if !t.Suppressed {
 					want[t.Key] = t
 				}
 			}
@@ -666,10 +666,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				}
 			}
 
-			// 5. Snap tab order and titles back, in declared order. Only the home plugin orders the
-			// LazyRex session, which all plugins share; its tabs come first. In a home session the
-			// tabs share the session with the user's own tabs: only titles, never the order.
-			if err := h.orderTabs(ctx, sess, order, byTab, inApp && plugin == home); err == errRetry {
+			// 5. Write the declared titles back. The hub never orders tabs: the LazyRex session and
+			// the home sessions keep the order that Rex and the user give them.
+			if err := h.titleTabs(ctx, sess, order, byTab); err == errRetry {
 				more = true
 			} else if err != nil {
 				return false, err
@@ -944,12 +943,11 @@ func (h *Hub) closeView(ctx context.Context, v *view, why string) {
 	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "by": "hub", "why": why})
 }
 
-func (h *Hub) orderTabs(ctx context.Context, sess string, tabs []tab, byTab map[string]*view, reorder bool) error {
-	var desired []string
+// titleTabs writes each open tab's declared title to its window label.
+func (h *Hub) titleTabs(ctx context.Context, sess string, tabs []tab, byTab map[string]*view) error {
 	title := map[string]string{} // window -> declared title
 	for _, t := range tabs {
 		if v := byTab[t.Key]; v != nil {
-			desired = append(desired, v.Window)
 			title[v.Window] = t.Title
 		}
 	}
@@ -978,50 +976,6 @@ func (h *Hub) orderTabs(ctx context.Context, sess string, tabs []tab, byTab map[
 			h.ev.emit("tab_renamed", map[string]any{"session_id": sess, "window_id": w.WindowID, "title": t})
 		}
 	}
-	if !reorder {
-		return nil
-	}
-	var current []string
-	for _, w := range sv.Windows {
-		current = append(current, w.WindowID)
-	}
-	return h.orderWindows(ctx, sess, desired, current)
-}
-
-// orderWindows puts the desired windows first, in the given order. Other windows keep their
-// relative order after them. current is the session's tab order now.
-func (h *Hub) orderWindows(ctx context.Context, sess string, desired, current []string) error {
-	isView := map[string]bool{}
-	for _, w := range desired {
-		isView[w] = true
-	}
-	var actual []string
-	for _, w := range current {
-		if isView[w] {
-			actual = append(actual, w)
-		}
-	}
-	if strings.Join(actual, ",") == strings.Join(desired, ",") && (len(desired) == 0 || current[0] == desired[0]) {
-		return nil
-	}
-	for i := len(desired) - 1; i >= 0; i-- {
-		args := map[string]any{"session_id": sess, "window_id": desired[i]}
-		if i+1 < len(desired) {
-			args["before_window_id"] = desired[i+1]
-		} else if len(current) > 0 && current[0] != desired[i] {
-			args["before_window_id"] = current[0]
-		} else {
-			continue
-		}
-		if err := h.rex.Call(ctx, "session.move_window", args, nil); err != nil {
-			var re *rex.RexError
-			if errors.As(err, &re) && re.Code == "not_found" {
-				return errRetry // a tab closed meanwhile; the next pass sees it
-			}
-			return err
-		}
-	}
-	h.ev.emit("tabs_reordered", map[string]any{"session_id": sess})
 	return nil
 }
 
@@ -1301,13 +1255,16 @@ func (h *Hub) uiSessionDestroyed(ctx context.Context, sess string) {
 
 // --- Actions ---
 
-// uiTabs replaces the calling plugin's declared tab set. The first tab is the plugin's home.
-// An empty list is valid for any plugin: a plugin with only a landing panel has no tabs
-// (panels.go). The home plugin then has only its panel and forms.
+// uiTabs replaces the calling plugin's declared tab set. An empty list is valid for any plugin:
+// a plugin with only a landing panel has no tabs (panels.go). The home plugin declares no tabs:
+// it has only its panel and forms.
 func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (any, error) {
 	list, ok := asList(args["tabs"])
 	if !ok {
 		return nil, bad("tabs must be a list")
+	}
+	if len(list) > 0 && plugin == h.homePlugin() {
+		return nil, bad("the home plugin declares no tabs")
 	}
 	seen := map[string]bool{}
 	var tabs []tab

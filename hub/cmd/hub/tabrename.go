@@ -9,7 +9,7 @@ package main
 // title (A -> B -> A) is still a rename. A label equal to the tab's declared title, Rex's generated
 // label ("Window " + the last 8 characters of the window ID), and an empty label are not renames.
 // Label events run one at a time, in arrival order (one worker), so rapid renames reach the plugin
-// in order. While a rename waits for the plugin, orderTabs leaves that window's label alone; only
+// in order. While a rename waits for the plugin, titleTabs leaves that window's label alone; only
 // the rename that set the hold releases it.
 
 import (
@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const renameHold = 10 * time.Second // the longest a pending rename keeps orderTabs off a window
+const renameHold = 10 * time.Second // the longest a pending rename keeps titleTabs off a window
 
 type labelEvent struct{ sess, window, label string }
 
