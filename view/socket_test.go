@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,7 +55,12 @@ func TestKnownDefault(t *testing.T) {
 // A Linux pane has no REX_SERVER: with -real-server, the renderer takes this user's default socket
 // that exists. Without one, it refuses. A Linux path in REX_SERVER is accepted.
 func TestRealSocketOnLinux(t *testing.T) {
-	xdg := t.TempDir()
+	// A short directory: a Unix socket path has a length limit (104 bytes on macOS).
+	xdg, err := os.MkdirTemp("/tmp", "rs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(xdg) })
 	sock := filepath.Join(xdg, "rex", "server.sock")
 	if p, err := realSocketFor("", "/nohome", xdg, 501); err == nil {
 		t.Fatalf("no socket exists, but got %q", p)
@@ -62,9 +68,19 @@ func TestRealSocketOnLinux(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(sock, nil, 0o600); err != nil { // a file stands in for the socket
+	// A stray file at the default path is not a socket.
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if p, err := realSocketFor("", "/nohome", xdg, 501); err == nil {
+		t.Fatalf("a plain file was taken as the socket: %q", p)
+	}
+	os.Remove(sock)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
 	if p, err := realSocketFor("", "/nohome", xdg, 501); err != nil || p != sock {
 		t.Fatalf("empty REX_SERVER: %q %v", p, err)
 	}
@@ -73,6 +89,37 @@ func TestRealSocketOnLinux(t *testing.T) {
 	}
 	if _, err := realSocketFor("unix:///tmp/rexlab/rex.sock", "/nohome", xdg, 501); err == nil {
 		t.Fatal("accepted a lab socket")
+	}
+}
+
+// The same test as TestKnownDefaultSymlinks in hub/internal/rexreal: a symlink to a default socket
+// is the default socket, in both directions.
+func TestKnownDefaultSymlinks(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "runtime")
+	if err := os.MkdirAll(filepath.Join(real, "rex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(real, "rex", "server.sock")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias.sock")
+	if err := os.Symlink(sock, alias); err != nil {
+		t.Fatal(err)
+	}
+	linkedXDG := filepath.Join(root, "linked-runtime")
+	if err := os.Symlink(real, linkedXDG); err != nil {
+		t.Fatal(err)
+	}
+	if !knownDefault("unix://"+alias, "/nohome", real, 501) {
+		t.Error("an endpoint that links to the default socket")
+	}
+	if !knownDefault("unix://"+sock, "/nohome", linkedXDG, 501) {
+		t.Error("a default directory that is a link")
+	}
+	if knownDefault("unix://"+filepath.Join(root, "other.sock"), "/nohome", real, 501) {
+		t.Error("another path in the same directory")
 	}
 }
 
