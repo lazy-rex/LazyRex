@@ -485,6 +485,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if cfg.Test {
 		h.test = newTestState()
 		h.sql.beforeCommit = h.testBeforeSQLCommit
+		h.sql.beforeBegin = h.testBeforeSQLBegin
 	}
 
 	var actions []map[string]any
