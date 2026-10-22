@@ -113,6 +113,7 @@ type Plugin struct {
 	entry      *configEntry // the entry that bound this name; nil for a kept record (loadKept)
 	source     string       // the source that the instance ran from (the plugins row)
 	run        pluginRun    // the metadata of the recorded instance; zero when there is none (saved in the plugins row)
+	selected   *selectedRun // the run of the next automatic start; nil when none (the plugins row selected_run)
 	Desired    string       // running or stopped
 	InstanceID string
 	SessionID  string // the session of the instance's block ("" in rows from before it was recorded)

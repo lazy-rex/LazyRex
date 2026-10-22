@@ -241,15 +241,19 @@ func (h *Hub) ensurePluginRow(ctx context.Context, name string) error {
 // readPluginRow is loadPluginRow without the insert: an absent row reads as the default row. An
 // admin call reads with it before its first effect (adminattempt.go).
 func (h *Hub) readPluginRow(ctx context.Context, pl *Plugin) error {
-	var run string
-	err := h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run FROM plugins WHERE name = ?`, pl.Name).
-		Scan(&pl.Desired, &pl.InstanceID, &pl.SessionID, &pl.BlockID, &pl.ChildPID, &pl.ChildStart, &run)
+	var run, selected string
+	err := h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run, selected_run FROM plugins WHERE name = ?`, pl.Name).
+		Scan(&pl.Desired, &pl.InstanceID, &pl.SessionID, &pl.BlockID, &pl.ChildPID, &pl.ChildStart, &run, &selected)
 	if errors.Is(err, sql.ErrNoRows) {
-		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, err = defaultDesired, "", "", "", 0, "", "", nil
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, selected, err = defaultDesired, "", "", "", 0, "", "", "", nil
 	}
-	pl.run = pluginRun{}
+	pl.run, pl.selected = pluginRun{}, nil
 	if err == nil && run != "" {
 		err = json.Unmarshal([]byte(run), &pl.run)
+	}
+	if err == nil && selected != "" {
+		pl.selected = &selectedRun{}
+		err = json.Unmarshal([]byte(selected), pl.selected)
 	}
 	return err
 }
@@ -285,6 +289,15 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 		b, _ := json.Marshal(pl.run)
 		run = string(b)
 	}
+	// A kept record never starts, so it has no selected run (the entry's removal clears it).
+	if pl.entry == nil {
+		pl.selected = nil
+	}
+	selected := ""
+	if pl.selected != nil {
+		b, _ := json.Marshal(pl.selected)
+		selected = string(b)
+	}
 	stamp := ""
 	if identity != "" {
 		stamp = entryStamp(pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run)
@@ -294,18 +307,24 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 	// (loadKept).
 	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ?,
 		source = CASE WHEN ? != '' THEN ? ELSE source END,
-		entry_identity = CASE WHEN ? != '' THEN ? ELSE entry_identity END, entry_stamp = ? WHERE name = ?`,
-		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, identity, identity, stamp, pl.Name)
+		entry_identity = CASE WHEN ? != '' THEN ? ELSE entry_identity END, entry_stamp = ?, selected_run = ? WHERE name = ?`,
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, identity, identity, stamp, selected, pl.Name)
 	return err
 }
 
-// loadKept makes a kept record for each plugins row that has a recorded block or an open spawn
+// loadKept clears every selected run, then makes a kept record for each plugins row that has a recorded block or an open spawn
 // intent: the instance or the intent has an owner even when no entry gives its name now
 // (reviewer, hub-review-2d1-ownership-boundary). An entry adopts its kept record when it gives
 // the same name from the same source (resolveLocked). It runs at hub start, before the first
 // resolution. A row from before the source was recorded has source "": only an entry that gives
 // the same name adopts it (migration rule).
 func (h *Hub) loadKept(ctx context.Context) error {
+	// Hub start: no selected run survives a hub stop. A value that this hub stored before, or that a
+	// rollback hub kept (it does not know the column), never reaches an automatic start: only an
+	// explicit start of this process selects a run (selectedrun.go).
+	if _, err := h.db.ExecContext(ctx, `UPDATE plugins SET selected_run = '' WHERE selected_run != ''`); err != nil {
+		return err
+	}
 	rows, err := h.db.QueryContext(ctx, `SELECT name, source FROM plugins WHERE block_id != ''
 		OR name IN (SELECT plugin FROM spawn_intents WHERE status IN ('prepared', 'sending')) ORDER BY name`)
 	if err != nil {
@@ -640,6 +659,14 @@ func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, e *configEntry, cand 
 			pl.state = "waiting"
 		}
 	}
+	if member && missing != nil {
+		// The wake starts this run (an automatic start), so it is selected before the lease ends.
+		pl.selected = &selectedRun{Entry: entryIdentity(e), Run: *cand}
+		if err := h.savePlugin(ctx, pl); err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("plugin %s: the selected run is not saved: %w", pl.Name, err)
+		}
+	}
 	h.mu.Unlock()
 	if missing == nil {
 		return h.spawn(ctx, pl, cand, lease)
@@ -971,14 +998,17 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 		return &spawnError{stage: "intent", known: true, err: err}
 	}
 	h.mu.Lock()
-	wasInstance, wasSession, wasClient, wasRun, wasSource := pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source
+	wasInstance, wasSession, wasClient, wasRun, wasSource, wasSelected := pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source, pl.selected
 	pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source = instance, sess, "", *cand, cand.Source
+	if pl.entry != nil {
+		pl.selected = &selectedRun{Entry: entryIdentity(pl.entry), Run: *cand}
+	}
 	run := pl.run
 	if err := h.savePlugin(ctx, pl); err != nil {
 		// The run is not durable: prune could not see it, so nothing is sent. The record keeps its
 		// state from before this spawn. The intent was never sent, so it is abandoned now, or by
 		// the next intent resolution if this update fails too.
-		pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source = wasInstance, wasSession, wasClient, wasRun, wasSource
+		pl.InstanceID, pl.SessionID, pl.ClientID, pl.run, pl.source, pl.selected = wasInstance, wasSession, wasClient, wasRun, wasSource, wasSelected
 		h.mu.Unlock()
 		return h.knownFailure(ctx, "save", instance, "prepared", fmt.Errorf("spawn %s: %w; nothing was sent", pl.Name, err))
 	}
@@ -1133,7 +1163,7 @@ func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	block := pl.BlockID
 	h.parts.drop(pl.ClientID)
 	pl.clearInstance()
-	pl.Desired, pl.state, pl.refusal, pl.waiting = "stopped", "", "", nil
+	pl.Desired, pl.state, pl.refusal, pl.waiting, pl.selected = "stopped", "", "", nil, nil
 	h.savePlugin(ctx, pl)
 	h.dropKept(pl) // a stopped kept record owns nothing more
 	h.mu.Unlock()
