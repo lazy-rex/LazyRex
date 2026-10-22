@@ -520,7 +520,31 @@ func (h *Hub) opView(ctx context.Context, id string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return op.view(), nil
+	v := op.view()
+	// attempts: each attempt record, oldest first. resolved_by (with its note) only when stored.
+	attempts := []map[string]any{}
+	rows, err := h.db.QueryContext(ctx, `SELECT attempt, call, at, outcome, proof, resolved_by FROM plugin_op_attempts WHERE op_id = ? ORDER BY at, rowid`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var attempt, call, outcome, proof, by string
+		var at int64
+		if err := rows.Scan(&attempt, &call, &at, &outcome, &proof, &by); err != nil {
+			return nil, err
+		}
+		a := map[string]any{"attempt": attempt, "call": call, "at": at, "outcome": outcome, "proof": proof}
+		if by != "" {
+			a["resolved_by"], a["note"] = resolvedRecord(by), resolvedNote
+		}
+		attempts = append(attempts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	v["attempts"] = attempts
+	return v, nil
 }
 
 // pluginOpsList answers hub.plugins.ops: one op by op_id, or the 50 newest.
