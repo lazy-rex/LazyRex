@@ -130,6 +130,9 @@ Forms and panels (each: opens the right surface; Esc closes it)
 - 2.8 New Thread…  2.9 Threads…  2.10 Start Agent…  2.11 Start Accessory…  2.12 Start Session…
   2.13 Save as Template…  2.14 Templates…  2.15 Tunnels  2.16 Forward Port…  2.17 Worktrees…
   2.18 New Worktree…  2.19 Remove Worktree…  2.20 Automations…  2.21 New Automation…
+  2.22 Agents… (the home panel)  2.23 Stop Worker…
+  "Launch Profile…" shows only when the Profiles plugin is not registered; with Profiles, use
+  Start Agent… and Start Accessory…
   Each is its own result.
 
 ## 3. Forms (submit and cancel are separate items)
@@ -156,10 +159,14 @@ Forms and panels (each: opens the right surface; Esc closes it)
 - 3.29 Esc with changed values: closes and discards. 3.30 Esc while an operation runs: waits.
 - 3.31 Ctrl+N within one renderer: in a view whose tree holds both a composer and a form, Ctrl+N
   focuses the form's first field. It cannot move focus to a form in another pane.
+- 3.32 Stop Worker: submit (a worker of the session, B.2); the form closes. 3.33 Stop Worker: Cancel.
+- 3.34 Worker menu (Agents…, an active worker, Manage…): it opens over the panel. Open shows the
+  worker and the panel comes back. 3.35 Stop (a worker of the session, B.2): the panel comes back
+  without it. 3.36 Close and Esc: the panel comes back.
 
 ## 4. Panels
 
-- 4.1 Threads 4.2 Templates 4.3 Tunnels 4.4 Worktrees 4.5 Automations: each list action and
+- 4.1 Threads 4.2 Templates 4.3 Tunnels 4.4 Worktrees 4.5 Automations 4.8 Agents: each list action and
   button, empty state, refresh. One result per panel; list failures by action.
 - 4.6 Open a panel over a form with changes. Expected: "Replace this panel with X?" with Keep
   editing / Discard and replace. 4.7 Keep editing keeps the values.

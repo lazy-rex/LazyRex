@@ -894,7 +894,7 @@ Lab (observed on Rex 0.0.1792158932-g88fd41): `TestAppModeStateRemovedAtStartupL
 
 ## One LazyRex session (mount and detach)
 
-Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). Lab (Claude, Rex 1203, 2026-10-16).
+Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). The home tab is gone too (see "No LazyRex tab"). Lab (Claude, Rex 1203, 2026-10-16).
 
 All plugin views live in one Rex session, labeled `lazyrex`. The home plugin (config `home`, default `lazyrex`) is always mounted, first. Its tab is the menu. One other plugin is **active**, and its tabs are mounted after the home tab. The views of every other plugin are **detached** with `session.detach_block`: their processes and unsaved input stay.
 
@@ -920,6 +920,39 @@ Lab results (observed):
 - Resize after a swap out and back: the restored Claude view redrew at 60 and at 110 columns (its composer border followed the width), and the unsaved draft stayed.
 
 Untested: app selection (no app in the lab). A draft conflict during retirement has renderer test coverage only.
+
+## No LazyRex tab (2026-10-22)
+
+Status: code with tests; next hub release (coord-parallel-push-1, item 2; decisions Q1 A and Q2,
+2026-10-22). The home plugin has no tab. Every LazyRex command comes from the palette and its
+popups.
+
+- Any plugin may declare no tabs; the home plugin then has only its panel and forms (`hub.ui.tabs
+  {tabs = {}}`; the hub no longer refuses it from the home plugin).
+- The home plugin's palette entries:
+  - "Agents…" (panel `/panels/agents`, the landing). It lists the agents (Message, only while the
+    messaging plugin is registered) and the workers and accessories. An active worker has
+    "Manage…": the menu form `/forms/worker/<spawn_id>` with Open (when it has a window), Stop and
+    Close. A failed worker has Dismiss. Another worker with a window has Open.
+  - "Stop Worker…" (`/forms/stop`): a select of the active workers.
+  - "Launch Profile…" (`/forms/launch`): one launch form per profile. The plugin registers it only
+    while no plugin named `profiles` is registered; Profiles has Start Agent… and Start Accessory….
+    The plugin registers again on `hub.changed` only when its command set changes.
+- The home tab's plugin list is gone: each plugin has its own palette entry, and Hub Plugins has
+  "Plugins…".
+- The LazyRex session stays. The hub still creates it, and it can be empty. Thread tabs with no
+  known home still open there (phase 2 decides the session's creation and the thread fallback).
+- Upgrade: a home view whose tab the home plugin no longer declares retires through the legacy gate
+  (`view.retire`: the renderer leaves when nothing is unsaved; its exit closes the pane). The hub
+  never closes it as undeclared. The missing declaration is durable, so the hub asks again after a
+  restart. A home view in a legacy session retires as before. Until it retires, the old view (route
+  `/`) shows the Agents panel.
+- Reconciliation covers every plugin with a declared tab or a live tab view (`uiPlugins`). A
+  non-home plugin that declares no tabs gets a pass, so its open tab view closes as undeclared.
+
+Tests: `tests/harness/tests/no_tabs.lua`, `tests/harness/tests/home_retire.lua` (the fixture as
+home: a view retires, a view with unsaved text waits, a restart resumes the retirement),
+`TestUIPluginsIncludesLiveTabViews`, and `plugins/lazyrex/tests` (README coverage table).
 
 ### Worktrees plugin
 
