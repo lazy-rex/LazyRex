@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,11 +130,14 @@ func TestSetupBootAndHubPaletteLab(t *testing.T) {
 	t.Logf("reload without pcall, the full file: %s", strings.TrimSpace(rex("config", "reload")))
 	check("without pcall, the full file", append(append([]string(nil), bootNames...), hubNames...), nil)
 
-	// The control: without pcall, an error in a module fails the reload.
+	// The control: without pcall, an error in a module fails the reload as a configuration error
+	// (exit 1 and Rex's error text), not as some other rex failure such as a lost connection.
 	write("lazyrex_palette.lua", paletteHeader+`error("a broken palette file")`+"\n")
-	if out, err := rexErr("config", "reload"); err == nil {
-		t.Errorf("a broken module did not fail the reload:\n%s", out)
-	} else {
-		t.Logf("the control: %v: %s", err, strings.TrimSpace(out))
+	out, err := rexErr("config", "reload")
+	t.Logf("the control: %v: %s", err, strings.TrimSpace(out))
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(out, "lazyrex_palette.lua:3: a broken palette file") ||
+		!strings.Contains(out, "the configuration has errors") {
+		t.Errorf("a broken module: want exit 1 and the configuration error, got %v:\n%s", err, out)
 	}
 }
