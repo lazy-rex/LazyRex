@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -487,7 +488,7 @@ func (w *relWorld) open(step string) *releaser {
 	}
 	r.buildInfo = func(p string) (string, bool, error) {
 		switch p {
-		case r.hubBin():
+		case r.hubBin(), r.hubBin() + ".new":
 			return w.binRev, false, nil
 		case filepath.Join(w.state, "dev", "hub"):
 			return w.devRev, false, nil
@@ -626,6 +627,13 @@ func TestReleaseHubFreezeRefusals(t *testing.T) {
 		"no main.go":   {func(w *relWorld) { w.commits[commitOld].mainGo = false }, "has no hub/cmd/hub/main.go"},
 		"dirty clone":  {func(w *relWorld) { w.dirty = true }, "local changes"},
 		"lock not OLD": {func(w *relWorld) { w.writePins(pinH, pinH) }, "not at OLD"},
+		"H is OLD": {func(w *relWorld) {
+			var s map[string]any
+			json.Unmarshal(mustRead(w.specP), &s)
+			s["h"] = commitOld
+			b, _ := json.Marshal(s)
+			os.WriteFile(w.specP, b, 0o600)
+		}, "a release without a change"},
 	} {
 		w := newRelWorld(t)
 		tc.mod(w)
@@ -1112,5 +1120,153 @@ func TestReleaseHubPendingCreateAcrossSteps(t *testing.T) {
 	w.must("rollback")
 	if w.hubPID != pid || w.hubN != n {
 		t.Errorf("the rerun replaced the OLD hub of the rollback: pid %d want %d", w.hubPID, pid)
+	}
+}
+
+// The H binary (design v2 G): in "from from" a failed build leaves no H binary, also when an older
+// one exists (case 11). After a pin moved, a failed retry keeps the verified binary, and the
+// rollback pulls the pins back with it.
+func TestReleaseHubBuildKeepsVerifiedBinary(t *testing.T) {
+	w := newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout")
+	r := w.open("x")
+	bin := r.hubBin()
+	r.unlock()
+	os.MkdirAll(filepath.Dir(bin), 0o700)
+	os.WriteFile(bin, []byte("an older H binary"), 0o700)
+	w.buildFail = true
+	if err := w.step("pull"); err == nil {
+		t.Fatal("a failed build passed")
+	}
+	if _, err := os.Stat(bin); err == nil {
+		t.Error("a failed build in \"from from\" left an H binary")
+	}
+	w.wantPins(pinOld, pinOld)
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout")
+	w.pullStop = "lock"
+	if err := w.step("pull"); err == nil {
+		t.Fatal("a pull stopped after the lock write passed")
+	}
+	w.wantPins(pinH, pinOld) // "to from"
+	r = w.open("x")
+	bin = r.hubBin()
+	r.unlock()
+	w.buildFail = true
+	if err := w.step("pull"); err == nil || !strings.Contains(err.Error(), "build failed") {
+		t.Fatalf("retry: %v", err)
+	}
+	if b, err := os.ReadFile(bin); err != nil || !strings.HasPrefix(string(b), "hub-H binary") {
+		t.Fatalf("the failed retry did not keep the verified H binary: %q %v", b, err)
+	}
+	w.buildFail = false
+	w.must("rollback")
+	w.wantPins(pinOld, pinOld)
+	if w.head != commitOld || w.devRev != commitOld {
+		t.Errorf("rollback: head %s dev %s", w.head[:6], w.devRev[:6])
+	}
+}
+
+// A-u3 (design v2 E): a lab spec runs only on a proved lab server, with every path that the steps
+// write or run inside the lab; each path alone outside the lab refuses before the lock file. A spec
+// without "lab" refuses a lab server; "lab" and "real" together refuse.
+func TestReleaseLabSpec(t *testing.T) {
+	lab, err := os.MkdirTemp("/tmp", "rexlab-release-t-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(lab)
+	lab, _ = filepath.EvalSymlinks(lab)
+	out := t.TempDir()
+	sock := filepath.Join(lab, "rex.sock")
+	server := "unix://" + sock
+	stand := exec.Command("/bin/sh", "-c", "sleep 60; true", "sh", "--listen", server, "--state-dir", filepath.Join(lab, "state"))
+	if err := stand.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { stand.Process.Kill(); stand.Wait() }()
+	proof, _ := json.Marshal(map[string]any{"socket": server, "server_pid": stand.Process.Pid, "nonce": "n"})
+	os.WriteFile(filepath.Join(lab, "lab.json"), proof, 0o600)
+
+	type tc struct {
+		cfg  map[string]any
+		spec map[string]any
+		run  string
+		want string
+	}
+	base := func() tc {
+		return tc{
+			cfg: map[string]any{"server": server, "state": filepath.Join(lab, "hub"), "agents": []any{map[string]string{"id": "user"}},
+				"view": filepath.Join(lab, "view.sh"), "profiles": filepath.Join(lab, "home", "profiles.json")},
+			spec: map[string]any{"kind": "hub", "h": commitH, "release_dir": filepath.Join(lab, "release"), "server": server,
+				"dev_log": filepath.Join(lab, "dev.log"), "lab": true},
+			run: filepath.Join(lab, "run"),
+		}
+	}
+	n := 0
+	try := func(c tc) error {
+		n++
+		cfg := filepath.Join(lab, fmt.Sprintf("hub-%d.json", n))
+		b, _ := json.Marshal(c.cfg)
+		os.WriteFile(cfg, b, 0o600)
+		c.spec["config"] = cfg
+		sb, _ := json.Marshal(c.spec)
+		sp := filepath.Join(out, fmt.Sprintf("spec-%d.json", n))
+		os.WriteFile(sp, sb, 0o600)
+		run := fmt.Sprintf("%s-%d", c.run, n)
+		if err := createRun(run, sp); err != nil {
+			return err
+		}
+		r, err := openRun(run, "precheck", &bytes.Buffer{})
+		if err == nil {
+			r.unlock()
+			return nil
+		}
+		if _, serr := os.Stat(strings.TrimSuffix(cfg, ".json") + ".release.lock"); serr == nil {
+			t.Errorf("a refused lab spec wrote the lock file: %v", err)
+		}
+		return err
+	}
+	if err := try(base()); err != nil {
+		t.Fatalf("a valid lab spec: %v", err)
+	}
+	for name, mod := range map[string]func(c *tc){
+		"config server":    func(c *tc) { c.cfg["server"] = "unix:///tmp/other/rex.sock" },
+		"state":            func(c *tc) { c.cfg["state"] = filepath.Join(out, "state") },
+		"lock override":    func(c *tc) { c.cfg["lock"] = filepath.Join(out, "lock.json") },
+		"managed override": func(c *tc) { c.cfg["managed_plugins"] = filepath.Join(out, "plugins.json") },
+		"view":             func(c *tc) { c.cfg["view"] = filepath.Join(out, "view.sh") },
+		"palette_lua":      func(c *tc) { c.cfg["palette_lua"] = filepath.Join(out, "palette.lua") },
+		"release_dir":      func(c *tc) { c.spec["release_dir"] = filepath.Join(out, "release") },
+		"dev_log":          func(c *tc) { c.spec["dev_log"] = filepath.Join(out, "dev.log") },
+		"probes":           func(c *tc) { c.spec["probes"] = filepath.Join(out, "probes.sql") },
+		"run dir":          func(c *tc) { c.run = filepath.Join(out, "run") },
+		"symlink out": func(c *tc) {
+			os.Symlink(out, filepath.Join(lab, "link"))
+			c.spec["dev_log"] = filepath.Join(lab, "link", "dev.log")
+		},
+	} {
+		c := base()
+		mod(&c)
+		if err := try(c); err == nil || !strings.Contains(err.Error(), "lab spec") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	c := base()
+	c.spec["lab"] = false
+	if err := try(c); err == nil || !strings.Contains(err.Error(), "is a lab server") {
+		t.Errorf("no lab field on a lab server: %v", err)
+	}
+	c = base()
+	c.spec["real"] = true
+	if err := try(c); err == nil || !strings.Contains(err.Error(), `"lab" and "real"`) {
+		t.Errorf("lab and real: %v", err)
+	}
+	os.Remove(filepath.Join(lab, "lab.json"))
+	if err := try(base()); err == nil || !strings.Contains(err.Error(), "no lab proof") {
+		t.Errorf("no proof: %v", err)
 	}
 }

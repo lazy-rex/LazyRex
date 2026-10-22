@@ -47,6 +47,7 @@ type relSpec struct {
 	Server     string   `json:"server"`      // the Rex server of the hub
 	DevLog     string   `json:"dev_log"`     // hub: the log of the dev pane
 	Real       bool     `json:"real"`        // the live hub: DEV_REAL=1 for dev.sh
+	Lab        bool     `json:"lab"`         // a lab run (rehearse): every path in the lab, a proved lab server
 	Probes     string   `json:"probes"`      // optional SQL probe file for the tables that H adds
 	Absent     []string `json:"absent"`      // paths that must not exist at backup
 	// LabArgs maps a plugin arg that names a path to its value in the lab (rehearse).
@@ -75,6 +76,9 @@ func readSpec(path string) (*relSpec, error) {
 }
 
 func (s *relSpec) check() error {
+	if s.Lab && s.Real {
+		return errors.New(`a spec cannot be "lab" and "real"`)
+	}
 	need := func(name, v string) error {
 		if v == "" {
 			return fmt.Errorf("%s is required for a %s release", name, s.Kind)
@@ -460,6 +464,10 @@ func openRun(dir, step string, stdout io.Writer) (*releaser, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Before the lock file write and before any child.
+	if err := checkLabSpec(dir, s, cfg); err != nil {
+		return nil, err
+	}
 	unlock, err := lockOperator(s.Config)
 	if err != nil {
 		return nil, err
@@ -523,4 +531,70 @@ func relStepFor(name string) (relStep, bool) {
 		return hub(hubResume)
 	}
 	return relStep{}, false
+}
+
+// checkLabSpec checks the lab of a spec with "lab": the server has a lab proof (checkLabProof), its
+// lab dir L is the dir of the socket, the config names the same server, and every path that the
+// steps write or run resolves inside L: the config, its state, lock and managed file (after any
+// override in the config), view, profiles and palette_lua, the release dir and its dev.sh, the dev
+// log, the probe file and the run dir. A spec without "lab" must not name a lab server.
+func checkLabSpec(run string, s *relSpec, cfg *pluginCmdConfig) error {
+	if !s.Lab {
+		if checkLabProof(s.Server) == nil {
+			return relFail("the server %s is a lab server; a lab spec must say \"lab\": true", s.Server)
+		}
+		return nil
+	}
+	if err := checkLabProof(s.Server); err != nil {
+		return relFail("lab spec: %v", err)
+	}
+	socket, err := rexSocket(s.Server)
+	if err != nil {
+		return relFail("lab spec: %v", err)
+	}
+	lab, err := resolveExisting(filepath.Dir(socket))
+	if err != nil {
+		return relFail("lab spec: %v", err)
+	}
+	b, err := os.ReadFile(cfg.path)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return relFail("lab spec: the config %s: %v", cfg.path, err)
+	}
+	if raw["server"] != s.Server {
+		return relFail("lab spec: the config server %v is not the spec server %s", raw["server"], s.Server)
+	}
+	type labPath struct{ key, p string }
+	paths := []labPath{{"config", cfg.path}, {"state", cfg.state}, {"lock", cfg.lock}, {"managed file", cfg.managed},
+		{"run dir", run}, {"probes", s.Probes}}
+	for _, k := range []string{"view", "profiles", "palette_lua"} {
+		if v, ok := raw[k].(string); ok {
+			paths = append(paths, labPath{"config " + k, v})
+		} else if raw[k] != nil {
+			return relFail("lab spec: the config %s is not a string", k)
+		}
+	}
+	if s.Kind == "hub" {
+		paths = append(paths, labPath{"release_dir", s.ReleaseDir},
+			labPath{"dev.sh", filepath.Join(s.ReleaseDir, "LazyRex", "dev.sh")}, labPath{"dev_log", s.DevLog})
+	}
+	for _, x := range paths {
+		if x.p == "" {
+			continue
+		}
+		p, err := filepath.Abs(x.p)
+		if err == nil {
+			p, err = resolveExisting(p)
+		}
+		if err != nil {
+			return relFail("lab spec: %s: %v", x.key, err)
+		}
+		if !within(p, lab) {
+			return relFail("lab spec: the %s %s is outside the lab %s", x.key, x.p, lab)
+		}
+	}
+	return nil
 }

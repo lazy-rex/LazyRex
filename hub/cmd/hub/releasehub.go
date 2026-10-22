@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -178,6 +179,9 @@ func hubFreeze(r *releaser) error {
 		return err
 	}
 	h := r.spec.H
+	if h == old {
+		return relFail("H %s is OLD, the commit of the release clone: a release without a change is not supported", h)
+	}
 	if _, err := r.git("fetch", "-q", "origin"); err != nil {
 		return err
 	}
@@ -634,17 +638,7 @@ func hubPull(r *releaser) error {
 	if err != nil {
 		return err
 	}
-	// The build comes first: a failed module download or build stops in state "from from".
-	hubDir := filepath.Join(r.relClone(), "hub")
-	if err := os.MkdirAll(filepath.Dir(r.hubBin()), 0o700); err != nil {
-		return err
-	}
-	for _, argv := range [][]string{{"go", "mod", "download"}, {"go", "build", "-o", r.hubBin(), "./cmd/hub"}} {
-		if _, e, err := r.runCmd(relCmd{Dir: hubDir, Argv: argv}); err != nil {
-			return cmdError(argv, e, err)
-		}
-	}
-	if err := r.checkProvenance(r.hubBin(), c.To.Commit, "hub-H"); err != nil {
+	if err := r.buildHubH(c, st); err != nil {
 		return err
 	}
 	// The build can take minutes: check the hold again right before the pull.
@@ -673,6 +667,35 @@ func hubPull(r *releaser) error {
 		return err
 	}
 	return r.statusOK(r.hubBin())
+}
+
+// buildHubH builds the H binary first: a failed module download or build stops before any pin
+// moves. The build goes to hub-H.new, and replaces hub-H only after its provenance check. In pin
+// state "from from" no pin moved, so a prior H binary is removed first: a failed build then leaves
+// no binary. After a pin moved, the verified H binary stays for the rollback pull when a retry fails.
+func (r *releaser) buildHubH(c *relCandidate, st string) error {
+	if err := os.MkdirAll(filepath.Dir(r.hubBin()), 0o700); err != nil {
+		return err
+	}
+	if st == "from from" {
+		if err := os.Remove(r.hubBin()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	next := r.hubBin() + ".new"
+	if err := os.Remove(next); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	hubDir := filepath.Join(r.relClone(), "hub")
+	for _, argv := range [][]string{{"go", "mod", "download"}, {"go", "build", "-o", next, "./cmd/hub"}} {
+		if _, e, err := r.runCmd(relCmd{Dir: hubDir, Argv: argv}); err != nil {
+			return cmdError(argv, e, err)
+		}
+	}
+	if err := r.checkProvenance(next, c.To.Commit, "hub-H"); err != nil {
+		return err
+	}
+	return os.Rename(next, r.hubBin())
 }
 
 // runtime checks that the hub h runs <state>/dev/hub, a clean build of commit.
