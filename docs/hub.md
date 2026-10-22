@@ -702,7 +702,7 @@ Test: `lazyrex-hub test -file agent_restart.lua tests/harness`; `TestRestartChec
 
 The hub writes one line for each answered call (`Hub.answer`, `hub/cmd/hub/calllog.go`): `<action> from <client> pid <pid> -> <error or <nil>> in <ms>`. One exception: a fast, successful routine read gets no line.
 
-- The routine reads are `hub.store.get` and `hub.store.scan`. Before Messaging f60a990 (2026-10-21), the live Messaging plugin made tens of thousands of them a minute, and a line for each made the log grow by about 1 GB. After f60a990, it makes about 500 to 1,000 a minute.
+- The routine reads are `hub.store.get`, `hub.store.scan` and `hub.sql.query`. Before Messaging f60a990 (2026-10-21), the live Messaging plugin made tens of thousands of them a minute, and a line for each made the log grow by about 1 GB. After f60a990, it makes about 500 to 1,000 a minute.
 - A routine read keeps its line when it fails, when its reply was not delivered, or when it takes 250 ms or longer.
 - Every other action keeps its line, also an action that is added later. A call that changes state for another party (admin, register, spawn, acting as the user) needs its line.
 - The hub counts the skipped calls. The first call one minute or more after the count started writes one summary line before its own line, then the count starts again: `routine calls without a line since 15:00:00: hub.store.get 3 (max 12.0ms), hub.store.scan 1 (max 40.0ms)`. A minute without skipped calls writes no summary. No goroutine writes the summary: the first call after the minute writes it. After a burst of reads with no later call, the counts wait for the next call. So a missing summary line does not mean that no reads occurred.
