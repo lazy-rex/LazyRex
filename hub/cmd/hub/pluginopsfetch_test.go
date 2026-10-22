@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -344,4 +345,70 @@ func TestPluginOpFetchCrashBeforeStore(t *testing.T) {
 	if le.Commit != commit || len(ents) != 2 {
 		t.Fatalf("the replay: pin %+v, cache entries %d", le, len(ents))
 	}
+}
+
+// fetchOpSimEnv makes the test binary a hub whose manager fetches through fetchChildGit
+// (TestPluginOpFetchHubKill). Its value is "<pids file>\t<state>\t<url>".
+const fetchOpSimEnv = "LAZYREX_FETCH_OPSIM"
+
+// fetchOpSimMain runs the simulated hub when fetchOpSimEnv is set (TestMain). Each fetch child
+// writes its watcher and gate to the pids file, so the file names the last one: the fetch, when
+// the stalled git runs.
+func fetchOpSimMain() {
+	v := os.Getenv(fetchOpSimEnv)
+	if v == "" {
+		return
+	}
+	p := strings.Split(v, "\t")
+	fetchChildRecord = func(w, g int) { os.WriteFile(p[0], fmt.Appendf(nil, "%d %d\n", w, g), 0o600) }
+	ev, err := openEvents(filepath.Join(p[1], "events.log"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "opsim:", err)
+		os.Exit(1)
+	}
+	h := &Hub{ev: ev}
+	tmp := filepath.Join(p[1], "plugins", ".tmp", "x")
+	os.MkdirAll(tmp, 0o700)
+	_, err = fetchCommit(context.Background(), h.fetchChildGit("sim", "fetching"), p[1], tmp, p[2], "lazy-rex", "Messaging", "", "refs/tags/v1.0.0", strings.Repeat("0", 40), false)
+	fmt.Fprintln(os.Stderr, "opsim:", err)
+	os.Exit(0)
+}
+
+// A SIGKILL of the hub while the manager's fetch stalls in git: no process of that fetch remains
+// (the watcher, the gate group and git). This is the manager path: the hub runs fetchCommit with
+// fetchChildGit, as the fetching phase does.
+func TestPluginOpFetchHubKill(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	pidFile := stallGit(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cacheTemp(t)
+	rec := filepath.Join(t.TempDir(), "pids")
+	hub := exec.Command(self)
+	hub.Env = append(os.Environ(), fetchOpSimEnv+"="+rec+"\t"+state+"\t"+r.url())
+	hub.Stderr = os.Stderr
+	if err := hub.Start(); err != nil {
+		t.Fatal(err)
+	}
+	git := waitPid(t, pidFile)
+	b, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w, g int
+	fmt.Sscanf(string(b), "%d %d", &w, &g)
+	psEvidence(t, "before the hub kill", hub.Process.Pid, w, g, git)
+	hub.Process.Signal(syscall.SIGKILL)
+	hub.Wait()
+	assertGone(t, "hub kill", w, g, git)
+	end := time.Now().Add(2 * time.Second)
+	for err := syscall.Kill(-g, 0); !errors.Is(err, syscall.ESRCH); err = syscall.Kill(-g, 0) {
+		if time.Now().After(end) {
+			t.Fatalf("the gate group %d still has a process: %v", g, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	psEvidence(t, "after the hub kill", w, g, git)
 }

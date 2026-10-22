@@ -27,6 +27,7 @@ func TestMain(m *testing.M) {
 		labKeeper() // the test binary as a lab keeper (labkeeper_test.go)
 	}
 	fetchChildMain()
+	fetchOpSimMain() // the test binary as a hub with a manager fetch (pluginopsfetch_test.go)
 	if path := os.Getenv(fetchHubSimEnv); path != "" {
 		_, err := runFetchChild(context.Background(), fetchCmd{Argv: os.Args[1:]}, func(_ context.Context, w, g int) error {
 			return os.WriteFile(path, fmt.Appendf(nil, "%d %d\n", w, g), 0o600)
