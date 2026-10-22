@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +56,8 @@ func harnessEnv(t *testing.T) []string {
 
 var keptLab = regexp.MustCompile(`lab kept: (/tmp/lrt-[0-9]+)`)
 
-// assertLabsGone checks that no process names a kept lab directory, then removes the directories.
+// assertLabsGone checks that no process names a kept lab directory, then removes the directories
+// that a probe proves ended. A lab with a survivor stays as evidence.
 func assertLabsGone(t *testing.T, out string) {
 	t.Helper()
 	ps, err := exec.Command("ps", "-eww", "-o", "pid=,command=").Output()
@@ -62,29 +65,52 @@ func assertLabsGone(t *testing.T, out string) {
 		t.Fatal(err)
 	}
 	for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+		survived := false
 		sc := bufio.NewScanner(strings.NewReader(string(ps)))
 		for sc.Scan() {
 			if strings.Contains(sc.Text(), m[1]+"/") {
 				t.Errorf("a process of lab %s survived: %s", m[1], sc.Text())
+				survived = true
 			}
 		}
-		if err := removeLab(m[1]); err != nil {
-			t.Error(err)
+		if survived {
+			t.Errorf("lab %s kept as evidence", m[1])
+			continue
 		}
+		removeIfEnded(t, m[1])
 	}
 }
 
 // removeKeptLabs removes, when the test ends, each lab that the harness output names as kept: a
 // harness test runs with -keep, and a check that fails before assertLabsGone must not leave its
-// labs (the lrt leak, 2026-10-22).
+// labs (the lrt leak, 2026-10-22). A lab that a probe does not prove ended stays as evidence.
 func removeKeptLabs(t *testing.T, out string) {
 	t.Cleanup(func() {
 		for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
-			if err := removeLab(m[1]); err != nil {
-				t.Error(err)
-			}
+			removeIfEnded(t, m[1])
 		}
 	})
+}
+
+// removeIfEnded removes the lab dir when labProbe proves it absent. Else the lab stays and the test
+// fails with its path: a live or uncertain lab is evidence.
+func removeIfEnded(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	procs, err := labProcs()
+	if err != nil {
+		t.Errorf("lab %s kept: %v", dir, err)
+		return
+	}
+	if st, why := labProbe(dir, procs); st != labAbsent {
+		t.Errorf("lab %s kept (%s): %s", dir, st, why)
+		return
+	}
+	if err := removeLab(dir); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestHarnessSelfTestsPass(t *testing.T) {

@@ -225,6 +225,7 @@ type fileResult struct {
 	passed, failed int
 	problems       []string // harness failures: no plan, a crash, cleanup, ...
 	labDir         string
+	labKept        bool // the lab stays with a KEEP marker: -keep, or its cleanup was not proved
 	parity         bool
 }
 
@@ -336,11 +337,15 @@ func testMain(argv []string) int {
 		if !r.ok() {
 			status, code = "FAIL", 1
 		}
-		fmt.Printf("%s %s: %d passed, %d failed\n", status, r.name, r.passed, r.failed)
+		where := ""
+		if !r.ok() && r.labKept {
+			where = " (lab kept: " + r.labDir + ")"
+		}
+		fmt.Printf("%s %s: %d passed, %d failed%s\n", status, r.name, r.passed, r.failed, where)
 		for _, p := range r.problems {
 			fmt.Printf("     %s\n", p)
 		}
-		if o.keep && r.labDir != "" {
+		if r.labKept {
 			fmt.Printf("     lab kept: %s (it has a KEEP marker; remove it after its review: lazyrex-hub test -clean %s)\n", r.labDir, r.labDir)
 		}
 	}
@@ -635,12 +640,11 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		res.labDir = l.dir
 		defer func() {
 			res.problems = append(res.problems, l.stop()...)
-			if o.keep {
-				why := fmt.Sprintf("%s: %d passed, %d failed, %d problems", res.name, res.passed, res.failed, len(res.problems))
-				if err := markLabKept(l.dir, "lazyrex-hub test -keep", why); err != nil {
-					res.problems = append(res.problems, "lab KEEP marker: "+err.Error())
-				}
-			} else if note := removeRunLab(l.dir, false, !res.ok()); note != "" {
+			why := fmt.Sprintf("%s: %d passed, %d failed, %d problems", res.name, res.passed, res.failed, len(res.problems))
+			var probs []string
+			res.labKept, probs = endLab(l.dir, o.keep, why, l.unproved)
+			res.problems = append(res.problems, probs...)
+			if note := removedNote(l.dir, res.labKept, len(probs) == 0, !res.ok()); note != "" {
 				fmt.Println("  " + note)
 			}
 		}()
@@ -784,17 +788,11 @@ func unescapeLRT(s string) string {
 	return strings.NewReplacer(`\n`, "\n       ", `\\`, `\`).Replace(s)
 }
 
-// removeRunLab removes the lab of a test file at its end, unless -keep. It returns a line for the
-// output: for any file whose removal fails, the error; for a failed file, after the log tails, that
-// its lab was removed (the printed log paths are gone then) and how to keep it.
-func removeRunLab(dir string, keep, failed bool) string {
-	if keep {
-		return ""
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Sprintf("lab not fully removed: %s: %v", dir, err)
-	}
-	if !failed {
+// removedNote is the output line after the log tails of a failed file whose lab endLab removed:
+// the printed log paths are gone, and -keep keeps them (the vanished-lab reports, 2026-10-22). A
+// kept lab, a failed removal (endLab reports it as a problem) and a passed file give no line.
+func removedNote(dir string, kept, removed, failed bool) string {
+	if kept || !removed || !failed {
 		return ""
 	}
 	return "lab removed: " + dir + " (run with -keep to keep it)"

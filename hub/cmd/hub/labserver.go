@@ -42,6 +42,7 @@ type lab struct {
 	restarts            int                          // hub:restart() calls (restartHub)
 	guard               *exec.Cmd                    // the lab guard (labguard.go); nil without o.self
 	guardIn             io.WriteCloser               // its stdin: closing it, or this process ending, starts its stop
+	unproved            []string                     // stop: why the cleanup is not proved (a survivor, the guard)
 }
 
 // home is the lab HOME, the working directory of every lab process.
@@ -284,7 +285,9 @@ func (l *lab) stop() []string {
 	stopGroup(l.hubW, l.hubExit, "hub")
 	l.snapshot()
 	stopGroup(l.srvW, l.srvExit, "lab server")
-	problems = append(problems, l.stopGuard()...)
+	g := l.stopGuard()
+	problems = append(problems, g...)
+	l.unproved = append(l.unproved, g...)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var alive []int
@@ -303,8 +306,10 @@ func (l *lab) stop() []string {
 			sort.Ints(alive)
 			for _, pid := range alive {
 				argv, _ := procArgv(pid)
-				problems = append(problems, fmt.Sprintf("cleanup: process survived the lab server: pid %d, start %s, command %s (not signaled)",
-					pid, l.tracked[pid], strings.Join(argv, " ")))
+				p := fmt.Sprintf("cleanup: process survived the lab server: pid %d, start %s, command %s (not signaled)",
+					pid, l.tracked[pid], strings.Join(argv, " "))
+				problems = append(problems, p)
+				l.unproved = append(l.unproved, p)
 			}
 			break
 		}

@@ -4,7 +4,8 @@ package main
 // A run removes its lab when it ends. A lab that a run keeps on purpose (-keep, or a failed Go lab
 // test) gets a KEEP marker that says who kept it and why. Labs that a killed run left (SIGKILL, a
 // go test timeout) are removed by the sweep: at most once per hour per user, at the start of a
-// run, it removes each old lab of this user that has no KEEP marker and no live server. A kept lab
+// run, it removes each old lab of this user that has no KEEP marker and that a probe proves absent:
+// no server and no process (labProbe). A kept lab
 // is removed with `lazyrex-hub test -clean <dir>` after its review (docs/testing.md).
 
 import (
@@ -14,9 +15,11 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -71,14 +74,127 @@ func removeLab(dir string) error {
 	return nil
 }
 
-// labLive reports whether a server accepts a connection on the lab's socket.
-func labLive(dir string) bool {
-	c, err := net.DialTimeout("unix", filepath.Join(dir, "rex.sock"), 500*time.Millisecond)
+// labState is what a probe can prove about a lab: a lab is removed only when it is absent.
+type labState int
+
+const (
+	labAbsent    labState = iota // no server on the socket and no process that names the lab
+	labLive                      // a server accepts a connection, or a process names the lab
+	labUncertain                 // the probe cannot prove either: the lab stays
+)
+
+func (s labState) String() string {
+	return [...]string{"absent", "live", "uncertain"}[s]
+}
+
+// labProc is one line of the process listing.
+type labProc struct {
+	pid, ppid int
+	cmd       string
+}
+
+// labProcs lists every process with its parent and command line. ps is a base tool on macOS and
+// Linux; -e, -ww and -o pid=,ppid=,command= mean the same on both. A test replaces it.
+var labProcs = func() ([]labProc, error) {
+	out, err := exec.Command("ps", "-eww", "-o", "pid=,ppid=,command=").Output()
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("process listing: %w", err)
 	}
-	c.Close()
-	return true
+	var procs []labProc
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		ppid, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("process listing: a line that is not pid, ppid, command: %q", line)
+		}
+		procs = append(procs, labProc{pid, ppid, strings.Join(f[2:], " ")})
+	}
+	if len(procs) == 0 {
+		return nil, errors.New("process listing: no process")
+	}
+	return procs, nil
+}
+
+// labDial connects to a lab socket. A test replaces it.
+var labDial = func(sock string) error {
+	c, err := net.DialTimeout("unix", sock, 500*time.Millisecond)
+	if err == nil {
+		c.Close()
+	}
+	return err
+}
+
+// labProbe tells whether the lab dir is live, absent or uncertain, with the reason. procs is one
+// process listing (labProcs); nil means that the listing failed or was not made, and only a test
+// passes nil for a base case. Rules, in order:
+//   - a process whose command line names the lab (dir + "/", or dir as a whole word) is live. This
+//     process and its ancestors do not count: a -clean names the lab in its own arguments.
+//   - a connection to <dir>/rex.sock: accepted is live; "no such file" is absent.
+//   - "connection refused" is absent only when lab.json names a server pid that no longer runs. A
+//     live server with a full connection queue refuses too (macOS), so a refused dial without
+//     lab.json, or with a server pid that runs (even a reused pid), is uncertain.
+//   - any other dial error is uncertain.
+func labProbe(dir string, procs []labProc) (labState, string) {
+	if procs != nil {
+		mine := map[int]bool{}
+		parent := map[int]int{}
+		for _, p := range procs {
+			parent[p.pid] = p.ppid
+		}
+		for pid := os.Getpid(); pid > 1 && !mine[pid]; pid = parent[pid] {
+			mine[pid] = true
+		}
+		for _, p := range procs {
+			if mine[p.pid] {
+				continue
+			}
+			if strings.Contains(p.cmd, dir+"/") || containsWord(p.cmd, dir) {
+				return labLive, fmt.Sprintf("process %d names the lab: %s", p.pid, p.cmd)
+			}
+		}
+	}
+	err := labDial(filepath.Join(dir, "rex.sock"))
+	switch {
+	case err == nil:
+		return labLive, "a server accepts connections on rex.sock"
+	case errors.Is(err, syscall.ENOENT):
+		return labAbsent, "no rex.sock and no process"
+	case !errors.Is(err, syscall.ECONNREFUSED):
+		return labUncertain, "rex.sock: " + err.Error()
+	}
+	var lj struct {
+		ServerPID int `json:"server_pid"`
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "lab.json"))
+	if err != nil {
+		return labUncertain, "rex.sock refuses connections and lab.json cannot be read: " + err.Error()
+	}
+	if err := json.Unmarshal(b, &lj); err != nil || lj.ServerPID <= 0 {
+		return labUncertain, "rex.sock refuses connections and lab.json names no server pid"
+	}
+	if procs == nil {
+		return labUncertain, "rex.sock refuses connections and there is no process listing"
+	}
+	for _, p := range procs {
+		if p.pid == lj.ServerPID {
+			return labUncertain, fmt.Sprintf("rex.sock refuses connections and the server pid %d runs (%s)", p.pid, p.cmd)
+		}
+	}
+	return labAbsent, fmt.Sprintf("rex.sock refuses connections and the server pid %d has ended", lj.ServerPID)
+}
+
+// containsWord reports whether word is a whole space-separated word of s.
+func containsWord(s, word string) bool {
+	for _, f := range strings.Fields(s) {
+		if f == word {
+			return true
+		}
+	}
+	return false
 }
 
 // labOwned reports whether fi is owned by this user.
@@ -97,7 +213,8 @@ func labAge(dir string, fi os.FileInfo, now time.Time) time.Duration {
 }
 
 // sweepLabs removes, in root, each lab directory (lrt-<digits>, not a symbolic link) of this user
-// that has no KEEP marker, is older than labStaleAfter and has no live server. It runs at most
+// that has no KEEP marker, is older than labStaleAfter and is absent (labProbe). A failed process
+// listing stops the sweep, and an uncertain lab stays, with one log line. It runs at most
 // once per labSweepEvery per user: the stamp file <root>/lrt-sweep-<uid> holds the time of the
 // last sweep. logf gets one line for each removal and each failure.
 func sweepLabs(root string, now time.Time, logf func(string)) {
@@ -120,6 +237,11 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 		logf(fmt.Sprintf("lab sweep: %v", err))
 		return
 	}
+	procs, err := labProcs()
+	if err != nil {
+		logf(fmt.Sprintf("lab sweep: no lab is removed: %v", err))
+		return
+	}
 	for _, e := range entries {
 		if !labDirName.MatchString(e.Name()) || e.Type()&fs.ModeSymlink != 0 || !e.IsDir() {
 			continue
@@ -133,19 +255,59 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 			continue // kept, or the marker cannot be checked
 		}
 		age := labAge(dir, fi, now)
-		if age < labStaleAfter || labLive(dir) {
+		if age < labStaleAfter {
+			continue
+		}
+		if st, why := labProbe(dir, procs); st != labAbsent {
+			if st == labUncertain {
+				logf(fmt.Sprintf("lab sweep: kept %s (uncertain: %s)", dir, why))
+			}
 			continue
 		}
 		if err := removeLab(dir); err != nil {
 			logf("lab sweep: " + err.Error())
 			continue
 		}
-		logf(fmt.Sprintf("lab sweep: removed %s (age %s, no KEEP marker, no server; to keep a lab, put a file named KEEP in it)", dir, age.Round(time.Minute)))
+		logf(fmt.Sprintf("lab sweep: removed %s (age %s, no KEEP marker, no server or process; to keep a lab, put a file named KEEP in it)", dir, age.Round(time.Minute)))
 	}
 }
 
+// endLab ends the lab dir of one test file after its stop. unproved lists why the stop could not
+// prove the cleanup (a survivor, the guard). The lab stays with a KEEP marker when the cleanup is
+// not proved (unproved, or a probe that is not absent: the evidence stays) or with -keep; else it
+// is removed. It returns whether the lab stays, and the problems for the run's result.
+func endLab(dir string, keep bool, why string, unproved []string) (bool, []string) {
+	reason := strings.Join(unproved, "; ")
+	if reason == "" {
+		procs, err := labProcs()
+		if err != nil {
+			reason = err.Error()
+		} else if st, w := labProbe(dir, procs); st != labAbsent {
+			reason = st.String() + ": " + w
+		}
+	}
+	by := "lazyrex-hub test -keep"
+	if reason != "" {
+		by, why = "lazyrex-hub test", "cleanup not proved: "+reason
+	} else if !keep {
+		if err := removeLab(dir); err != nil {
+			return false, []string{err.Error()}
+		}
+		return false, nil
+	}
+	var probs []string
+	if reason != "" {
+		probs = append(probs, fmt.Sprintf("lab kept: %s: the cleanup is not proved (%s)", dir, reason))
+	}
+	if err := markLabKept(dir, by, why); err != nil {
+		probs = append(probs, "lab KEEP marker: "+err.Error())
+	}
+	return true, probs
+}
+
 // cleanLab is `lazyrex-hub test -clean <dir>`: it removes a lab, kept or not, after its review.
-// It refuses a path that is not a lab directory of this user in root, and a lab with a live server.
+// It refuses a path that is not a lab directory of this user in root, and a lab that is live or
+// uncertain (labProbe).
 func cleanLab(root, dir string) error {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -166,8 +328,15 @@ func cleanLab(root, dir string) error {
 	if !fi.IsDir() || !labOwned(fi) {
 		return fmt.Errorf("%s is not a lab directory of this user", dir)
 	}
-	if labLive(abs) {
-		return fmt.Errorf("%s has a live server on rex.sock; stop it first", dir)
+	procs, err := labProcs()
+	if err != nil {
+		return fmt.Errorf("%s is kept: %w", dir, err)
+	}
+	switch st, why := labProbe(abs, procs); st {
+	case labLive:
+		return fmt.Errorf("%s is live (%s); stop it first", dir, why)
+	case labUncertain:
+		return fmt.Errorf("%s is kept: the probe cannot prove that its server and processes ended (%s)", dir, why)
 	}
 	return removeLab(abs)
 }
