@@ -15,9 +15,9 @@ import (
 
 // TestHomeLegacyViewRetiresLab: a home plugin that declares no tabs, and an open view of it in an
 // older hub's per-plugin session (a legacy session) with a live test renderer. The hub asks the
-// view to retire (view.retire). While the renderer has unsaved text (testview hold mode
-// retire-wait) the view and its pane stay; a hub restart asks again; when the text is gone the
-// renderer exits, the row closes once, the pane goes and the empty legacy session is destroyed.
+// view to retire (view.retire). While the renderer has simulated unsaved text (testview hold mode
+// retire-wait; not a real dirty renderer) the view and its pane stay; a hub restart asks again;
+// when the text is gone the renderer exits, the row closes once, the pane goes and the empty legacy session is destroyed.
 // Lab only: HARNESS_LAB=1.
 func TestHomeLegacyViewRetiresLab(t *testing.T) {
 	bin, root := harnessBinary(t)
@@ -146,21 +146,42 @@ func TestHomeLegacyViewRetiresLab(t *testing.T) {
 			}
 		}
 	}
-	paneAlive := func() bool {
+	// pane is the pane's state from a definite answer: "present", "absent" (the session lists no such
+	// block, or the session is gone), or "unknown" (any other error, for example a timeout). An unknown
+	// answer never counts as absence: the checks below ask again.
+	pane := func() string {
 		var out struct {
 			Blocks []struct {
 				ID string `json:"block_id"`
 			} `json:"blocks"`
 		}
 		if err := l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": sess}, &out); err != nil {
-			return false
+			if sessionGone(err) {
+				return "absent"
+			}
+			t.Logf("session.list_blocks: %v", err)
+			return "unknown"
 		}
 		for _, b := range out.Blocks {
 			if b.ID == block {
-				return true
+				return "present"
 			}
 		}
-		return false
+		return "absent"
+	}
+	// paneIs waits a short time for a definite answer equal to want; an answer of the other kind fails.
+	paneIs := func(want string) {
+		t.Helper()
+		for end := time.Now().Add(5 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+			switch got := pane(); {
+			case got == want:
+				return
+			case got != "unknown":
+				t.Fatalf("the pane is %s, want %s", got, want)
+			case time.Now().After(end):
+				t.Fatalf("no definite answer about the pane, want %s", want)
+			}
+		}
 	}
 
 	if err := o.startHub(ctx, l); err != nil {
@@ -171,9 +192,10 @@ func TestHomeLegacyViewRetiresLab(t *testing.T) {
 		return att != "" && events("view_retire") >= 1
 	})
 	time.Sleep(2 * time.Second) // passes run; the waiting view stays
-	if st, _ := row(); st != "open" || !paneAlive() {
-		t.Fatalf("a view with unsaved text did not wait: status %s, pane %v", st, paneAlive())
+	if st, _ := row(); st != "open" {
+		t.Fatalf("a view with unsaved text did not wait: status %s", st)
 	}
+	paneIs("present")
 	asked := events("view_retire")
 
 	stopHub()
@@ -181,20 +203,25 @@ func TestHomeLegacyViewRetiresLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor("the new hub asks view.retire again", 30*time.Second, func() bool { return events("view_retire") > asked })
-	if st, _ := row(); st != "open" || !paneAlive() {
-		t.Fatalf("after the restart: status %s, pane %v", st, paneAlive())
+	if st, _ := row(); st != "open" {
+		t.Fatalf("after the restart: status %s", st)
 	}
+	paneIs("present")
 
 	os.Remove(hold) // the text is saved: the renderer leaves
 	waitFor("the row to close", 20*time.Second, func() bool { st, _ := row(); return st == "closed" })
-	waitFor("the pane to go", 20*time.Second, func() bool { return !paneAlive() })
+	waitFor("the pane to go (a definite answer)", 20*time.Second, func() bool { return pane() == "absent" })
 	time.Sleep(2 * time.Second)
 	if n := events("view_retired") + events("view_closed"); n != 1 {
 		t.Fatalf("completions: %d view_retired + view_closed, want exactly 1", n)
 	}
 	waitFor("the empty legacy session to be destroyed", 20*time.Second, func() bool {
 		var out any
-		return l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": sess}, &out) != nil
+		err := l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": sess}, &out)
+		if err != nil && !sessionGone(err) {
+			t.Logf("session.list_blocks: %v", err) // not a definite answer: ask again
+		}
+		return sessionGone(err)
 	})
 	if st, _ := row(); st != "closed" {
 		t.Fatalf("status %s", st)
