@@ -56,3 +56,18 @@ func TestSQLTransactionLoss(t *testing.T) {
 		}
 	})
 }
+
+// A query error in a handler transaction goes through the same loss check as a statement error
+// (Codex note on 81da75e). An ordinary query error keeps the transaction: it commits. No read
+// error that ends SQLite's transaction is known, so this is a guard, not a reproduction.
+func TestSQLQueryErrorKeepsTheTransaction(t *testing.T) {
+	l := newSQLLab(t)
+	l.must("hub.sql.exec", `{"sql":"CREATE TABLE t (n)"}`)
+	tx := l.must("hub.sql.begin", `{}`)["tx"].(string)
+	l.must("hub.sql.exec", js(map[string]any{"tx": tx, "sql": "INSERT INTO t VALUES (1)"}))
+	l.fails("sql_error", "hub.sql.query", js(map[string]any{"tx": tx, "sql": "SELECT * FROM missing"}))
+	l.must("hub.sql.commit", js(map[string]any{"tx": tx}))
+	if q := l.must("hub.sql.query", `{"sql":"SELECT count(*) FROM t"}`); js(q["rows"]) != `[[1]]` {
+		t.Fatalf("the transaction after a query error: %s", js(q["rows"]))
+	}
+}
