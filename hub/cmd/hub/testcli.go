@@ -19,7 +19,7 @@ import (
 // Like both CLIs (S1, 2026-10-22) it reports program status idle first. It reports its identity
 // from a child process (as a hook does) at its start (when "start") or after its first input line
 // (when "prompt"). stop says how it ends: "int" (one Ctrl-C), "int2" (two Ctrl-C within a second),
-// "term" (it ignores Ctrl-C), "kill" (it ignores Ctrl-C and SIGTERM), "fgchild" (after its report a
+// "term" (it ignores Ctrl-C), "kill" (it logs each Ctrl-C and ignores it and SIGTERM), "fgchild" (after its report a
 // child in its own foreground process group logs each Ctrl-C). Each input line and each SIGTERM is
 // appended to $PWD/fake-<conversation>.log. After the first line, "again" reports once more, "exec"
 // executes /bin/sleep in this pid, "stale" starts a reporter that reports 3 s later and then reports at
@@ -58,7 +58,9 @@ func testCLIMain(argv []string) int {
 		signal.Ignore(syscall.SIGINT)
 		signal.Notify(sigs, syscall.SIGTERM)
 	case "kill":
-		signal.Ignore(syscall.SIGINT, syscall.SIGTERM)
+		// Ctrl-C is caught and logged (the tests wait for it), not obeyed. SIGTERM is ignored.
+		signal.Ignore(syscall.SIGTERM)
+		signal.Notify(sigs, syscall.SIGINT)
 	case "int2":
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	default:
@@ -70,6 +72,10 @@ func testCLIMain(argv []string) int {
 			if s == syscall.SIGTERM {
 				note("signal: TERM")
 				os.Exit(0)
+			}
+			if stop == "kill" {
+				note("signal: INT")
+				continue
 			}
 			if !last.IsZero() && time.Since(last) <= time.Second {
 				os.Exit(0)

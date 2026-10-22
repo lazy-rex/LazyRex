@@ -222,10 +222,14 @@ end)
 test('a check that fails during the stop: failed, the reply says not stopped', function()
   local id, old, sess = started('noterm', 'codex', 'k14')
   restart({key = 'x-k14', agent = id})
-  H.wait('stopping', function() return target(restart({key = 'x-k14', agent = id}), id).phase == 'stopping' end)
-  -- The agent ignores the keys; it now executes another program in its pid.
+  -- The fake acknowledges the exit key (it logs it and stays). A Ctrl-C flushes a pending input line,
+  -- so the lines go only after it.
+  H.wait('the exit key', function() return log('k14'):find('signal: INT', 1, true) end)
+  local pid = pane_child(sess, old).pid
   write_block(sess, old, 'hello\r')
   write_block(sess, old, 'exec\r')
+  H.wait('the exec', function() local c = pane_child(sess, old); return c and c.path == '/bin/sleep' end)
+  expect(pane_child(sess, old).pid).to_be(pid)
   local t = target(finished('x-k14', {agent = id}), id)
   expect(t.phase).to_be('failed')
   expect(t.stop).to_match('^not stopped: ')
