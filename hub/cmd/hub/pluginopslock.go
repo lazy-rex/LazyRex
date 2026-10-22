@@ -89,11 +89,13 @@ func (h *Hub) lastIntended(ctx context.Context, op *pluginOp, call string) (stri
 // opLock writes the op's pin into the lock file, under both plugin command flocks. Its recovery
 // rule, after a crash at any point: the file hash is the intended hash of the op's last write:lock
 // attempt -> written; the key's pin is already the op's pin -> written; the key's pin is still the
-// base (the pin when the target was stored) -> write; else conflict. Before the write:
+// base (the pin when the target was stored) -> write; else conflict. Before the op goes on, also
+// when the pin is written:
 //   - the op's cache entry must still verify (a CLI cleanup can remove a directory that no lock
 //     names): a pin that does not verify is fetched again;
 //   - the graph check (graphRefusals) with the new lock and the managed entries after the op: a
-//     refusal that the current lock and entries do not have is conflict, and nothing is written.
+//     refusal that the current lock and entries do not have is conflict, and nothing more is
+//     written.
 //
 // The new lock keeps every other entry as the locked read gave it.
 func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
@@ -143,10 +145,9 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	}
 	intended := lockBase(&pluginLock{Plugins: map[string]*lockEntry{t.Source: &pin}}, t.Source)
 	cur := lockBase(lock, t.Source)
-	switch {
-	case last != "" && b != nil && hashBytes(b) == last, cur == intended:
-		return h.setOpPhase(ctx, op, op.nextPhase("locking"), "", "") // written (before a crash, or by another writer)
-	case cur != t.LockBase:
+	// written: by this op before a crash, or by another writer.
+	written := last != "" && b != nil && hashBytes(b) == last || cur == intended
+	if !written && cur != t.LockBase {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock entry of %s changed since the operation resolved it: %s, now %s; nothing was written", t.Source, t.LockBase, cur))
 	}
 	next := &pluginLock{Plugins: map[string]*lockEntry{}}
@@ -154,11 +155,19 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 		next.Plugins[k] = v
 	}
 	next.Plugins[t.Source] = &pin
+	// The graph check runs also when the pin is written: the managed entries can have changed, and
+	// another writer's pin had no check of this op's entry.
 	if msg, err := h.lockRefusal(op, t, lockFile, lock, next); err != nil || msg != "" {
 		if err != nil {
 			msg = err.Error()
 		}
+		if written {
+			return h.setOpPhase(ctx, op, "conflict", "", msg+"; the lock has the operation's pin, and the managed file is unchanged")
+		}
 		return h.setOpPhase(ctx, op, "conflict", "", msg+"; nothing was written")
+	}
+	if written {
+		return h.setOpPhase(ctx, op, op.nextPhase("locking"), "", "")
 	}
 	nb, err := encodeLock(next)
 	if err != nil {
