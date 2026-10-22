@@ -90,7 +90,7 @@ func fetchTest(t *testing.T, r *testRepo, fetchRef, commit string, byID bool) (s
 	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ft, err := fetchCommit(context.Background(), state, tmp, r.url(), "lazy-rex", "Messaging", "", fetchRef, commit, byID)
+	ft, err := fetchCommit(context.Background(), execGit, state, tmp, r.url(), "lazy-rex", "Messaging", "", fetchRef, commit, byID)
 	return state, ft, err
 }
 
@@ -109,12 +109,12 @@ func TestCheckRef(t *testing.T) {
 	gitTestEnv(t)
 	ctx, dir := context.Background(), t.TempDir()
 	for _, ok := range []string{"main", "v1.2", "team/x", "refs/heads/main", "refs/tags/v1", testCommit, "abc123"} {
-		if err := checkRef(ctx, dir, ok); err != nil {
+		if err := checkRef(ctx, execGit, dir, ok); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}
 	}
 	for _, bad := range []string{"a..b", "x~1", "x^", "x:y", "a b", "refs/remotes/o/x", "refs/heads/", "x.lock", "-x/..", strings.ToUpper(testCommit) + "/.."} {
-		if err := checkRef(ctx, dir, bad); err == nil || err.Error() != bad+" is not a valid ref" {
+		if err := checkRef(ctx, execGit, dir, bad); err == nil || err.Error() != bad+" is not a valid ref" {
 			t.Errorf("%s: %v", bad, err)
 		}
 	}
@@ -147,7 +147,7 @@ func TestResolveRef(t *testing.T) {
 		{ref: c1, commit: c1, kind: "commit", fetch: c1},
 	}
 	for _, c := range cases {
-		got, err := resolveRef(ctx, dir, r.url(), c.ref)
+		got, err := resolveRef(ctx, execGit, dir, r.url(), c.ref)
 		if c.err != "" {
 			if err == nil || err.Error() != c.err {
 				t.Errorf("%s: %v, want %q", c.ref, err, c.err)
@@ -200,7 +200,7 @@ func TestFetchAnnotatedTag(t *testing.T) {
 	r := newTestRepo(t)
 	c := r.commit(map[string]string{"lazyrex.json": `{"name":"messaging","main":"m.lua"}`, "m.lua": ""})
 	r.git("tag", "-a", "-m", "v1", "v1")
-	res, err := resolveRef(context.Background(), t.TempDir(), r.url(), "v1")
+	res, err := resolveRef(context.Background(), execGit, t.TempDir(), r.url(), "v1")
 	if err != nil || res.Commit != c {
 		t.Fatalf("resolve: %+v %v", res, err)
 	}
@@ -363,7 +363,7 @@ func TestGitErrorBounded(t *testing.T) {
 	}
 	// A git subprocess that writes 12 KiB to stderr: the alias is a test fixture in this command
 	// only; it changes no git config.
-	_, err := runGit(context.Background(), t.TempDir(), "-c", "alias.noisy=!printf '%012288d' 0 >&2; exit 1", "noisy")
+	_, err := execGit(context.Background(), t.TempDir(), nil, "-c", "alias.noisy=!printf '%012288d' 0 >&2; exit 1", "noisy")
 	if err == nil {
 		t.Fatal("runGit gave no error")
 	}
@@ -405,7 +405,7 @@ func TestResolveTag(t *testing.T) {
 		{name: "main", err: "not a tag: main"},
 		{name: "v1", err: "not a tag: v1"}, // only refs/tags/team/v1 exists: a suffix match
 	} {
-		got, err := resolveTag(ctx, dir, r.url(), c.name)
+		got, err := resolveTag(ctx, execGit, dir, r.url(), c.name)
 		if c.err != "" {
 			if err == nil || err.Error() != c.err {
 				t.Errorf("%s: %v, want %q", c.name, err, c.err)
