@@ -13,7 +13,8 @@ Requirements:
 You need Rex, with its server running. LazyRex runs on macOS and Linux, arm64 and amd64.
 
 - git. Setup reads the plugin tags, and the plugin sync fetches the plugins.
-- The Claude Code or Codex CLI, for agents.
+- The Claude Code or Codex CLI, for agents: installed, and run once (logged in) before Start Agent.
+  A CLI that was never run stops in its own first-run screens, and the agent waits there.
 - Access to the [lazy-rex](https://github.com/lazy-rex) repositories on GitHub. The repositories are
   private for now, so the download uses the [GitHub CLI](https://cli.github.com) (`gh auth login`),
   and git must authenticate to github.com (`gh auth setup-git`).
@@ -61,17 +62,25 @@ profiles, the LazyRex palette entries for Rex, and the agent hooks and skill. De
   git fetches each plugin, and setup says `Plugins: installed.` If you answer no, or the sync
   fails, setup prints the exact command to run later.
 
-Then, in this order:
+Then:
 
-1. Run the `rex -S <server> config reload` line that setup prints. It loads the palette entries.
-2. Setup also offers `rex skill setup` for the agents that it found: Rex's own skill and hooks. If you answer no, run the command that setup prints.
-3. Codex: if setup says so, review and trust the new hook in Codex with `/hooks`.
+1. Always: run the `rex -S <server> config reload` line that setup prints. It loads the palette
+   entries.
+
+The other steps are checks. Setup offers each one; do it yourself only in the case named:
+
+2. Setup also offers `rex skill setup` for the agents that it found: Rex's own skill and hooks. If
+   you answered no, run the command that setup prints.
+3. Codex: setup does not trust hooks for you. If setup says so, review and trust the new hook in
+   Codex with `/hooks`.
 4. If setup printed `Install the plugins: ...`, run that command.
 
 ## Start
 
 In the Rex palette, run **LazyRex: Start Hub**. A pane opens, and the hub runs in it. Closing the
-pane stops the hub. **LazyRex: Hub Status** and **LazyRex: Stop Hub** are beside it.
+pane stops the hub. **LazyRex: Hub Status** and **LazyRex: Stop Hub** are beside it. With the default
+plugins, the hub also opens two tabs at its start: **LazyRex** (the home view) and the Messaging
+thread of the **Team** group (its messages over a composer).
 
 Start Hub runs this command, which you can also run in a terminal:
 
