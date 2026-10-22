@@ -446,7 +446,8 @@ function M.plugin(name)
   end
   -- app.command(spec): an extra hub.register command (a palette entry).
   function app.command(spec) commands[#commands + 1] = spec end
-  -- app.start(fn): runs once at start, after the migrations, in one transaction.
+  -- app.start(fn, opts): runs once at start, after the migrations, in one transaction, before the
+  -- registration. opts.after_register = true runs it after hub.register.
   function app.start(fn, opts) starts[#starts + 1] = {fn = fn, opts = opts or {}} end
 
   -- Callbacks: each run is a frame with one transaction (opts.tx = false: each SQL call alone). An
@@ -649,10 +650,20 @@ function M.plugin(name)
   end
   function S.register()
     migrate()
-    for _, s in ipairs(starts) do run({tx = s.opts.tx ~= false}, s.fn) end
-    local keymap, exports = {}, {}
-    for _, n in ipairs({'view.render', 'view.action', 'view.seen', 'view.draft.save', 'view.send', 'view.history', 'hub.changed'}) do
+    for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
+    local keymap, exports, seen = {}, {}, {}
+    local function hub_call(n)
+      if seen[n] then return end
+      seen[n] = true
       keymap[#keymap + 1] = {name = n, kind = 'client', title = n, args = {type = 'object', additionalProperties = true}}
+    end
+    for _, n in ipairs({'view.render', 'view.action', 'view.seen', 'view.draft.save', 'view.send', 'view.history', 'hub.changed'}) do hub_call(n) end
+    -- Each view.* handler name of an app.view (for example view.open, view.rename).
+    for _, v in ipairs(views) do
+      local names = {}
+      for n in pairs(v.handlers) do if type(n) == 'string' and n:sub(1, 5) == 'view.' then names[#names + 1] = n end end
+      table.sort(names)
+      for _, n in ipairs(names) do hub_call(n) end
     end
     for _, n in ipairs(order) do
       local a = actions[n]
@@ -670,6 +681,8 @@ function M.plugin(name)
     if #commands > 0 then reg.commands = commands end
     hub('hub.register', reg)
     rex.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
+    -- Start code that needs a registered plugin (for example hub.ui.tabs).
+    for _, s in ipairs(starts) do if s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
   end
   rex.after(0, function()
     local ok, err = pcall(S.register)

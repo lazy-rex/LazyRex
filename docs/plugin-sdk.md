@@ -99,9 +99,9 @@ errors and the transaction rules above.
 |---|---|
 | `app.fail(code, message)` | An error with a code (`conflict`, `not_found`, `refused`, ...). `error('text')` gives code `failed`. |
 | `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. |
-| `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
+| `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
-| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn)` | A Rex event (or `hub.changed`, `view.seen`), a timer, start code. Each run is one transaction. |
+| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or `hub.changed`, `view.seen`), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. `app.db.query` also answers `more` (true when a reply did not hold every row). |
 | `app.notice(agent, pending)` | Wake an agent at the commit. |
@@ -111,6 +111,8 @@ errors and the transaction rules above.
 
 Action options: `title`, `description`, `user_only`, `tx = false` (each SQL call alone),
 `store = false` (no saved reply: the plugin keeps its own operations table), `fingerprint`.
+A plugin that keeps its data in hub.store until it moves to SQL passes `store = false` on each
+action and `app.view`: with a key, `store = true` reads `hub.sql.replay` first.
 The schema is the short form (`{text = 'string', note = 'string?'}`, or a JSON Schema for a property)
 or a full JSON Schema. The SDK adds an optional `key`; the handler gets it as `ctx.key`, not in args.
 

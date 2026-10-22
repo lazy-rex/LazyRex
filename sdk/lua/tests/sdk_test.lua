@@ -509,3 +509,24 @@ test('a Rex timeout code is unavailable (unknown outcome); a hub.sql timeout tex
   expect(code('client.perform failed: no answer (status=504 code=timeout)')).to_be('unavailable')
   expect(code('client.perform failed: timeout: rolled back (status=500 code=internal)')).to_be('timeout')
 end)
+
+test('the keymap lists each view handler name of app.view, and the hub calls reach it', function()
+  local s = plugin([[app.view('/thread/*', {render = function() return {title = 'T', nodes = {}} end, ['view.open'] = function(ctx, args) return {opened = args.route} end}, {tx = false, store = false})]])
+  local entry = find(s.keymap, function(a) return a.name == 'view.open' end)
+  expect(entry ~= nil, 'view.open in the keymap').to_be(true)
+  expect(find(s.keymap, function(a) return a.name == 'render' end), 'render is not a hub action').to_be(nil)
+  local count = 0
+  for _, a in ipairs(s.keymap) do if a.name == 'view.render' then count = count + 1 end end
+  expect(count, 'one view.render').to_be(1)
+  expect(s:call('view.open', {route = '/thread/7', user = 'user', node_id = 'x', operation_key = 'o'}).result).to_equal({opened = '/thread/7'})
+end)
+
+test('app.start with after_register = true runs after hub.register', function()
+  local s = plugin([[
+order = {}
+app.start(function() order[#order + 1] = 'before' end)
+app.start(function() order[#order + 1] = 'after:' .. tostring(registered_seen) end, {after_register = true, tx = false})
+app.action('p.order', {}, function() return {order = order} end, {store = false})]],
+    {hub = {['hub.register'] = function(a) registered_seen = true; return {} end}})
+  expect(s:agent('p.order', {}).result.order).to_equal({'before', 'after:true'})
+end)
