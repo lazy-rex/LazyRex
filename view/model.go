@@ -62,6 +62,7 @@ type model struct {
 	browseSequence                         uint64
 	client                                 *viewClient
 	replacement                            *panelReplacement
+	endedReplacements                      map[string]bool // replacement IDs that ended for this view (panels.go); never evicted
 	effectFailure                          *completed
 	snapshot                               Snapshot
 	programStatus                          string   // last OSC 7501 report written; "" = none yet
@@ -95,7 +96,7 @@ type model struct {
 }
 
 func newModel(client *viewClient) *model {
-	return &model{client: client, operations: map[string]bool{}, editors: map[string]*editor{}, recovery: map[string]string{}, width: 80, height: 24, status: "Connecting to the hub…"}
+	return &model{client: client, operations: map[string]bool{}, editors: map[string]*editor{}, recovery: map[string]string{}, endedReplacements: map[string]bool{}, width: 80, height: 24, status: "Connecting to the hub…"}
 }
 
 // Init subscribes to color scheme changes (DEC mode 2031) and asks for the current scheme (DSR 996).

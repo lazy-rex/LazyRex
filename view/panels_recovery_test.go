@@ -143,8 +143,10 @@ func TestResumeBeforeRecoveredStateIsRecovered(t *testing.T) {
 	r.apply(r.next(isResume), false) // before the recovered state
 	read := r.apply(recovered, true)
 	r.apply(r.next(isSnapshot), false)
-	if r.m.replacement == nil || r.edits("lost") {
-		t.Fatal("The attach reply did not freeze the renderer")
+	// The resume ended r1 (the hub sends it after the end is durable): the attach reply for an
+	// ended replacement does not freeze the renderer (row 7), and it asks for no read.
+	if r.m.replacement != nil || read != nil || !r.edits("typed") {
+		t.Fatal("The attach reply froze the renderer for an ended replacement")
 	}
 	r.run(read)
 	if r.m.replacement != nil || !r.edits("typed") {

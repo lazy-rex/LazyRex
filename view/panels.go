@@ -67,10 +67,13 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 			return true, msg.reply("refused")
 		}
 		if msg.Action == "view.resume" {
-			if m.replacement != nil && m.replacement.ID == msg.ID {
-				m.resumeReplacement()
-			}
+			m.endReplacement(msg.ID)
 			return true, msg.reply("resumed")
+		}
+		if m.endedReplacements[msg.ID] {
+			// The resume of this replacement came first (Rex does not order calls from different
+			// connections): it ended, and it never freezes this renderer again.
+			return true, msg.reply("cancelled")
 		}
 		if m.replacement != nil {
 			if m.replacement.ID != msg.ID {
@@ -99,7 +102,14 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 		m.setReplacementID(msg.ID)
 		return true, msg.reply(answer)
 	case replacementRecovered:
-		if m.replacement == nil && msg.Initial && msg.ID != "" && msg.State.State != "cancelled" && msg.State.State != "superseded" {
+		if m.endedReplacements[msg.ID] {
+			return true, nil // a late result cannot undo the end
+		}
+		if msg.Err == nil && (msg.State.State == "cancelled" || msg.State.State == "superseded") {
+			m.endReplacement(msg.ID)
+			return true, nil
+		}
+		if m.replacement == nil && msg.Initial && msg.ID != "" {
 			m.replacement = &panelReplacement{ID: msg.ID, PreviousFocus: m.focus}
 			m.setReplacementID(msg.ID)
 		}
@@ -110,10 +120,6 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 			m.replacement.Error = "The hub has not confirmed the choice. Waiting for reconnection."
 			return true, nil
 		}
-		if msg.State.State == "cancelled" || msg.State.State == "superseded" {
-			m.resumeReplacement()
-			return true, nil
-		}
 		m.replacement.replacementState = msg.State
 		m.replacement.Error = ""
 		if msg.FromAttach && frozenState(msg.State.State) {
@@ -121,6 +127,14 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	case replacementRead:
+		// An ended state ends the replacement, also one that is not active (row 7).
+		if msg.Err == nil && msg.State != nil && (msg.State.State == "cancelled" || msg.State.State == "superseded") {
+			m.endReplacement(msg.ID)
+			return true, nil
+		}
+		if m.endedReplacements[msg.ID] {
+			return true, nil
+		}
 		// Only the replacement that froze this renderer, read through the current attachment: a
 		// late answer after a resume or a new attachment changes nothing.
 		if m.replacement == nil || m.replacement.ID != msg.ID || m.currentAttachment() != msg.Attachment {
@@ -135,7 +149,7 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 			m.client.lost = true
 			m.client.mu.Unlock()
 			m.client.pulse()
-		case msg.State == nil || msg.State.State == "cancelled" || msg.State.State == "superseded":
+		case msg.State == nil:
 			m.resumeReplacement()
 		default:
 			m.replacement.replacementState = *msg.State
@@ -238,6 +252,23 @@ func (m *model) readReplacement(id string) tea.Cmd {
 			err = errors.New("the hub answered for another replacement")
 		}
 		return replacementRead{ID: id, Attachment: attachment, State: out.Replacement, Err: err}
+	}
+}
+
+// endReplacement records that replacement id ended without the slot (a resume, a cancel or a
+// supersede), and unfreezes the renderer if id froze it. Another active replacement stays. The
+// set is never evicted: it gets one ID per replacement of this view, and an eviction would let a
+// late release of an evicted ID freeze the renderer again.
+func (m *model) endReplacement(id string) {
+	if id == "" {
+		return
+	}
+	if m.endedReplacements == nil {
+		m.endedReplacements = map[string]bool{}
+	}
+	m.endedReplacements[id] = true
+	if m.replacement != nil && m.replacement.ID == id {
+		m.resumeReplacement()
 	}
 }
 
