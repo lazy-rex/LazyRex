@@ -1,0 +1,1 @@
+{"name": "sp", "main": "main.lua", "sdk": "0", "test": {"agents": [{"id": "alice", "name": "Alice"}]}}
