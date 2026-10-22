@@ -1,0 +1,7 @@
+-- Run: lazyrex-hub test (in the plugin directory). The guide: docs/testing.md in LazyRex.
+test('an added item shows in the panel', function()
+  local alice = agent('alice')
+  alice:call('{{.Name}}.add', {text = 'first item'})
+  local tree = user:open('items'):render()
+  expect(H.node(tree, 'items').items[1].label).to_equal('first item')
+end)

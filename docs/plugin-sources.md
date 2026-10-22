@@ -323,6 +323,10 @@ The commands are CLI only. A hub action must answer fast, because the hub has on
   6a).
 - `lazyrex-hub plugin pull -config <cfg> -file <path> [-take <source>]... [-keep <source>]...`:
   merge a pin document into the lock (section 6a).
+- `lazyrex-hub plugin new <name> [-dir <path>]`: write a new SDK plugin (`lazyrex.json`, `main.lua`,
+  `tests/<name>.lua`, `README.md`) into a directory that must not exist (default `./<name>`). The
+  files go into a stage beside it, then one rename publishes them: the directory gets every file or
+  none. It needs no config.
 
 **All or nothing.** A command writes the lock only after every fetch and check passes (temp file,
 fsync, rename, directory fsync). A failure before the rename leaves the old lock. Entries that the

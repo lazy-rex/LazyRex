@@ -1,0 +1,24 @@
+-- {{.Name}}: a LazyRex plugin on the Plugin SDK. The guide: docs/plugin-sdk.md in LazyRex.
+local app = require('lazyrex').plugin('{{.Name}}')
+
+-- The schema. Each string is one version. The SDK runs the new ones once, in order. Add new
+-- versions at the end; never change one that has run.
+app.db.migrate {
+  'CREATE TABLE items (id INTEGER PRIMARY KEY, text TEXT NOT NULL)',
+}
+
+-- An action: agents and the user can call it. The SDK checks the arguments against the schema.
+app.action('{{.Name}}.add', {text = {type = 'string', minLength = 1}}, function(ctx, args)
+  local r = app.db.exec('INSERT INTO items (text) VALUES (?)', args.text)
+  return {id = r.id}
+end, {description = 'Add an item.'})
+
+-- A panel: a tab in the LazyRex window. It shows again by itself after a write to a table that
+-- it read.
+app.panel('Items', function(view)
+  local items = {}
+  for _, row in ipairs(app.db.query('SELECT id, text FROM items ORDER BY id')) do
+    items[#items + 1] = {id = row.id, label = row.text}
+  end
+  return {app.ui.list('items', items, {empty = 'No items. An agent adds one with {{.Name}}.add.'})}
+end)

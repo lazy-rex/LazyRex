@@ -626,13 +626,16 @@ func cacheEntries(state string) []string {
 // conflict); 2: a usage error.
 func pluginCmdMain(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: lazyrex-hub plugin sync|update|status|export|pull -config <cfg> [update: name|source ...] [pull: -file <path> [-take <source>]... [-keep <source>]...]")
+		fmt.Fprintln(stderr, "usage: lazyrex-hub plugin sync|update|status|export|pull -config <cfg> [update: name|source ...] [pull: -file <path> [-take <source>]... [-keep <source>]...]\n       lazyrex-hub plugin new <name> [-dir <path>]")
 		return 2
 	}
 	if len(args) == 0 {
 		return usage()
 	}
 	cmd := args[0]
+	if cmd == "new" {
+		return pluginNewMain(args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("plugin "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "hub configuration JSON (required)")
