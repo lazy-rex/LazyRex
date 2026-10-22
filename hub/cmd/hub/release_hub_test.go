@@ -40,6 +40,7 @@ type fakeCommit struct {
 type fakeRun struct {
 	commit, digest, instance, desired string
 	registered, pending               bool
+	crashing                          bool // the instance exited and a respawn is due; instance is the exited one
 }
 
 type relWorld struct {
@@ -63,7 +64,10 @@ type relWorld struct {
 	runs                                  map[string]*fakeRun // by plugin name
 	replaceCalls, startCalls              int
 	replaceArgs                           []map[string]any
-	loseReply                             bool // the next replace runs, and its reply is lost
+	startArgs                             []map[string]any
+	loseReply                             bool    // the next replace runs, and its reply is lost
+	respawnFirst                          *relPin // the next hub.admin.start finds that a respawn ran first, at this pin
+	startRefuse                           string  // the next hub.admin.start is refused with this code before any effect
 	// A plugin release (newPluginWorld).
 	sdkDir      string      // the -sdk directory of the hub (argv)
 	toManifest  string      // the manifest of P at TO
@@ -178,7 +182,7 @@ func (w *relWorld) lockPin(src string) relPin {
 }
 
 // newCacheDir gives a lock entry a new cache dir with the manifest of its old one, as a fetch can
-// (case 1 of the kits: the same pin in a new dir).
+// (the same pin in a new dir).
 func (w *relWorld) newCacheDir(e *lockEntry) {
 	var m struct {
 		SDK string `json:"sdk"`
@@ -206,9 +210,11 @@ func (w *relWorld) refetch() {
 }
 
 // spawn starts a plugin instance at its lock pin.
-func (w *relWorld) spawn(name, src string) {
+func (w *relWorld) spawn(name, src string) { w.spawnAt(name, w.lockPin(src)) }
+
+// spawnAt starts a plugin instance at the pin p.
+func (w *relWorld) spawnAt(name string, p relPin) {
 	w.nextInst++
-	p := w.lockPin(src)
 	id := fmt.Sprintf("inst-%d", w.nextInst)
 	w.runs[name] = &fakeRun{commit: p.Commit, digest: p.Digest, instance: id, desired: "running", registered: true}
 	w.event(map[string]any{"event": "plugin_spawned", "plugin": name, "instance_id": id})
@@ -429,7 +435,10 @@ func (w *relWorld) hubAction(action string, args map[string]any) ([]byte, []byte
 		for _, n := range []string{"lazyrex", "other"} {
 			r := w.runs[n]
 			state := "running"
-			if r.instance == "" {
+			switch {
+			case r.crashing:
+				state = "crashing"
+			case r.instance == "":
 				state = "stopped"
 			}
 			entries = append(entries, map[string]any{"name": n, "source": srcOf[n], "commit": r.commit, "state": state,
@@ -442,6 +451,9 @@ func (w *relWorld) hubAction(action string, args map[string]any) ([]byte, []byte
 		w.replaceArgs = append(w.replaceArgs, args)
 		n, _ := args["plugin"].(string)
 		r := w.runs[n]
+		if r.crashing {
+			return nil, []byte("no_instance: the recorded instance exited"), exitErr(1)
+		}
 		if r.instance != args["expect_instance"] {
 			return nil, []byte("instance_changed"), exitErr(1)
 		}
@@ -457,10 +469,22 @@ func (w *relWorld) hubAction(action string, args map[string]any) ([]byte, []byte
 		return []byte(`{"instance_id":"` + w.runs[n].instance + `"}`), nil, nil
 	case "hub.admin.start":
 		w.startCalls++
+		w.startArgs = append(w.startArgs, args)
 		n, _ := args["plugin"].(string)
 		r := w.runs[n]
 		x, _ := args["expect_run"].(map[string]any)
-		if r.instance != "" {
+		// The hub orders a due respawn and a start by the plugin's lifecycle lock.
+		if r.crashing && w.respawnFirst != nil {
+			w.spawnAt(n, *w.respawnFirst)
+			w.respawnFirst = nil
+			r = w.runs[n]
+		}
+		if w.startRefuse != "" {
+			code := w.startRefuse
+			w.startRefuse = ""
+			return nil, []byte(code + ": nothing was retired or spawned"), exitErr(1)
+		}
+		if r.instance != "" && !r.crashing {
 			if x != nil && (x["commit"] != r.commit || x["digest"] != r.digest) {
 				return nil, []byte("candidate_changed: plugin runs another run; nothing was started"), exitErr(1)
 			}
@@ -646,7 +670,7 @@ func mustCandidate(t *testing.T, w *relWorld) *relCandidate {
 	return c
 }
 
-// Freeze refuses an H that is not on origin/main, a git grep error in the OLD tree (case 10), and
+// Freeze refuses an H that is not on origin/main, a git grep error in the OLD tree, and
 // an OLD tree without the hub; no match gives old_expect_run false.
 func TestReleaseHubFreezeRefusals(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -681,7 +705,7 @@ func TestReleaseHubFreezeRefusals(t *testing.T) {
 	}
 }
 
-// B-u2 and the precheck gates: a changed hold file, a second dev pane, no rehearsal record, a set
+// The precheck gates: a changed hold file, a second dev pane, no rehearsal record, a set
 // LAZYREX_FETCH_ROLE, a missing inherited python3, and an existing stamp each refuse.
 func TestReleaseHubPrecheckRefusals(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -803,8 +827,8 @@ func TestReleaseHubPartialPull(t *testing.T) {
 	}
 }
 
-// Case 12: a dev pane that starts no hub fails step start; the rollback closes that pane and starts
-// OLD. Case 9: when H ended before the rollback, no hub call goes to H.
+// A dev pane that starts no hub fails step start; the rollback closes that pane and starts
+// OLD. When H ended before the rollback, no hub call goes to H.
 func TestReleaseHubFailedStartAndEndedH(t *testing.T) {
 	w := newRelWorld(t)
 	w.freeze()
@@ -836,7 +860,7 @@ func TestReleaseHubFailedStartAndEndedH(t *testing.T) {
 	}
 }
 
-// Case 13: after stop, a backup that fails before its stamp leaves no change: resume starts OLD
+// After stop, a backup that fails before its stamp leaves no change: resume starts OLD
 // again. After a stamp exists, resume refuses.
 func TestReleaseHubResume(t *testing.T) {
 	w := newRelWorld(t)
@@ -862,7 +886,7 @@ func TestReleaseHubResume(t *testing.T) {
 	}
 }
 
-// B-u4: the replace rows. The home plugin that already runs the target makes zero replace calls;
+// The replace rows. The home plugin that already runs the target makes zero replace calls;
 // a plugin at from gets one call with its instance; a lost reply rerun makes no second call; a
 // stop at begin reruns with the saved instance; a pending intent stops with zero calls; spawn_failed
 // starts with the saved expect_run; a target that never registers fails without a call.
@@ -929,7 +953,132 @@ func TestReleaseHubReplaceRows(t *testing.T) {
 	}
 }
 
-// B-u3: each mutating op stopped at begin or after, then the step run again, reaches the end
+// crash marks the instance of a plugin as exited with a respawn due (the hub's state crashing).
+func (w *relWorld) crash(name string) {
+	w.runs[name].crashing, w.runs[name].registered = true, false
+}
+
+// startCommit is the expect_run commit of the hub.admin.start call i.
+func (w *relWorld) startCommit(i int) string {
+	x, _ := w.startArgs[i]["expect_run"].(map[string]any)
+	s, _ := x["commit"].(string)
+	return s
+}
+
+// A crashing home plugin. Forward: a record that crashed at FROM gets one guarded hub.admin.start
+// with expect_run TO and no replace; a record that crashed at TO, or at another commit, is refused
+// with no call. The hub orders a due respawn and the start: a respawn that ran first at TO makes
+// the start a no-op with one new instance; a respawn at FROM makes it candidate_changed, and a
+// rerun replaces the running FROM. A refused start stops the step, the record stays crashing, and a
+// rerun starts it. A stop before or after the start converges on a rerun with no second spawn.
+// Rollback: a record that crashed at TO or at FROM under H gets a guarded start with expect_run
+// FROM, after the pins are back.
+func TestReleaseHubCrashing(t *testing.T) {
+	fwd := func(at relPin) *relWorld {
+		w := newRelWorld(t)
+		w.freeze()
+		w.must("precheck", "stop", "backup", "checkout", "pull", "start")
+		w.runs["lazyrex"].commit, w.runs["lazyrex"].digest = at.Commit, at.Digest
+		w.crash("lazyrex")
+		return w
+	}
+	home := func(w *relWorld) *fakeRun { return w.runs["lazyrex"] }
+	running := func(w *relWorld, want string) bool {
+		r := home(w)
+		return r.commit == want && !r.crashing && r.registered
+	}
+
+	// The start comes first.
+	w := fwd(pinOld)
+	inst := w.nextInst
+	w.must("replace")
+	if w.replaceCalls != 0 || w.startCalls != 1 || w.startCommit(0) != commitH || !running(w, commitH) || w.nextInst != inst+1 {
+		t.Fatalf("crashing FROM: %d replace, %d start (%s), home %+v, %d spawns", w.replaceCalls, w.startCalls, w.startCommit(0), *home(w), w.nextInst-inst)
+	}
+	w.must("verify")
+
+	// A respawn at TO ran first: the start changes nothing.
+	w = fwd(pinOld)
+	inst = w.nextInst
+	w.respawnFirst = &pinH
+	w.must("replace")
+	if w.startCalls != 1 || w.replaceCalls != 0 || !running(w, commitH) || w.nextInst != inst+1 {
+		t.Errorf("respawn first at TO: %d start, %d replace, home %+v, %d spawns", w.startCalls, w.replaceCalls, *home(w), w.nextInst-inst)
+	}
+
+	// A respawn at FROM ran first: candidate_changed stops the step; the rerun replaces FROM.
+	w = fwd(pinOld)
+	w.respawnFirst = &pinOld
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "candidate_changed") || !running(w, commitOld) || w.replaceCalls != 0 {
+		t.Fatalf("respawn first at FROM: %v, home %+v, %d replace", err, *home(w), w.replaceCalls)
+	}
+	w.must("replace")
+	if w.replaceCalls != 1 || w.startCalls != 1 || !running(w, commitH) {
+		t.Errorf("rerun after candidate_changed: %d replace, %d start, home %+v", w.replaceCalls, w.startCalls, *home(w))
+	}
+
+	// A refused start: the code, no change, the record still crashing; the rerun starts it.
+	w = fwd(pinOld)
+	w.startRefuse = "dependency_not_ready"
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "dependency_not_ready") || !home(w).crashing || w.startCalls != 1 {
+		t.Fatalf("refused start: %v, home %+v, %d start", err, *home(w), w.startCalls)
+	}
+	w.must("replace")
+	if w.startCalls != 2 || w.replaceCalls != 0 || !running(w, commitH) {
+		t.Errorf("rerun after a refusal: %d start, %d replace, home %+v", w.startCalls, w.replaceCalls, *home(w))
+	}
+
+	// Crashing at TO forward, and at a foreign commit: refused, no call.
+	w = fwd(pinH)
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "run rollback") || w.startCalls+w.replaceCalls != 0 {
+		t.Errorf("crashing TO forward: %v, %d calls", err, w.startCalls+w.replaceCalls)
+	}
+	w = fwd(relPin{strings.Repeat("f", 40), digestH})
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "neither") || w.startCalls+w.replaceCalls != 0 {
+		t.Errorf("crashing at a foreign commit: %v, %d calls", err, w.startCalls+w.replaceCalls)
+	}
+
+	// A stop before the start, and a stop after it.
+	op := "start-crashing-" + commitH[:12]
+	w = fwd(pinOld)
+	if err := w.stepStop("replace", op+":begin"); !errors.Is(err, errTestStop) || w.startCalls != 0 {
+		t.Fatalf("stop at begin: %v, %d start", err, w.startCalls)
+	}
+	w.must("replace")
+	if w.startCalls != 1 || !running(w, commitH) {
+		t.Errorf("rerun after a stop at begin: %d start, home %+v", w.startCalls, *home(w))
+	}
+	w = fwd(pinOld)
+	inst = w.nextInst
+	if err := w.stepStop("replace", op+":after"); !errors.Is(err, errTestStop) || !running(w, commitH) {
+		t.Fatalf("stop after: %v, home %+v", err, *home(w))
+	}
+	w.must("replace") // the registered instance of TO takes the running path: no second spawn
+	if w.nextInst != inst+1 || w.replaceCalls != 0 || w.startCommit(len(w.startArgs)-1) != commitH {
+		t.Errorf("rerun after a stop after the start: %d spawns, %d replace", w.nextInst-inst, w.replaceCalls)
+	}
+
+	// Rollback under H: a crash at TO after a forward run, and a crash at FROM before the replace.
+	for _, at := range []relPin{pinH, pinOld} {
+		w = newRelWorld(t)
+		w.freeze()
+		w.must("precheck", "stop", "backup", "checkout", "pull", "start")
+		if at == pinOld {
+			w.runs["lazyrex"].commit, w.runs["lazyrex"].digest = commitOld, digestOld
+		} else {
+			w.must("replace", "verify")
+		}
+		w.crash("lazyrex")
+		n := w.startCalls
+		w.must("rollback")
+		w.wantPins(pinOld, pinOld)
+		if w.startCalls <= n || w.startCommit(n) != commitOld || w.replaceCalls != 0 || !running(w, commitOld) {
+			t.Errorf("rollback of a crash at %s: %d start calls (first %s), %d replace, home %+v", at.Commit[:6], w.startCalls-n, w.startCommit(n), w.replaceCalls, *home(w))
+		}
+	}
+}
+
+// Each mutating op stopped at begin or after, then the step run again, reaches the end
 // state of an uninterrupted run, or stops before any mutation on an unresolved state.
 func TestReleaseHubInterruptedSteps(t *testing.T) {
 	type tc struct {
@@ -1154,8 +1303,8 @@ func TestReleaseHubPendingCreateAcrossSteps(t *testing.T) {
 	}
 }
 
-// The H binary (design v2 G): in "from from" a failed build leaves no H binary, also when an older
-// one exists (case 11). After a pin moved, a failed retry keeps the verified binary, and the
+// The H binary: in "from from" a failed build leaves no H binary, also when an older
+// one exists. After a pin moved, a failed retry keeps the verified binary, and the
 // rollback pulls the pins back with it.
 func TestReleaseHubBuildKeepsVerifiedBinary(t *testing.T) {
 	w := newRelWorld(t)
@@ -1201,7 +1350,7 @@ func TestReleaseHubBuildKeepsVerifiedBinary(t *testing.T) {
 	}
 }
 
-// A-u3 (design v2 E): a lab spec runs only on a proved lab server, with every path that the steps
+// A lab spec runs only on a proved lab server, with every path that the steps
 // write or run inside the lab; each path alone outside the lab refuses before the lock file. A spec
 // without "lab" refuses a lab server; "lab" and "real" together refuse.
 func TestReleaseLabSpec(t *testing.T) {

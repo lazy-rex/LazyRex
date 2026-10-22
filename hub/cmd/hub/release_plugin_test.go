@@ -437,9 +437,8 @@ func TestReleasePluginStartBarrier(t *testing.T) {
 	w.stepErr("precheck", "did not finish its start")
 }
 
-// Review R14 (codex-26's TestReviewPluginFailedPrecheckCannotPull): a failed precheck leaves no
-// checkpoint, so pull refuses after backup and the pin stays at FROM. A failed rerun after a passed
-// precheck removes the earlier checkpoint too.
+// A failed precheck leaves no checkpoint, so pull refuses after backup and the pin stays at FROM.
+// A failed rerun after a passed precheck removes the earlier checkpoint too.
 func TestReleasePluginFailedPrecheckCannotPull(t *testing.T) {
 	w := newPluginWorld(t, "0")
 	w.freeze()
@@ -460,9 +459,8 @@ func TestReleasePluginFailedPrecheckCannotPull(t *testing.T) {
 	w.stepErr("pull", "no hub of precheck")
 }
 
-// Review R15 (codex-26's TestReviewPluginFailedArgvReadCannotFreeze): a failed or empty argv read
-// of the hub refuses freeze; it is not "no -sdk". A read argv without -sdk is that state (a plugin
-// without the SDK passes).
+// A failed or empty argv read of the hub refuses freeze; it is not "no -sdk". A read argv without
+// -sdk is that state (a plugin without the SDK passes).
 func TestReleasePluginArgvReadFailure(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -493,8 +491,8 @@ func TestReleasePluginArgvReadFailure(t *testing.T) {
 	}
 }
 
-// Review R16 (codex-26's TestReviewPluginVerifyChecksPins): verify checks the pins. The lock of P
-// back at FROM while P runs TO, or another pin moved, fails verify.
+// Verify checks the pins. The lock of P back at FROM while P runs TO, or another pin moved, fails
+// verify.
 func TestReleasePluginVerifyChecksPins(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -519,5 +517,33 @@ func TestReleasePluginVerifyChecksPins(t *testing.T) {
 			c.set(w)
 			w.stepErr("verify", c.want)
 		})
+	}
+}
+
+// A crashing plugin in a plugin release. Forward: a record that crashed at FROM gets one guarded
+// hub.admin.start with expect_run TO and no replace; one that crashed at TO is refused with no
+// call. Rollback: a record that crashed at TO gets a guarded start with expect_run FROM after the
+// pin is back at FROM. The hub is never restarted.
+func TestReleasePluginCrashing(t *testing.T) {
+	w := newPluginWorld(t, "0")
+	w.freeze()
+	hub := w.hubPID
+	w.must("precheck", "backup", "pull")
+	w.crash("other")
+	w.must("replace")
+	if r := w.runs["other"]; r.commit != pluginTo || r.crashing || w.replaceCalls != 0 || w.startCalls != 1 || w.startCommit(0) != pluginTo {
+		t.Fatalf("forward crashing FROM: run %+v, %d replace, %d start", *r, w.replaceCalls, w.startCalls)
+	}
+	w.must("verify")
+	w.crash("other")
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "run rollback") || w.startCalls != 1 {
+		t.Fatalf("forward crashing TO: %v, %d start", err, w.startCalls)
+	}
+	w.must("rollback")
+	if got := w.lockPin(otherSrc); got != pinFrom {
+		t.Fatalf("lock pin after rollback %v", got)
+	}
+	if r := w.runs["other"]; r.commit != relCommitC || r.crashing || w.replaceCalls != 0 || w.startCalls != 2 || w.startCommit(1) != relCommitC || w.hubPID != hub {
+		t.Fatalf("rollback crashing TO: run %+v, %d replace, %d start, hub %d (was %d)", *r, w.replaceCalls, w.startCalls, w.hubPID, hub)
 	}
 }

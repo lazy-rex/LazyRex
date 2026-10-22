@@ -287,8 +287,7 @@ func TestReleaseLabMirrors(t *testing.T) {
 }
 
 // rehearsalFixture is a frozen release world whose config names a profile file, and a rehearsal of
-// its run that captured the live inputs and passed its phases (codex-26's review fixture, R8 to
-// R11).
+// its run that captured the live inputs and passed its phases.
 func rehearsalFixture(t *testing.T) (*relWorld, *rehearsal, string) {
 	t.Helper()
 	w := newRelWorld(t)
@@ -498,7 +497,7 @@ func TestReleaseLabProbeAgent(t *testing.T) {
 	}
 }
 
-// c3e, design v2 G: the failing go logs each call, exits 1 for go build, and runs the real go for
+// The failing go logs each call, exits 1 for go build, and runs the real go for
 // every other call.
 func TestReleaseFailGo(t *testing.T) {
 	dir := t.TempDir()
@@ -521,7 +520,7 @@ func TestReleaseFailGo(t *testing.T) {
 }
 
 // fullProbe is a lab hub.db with the table newer (one row before the probe file) and the probe
-// file script (codex-26's review fixture, R12 and R13).
+// file script.
 func fullProbe(t *testing.T, script string) (*rehearsal, *sql.DB) {
 	t.Helper()
 	h := &rehearsal{lab: t.TempDir(), r: &releaser{spec: &relSpec{Probes: "probes.sql"}, out: &bytes.Buffer{}}}

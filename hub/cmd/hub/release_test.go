@@ -139,7 +139,7 @@ func TestReleaseSpecRefused(t *testing.T) {
 	}
 }
 
-// B-u1: a second operator fails at once, with the holder's pid.
+// A second operator fails at once, with the holder's pid.
 func TestReleaseOperatorLock(t *testing.T) {
 	f := newRelFixture(t, "hub")
 	if _, err := lockOperator(f.cfg); err == nil || !strings.Contains(err.Error(), "another release step runs") {
@@ -260,7 +260,7 @@ func TestReleasePinDocs(t *testing.T) {
 	}
 }
 
-// Failure case 1: the pin comparison ignores the cache dirs; the pins count.
+// The pin comparison ignores the cache dirs; the pins count.
 func TestReleaseLockPinsIgnoreDir(t *testing.T) {
 	f := newRelFixture(t, "hub")
 	a, _ := lockPinsHash(f.r.cfg.lock)
