@@ -4,6 +4,7 @@
  "notice": "Fixture notice.",
  "test": {
   "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"},
-    {"id": "carol", "name": "Carol"}, {"id": "dave", "name": "Dave"}]
+    {"id": "carol", "name": "Carol"}, {"id": "dave", "name": "Dave"}],
+  "files": {"home_retire.lua": {"home": "harnessfix"}}
  }
 }

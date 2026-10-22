@@ -620,7 +620,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// 2. Close views whose tab is no longer wanted, or whose route changed. A user close does
 			// not remove a home tab; the crash limit still does (no endless respawn).
 			want := map[string]tab{}
+			declared := map[string]bool{}
 			for _, t := range tabs {
+				declared[t.Key] = true
 				if !t.Suppressed || (plugin == home && t.Crashes < maxCrashes) {
 					want[t.Key] = t
 				}
@@ -628,6 +630,16 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// A layout change converts the view in place: the composer stays, and only the
 			// transcript pane comes or goes (an unsaved draft survives a config change).
 			for key, v := range byTab {
+				if plugin == home && !declared[key] {
+					// The home plugin dropped the tab (the home tab became a panel): the view retires
+					// through the legacy gate, so an unsaved draft is never discarded. The missing
+					// declaration is durable, so each pass asks again, also after a restart.
+					if h.retireLegacy(ctx, v) {
+						h.retryLater()
+					}
+					delete(byTab, key)
+					continue
+				}
 				t, ok := want[key]
 				if !ok || t.Route != v.Route {
 					h.closeView(ctx, v, "undeclared")
@@ -1314,14 +1326,12 @@ func (h *Hub) uiSessionDestroyed(ctx context.Context, sess string) {
 // --- Actions ---
 
 // uiTabs replaces the calling plugin's declared tab set. The first tab is the plugin's home.
-// An empty list is valid: a plugin with only a landing panel has no tabs (panels.go).
+// An empty list is valid for any plugin: a plugin with only a landing panel has no tabs
+// (panels.go). The home plugin then has only its panel and forms.
 func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (any, error) {
 	list, ok := asList(args["tabs"])
 	if !ok {
 		return nil, bad("tabs must be a list")
-	}
-	if len(list) == 0 && plugin == h.homePlugin() {
-		return nil, bad("the home plugin needs at least one tab")
 	}
 	seen := map[string]bool{}
 	var tabs []tab
