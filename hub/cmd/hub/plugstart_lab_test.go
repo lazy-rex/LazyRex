@@ -686,3 +686,53 @@ func TestPluginStartBeforeRecoveryLab(t *testing.T) {
 		t.Errorf("recovery replaced the instance: %+v, after the start %+v", st, cur)
 	}
 }
+
+// crashFixture registers, then ends its process with status 1 at once: a crash loop.
+const crashFixture = `local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
+local instance_id = assert(rex.args.instance_id, 'instance_id is required')
+rex.call('client.set_label', {label = 'lazyrex-plugin:c'})
+local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.register', args = {plugin = 'c', instance_id = instance_id, exports = {}}, timeout_ms = 10000})
+if err then print('register: ' .. tostring(err)) end
+rex.stop(1)
+`
+
+// The crash backoff (lead-hf-queue item 2): a plugin that registers and exits at once respawns
+// after 1, 2, 4 ... s, so it spawns at most 3 times in 4 s (before the backoff: without a pause,
+// without end). While the respawn is due, hub.plugins reports "crashing" with last_exit,
+// respawn_at and respawn_delay_ms. hub.admin.stop while crashing cancels the respawn.
+func TestPluginCrashBackoffLab(t *testing.T) {
+	s := newStartLab(t, "c")
+	s.writeSource("c", `{"name":"c","main":"main.lua"}`, "")
+	if err := os.WriteFile(filepath.Join(s.src, "c", "main.lua"), []byte(crashFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.start()
+	s.wait("the first spawn", func() bool { return len(s.events("plugin_spawned", "c")) > 0 })
+	time.Sleep(4 * time.Second)
+	n := len(s.events("plugin_spawned", "c"))
+	if n < 2 || n > 3 {
+		t.Fatalf("%d spawns in about 4 s; want 2 or 3", n)
+	}
+	var e map[string]any
+	s.wait("crashing", func() bool { e = s.entry("c"); return e["state"] == "crashing" })
+	le, _ := e["last_exit"].(map[string]any)
+	if le == nil || le["detail"] == "" || le["at"] == nil || e["respawn_at"] == nil || e["desired"] != "running" || e["registered"] != false {
+		t.Fatalf("hub.plugins while crashing: %v", e)
+	}
+	delay, _ := e["respawn_delay_ms"].(float64)
+	if delay < 1000 || delay > 60000 {
+		t.Fatalf("respawn_delay_ms %v", e["respawn_delay_ms"])
+	}
+	s.must("hub.admin.stop", map[string]any{"plugin": "c"})
+	n = len(s.events("plugin_spawned", "c"))
+	time.Sleep(time.Duration(delay)*time.Millisecond + 1500*time.Millisecond)
+	if m := len(s.events("plugin_spawned", "c")); m != n {
+		t.Fatalf("%d spawns after the stop", m-n)
+	}
+	if e := s.entry("c"); e["state"] != "stopped" || e["respawn_at"] != nil || e["last_exit"] == nil {
+		t.Fatalf("hub.plugins after the stop: %v", e)
+	}
+	if r := s.events("plugin_respawn", "c"); len(r) == 0 {
+		t.Fatal("no plugin_respawn event")
+	}
+}

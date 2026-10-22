@@ -119,6 +119,7 @@ func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *e
 		h.mu.Unlock()
 		return fmt.Errorf("plugin %s: the desired state was not saved: %w; nothing was retired or spawned", pl.Name, err)
 	}
+	pl.cancelRespawnLocked() // the start passed its refusals: it owns the plugin now (respawn.go)
 	keep := keepLive && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && x.matches(&pl.run)
 	pl.state, pl.refusal, pl.waiting = "", "", nil // admitted: not refused, not waiting
 	h.mu.Unlock()
