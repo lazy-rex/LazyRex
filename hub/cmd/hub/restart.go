@@ -90,8 +90,16 @@ func restartMain(ctx context.Context, cfg Config, args []string) int {
 
 // stopOnDone puts SIGTERM into sigs when ctx ends (the signal may also have been SIGINT). The
 // wrapper acts on its first signal only, so a signal in both ctx and sigs stops it once. The
-// returned func ends the bridge.
+// returned func ends the bridge. A ctx that has ended already puts its signal in sigs before
+// stopOnDone returns, so the wrapper never starts a first child for it.
 func stopOnDone(ctx context.Context, sigs chan os.Signal) func() {
+	if ctx.Err() != nil {
+		select {
+		case sigs <- syscall.SIGTERM:
+		default: // a signal is in sigs already
+		}
+		return func() {}
+	}
 	quit := make(chan struct{})
 	go func() {
 		select {

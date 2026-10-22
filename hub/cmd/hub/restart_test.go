@@ -655,11 +655,9 @@ func TestRestartContextBeforeFirstStart(t *testing.T) {
 	wr := newWrapperTest(t, "ready-wait")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	defer stopOnDone(ctx, wr.w.sigs)()
-	for deadline := time.Now().Add(5 * time.Second); len(wr.w.sigs) == 0; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the ended context put no signal into sigs")
-		}
+	defer stopOnDone(ctx, wr.w.sigs)() // as in restartMain: the wrapper runs right after it
+	if n := len(wr.w.sigs); n != 1 {
+		t.Fatalf("stopOnDone returned with %d signals in sigs, want 1: an ended context is in sigs at once", n)
 	}
 	if code := waitCode(t, wr.runAsync()); code != 0 {
 		t.Fatalf("exit %d, want 0\n%s", code, wr.text())
