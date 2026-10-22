@@ -116,7 +116,7 @@ func sdkUnder(p, root string) error {
 // extracted with git archive into a temporary directory under tmp, as a plugin fetch does.
 func sdkTreeDigest(ctx context.Context, dir, commit, tmp string) (string, error) {
 	ti := commit + ":sdk/lua"
-	tree, err := lsTree(ctx, dir, ti)
+	tree, err := lsTree(ctx, execGit, dir, ti)
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +128,7 @@ func sdkTreeDigest(ctx context.Context, dir, commit, tmp string) (string, error)
 		return "", err
 	}
 	defer os.RemoveAll(d)
-	files, err := archiveInto(ctx, dir, ti, tree, d)
+	files, err := archiveInto(ctx, execGit, dir, ti, tree, d)
 	if err != nil {
 		return "", err
 	}
