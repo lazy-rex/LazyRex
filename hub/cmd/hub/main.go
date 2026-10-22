@@ -288,7 +288,7 @@ var pluginArgKey = regexp.MustCompile(`^[a-z0-9_]+$`)
 var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true, "main": true, "lazyrex_sdk": true}
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
-var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
+var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join",
 	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.store.ops_scan", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
@@ -857,8 +857,6 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.agentsList(args), nil
 	case "hub.agents.resolve":
 		return h.resolveAgent(args)
-	case "hub.tools":
-		return h.tools(), nil
 	case "hub.identity.report":
 		return h.identityReport(ctx, p, args)
 	case "hub.digest":
@@ -1099,29 +1097,6 @@ func (h *Hub) callerInManagedPane(pid int) (bool, error) {
 	}
 	// No match in the pids read. With an incomplete walk the answer is unknown: the guard refuses.
 	return false, walkErr
-}
-
-func (h *Hub) tools() any {
-	names := h.pluginNames()
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var list []any
-	for _, a := range hubToolActions {
-		name := a["name"].(string)
-		list = append(list, map[string]any{"name": strings.ReplaceAll(name, ".", "_"), "action": name, "plugin": "hub", "client_id": h.clientID})
-	}
-	for _, name := range names {
-		p := h.plugins[name]
-		if p.ClientID == "" {
-			continue
-		}
-		for _, e := range p.Exports {
-			list = append(list, map[string]any{
-				"name": strings.ReplaceAll(e, ".", "_"), "action": e, "plugin": p.Name, "client_id": p.ClientID,
-			})
-		}
-	}
-	return map[string]any{"tools": list}
 }
 
 // storeBatchHook is a test hook of fencedBatch. It runs at stage "check" (after the caller check in
