@@ -609,8 +609,8 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		res.labDir = l.dir
 		defer func() {
 			res.problems = append(res.problems, l.stop()...)
-			if !o.keep {
-				os.RemoveAll(l.dir)
+			if note := removeRunLab(l.dir, o.keep, !res.ok()); note != "" {
+				fmt.Println("  " + note)
 			}
 		}()
 	}
@@ -751,6 +751,23 @@ func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer, restart f
 // unescapeLRT reverses the runner's escaping of new lines in messages.
 func unescapeLRT(s string) string {
 	return strings.NewReplacer(`\n`, "\n       ", `\\`, `\`).Replace(s)
+}
+
+// removeRunLab removes the lab of a test file at its end, unless -keep. For a failed file it
+// returns a line for the output after the log tails: the printed log paths are gone then, and the
+// line says how to keep them.
+func removeRunLab(dir string, keep, failed bool) string {
+	if keep {
+		return ""
+	}
+	err := os.RemoveAll(dir)
+	switch {
+	case !failed:
+		return ""
+	case err != nil:
+		return fmt.Sprintf("lab not fully removed: %s: %v", dir, err)
+	}
+	return "lab removed: " + dir + " (run with -keep to keep it)"
 }
 
 func tail(path string, res *fileResult, all bool) {

@@ -51,6 +51,9 @@ warning never fails the run.
       every process that it saw under them is gone. A survivor fails the file, and the output
       names its pid, start time and command. The harness sends a survivor no signal: on macOS a
       pid can be reused between a check and a signal, so the harness cannot prove that it owns it.
+   6. Without `-keep` it removes the lab directory, also when the file failed. For a failed file
+      the output says so after the log tails: `lab removed: /tmp/lrt-<digits> (run with -keep to
+      keep it)`, because the printed log paths no longer exist.
 4. Tests in one file share one hub and run in order. Files do not share anything.
 
 The same cleanup runs after a failure, a startup failure, a timeout and an interrupt (Ctrl-C).
