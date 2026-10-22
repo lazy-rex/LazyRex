@@ -523,6 +523,28 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 
 Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestStopStatusLab` (its own lab server: not running; a running wrapper; a hub of another state seen and stopped through its own config; backoff with the server stopped, where stop sends no signal; a new server, then stop of hub and wrapper). `TestStatusTrustsOnlyTheLockHolder`: a status file of another pid or another start time is `unknown`; a `gave_up` file without a holder; a reader makes no `restart.lock`. `TestStatusUnknownWhenNotSeen`: no Rex server, a hub without `hub.info`, a state that cannot be resolved, and an unreadable `restart.lock` are each `unknown`. `TestStopNeedsASeenExit` (a script stands in for rex): a failed or hung listing, a hung shutdown, and a hub that stays listed are exit 1 within the bound. `TestStopWaitsForTheLockHolder`: a lock holder without a status file keeps stop from `stopped` until it exits.
 
+## Agent resume
+
+`hub.admin.resume` continues detached agents in new panes (`hub/cmd/hub/resume.go`). It is an admin action: the guard of `hub.admin.*` applies, so an agent or plugin pane is refused. Arguments: `key` (required, at most 128 characters), and one of `agent` (an identity or an alias), `kind` and/or `session_id` (every detached identity of that kind, whose spawn ran in that session), or `release` (an identity).
+
+What it does, for each target identity:
+
+1. Admission. The request is resolved once, and the target list is stored with the operation (`agent_ops`, `agent_op_targets`). A target is refused when the identity is not detached, when it has no spawn record (an agent started by hand), or when its profile has no `resume` template. An identity has at most one active target over all operations and keys; another one is refused as `busy`.
+2. Launch. A new spawn row (`resume_of` = the identity, no new agent ID) with the source spawn's profile, session, cwd, title and effective args. The command is the profile's `resume` template, with the same environment as a spawn (`spawnArgv`). The row goes through `sendSpawn`: a refusal fails the target, a lost answer makes it `unknown`. The old pane stays.
+3. First prompt. When the new pane's program status is `idle` or `done`, the hub writes `New message. Call messaging_read.` once, as a notice. A resumed Codex runs its hook only at its first prompt; Claude runs it at its start, and then the prompt is not needed.
+4. Rebind. The identity's hook reports from the new pane, and the hub sets the identity current there (as for any resume). The target is `rebound` only when the identity is current in the target's own pane: a report from an older pane does not complete a newer attempt.
+
+Phases: `admitted`, `launching`, `launched`, `prompt_sending`, `prompt_sent`, `rebound`. `refused`, `failed`, `released` and `rebound` end a target. `unknown` does not: the pane or the prompt may still act, so the target keeps its reservation. It ends when a look proves an end (the rebind, or the pane closed without one), or with `release`. Rules:
+
+- The reply is the operation's state: `{op_id, done, targets: [{agent, phase, detail?, block_id?, spawn_id?}]}`. The call returns after admission; the caller reads the progress again with the same key and the same request. The same key with another request is refused.
+- Writes are at most once. The phase `prompt_sending` is stored before the prompt write and is never written again: after a failed write, or a hub stop during it, the target is `unknown`.
+- At most 3 targets are between admission and their end at one time: each launch makes the hub tell every plugin that agents changed. The waits are bounded: 120 s for a ready status, 120 s for the hook after the prompt; then `unknown`. These numbers are implementation choices.
+- A pane whose create answer was lost is not adopted by its label (`resolveSpawns`), and the hub writes no prompt to it.
+
+Profiles: see "Profiles and workers" (`resume`). Observed on 2026-10-22 (lab, Codex 0.163.0, Claude 2.1.307): both report program status `idle` before their hook; Codex's hook runs at its first prompt; Claude's at its start.
+
+Test: `lazyrex-hub test -file agent_resume.lua tests/harness`. A fake agent CLI (`tests/harness/fake-agent.sh`) reports at its start or at its first prompt. Cases: a Codex-like resume with one prompt, then a same-key replay and a different-request refusal; a Claude-like resume; refusals; one active operation for each agent, a release, and an older pane's late report that does not complete the newer attempt; a lost create answer (`unknown`, the same spawn on a retry, `busy` for another key, then a release).
+
 ## Process log
 
 The hub writes one line for each answered call (`Hub.answer`, `hub/cmd/hub/calllog.go`): `<action> from <client> pid <pid> -> <error or <nil>> in <ms>`. One exception: a fast, successful routine read gets no line.

@@ -193,7 +193,7 @@ func validProfile(p Profile) error {
 }
 
 func (h *Hub) workersSchemaStart(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema+grantsSchema); err != nil {
+	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema+grantsSchema+agentOpsSchema); err != nil {
 		return err
 	}
 	for _, m := range []string{
@@ -203,6 +203,8 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		`ALTER TABLE spawns ADD COLUMN effective_args TEXT NOT NULL DEFAULT ''`,
 		// The hub generation that admitted the row; 0 on rows from before the prepared state.
 		`ALTER TABLE spawns ADD COLUMN generation INTEGER NOT NULL DEFAULT 0`,
+		// The identity that a resume spawn continues (resume.go); '' on other spawns.
+		`ALTER TABLE spawns ADD COLUMN resume_of TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err

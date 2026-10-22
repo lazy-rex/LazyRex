@@ -144,6 +144,7 @@ type Hub struct {
 	slots          slotState     // side slot locks (panels.go)
 	noticeKick     chan struct{} // wakes noticeLoop (kickNotices)
 	spawnKick      chan struct{} // wakes resolveSpawns (kickSpawns)
+	resumeKick     chan struct{} // wakes resumeLoop (kickResume)
 	waitKick       chan struct{} // wakes waitLoop (kickWaiting)
 	profileStamp   string        // profile files as last checked (checkProfiles)
 	profileChecked bool
@@ -268,7 +269,7 @@ var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": tr
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
 var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
-	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.info",
+	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.admin.resume", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
@@ -444,7 +445,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if err := json.Unmarshal(r.Welcome, &welcome); err != nil || welcome.Client.ID == "" {
 		return nil, fmt.Errorf("welcome has no client id: %s", r.Welcome)
 	}
-	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
+	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
 	for _, a := range cfg.Agents {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
@@ -527,6 +528,7 @@ func (h *Hub) run(ctx context.Context) {
 	go h.recoverPlugins(ctx)
 	go h.waitLoop(ctx)
 	go h.noticeLoop(ctx)
+	go h.resumeLoop(ctx)
 	h.kickNotices() // notices pending from before the start
 	for {
 		select {
@@ -850,7 +852,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		return h.viewEffectRetry(ctx, p, args)
 	case "hub.view.operation":
 		return h.viewOperation(ctx, p, args)
-	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown":
+	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown", "hub.admin.resume":
 		if in, err := h.callerInManagedPane(pid); err != nil {
 			return nil, unverifiedCaller(err)
 		} else if in {
@@ -858,6 +860,9 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		}
 		if p.Action == "hub.admin.unlock" {
 			return h.cwdUnlock(ctx, "", true, args)
+		}
+		if p.Action == "hub.admin.resume" {
+			return h.adminResume(ctx, args)
 		}
 		if p.Action == "hub.admin.shutdown" {
 			// The stop itself starts in answer, after the reply.
