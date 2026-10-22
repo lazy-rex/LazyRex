@@ -378,3 +378,43 @@ func (zeroReader) Read(p []byte) (int, error) {
 	clear(p)
 	return len(p), nil
 }
+
+// resolveTag reads the exact tag ref only: a branch-only name is not a tag; an annotated tag gives
+// its peeled commit; a name that a branch also has is a tag with Branch set.
+func TestResolveTag(t *testing.T) {
+	r := newTestRepo(t)
+	c1 := r.commit(map[string]string{"a": "1"})
+	r.git("tag", "light")
+	r.git("tag", "-a", "-m", "annotated", "ann")
+	r.git("branch", "only-branch")
+	c2 := r.commit(map[string]string{"a": "2"})
+	r.git("branch", "both")
+	r.git("tag", "both")
+	r.git("tag", "team/v1")
+	ctx, dir := context.Background(), t.TempDir()
+	for _, c := range []struct {
+		name, commit string
+		branch       bool
+		err          string
+	}{
+		{name: "light", commit: c1},
+		{name: "ann", commit: c1},
+		{name: "both", commit: c2, branch: true},
+		{name: "team/v1", commit: c2},
+		{name: "only-branch", err: "not a tag: only-branch"},
+		{name: "main", err: "not a tag: main"},
+		{name: "v1", err: "not a tag: v1"}, // only refs/tags/team/v1 exists: a suffix match
+	} {
+		got, err := resolveTag(ctx, dir, r.url(), c.name)
+		if c.err != "" {
+			if err == nil || err.Error() != c.err {
+				t.Errorf("%s: %v, want %q", c.name, err, c.err)
+			}
+			continue
+		}
+		want := taggedRef{resolved{Commit: c.commit, Kind: "tag", FetchRef: "refs/tags/" + c.name}, c.branch}
+		if err != nil || got != want {
+			t.Errorf("%s: %+v %v", c.name, got, err)
+		}
+	}
+}

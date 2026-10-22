@@ -109,6 +109,11 @@ type pluginOpsSvc struct {
 	observing map[string]time.Time
 	// fault is a test hook: true at a point stops the manager there, as a crash would.
 	fault func(point string) bool
+	// cmd are the options of the git commands of the resolving and fetching phases (a test sets the
+	// remote URL).
+	cmd pluginCmdOpts
+	// resolve is a test hook in place of opResolveTarget; nil in production.
+	resolve func(ctx context.Context, op *pluginOp) (opResolved, error)
 }
 
 // errOpCrash ends a manager run at a test fault point.
@@ -752,6 +757,8 @@ func (h *Hub) runOp(ctx context.Context, op *pluginOp) error {
 			err = h.opCall(ctx, op, "start")
 		case "stopping":
 			err = h.opCall(ctx, op, "stop")
+		case "resolving":
+			err = h.opResolve(ctx, op)
 		case "writing":
 			err = h.opWrite(ctx, op)
 		case "reloading":
