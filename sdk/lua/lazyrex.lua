@@ -75,6 +75,7 @@ local function external()
 end
 local function marked(fn) return function(...) external(); return fn(...) end end
 -- api(t) wraps the calls of a Rex API table in place: rex itself, or a table of rex.server(label).
+-- A member that the table does not have is left out.
 local function api(t)
   for _, k in ipairs({'call', 'invoke', 'wait', 'servers', 'host'}) do
     if type(t[k]) == 'function' then t[k] = marked(t[k]) end
@@ -88,6 +89,22 @@ local function api(t)
       return v
     end})
   end
+  -- exec is a callable table (observed on Rex 0.0.1792158932-g88fd41): the copy keeps its members.
+  if t.exec ~= nil then
+    local exec, copy = t.exec, {}
+    for k, v in pairs(exec) do copy[k] = type(v) == 'function' and marked(v) or v end
+    t.exec = setmetatable(copy, {__call = function(_, ...) external(); return exec(...) end})
+  end
+  -- A server table gets wrapped calls too, so a call through it marks a render also when the table
+  -- was made before the render. All arguments and results pass unchanged.
+  if type(t.server) == 'function' then
+    local server = t.server
+    local function wrapped(r, ...)
+      if type(r) == 'table' then api(r) end
+      return r, ...
+    end
+    t.server = function(...) external(); return wrapped(server(...)) end
+  end
 end
 -- install answers true when every replacement holds (it reads each one back).
 local function install()
@@ -99,22 +116,6 @@ local function install()
   local before = current()
   raw.call = rex.call
   api(rex)
-  if rex.exec ~= nil then
-    local exec, copy = rex.exec, {}
-    for k, v in pairs(exec) do copy[k] = type(v) == 'function' and marked(v) or v end
-    rex.exec = setmetatable(copy, {__call = function(_, ...) external(); return exec(...) end})
-  end
-  if type(rex.server) == 'function' then
-    local server = rex.server
-    -- A server table gets wrapped calls, so a call through it marks a render also when the table was
-    -- made earlier.
-    rex.server = function(label)
-      external()
-      local t = server(label)
-      if type(t) == 'table' then api(t) end
-      return t
-    end
-  end
   for _, k in ipairs({'open', 'lines', 'popen'}) do if type(io[k]) == 'function' then io[k] = marked(io[k]) end end
   if type(os.execute) == 'function' then os.execute = marked(os.execute) end
   local now = current()

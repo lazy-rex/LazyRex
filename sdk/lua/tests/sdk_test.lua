@@ -1088,6 +1088,8 @@ local inputs = {
   server = function() rex.server('lab') end,
   server_call = function() srv.call('x.read', {}) end,
   server_session = function() srv.session.view({}) end,
+  server_exec = function() srv.exec({'/bin/true'}) end,
+  server_exec_start = function() srv.exec.start({'/bin/true'}) end,
   alias = function() local f = alias('/dev/null'); if f then f:close() end end,
   app_rex = function() app.rex('x.read') end,
   hub = function() app.hub('hub.thing', {}) end,
@@ -1102,7 +1104,7 @@ end})
   expect(s:render('/x/sql', 'render-0').result.refresh, 'SQL only').to_be(nil)
   expect(#s.rex_calls, 'the SDK transport calls no wrapped function').to_be(1) -- rex.server at load
   for _, n in ipairs({'open', 'lines', 'popen', 'execute', 'call', 'invoke', 'wait', 'servers', 'host', 'exec', 'exec_start',
-      'block', 'session', 'server', 'server_call', 'server_session', 'alias', 'app_rex', 'hub'}) do
+      'block', 'session', 'server', 'server_call', 'server_session', 'server_exec', 'server_exec_start', 'alias', 'app_rex', 'hub'}) do
     local r = s:render('/x/' .. n, 'render-' .. n)
     expect(r.error, n).to_be(nil)
     expect(r.result.refresh, n).to_be('all')
@@ -1110,7 +1112,7 @@ end})
   end
   -- rex.call goes to the sandbox's client methods, which record nothing.
   expect(s.rex_calls, 'each wrapper called the original').to_equal({'server', 'invoke', 'wait', 'servers', 'host', 'exec',
-    'exec.start', 'block.call', 'session.view', 'server', 'lab:call', 'lab:session.view'})
+    'exec.start', 'block.call', 'session.view', 'server', 'lab:call', 'lab:session.view', 'lab:exec', 'lab:exec.start'})
 end)
 
 test('a wrapper passes values, nil values and errors unchanged; outside a render it marks nothing', function()
@@ -1120,14 +1122,17 @@ app.action('p.io', {}, function()
   local ok, raised = pcall(rex.call, 'p.boom', {})
   local e = rex.exec({'/bin/true'})
   local h = rex.exec.start({'/bin/true'})
-  return {f = f == nil, err = err, code = code, n = select('#', io.open('/nonexistent/x')), ok = ok, raised = tostring(raised), exec = e.name, start = h.name}
+  local srv, second = rex.server('lab')
+  local sok, serr = pcall(rex.server, 'bad')
+  return {server = type(srv), second = second, sok = sok, serr = serr, f = f == nil, err = err, code = code, n = select('#', io.open('/nonexistent/x')), ok = ok, raised = tostring(raised), exec = e.name, start = h.name}
 end)
 ]], {rex = {['p.boom'] = function() error('boom-x', 0) end}})
   local want_n = select('#', io.open('/nonexistent/x'))
   local r = s:agent('p.io', {})
   expect(r.error).to_be(nil)
   local _, err, code = io.open('/nonexistent/x')
-  expect(r.result).to_equal({f = true, err = err, code = code, n = want_n, ok = false, raised = 'boom-x', exec = 'exec', start = 'exec.start'})
+  expect(r.result).to_equal({f = true, err = err, code = code, n = want_n, ok = false, raised = 'boom-x', exec = 'exec', start = 'exec.start',
+    server = 'table', second = 'second', sok = false, serr = 'unknown server bad'})
   expect(r.result.refresh, 'an action reply has no refresh').to_be(nil)
 end)
 

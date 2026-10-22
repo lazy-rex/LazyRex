@@ -53,13 +53,19 @@ return function(sdk_dir, base, opts)
   s.rex_calls = {}
   local function rec(name) return function() s.rex_calls[#s.rex_calls + 1] = name; return {name = name} end end
   local function api(prefix)
-    return {call = rec(prefix .. 'call'), block = {call = rec(prefix .. 'block.call')}, session = {view = rec(prefix .. 'session.view')}}
+    return {call = rec(prefix .. 'call'), block = {call = rec(prefix .. 'block.call')}, session = {view = rec(prefix .. 'session.view')},
+      exec = setmetatable({start = rec(prefix .. 'exec.start')}, {__call = function(_, ...) return rec(prefix .. 'exec')(...) end})}
   end
   local own = api('')
   stub.block, stub.session = own.block, own.session
   stub.invoke, stub.wait, stub.servers, stub.host = rec('invoke'), rec('wait'), rec('servers'), rec('host')
   stub.exec = setmetatable({start = rec('exec.start')}, {__call = function(_, ...) return rec('exec')(...) end})
-  stub.server = function(label) s.rex_calls[#s.rex_calls + 1] = 'server'; return api(label .. ':') end
+  -- rex.server raises for an unknown label (Rex docs). A second result checks that the SDK passes all.
+  stub.server = function(label)
+    if label == 'bad' then error('unknown server bad', 0) end
+    s.rex_calls[#s.rex_calls + 1] = 'server'
+    return api(label .. ':'), 'second'
+  end
   -- opts.frozen: a rex table that keeps its fields (the SDK cannot replace them).
   local rex_env = stub
   if opts.frozen then rex_env = setmetatable({}, {__index = stub, __newindex = function() end}) end
