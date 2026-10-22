@@ -272,7 +272,7 @@ injection matches only a commit whose transaction ran a statement with a paramet
 value (in `params`, an array or an object). For example, the commit that inserts the run of one
 date.
 
-`inject{match = {sql_begin = true}, sql = {{sql, params?}, ...}, skip?, times?}` acts at the
+`inject{match = {sql_begin = true}, sql = {{sql = ..., params = ...?}, ...}, skip?, times?}` acts at the
 plugin's next `hub.sql.begin`: the hub first commits the statements in a transaction of their own,
 as another writer (no commit fault applies to it), and then begins the plugin transaction. So the
 other writer commits after the plugin's last read outside the transaction and before its write
