@@ -111,6 +111,17 @@ type manifestAgent struct {
 	Name string `json:"name"`
 }
 
+// agentMode is the mode of the suite's test agents (docs/testing.md): "roster" when the manifest
+// has the test.agents key, even as an empty list (encoding/json gives a non-nil empty slice for
+// []), and "identity" when it has no such key (a nil slice; loadManifest refuses a null). The
+// harness reads it as the runner arg agent_mode.
+func (m *manifest) agentMode() string {
+	if m.Test.Agents != nil {
+		return "roster"
+	}
+	return "identity"
+}
+
 // checkNotice checks a manifest notice. The hub pastes it into an agent pane and then sends CR,
 // so a control character (a newline) would submit or change the agent's input.
 func checkNotice(s string) error {
@@ -159,6 +170,15 @@ func loadManifest(dir string) (*manifest, error) {
 		}
 		names[d.m.Name] = true
 		m.deps = append(m.deps, d)
+	}
+	// A null test.agents decodes like an absent key, so agentMode could not tell them apart.
+	var raw struct {
+		Test struct {
+			Agents json.RawMessage `json:"agents"`
+		} `json:"test"`
+	}
+	if json.Unmarshal(b, &raw) == nil && string(raw.Test.Agents) == "null" {
+		return nil, fmt.Errorf("%s: test.agents is null: give a list, or delete the key for the identity mode", path)
 	}
 	for _, a := range m.Test.Agents {
 		if a.ID == "" || a.ID == "user" {
@@ -669,7 +689,7 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 	}
 	args := []string{"-S", l.server, "--autostart=false", "do", filepath.Join(o.lazyrex, "lab", "test", "runner.lua"), "-s", sess.SessionID,
 		"file=" + file, "lib=" + filepath.Join(o.lazyrex, "lab", "test"), "sdk=" + filepath.Join(o.lazyrex, "sdk", "lua"), "hub_bin=" + o.self, "plugin=" + o.m.Name, "tests_session=" + sess.SessionID,
-		"lab=" + l.dir, "profiles=" + l.profiles}
+		"lab=" + l.dir, "profiles=" + l.profiles, "agent_mode=" + o.m.agentMode()}
 	if o.run != "" && !parity {
 		args = append(args, "run="+o.run)
 	}
