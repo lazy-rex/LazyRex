@@ -785,10 +785,17 @@ type viewEffects struct {
 	CloseForm  bool           `json:"close_form"`
 	Panel      map[string]any `json:"panel"`       // {command} | {route} | {plugin, command} (panels.go)
 	ClosePanel bool           `json:"close_panel"` // closes the panel that ran the action
+	// Plugins is a plugin manager op {op, entry, expect, input} (pluginops.go): only the home
+	// plugin's answer to a user's view action has one.
+	Plugins json.RawMessage `json:"plugins"`
 }
 
 func (e viewEffects) any() bool {
-	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel
+	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel || e.plugins()
+}
+
+func (e viewEffects) plugins() bool {
+	return len(e.Plugins) > 0 && string(bytes.TrimSpace(e.Plugins)) != "null"
 }
 
 // navTarget is a navigate effect: a tab key of the plugin that ran the action ("thread/a"), or
@@ -882,6 +889,16 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 	}
 	if decodeErr != nil {
 		return fail(decodeErr)
+	}
+	// The op first: its admission is idempotent by the view operation key, so a retry or a hub
+	// restart admits it once.
+	if e.plugins() {
+		if retry, err := h.pluginOpEffect(ctx, plugin, key, viewID, e.Plugins); retry {
+			log.Printf("views %s: effects of %s: %v (retry)", plugin, key, err)
+			return true
+		} else if err != nil {
+			return fail(err)
+		}
 	}
 	if e.Navigate.set && navDone == 0 {
 		target := e.Navigate.Plugin
