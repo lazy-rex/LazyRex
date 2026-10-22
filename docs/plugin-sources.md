@@ -914,7 +914,33 @@ action: the guard of the other admin actions applies (an operator only). Use it 
 `instance_id` that `hub.plugins` reports. A replay, or a race with another change, then cannot
 replace another instance.
 
-Arguments: both fields are required and nonempty, and other fields are refused (`invalid`).
+Arguments: both fields are required and nonempty. `expect_run` is optional (below). Other fields
+are refused (`invalid`).
+
+**expect_run.** `hub.admin.replace` and `hub.admin.start` take an optional
+`"expect_run": {"source": "<exact source>", "commit": "<40 hex>", "digest": "sha256:<64 hex>"}`.
+commit and digest are required for a GitHub source and refused for a local source (`invalid`). The
+source string binds owner, repo, subdir and ref, so the same commit in another subdir is another
+run. A writer of the lock (plugin use, the plugin manager) names the run that it wrote; a pin that
+another writer wrote later is then refused, not started.
+
+- replace: after the candidate check (step 7), the candidate must be the expected run, else
+  `candidate_changed`, "plugin <p>: the candidate is <run>, not <expected>; the running instance
+  <id> is unchanged; nothing was retired or spawned".
+- start of a stopped plugin: the start path runs its resolution; the candidate must be the expected
+  run (else `candidate_changed`, "...; nothing was retired or spawned"), and each dependency must be
+  registered (else `dependency_not_ready`). Only then the record becomes desired running and the
+  hub spawns from that candidate. A refusal leaves the desired state as it was. The start never
+  enters `waiting`, because a later wake would start the candidate of that time. A retained live
+  instance is kept only when its run is the expected run.
+- start of a running plugin: its run must be the expected run, else `candidate_changed`, "plugin
+  <p> runs <run>, not <expected>; nothing was started". A run saved before the digest field has no
+  digest, so it does not match a GitHub expectation: replace it.
+- The candidate and the run carry the digest of the lock entry (`digest` in the run JSON).
+
+Tests: `replace_test.go` (TestExpectRunArguments) and `expectrun_lab_test.go` (local sources:
+replace and stopped start, refused and accepted, a running start, `dependency_not_ready`; a GitHub
+source: the same commit in another subdir, on replace and on a stopped start).
 
 Locks: `reloadMu`, then the plugin's lifecycle lock, then `entriesMu` only to resolve. A reload
 cannot swap the entries during a replace, so the candidate and the entry membership stay stable

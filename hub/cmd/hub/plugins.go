@@ -373,6 +373,15 @@ func (h *Hub) startPlugin(ctx context.Context, pl *Plugin) error {
 // registered live instance unchanged instead of replacing it: the check always runs first, so a
 // failing candidate stays refused or retained.
 func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) error {
+	return h.startPluginExpect(ctx, pl, keepLive, nil)
+}
+
+// startPluginExpect is startPluginWith. With an expected run x (hub.admin.start expect_run), the
+// desired state of the record does not decide: the start runs, and only a candidate that is x,
+// with every dependency registered, makes the record desired running and spawns. Otherwise it
+// refuses (candidate_changed, dependency_not_ready) and changes no desired state and no instance.
+// It never waits: a later wake would start whatever the candidate is then.
+func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, x *expectRun) error {
 	pl.attempted = true
 	h.startFault(pl.Name, "hold-before")
 	h.mu.Lock()
@@ -400,7 +409,7 @@ func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) er
 	if err := h.resolveIntents(ctx, pl); err != nil {
 		return err
 	}
-	if pl.Desired != "running" {
+	if x == nil && pl.Desired != "running" {
 		return nil
 	}
 	// The prune lock (prunelock.go): from before the resolution until the run is saved.
@@ -416,10 +425,31 @@ func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) er
 	if err != nil {
 		return err
 	}
+	if x != nil {
+		if !x.matches(cand) {
+			return candidateChanged(pl.Name, cand, x, "nothing was retired or spawned")
+		}
+		h.mu.Lock()
+		var missing string
+		for _, d := range cand.Depends {
+			if !h.registeredLocked(d) {
+				missing = d
+				break
+			}
+		}
+		if missing == "" {
+			pl.Desired = "running"
+			h.savePlugin(ctx, pl)
+		}
+		h.mu.Unlock()
+		if missing != "" {
+			return refuse("dependency_not_ready", "plugin %s: dependency %s is not registered; nothing was retired or spawned", pl.Name, missing)
+		}
+	}
 	h.startFault(pl.Name, "hold-after")
 	if keepLive {
 		h.mu.Lock()
-		live := pl.entry == e && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
+		live := pl.entry == e && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && (x == nil || x.matches(&pl.run))
 		if live {
 			pl.state, pl.refusal, pl.waiting = "", "", nil // the check passed: ready again
 		}
@@ -1066,6 +1096,13 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 	case "hub.admin.replace":
 		return h.adminReplace(ctx, args)
 	case "hub.admin.start", "hub.admin.stop":
+		x, err := parseExpectRun(args)
+		if err != nil {
+			return nil, err
+		}
+		if x != nil && action == "hub.admin.stop" {
+			return nil, bad("invalid: hub.admin.stop has no expect_run")
+		}
 		pl, err := h.adminTarget(action, args)
 		if err != nil {
 			return nil, err
@@ -1108,13 +1145,19 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		h.mu.Lock()
 		retained := pl.state == "retained"
 		running := pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && !retained
-		if !running {
+		// With expect_run, the start itself sets the desired state, and only when the candidate is the
+		// expected run (startPluginExpect). A running plugin must run the expected run.
+		if !running && x == nil {
 			pl.Desired = "running"
 			h.savePlugin(ctx, pl)
 		}
+		if running && x != nil && !x.matches(&pl.run) {
+			h.mu.Unlock()
+			return nil, refuse("candidate_changed", "plugin %s runs %s, not %s; nothing was started", pl.Name, runText(&pl.run), x)
+		}
 		h.mu.Unlock()
 		if !running {
-			if err := h.startPluginWith(ctx, pl, retained); err != nil {
+			if err := h.startPluginExpect(ctx, pl, retained, x); err != nil {
 				return nil, err
 			}
 		}

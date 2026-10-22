@@ -66,7 +66,7 @@ var openIntentText = map[string]string{
 
 func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error) {
 	for k := range args {
-		if k != "plugin" && k != "expect_instance" {
+		if k != "plugin" && k != "expect_instance" && k != "expect_run" {
 			return nil, bad("invalid: unknown field %s", k)
 		}
 	}
@@ -74,6 +74,10 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	expect, _ := args["expect_instance"].(string)
 	if name == "" || expect == "" {
 		return nil, bad("invalid: replace needs plugin and a nonempty expect_instance")
+	}
+	x, err := parseExpectRun(args)
+	if err != nil {
+		return nil, err
 	}
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
@@ -88,7 +92,7 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	defer h.kickWaiting() // the wake rule: a start or a stop of any plugin
 
 	h.mu.Lock()
-	err := h.loadPluginRow(ctx, pl)
+	err = h.loadPluginRow(ctx, pl)
 	h.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -125,6 +129,9 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	}
 	if err != nil {
 		return nil, refuse("refused", "%v; the running instance %s is unchanged", err, owned)
+	}
+	if x != nil && !x.matches(cand) {
+		return nil, candidateChanged(name, cand, x, "the running instance "+owned+" is unchanged; nothing was retired or spawned")
 	}
 	h.mu.Lock()
 	var missing string

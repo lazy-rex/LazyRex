@@ -111,3 +111,53 @@ func TestSpawnKnownFailureIntents(t *testing.T) {
 		})
 	}
 }
+
+// expect_run is checked before any lock, on replace and on start: its shape, and commit and
+// digest exactly for a GitHub source. hub.admin.stop has no expect_run.
+func TestExpectRunArguments(t *testing.T) {
+	h := &Hub{plugins: map[string]*Plugin{}}
+	c, d := strings.Repeat("a", 40), "sha256:"+strings.Repeat("b", 64)
+	for _, x := range []any{
+		"src/a",
+		map[string]any{},
+		map[string]any{"source": ""},
+		map[string]any{"source": "src/a", "commit": c},
+		map[string]any{"source": "src/a", "digest": d},
+		map[string]any{"source": "github:o/r@main"},
+		map[string]any{"source": "github:o/r@main", "commit": c},
+		map[string]any{"source": "github:o/r@main", "commit": strings.ToUpper(c), "digest": d},
+		map[string]any{"source": "github:o/r@main", "commit": c, "digest": "sha256:x"},
+		map[string]any{"source": "github:o/r@main", "commit": c, "digest": d, "dir": "x"},
+		map[string]any{"source": 7.0},
+	} {
+		if _, err := h.adminReplace(context.Background(), map[string]any{"plugin": "p", "expect_instance": "p-1-x", "expect_run": x}); err == nil || !strings.HasPrefix(err.Error(), "invalid") {
+			t.Errorf("replace %v: %v", x, err)
+		}
+		if _, err := h.adminAction(context.Background(), "hub.admin.start", map[string]any{"plugin": "p", "expect_run": x}); err == nil || !strings.HasPrefix(err.Error(), "invalid") {
+			t.Errorf("start %v: %v", x, err)
+		}
+	}
+	if _, err := h.adminAction(context.Background(), "hub.admin.stop", map[string]any{"plugin": "p", "expect_run": map[string]any{"source": "src/p"}}); err == nil || !strings.HasPrefix(err.Error(), "invalid") {
+		t.Errorf("stop: %v", err)
+	}
+	// Valid shapes pass the parse and reach the plugin lookup.
+	for _, x := range []map[string]any{{"source": "src/p"}, {"source": "github:o/r/sub@v1", "commit": c, "digest": d}} {
+		if _, err := h.adminReplace(context.Background(), map[string]any{"plugin": "p", "expect_instance": "p-1-x", "expect_run": x}); err == nil || !strings.Contains(err.Error(), `unknown plugin "p"`) {
+			t.Errorf("valid %v: %v", x, err)
+		}
+	}
+	x := &expectRun{"github:o/r/one@main", c, d}
+	for name, r := range map[string]*pluginRun{
+		"subdir":                   {Source: "github:o/r/two@main", Commit: c, Digest: d},
+		"commit":                   {Source: x.Source, Commit: strings.Repeat("c", 40), Digest: d},
+		"digest":                   {Source: x.Source, Commit: c, Digest: "sha256:" + strings.Repeat("e", 64)},
+		"old run without a digest": {Source: x.Source, Commit: c},
+	} {
+		if x.matches(r) {
+			t.Errorf("%s: matches", name)
+		}
+	}
+	if !x.matches(&pluginRun{Source: x.Source, Commit: c, Digest: d}) || x.matches(nil) {
+		t.Error("the exact run")
+	}
+}
