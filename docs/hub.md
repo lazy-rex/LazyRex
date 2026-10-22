@@ -790,9 +790,20 @@ and their lifetime. The plugin owns form contents and thread changes. The
 renderer owns popup menus and local field visibility. Thread menus open through
 right-click or Ctrl+O. Menu items use the existing view action protocol.
 
-The hub stores `{session_id, window_id, source_view_id, source_route}` as form
-context. Every form render and action receives this object in `args.context`.
-The plugin does not inspect later focus to find the source thread.
+The hub stores `{session_id, window_id, source_view_id, source_route,
+source_block_id, source_pwd, source_pwd_error}` as form context. Every form
+render and action receives this object in `args.context`. The plugin does not
+inspect later focus to find the source thread.
+
+The hub reads the source pane's working directory once, at the open (a palette
+command, or a form or panel effect), and freezes it in the context:
+`source_pwd` is the raw `terminal.pwd` value (for example an OSC 7
+`file://host/path` URI; the plugin decodes it), and `source_pwd_error` says why
+the read gave no value. Neither field is set when the open had no source pane.
+A form that a form opens keeps its source's value. A refresh, a reattach and a
+hub restart give the same value. A render only reads: values from the opening
+moment come from this context, never from a write in a render (decision "view
+render never writes; freeze open state in the form context").
 
 Action results can contain `{form:'/forms/…'}` or `{close_form:true}`. Opening a
 form preserves the source view. The hub commits the operation result before it
@@ -910,8 +921,8 @@ This verifies the helper. The combined Start form is tested below.
 `plugins/profiles.lua` declares two palette commands. Each opens a form in the tab's side slot
 (`/forms/start-agent`, `/forms/start-accessory`). The form lists the profiles of its kind.
 
-- **Directory.** The default is the source pane's `terminal.pwd` (`source_block_id` in the form
-  context). Without one, each profile uses its own directory. In a Git repository with more than
+- **Directory.** The default is the source pane's `terminal.pwd`, frozen at the open
+  (`source_pwd` in the form context). Without one, each profile uses its own directory. In a Git repository with more than
   one worktree, the form lists the worktrees. The form has no folder list of its own (removed
   2026-10-18, the maintainer: the native browser replaces it).
 - **Directory field.** The form has a text field `dir` with `browse = "native"`: the renderer

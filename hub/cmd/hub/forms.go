@@ -67,13 +67,18 @@ type paletteCommand struct {
 }
 
 type formContext struct {
-	SessionID    string      `json:"session_id"`
-	WindowID     string      `json:"window_id"`
-	SourceViewID string      `json:"source_view_id"`
-	SourceRoute  string      `json:"source_route"`
-	SourceBlock  string      `json:"source_block_id,omitempty"` // the pane the command ran from (for terminal.pwd, placement)
-	Panel        bool        `json:"panel,omitempty"`           // a side panel, not a form (panels.go)
-	Return       *slotReturn `json:"return,omitempty"`          // the panel this form replaced
+	SessionID    string `json:"session_id"`
+	WindowID     string `json:"window_id"`
+	SourceViewID string `json:"source_view_id"`
+	SourceRoute  string `json:"source_route"`
+	SourceBlock  string `json:"source_block_id,omitempty"` // the pane the command ran from (for terminal.pwd, placement)
+	// SourcePwd is the raw terminal.pwd value of SourceBlock, read once at the open; SourcePwdError
+	// is why that read gave no value. Neither is set without a source pane. A render reads them and
+	// never writes (decision "view render never writes; freeze open state in the form context").
+	SourcePwd      string      `json:"source_pwd,omitempty"`
+	SourcePwdError string      `json:"source_pwd_error,omitempty"`
+	Panel          bool        `json:"panel,omitempty"`  // a side panel, not a form (panels.go)
+	Return         *slotReturn `json:"return,omitempty"` // the panel this form replaced
 }
 
 func formsStart(ctx context.Context, db *DB) error {
@@ -365,6 +370,7 @@ func (h *Hub) paletteRun(ctx context.Context, p perform, args map[string]any) (a
 			fc.SourceViewID, fc.SourceRoute, fc.SourceBlock = prev.SourceViewID, prev.SourceRoute, prev.SourceBlock
 		}
 	}
+	h.freezeSourcePwd(ctx, &fc)
 	// The form or panel takes the window's side slot; a view there is replaced (panels.go).
 	out, err := h.openSlot(ctx, slotRequest{Plugin: plugin, Route: route, Ctx: fc, Focus: true, NextTitle: title})
 	if err != nil {
@@ -774,6 +780,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 				return fail(fmt.Errorf("form %s: the source view is not shown: %w", e.Form, err))
 			}
 			fc = formContext{SessionID: src.Session, WindowID: window, SourceViewID: viewID, SourceRoute: src.Route, SourceBlock: src.Block}
+			h.freezeSourcePwd(ctx, &fc)
 		}
 		sc := fc
 		sc.Panel, sc.Return = panel, nil
@@ -868,4 +875,25 @@ func (h *Hub) formsSweep(ctx context.Context) {
 			h.closeViewRow(ctx, f.id, "gone")
 		}
 	}
+}
+
+// freezeSourcePwd reads the working directory of fc's source pane once, at the open, and keeps the
+// raw value (the plugin decodes it). A form that a form opens keeps its source's frozen value.
+func (h *Hub) freezeSourcePwd(ctx context.Context, fc *formContext) {
+	fc.SourcePwd, fc.SourcePwdError = "", ""
+	if fc.SourceBlock == "" {
+		return
+	}
+	var out struct {
+		Pwd string `json:"pwd"`
+	}
+	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.pwd", fc.SessionID, fc.SourceBlock, map[string]any{}, &out); err != nil {
+		fc.SourcePwdError = "the source pane's directory could not be read: " + err.Error()
+		return
+	}
+	if out.Pwd == "" {
+		fc.SourcePwdError = "the source pane reports no directory (its shell sends no OSC 7)"
+		return
+	}
+	fc.SourcePwd = out.Pwd
 }

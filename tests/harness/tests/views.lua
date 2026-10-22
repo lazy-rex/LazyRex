@@ -92,3 +92,29 @@ test('a final operation answers its key again without calling the plugin', funct
   expect_error(function() home:action('count', 'count', {n = 2}, 'count-once') end, 'operation_conflict')
   expect(store('count').value).to_be(1)
 end)
+
+-- A form opened from the palette carries the source pane's directory, read once at the open
+-- (decision "view render never writes; freeze open state in the form context").
+test('a palette form freezes the source pane directory in its context', function()
+  -- A pane that reports a directory with OSC 7 (the Profiles fixture's way: /bin/sh, no login).
+  local uri = 'file:///tmp/lazyrex%20pwd'
+  local created = rex.call('session.create', {label = 'source-pwd', initial_windows = {{layout = {block = {
+    flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sh', '-c', 'printf "%s" "$1"; exec sleep 100000', 'sh', '\27]7;' .. uri .. '\7'},
+    login = false}}}}}})
+  local s, b = created.session_id, created.initial_windows[1].block_ids[1]
+  rex.call('session.attach', {session_id = s, event_scope = 'session'})
+  wait('the source pane reports its directory', function()
+    local r = rex.call('com.superlogical.terminal.pwd', {session_id = s, block_id = b, args = {}})
+    return r and r.pwd and r.pwd ~= ''
+  end)
+  user:command('fix_form', {session = s, block = b})
+  local form = user:view('/forms/fix', nil, s)
+  expect(form.context.source_pwd, 'the raw value, not decoded').to_be(uri)
+  expect(form.context.source_pwd_error).to_be(nil)
+  -- The tests session's pane sends no OSC 7: the form gets the reason, and no value.
+  user:command('fix_form')
+  local plain = user:view("/forms/fix", nil, H.args.tests_session)
+  expect(plain.context.source_pwd).to_be(nil)
+  expect(plain.context.source_pwd_error:find('reports no directory', 1, true) ~= nil, plain.context.source_pwd_error).to_be(true)
+  close_session(s)
+end)
