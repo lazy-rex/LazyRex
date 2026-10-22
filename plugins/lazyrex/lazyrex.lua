@@ -1,7 +1,6 @@
 -- LazyRex home. The hub owns profiles, workers, and navigation. Home has no tab: its palette
 -- entries are "Agents…" (a panel), "Stop Worker…" and, while no other plugin offers a launch,
--- "Launch Profile…" (forms). A view at '/' is the retired home tab; it renders the panel until the
--- hub retires it.
+-- "Launch Profile…" (forms).
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 local navigation_notice
@@ -157,7 +156,7 @@ local function launch_tree()
 end
 
 local function render(route)
-  if route == '/panels/agents' or route == '/' then return panel_tree() end
+  if route == '/panels/agents' then return panel_tree() end
   if route == '/forms/stop' then return stop_tree() end
   if route == '/forms/launch' then return launch_tree() end
   return worker_tree(route:match('^/forms/worker/(.+)$'))
@@ -263,7 +262,7 @@ local function sync()
   registered_ids = ids
 end
 
-local routes = {['/'] = true, ['/panels/agents'] = true, ['/forms/stop'] = true, ['/forms/launch'] = true}
+local routes = {['/panels/agents'] = true, ['/forms/stop'] = true, ['/forms/launch'] = true}
 local function known_route(route)
   return type(route) == 'string' and (routes[route] or route:match('^/forms/worker/.+$') ~= nil)
 end

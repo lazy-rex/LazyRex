@@ -947,14 +947,18 @@ popups.
 - Upgrade: a home view whose tab the home plugin no longer declares retires through the legacy gate
   (`view.retire`: the renderer leaves when nothing is unsaved; its exit closes the pane). The hub
   never closes it as undeclared. The missing declaration is durable, so the hub asks again after a
-  restart. A home view in a legacy session retires as before. Until it retires, the old view (route
-  `/`) shows the Agents panel.
+  restart. A home view in a legacy session retires as before. The home plugin refuses route `/`
+  ("Unknown home route or user"), so an old view shows the hub's error tree until it retires.
+  The release runbook for this hub release closes every open home view before the upgrade
+  (coordinator, coord-c3-gate), so no view with unsaved input meets the refusal.
 - Reconciliation covers every plugin with a declared tab or a live tab view (`uiPlugins`). A
   non-home plugin that declares no tabs gets a pass, so its open tab view closes as undeclared.
 
 Tests: `tests/harness/tests/no_tabs.lua`, `tests/harness/tests/home_retire.lua` (the fixture as
 home: a view retires, a view with unsaved text waits, a restart resumes the retirement),
-`TestUIPluginsIncludesLiveTabViews`, and `plugins/lazyrex/tests` (README coverage table).
+`TestUIPluginsIncludesLiveTabViews`, `TestHomeRouteRefusedLab` (lab: a home view at `/` in the
+LazyRex session gets the refused render, then retires, closes once and its pane goes), and
+`plugins/lazyrex/tests` (README coverage table).
 
 ### Worktrees plugin
 
