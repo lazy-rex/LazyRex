@@ -333,11 +333,11 @@ but the sync of its directory failed (a crash can undo the change): ...`, never 
 unchanged lock, and rolls nothing back. The same rule holds for the base file of pull (section 6a).
 
 **Result lines.** sync and update print one line for each change (`installed`, `updated`,
-`repaired`, `dropped`) only after the lock write. A failed command prints none. The lines go out
-in one write; a failed or short write is an error: `plugin <cmd>: the lock is written, but the
-result lines are not: ...`. A writer can take a part of the lines before it fails. status also
-writes its lines once; a failed write is `plugin status: the result lines are not written: ...`,
-with exit 1, before the not-ok result.
+`repaired`, `dropped`) only after the lock write. A failure before output delivery prints no
+result lines. The lines go out in one write; a failed or short write is an error: `plugin <cmd>:
+the lock is written, but the result lines are not: ...`. A writer can take a part of the lines
+before it fails. status also writes its lines once; a failed write is `plugin status: the result
+lines are not written: ...`, with exit 1, before the not-ok result.
 
 **Graph check.** Before it writes the lock, the command checks the new dependency graph. Example
 refusal: `plugin update: worktrees at <c> depends on profiles, which is not configured; the lock is
