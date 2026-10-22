@@ -1,6 +1,6 @@
 -- An agent in a tab the user never named is named after its terminal title, without the leading
 -- status glyph, and the name follows the title (identity.go paneName). A tab label that the user
--- sets wins over the title. It replaces the Node lab pane-names-lab.mjs (observed on Rex 0.0.1792158932-g88fd41).
+-- sets wins over the title (observed on Rex 0.0.1792158932-g88fd41).
 
 test('an unnamed tab names its agent after the terminal title', function()
   local a = agent('quill', {join = false, unnamed = true})

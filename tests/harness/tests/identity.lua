@@ -1,6 +1,6 @@
 -- Agent identity reports (hub/cmd/hub/identity.go). Each report runs in a new process in the
--- agent's lab pane, so the pid proof and the process start order are real. It replaces the Node lab
--- identity-lab.mjs (observed on Rex 0.0.1792158932-g88fd41).
+-- agent's lab pane, so the pid proof and the process start order are real
+-- (observed on Rex 0.0.1792158932-g88fd41).
 
 local function ident(id)
   local list = H.hub('hub.identity.list', {}).identities or {}

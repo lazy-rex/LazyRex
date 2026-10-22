@@ -1,7 +1,7 @@
 -- Tab rename (hub/cmd/hub/tabrename.go): the user renames a plugin view's Rex tab, and the plugin
 -- gets view.rename. The fixture keeps the title literally and declares it again; the record
 -- renames lists every title it got. A label that the hub writes (from a declared title) is never a
--- rename. It replaces the Node lab tab-rename-lab.mjs (Messages thread tabs).
+-- rename.
 
 local alice = agent('alice')
 

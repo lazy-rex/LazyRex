@@ -1,12 +1,11 @@
 package main
 
-// Fake Rex apps for tests (H2; the coordinator, 2026-10-19: test mode only). No app runs in a lab,
-// so hub.app.select_session and hub.view.app_action refuse with no_app. A test asks the hub for a
-// fake app: a second Rex connection whose hello says kind "app", as the real app's does
-// (templates-lab.mjs did the same from Node). It declares the app actions, shows the sessions
-// that the test names (session.attach), answers each client.perform with {} (or a chosen error)
-// and records it. userApp finds it like a real app. It lives in the hub process: a hub restart
-// closes it.
+// Fake Rex apps for tests (test mode only). No app runs in a lab, so hub.app.select_session and
+// hub.view.app_action refuse with no_app. A test asks the hub for a fake app: a second Rex
+// connection whose hello says kind "app", as the real app's does. It declares the app actions,
+// shows the sessions that the test names (session.attach), answers each client.perform with {} (or
+// a chosen error) and records it. userApp finds it like a real app. It lives in the hub process:
+// a hub restart closes it.
 //
 // hub.test.app {name, sessions?, fail?} opens the app (or reuses it) and attaches sessions.
 //   fail: an error code that the app answers instead of {} (empty: answer {}).
