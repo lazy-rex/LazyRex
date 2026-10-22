@@ -831,15 +831,17 @@ atomicity or the absence of transient processes during every failure.
 - `spikes/03-ui-framework/tests/templates-lab.mjs` with `TEMPLATES_RESTART=1`: the hub was killed (SIGKILL) right after a template start was admitted. Rex had created the whole tab. After the restart, each leaf had exactly one pane with its `lazyrex-spawn:<id>` label, and the hub kept each accessory leaf `sending` ("outcome unknown: 1 candidate pane(s)"). A label is only a hint, so this is by design (decision, 2026-10-17: v1 keeps it; see roadmap, "Idempotent create operations").
 - A process proof through the environment does not work on macOS for the main case. Observed on macOS 27.0.1 (26A434), own user: `ps eww -o command= -p <pid>` and `ps -E` showed `LAZYREX_SPAWN=…` for a Homebrew `node` process, and no environment for `/bin/sleep` and `/bin/zsh -c …`. Inferred: macOS hides the environment of Apple platform binaries. The built-in `shell` profile runs `$SHELL -l` (`/bin/zsh`).
 
-### A create can complete after its client dies (observed 2026-10-22, Rex 0.0.1792158932-g88fd41, lab)
+### A create can succeed when its client dies before the reply (observed 2026-10-22, Rex 0.0.1792158932-g88fd41, lab)
 
 - Probe: `lab/probes/late-create.sh <lab socket URL>`. A rex CLI sends `session.new_block` with a unique label. The probe kills that CLI with SIGKILL D ms later. A second client then lists the session's blocks every 20 ms for 3 s. Three trials for each delay.
 - Kills at 0, 1, 2, 5 and 10 ms: the CLI died before it printed a reply, and the block never appeared.
 - Kills at 20 ms: the CLI died before it printed a reply (exit status 137). The block was in the first list after the kill (all three trials).
 - Kills at 50 and 200 ms: the reply came first.
-- Result: Rex completes a `session.new_block` after the client that sent it is gone. A lost reply does not show that the create did not happen.
-- Consequence (B8; docs/hub.md, section "The work session", the `attempt` argument): an absent block never proves that a start or replace attempt was not applied. Only the block with the attempt's intent marker proves it. An absence keeps the attempt unresolved, with no timer.
-- Not tested: the longest delay between the client's death and the create; other create calls (`session.new_window`, `session.create`). The probe cannot show a create that lands later than 3 s.
+- Result (measured): a client can die before it prints the reply of a `session.new_block`, and the block exists. So a lost reply does not show that the create did not happen.
+- Not shown by this probe: whether Rex created the block after the client died. The block can exist before the kill, with only the reply lost. The probe never saw a block appear after an empty list.
+- Separate report (not verified by this probe): a lab capture of 2026-10-20 on the same Rex version saw a new block appear 20 to 80 ms after a fresh connection's first list, after its client died (engineering vault, "Rex can complete pane creation after the sending client dies").
+- B8 rule (docs/hub.md, section "The work session", the `attempt` argument), from both facts: a lost reply and an absent block never prove that a start or replace attempt was not applied. Only the block with the attempt's intent marker proves it. An absence keeps the attempt unresolved, with no timer.
+- Not tested: the longest delay before a late create lands; other create calls (`session.new_window`, `session.create`). The probe cannot show a create that lands later than 3 s.
 
 ### A detached pane still works for agents (observed 2026-10-16, Rex 1203, lab)
 
