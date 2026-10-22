@@ -52,9 +52,17 @@ const fetchOutEnv = "LAZYREX_FETCH_STDOUT"
 type fetchCmd struct {
 	Argv     []string
 	Dir      string    // git's working directory; "" is the hub's
-	Stdout   io.Writer // git's stdout; nil: git's stdout goes to the hub's stderr
-	TestStop string    // test mode only: the watcher's stop point (fetchStopEnv)
+	// Output reads git's stdout to EOF and returns its error. runFetchChild owns r: on a cancel or
+	// a failure it closes r, which ends a blocked Read, and it does not wait for Output after that.
+	// Output must return after a Read error. nil: git's stdout goes to the hub's stderr.
+	Output   func(r io.Reader) error
+	TestStop string // test mode only: the watcher's stop point (fetchStopEnv)
 }
+
+var (
+	errFetchOutputEarly = errors.New("the output reader returned before the end of git's output")
+	errFetchOutputOpen  = errors.New("the output reader did not finish")
+)
 
 // fetchChildEnv is the environment of a watcher: the hub's, without the fetch variables, plus env.
 func fetchChildEnv(env ...string) []string {
@@ -79,12 +87,14 @@ type fetchResult struct {
 	Watcher, Gate int // the pids that the hub recorded (Gate 0: no report)
 	GitStatus     int // git's exit status; -1 when git did not report
 	WatcherStatus syscall.WaitStatus
-	Stopped       bool // the hub ended the watcher with the hard stop
+	Stopped       bool  // the hub ended the watcher with the hard stop
+	OutputErr     error // fetchCmd.Output failed, returned early, or did not finish
 }
 
-// OK reports a fetch that the hub may publish: git exited 0, the watcher exited 0 by itself.
+// OK reports a fetch that the hub may publish: git exited 0, the watcher exited 0 by itself, and
+// Output (if any) read all of git's stdout without an error.
 func (r fetchResult) OK() bool {
-	return !r.Stopped && r.GitStatus == 0 && r.WatcherStatus.Exited() && r.WatcherStatus.ExitStatus() == 0
+	return !r.Stopped && r.OutputErr == nil && r.GitStatus == 0 && r.WatcherStatus.Exited() && r.WatcherStatus.ExitStatus() == 0
 }
 
 // runFetchChild runs fc.Argv (git and its arguments) through a watcher and a gate. record stores
@@ -114,7 +124,7 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 		}
 	}()
 	var outR *os.File
-	if fc.Stdout != nil {
+	if fc.Output != nil {
 		r, w, err := os.Pipe()
 		if err != nil {
 			return res, err
@@ -140,23 +150,23 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 	}
 	res.Watcher = cmd.Process.Pid
 	defer cmd.Process.Release()
-	// copied ends when git's stdout reaches EOF: every holder (the watcher, the gate, git and its
-	// helpers) ended. The hub closes its write end now, so it holds none.
-	copied := make(chan struct{})
+	// consumed gets Output's result. An Output that returns nil must have read to EOF: one more
+	// Read proves it. The hub closes its write end now, so only the fetch holds one.
+	var consumed chan error
 	if outR != nil {
 		cmd.ExtraFiles[0].Close()
+		consumed = make(chan error, 1)
 		go func() {
-			io.Copy(fc.Stdout, outR)
-			close(copied)
-		}()
-		defer func() {
-			select {
-			case <-copied:
-			case <-time.After(2 * time.Second): // a holder outside the fetch: the close below ends the copy
-				outR.Close()
-				<-copied
+			err := fc.Output(outR)
+			if err == nil {
+				var b [1]byte
+				if n, _ := outR.Read(b[:]); n > 0 {
+					err = errFetchOutputEarly
+				}
 			}
+			consumed <- err
 		}()
+		res.OutputErr = errFetchOutputOpen
 	}
 	// quit ends the reader when the caller returns before EOF.
 	quit := make(chan struct{})
@@ -182,6 +192,9 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 	stop := func() {
 		if deadline == nil {
 			stdin.Close()
+			if outR != nil {
+				outR.Close() // ends a blocked Read of Output; git gets EPIPE
+			}
 			deadline = time.After(fetchGrace)
 		}
 	}
@@ -189,6 +202,15 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 	recorded := make(chan error, 1)
 	for {
 		select {
+		case err := <-consumed:
+			consumed = nil
+			res.OutputErr = err
+			if err != nil {
+				if runErr == nil {
+					runErr = fmt.Errorf("fetch output: %w", err)
+				}
+				stop()
+			}
 		case err := <-recorded:
 			if err != nil {
 				runErr = err
@@ -236,6 +258,22 @@ func runFetchChild(ctx context.Context, fc fetchCmd, record func(ctx context.Con
 					}
 				}
 				stdin.Close()
+				// Output may still work on the last bytes. A stopped fetch does not wait for it
+				// (outR is closed); a cancel during this wait closes outR and returns.
+				if consumed != nil && deadline == nil {
+					select {
+					case err := <-consumed:
+						res.OutputErr = err
+						if err != nil && runErr == nil {
+							runErr = fmt.Errorf("fetch output: %w", err)
+						}
+					case <-ctx.Done():
+						outR.Close()
+						if runErr == nil {
+							runErr = ctx.Err()
+						}
+					}
+				}
 				return res, runErr
 			} else if err != nil && !errors.Is(err, syscall.EINTR) {
 				return res, err

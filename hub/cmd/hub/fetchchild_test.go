@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -354,7 +355,7 @@ func TestFetchChildNoLeak(t *testing.T) {
 			t.Fatalf("refused record %d: no error", i)
 		}
 		var out strings.Builder
-		if res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/echo", "x"}, Stdout: &out}, func(context.Context, int, int) error { return nil }); err != nil || !res.OK() || out.String() != "x\n" {
+		if res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/echo", "x"}, Output: copyTo(&out)}, func(context.Context, int, int) error { return nil }); err != nil || !res.OK() || out.String() != "x\n" {
 			t.Fatalf("stdout %d: %+v %v %q", i, res, err, out.String())
 		}
 	}
@@ -374,12 +375,12 @@ func TestFetchChildStdout(t *testing.T) {
 	}
 	none := func(context.Context, int, int) error { return nil }
 	var out strings.Builder
-	res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "pwd; printf data"}, Dir: dir, Stdout: &out}, none)
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "pwd; printf data"}, Dir: dir, Output: copyTo(&out)}, none)
 	if err != nil || !res.OK() || out.String() != dir+"\ndata" {
 		t.Fatalf("pwd: %+v %v %q", res, err, out.String())
 	}
 	var big countWriter
-	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "head -c 4194304 /dev/zero"}, Stdout: &big}, none)
+	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "head -c 4194304 /dev/zero"}, Output: copyTo(&big)}, none)
 	if err != nil || !res.OK() || big != 4194304 {
 		t.Fatalf("4 MiB: %+v %v %d bytes", res, err, big)
 	}
@@ -392,7 +393,7 @@ func TestFetchChildStdout(t *testing.T) {
 		}
 	}
 	var tar countWriter
-	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"git", "archive", "--format=tar", "HEAD"}, Dir: dir, Stdout: &tar}, none)
+	res, err = runFetchChild(context.Background(), fetchCmd{Argv: []string{"git", "archive", "--format=tar", "HEAD"}, Dir: dir, Output: copyTo(&tar)}, none)
 	if err != nil || !res.OK() || tar == 0 || tar%512 != 0 {
 		t.Fatalf("git archive: %+v %v %d bytes", res, err, tar)
 	}
@@ -434,5 +435,85 @@ func TestFetchChildSlowRecord(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if _, err := os.Stat(filepath.Join(stage, "git.pid")); !os.IsNotExist(err) {
 		t.Fatalf("git ran: %v", err)
+	}
+}
+
+// copyTo is an Output that copies git's stdout to w.
+func copyTo(w io.Writer) func(io.Reader) error {
+	return func(r io.Reader) error {
+		_, err := io.Copy(w, r)
+		return err
+	}
+}
+
+type fetchFailWriter struct{}
+
+func (fetchFailWriter) Write([]byte) (int, error) { return 0, errors.New("destination failed") }
+
+// An Output that fails, or that returns before the end, makes the fetch fail and stops git, also
+// for a large output. (The first case is codex-21's regression on f11603c.)
+func TestFetchChildOutputFailure(t *testing.T) {
+	none := func(context.Context, int, int) error { return nil }
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/echo", "archive-data"}, Output: copyTo(fetchFailWriter{})}, none)
+	if err == nil || res.OK() {
+		t.Fatalf("failed destination: %+v %v", res, err)
+	}
+	big := []string{"/bin/sh", "-c", "head -c 67108864 /dev/zero"} // 64 MiB: git blocks on a full pipe
+	for _, c := range []struct {
+		name   string
+		output func(io.Reader) error
+		want   error
+	}{
+		{"error after 1 KiB", func(r io.Reader) error {
+			io.CopyN(io.Discard, r, 1024)
+			return errors.New("consumer failed")
+		}, nil},
+		{"nil after 1 KiB", func(r io.Reader) error {
+			io.CopyN(io.Discard, r, 1024)
+			return nil
+		}, errFetchOutputEarly},
+	} {
+		start := time.Now()
+		res, err := runFetchChild(context.Background(), fetchCmd{Argv: big, Output: c.output}, none)
+		t.Logf("%s: %v, %+v, %v", c.name, time.Since(start), res, err)
+		if err == nil || res.OK() || time.Since(start) > 5*time.Second || (c.want != nil && !errors.Is(err, c.want)) {
+			t.Fatalf("%s: %v %+v %v", c.name, time.Since(start), res, err)
+		}
+		assertGone(t, c.name, res.Watcher, res.Gate)
+	}
+}
+
+// A cancel while Output has stopped reading: the fetch returns within the bound without waiting
+// for Output. When Output reads again, its Read fails, and it ends: no copier is left.
+func TestFetchChildCancelPausedOutput(t *testing.T) {
+	g0 := runtime.NumGoroutine()
+	ctx, cancel := context.WithCancel(context.Background())
+	paused, release, ended := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	output := func(r io.Reader) error {
+		b := make([]byte, 1)
+		r.Read(b)
+		close(paused)
+		<-release // the consumer stops reading
+		_, err := io.Copy(io.Discard, r)
+		ended <- err
+		return err
+	}
+	go func() { <-paused; cancel() }()
+	start := time.Now()
+	res, err := runFetchChild(ctx, fetchCmd{Argv: []string{"/bin/sh", "-c", "head -c 67108864 /dev/zero"}, Output: output}, func(context.Context, int, int) error { return nil })
+	t.Logf("cancel to return: %v, %+v, %v", time.Since(start), res, err)
+	if res.OK() || time.Since(start) > 5*time.Second || !errors.Is(err, context.Canceled) {
+		t.Fatalf("paused output: %v %+v %v", time.Since(start), res, err)
+	}
+	assertGone(t, "paused output", res.Watcher, res.Gate)
+	close(release)
+	if err := <-ended; err == nil {
+		t.Fatal("the paused Output read on after the cancel without an error")
+	}
+	for end := time.Now().Add(2 * time.Second); runtime.NumGoroutine() > g0 && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if g := runtime.NumGoroutine(); g > g0 {
+		t.Fatalf("goroutines %d -> %d", g0, g)
 	}
 }
