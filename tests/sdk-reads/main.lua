@@ -1,4 +1,4 @@
--- SQL read tracking through the real SDK: two opted-in panels and one default panel.
+-- SQL read tracking through the real SDK: two tracked panels (the default) and one with refresh = "all".
 local app = require('lazyrex').plugin('rr')
 
 app.db.migrate {
@@ -16,11 +16,11 @@ local function count(t)
   local n = app.db.first('SELECT count(*) AS n FROM ' .. t).n
   return {app.ui.text('n', tostring(n))}
 end
-app.panel('Alpha', function() return count('a') end, {refresh = 'reads'})
-app.panel('Beta', function() return count('b') end, {refresh = 'reads', landing = false})
-app.panel('Gamma', function() return count('a') end, {landing = false})
+app.panel('Alpha', function() return count('a') end)
+app.panel('Beta', function() return count('b') end, {landing = false})
+app.panel('Gamma', function() return count('a') end, {refresh = 'all', landing = false})
 
--- A caught query failure must prevent the SDK from opting this render in.
+-- A caught query failure makes the SDK reply refresh = "all" for this render.
 local function caught(raw)
   app.db.first('SELECT count(*) AS n FROM a')
   local ok = pcall(function()
@@ -32,5 +32,5 @@ local function caught(raw)
   end)
   return {app.ui.text('caught', ok and 'complete' or 'caught')}
 end
-app.panel('Caught DB', function() return caught(false) end, {refresh = 'reads', landing = false})
-app.panel('Caught Raw', function() return caught(true) end, {refresh = 'reads', landing = false})
+app.panel('Caught DB', function() return caught(false) end, {landing = false})
+app.panel('Caught Raw', function() return caught(true) end, {landing = false})

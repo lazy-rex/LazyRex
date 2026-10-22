@@ -103,18 +103,22 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   arguments: Rex Lua fails with "registry overflow".
 - **Big numbers.** Lua holds integers exactly only up to 2^53. A larger integer from the database
   comes back as a decimal string.
-- **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs
-  again after each write.
-- **Selective refresh (opt-in).** `app.panel(title, fn, {refresh = 'reads'})` or
-  `app.view(route, handlers, {refresh = 'reads'})`: the view renders again after its own action and
-  after a write to a table that its render read. For other state, call `app.refresh()`. If the render
-  reads through another hub call (for example `hub.store.*`), that render is not tracked: the view then
-  renders again after each write. The same holds for a render in which a hub call failed, also when
-  the plugin caught the error: "reads" states that every hub call of the render reached the hub and
-  returned without error, so the SDK then sends no `refresh`. `'writes'` is the default; another
-  value fails at load. Before a release that sets `'reads'`, your pair checks the render path. A hub
-  without render tracking (before hub 4.2) ignores the option.
-  The lab test `tests/sdk-reads` checks the option with this SDK on the hub.
+- **Views refresh by themselves.** The hub renders a view again after a write to a table that its
+  render read, and after its own action. Keep a render fast.
+- **One rule for other state.** If a view shows a value that the render did not read itself (a Lua
+  value, the time, an environment variable, or a handle opened earlier), call `app.refresh()` when it
+  changes.
+- **The SDK detects reads outside SQL.** In a render, a call of `io.open`, `io.lines`, `io.popen`,
+  `os.execute`, `rex.exec`, `rex.exec.start`, `rex.call`, `rex.invoke`, `rex.wait`, `rex.server`
+  (and the calls of its table), `rex.servers`, `rex.host`, `rex.block.call`, `rex.session.*`, or a
+  hub call other than an SQL query makes the render reply `refresh = "all"`: the view then renders
+  again after each SQL commit of the plugin. So does a render in which a hub call failed, also when
+  the plugin caught the error. The SDK cannot see a handle opened before the render or a native
+  module. The next render that reads only SQL is tracked again.
+- **Opt out.** `app.panel(title, fn, {refresh = 'all'})` or `app.view(route, handlers, {refresh = 'all'})`
+  renders the view again after each SQL commit. In a render, `ctx.refresh_all()` does the same for
+  that render only (a view that serves many routes). Another `refresh` value fails at load.
+  The lab test `tests/sdk-reads` checks read tracking with this SDK on the hub.
 - **A render only reads.** A panel, view or form render reads the committed state, with no
   transaction. A write (`db.exec`, `db.batch`, `db.transaction`, `app.notice`) in a render fails with `refused`.
   Write in an action or an `on_select` handler.
@@ -293,7 +297,7 @@ errors and the transaction rules above.
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
 | `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |
-| `app.refresh()` | Render the open views again, for state outside SQL. |
+| `app.refresh()` | Render the open views again, after a change of a value that a render did not read itself. |
 | `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
 | `app.args`, `app.dir` | The plugin arguments; the plugin directory. |
 | `app.registration` | The `hub.register` reply (for example `generation`). It is set before the start functions run. |

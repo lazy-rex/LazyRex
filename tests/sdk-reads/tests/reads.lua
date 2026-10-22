@@ -1,7 +1,7 @@
 -- The real SDK of this checkout (sdk/lua) against the hub's SQL read tracking (codex-29's review lab,
 -- Hub Render 4.2). Run: lazyrex-hub test tests/sdk-reads (from the repository root).
--- The SDK's own calls in a render keep it tracked: an opted-in panel renders again only after a
--- write to the table that it read. A default panel renders after every write.
+-- The SDK's own calls in a render keep it tracked: a default panel renders again only after a
+-- write to the table that it read. A panel with refresh = "all" renders after every write.
 local alice = agent('alice')
 local function pane(name)
   local s = session(name)
@@ -29,7 +29,7 @@ local function settle()
   end, 20)
 end
 
-test('opted-in SDK panels stay tracked and render only after their own table changes', function()
+test('default SDK panels stay tracked and render only after their own table changes', function()
   -- One pane in its own session for each panel: a second panel in the same window replaces the
   -- first (the panel slot).
   local views = {}
@@ -42,7 +42,7 @@ test('opted-in SDK panels stay tracked and render only after their own table cha
   settle()
   expect(count(views.alpha).sql_tracked, 'alpha tracked').to_be(true)
   expect(count(views.beta).sql_tracked, 'beta tracked').to_be(true)
-  expect(count(views.gamma).sql_tracked, 'gamma (default) tracked').to_be(false)
+  expect(count(views.gamma).sql_tracked, 'gamma (refresh = all) tracked').to_be(false)
   local a0, b0, g0 = count(views.alpha).attempts, count(views.beta).attempts, count(views.gamma).attempts
   alice:call('rr.add', {t = 'other'})
   settle()
@@ -58,7 +58,7 @@ test('opted-in SDK panels stay tracked and render only after their own table cha
   wait('alpha shows the new row', function() return node((views.alpha:get() or {}).tree or {nodes = {}}, 'n') and node(views.alpha:get().tree, 'n').text == '1' end, 10)
 end)
 
-test('caught errors before hub dispatch disable opt-in in both SDK query paths', function()
+test('caught errors before hub dispatch give broad refresh in both SDK query paths', function()
   for _, path in ipairs({'db', 'raw'}) do
     local gate = fault({point = 'action', action = 'hub.sql.query', when = 'before', mode = 'gate',
       sql_param = 'review-' .. path .. '-fail', plugin = 'rr'})
@@ -68,7 +68,7 @@ test('caught errors before hub dispatch disable opt-in in both SDK query paths',
     wait('the query gate', function() return fault_fired(gate) end, 10)
     settle()
     expect(node(v:get().tree, 'caught').text).to_be('caught')
-    expect(count(v).sql_tracked, 'the SDK must omit opt-in after a caught error').to_be(false)
+    expect(count(v).sql_tracked, 'the SDK replies refresh = all after a caught error').to_be(false)
     local before = count(v).attempts
     alice:call('rr.add', {t = 'other'})
     settle()
@@ -78,6 +78,6 @@ test('caught errors before hub dispatch disable opt-in in both SDK query paths',
     v:render()
     settle()
     expect(node(v:get().tree, 'caught').text).to_be('complete')
-    expect(count(v).sql_tracked, 'a later complete render can opt in again').to_be(true)
+    expect(count(v).sql_tracked, 'a later complete render is tracked again').to_be(true)
   end
 end)
