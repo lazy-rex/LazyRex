@@ -31,12 +31,12 @@ func parseAttempt(args map[string]any) (string, error) {
 	return s, nil
 }
 
-// bindAttempt binds attempt to call with the target instance and block, once. A row that does
+// bindAttempt binds attempt to call with the target instance, block and session, once. A row that does
 // not exist, of another call, or already bound refuses with attempt_bound, and the call does
 // nothing: a replay cannot bind again, and it proves nothing about the attempt that it names.
-func (h *Hub) bindAttempt(ctx context.Context, attempt, call, instance, block string) error {
-	res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET bound_at = ?, target_instance = ?, target_block = ?
-		WHERE attempt = ? AND call = ? AND bound_at = ''`, time.Now().UTC().Format(time.RFC3339Nano), instance, block, attempt, call)
+func (h *Hub) bindAttempt(ctx context.Context, attempt, call, instance, block, session string) error {
+	res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET bound_at = ?, target_instance = ?, target_block = ?, target_session = ?
+		WHERE attempt = ? AND call = ? AND bound_at = ''`, time.Now().UTC().Format(time.RFC3339Nano), instance, block, session, attempt, call)
 	if err != nil {
 		return err
 	}
