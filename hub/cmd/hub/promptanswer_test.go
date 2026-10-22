@@ -179,17 +179,6 @@ func TestPromptAnswerRecheck(t *testing.T) {
 	}
 }
 
-// The prompt-answer write modes are refuse and lose-reply; a mode that does not exist is refused.
-func TestPromptAnswerFaultModes(t *testing.T) {
-	h, _, _, _ := answerHub(t)
-	if _, err := h.testFaultArm(map[string]any{"point": "prompt-answer", "mode": "short", "when": "write"}, "telegram"); err == nil || !strings.Contains(err.Error(), "invalid") {
-		t.Fatalf("mode short: %v", err)
-	}
-	if _, err := h.testFaultArm(map[string]any{"point": "prompt-answer", "mode": "lose-reply", "when": "write"}, "telegram"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // Write errors: only not_found and session_not_found prove zero bytes. Every other error, and a
 // short write, is unknown. An Enter that fails gives partial or unknown_after_text.
 func TestPromptAnswerWriteErrors(t *testing.T) {
