@@ -50,6 +50,21 @@ type labKeep struct {
 	At  string `json:"at"`
 }
 
+// labEvidenceBy is the "by" of the KEEP marker of failure evidence: a lab whose cleanup a run did
+// not prove (endLab). No automatic path removes such a lab, even when a later probe says absent;
+// only -clean does, after its review.
+const labEvidenceBy = "lazyrex-hub test"
+
+// readLabKeep reads the KEEP marker of the lab dir.
+func readLabKeep(dir string) (labKeep, error) {
+	var k labKeep
+	b, err := os.ReadFile(filepath.Join(dir, labKeepFile))
+	if err == nil {
+		err = json.Unmarshal(b, &k)
+	}
+	return k, err
+}
+
 // markLabKept writes the KEEP marker of the lab dir.
 func markLabKept(dir, by, why string) error {
 	b, _ := json.Marshal(labKeep{By: by, Why: why, At: time.Now().UTC().Format(time.RFC3339)})
@@ -339,7 +354,7 @@ func endLab(dir string, keep bool, why string, unproved []string) (bool, []strin
 	}
 	by := "lazyrex-hub test -keep"
 	if reason != "" {
-		by, why = "lazyrex-hub test", "cleanup not proved: "+reason
+		by, why = labEvidenceBy, "cleanup not proved: "+reason
 	} else if !keep {
 		if err := removeLab(dir); err != nil {
 			return false, []string{err.Error()}

@@ -49,10 +49,11 @@ first.
   `{"by": "lazyrex-hub test", "why": "cleanup not proved: <reason>"}`, the file fails with a
   problem that names the lab, and the summary line names it:
   `FAIL tests/send.lua: 3 passed, 0 failed (lab kept: /tmp/lrt-123)`.
-- No run removes a kept lab. The only removal is `lazyrex-hub test -clean /tmp/lrt-<digits>`,
-  after the review. A lab server in a kept lab can still run, and `-clean` refuses that lab: stop
-  that server first, by the `server_pid` in its `lab.json` (check that its command names the lab's
-  `rex.sock`), never by a name pattern.
+- No run removes failure evidence (a `KEEP` marker for an unproved cleanup). A Go harness test may
+  remove an ordinary `-keep` lab that it made itself, after it passed. Every other kept lab is
+  removed only by `lazyrex-hub test -clean /tmp/lrt-<digits>`, after the review. A lab server in a
+  kept lab can still run, and `-clean` refuses that lab: stop that server first, by the `server_pid`
+  in its `lab.json` (check that its command names the lab's `rex.sock`), never by a name pattern.
 - The probe (`labProbe`) says whether a lab is live, absent or uncertain. Live: a process whose
   command line names the lab (this process and its ancestors do not count), or a server that
   accepts a connection on `rex.sock`. A lab has a name under each name of its root: on macOS

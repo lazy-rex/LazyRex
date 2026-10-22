@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ func runHarness(t *testing.T, bin, dir string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(bin, append(append([]string{"test"}, args...), dir)...)
 	cmd.Env = harnessEnv(t)
+	harnessStarts.LoadOrStore(t, time.Now().Add(-time.Second).UTC().Truncate(time.Second))
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -92,11 +94,28 @@ func removeKeptLabs(t *testing.T, out string) {
 	})
 }
 
-// removeIfEnded removes the lab dir when labProbe proves it absent. Else the lab stays and the test
-// fails with its path: a live or uncertain lab is evidence.
+// harnessStarts holds, for each test, the time before its first runHarness: a KEEP marker that the
+// harness wrote in that run is not older.
+var harnessStarts sync.Map // *testing.T -> time.Time
+
+// removeIfEnded removes a lab that a harness run of this test kept with -keep, when labProbe proves
+// it absent. Failure evidence (a KEEP marker for an unproved cleanup, labEvidenceBy) stays and is
+// logged: only -clean removes it. A lab without this test's own -keep marker, or that the probe does
+// not prove ended, stays too, and the test fails with its path.
 func removeIfEnded(t *testing.T, dir string) {
 	t.Helper()
 	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	k, err := readLabKeep(dir)
+	if err == nil && k.By == labEvidenceBy {
+		t.Logf("lab %s kept: failure evidence (%s); remove it with lazyrex-hub test -clean after its review", dir, k.Why)
+		return
+	}
+	since, _ := harnessStarts.Load(t)
+	at, terr := time.Parse(time.RFC3339, k.At)
+	if err != nil || k.By != "lazyrex-hub test -keep" || since == nil || terr != nil || at.Before(since.(time.Time)) {
+		t.Errorf("lab %s kept: it has no -keep marker of this test's run (%+v, %v)", dir, k, err)
 		return
 	}
 	procs, err := labProcs()

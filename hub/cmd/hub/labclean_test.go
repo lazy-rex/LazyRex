@@ -435,3 +435,26 @@ func TestProbeNoSocketRunningServerPid(t *testing.T) {
 		t.Errorf("no socket, an ended server pid: %v %s", st, why)
 	}
 }
+
+// Failure evidence (a KEEP marker for an unproved cleanup) stays: codex-21's regression
+// TestReviewerHarnessRetainsCleanupEvidence. The survivor can end before the harness test's
+// cleanup, and the probe then says absent. An ordinary -keep lab of this test's run is removed.
+func TestRemoveIfEndedKeepsEvidence(t *testing.T) {
+	root := labTestRoot(t)
+	ev := fakeLab(t, root, "lrt-980", 0)
+	if kept, probs := endLab(ev, false, "failed cleanup", []string{"cleanup: process survived"}); !kept || len(probs) == 0 {
+		t.Fatal("endLab did not keep the evidence")
+	}
+	removeIfEnded(t, ev)
+	if !exists(ev) {
+		t.Error("removeIfEnded removed failure evidence after the probe became absent")
+	}
+	harnessStarts.Store(t, time.Now().Add(-time.Second).UTC().Truncate(time.Second))
+	t.Cleanup(func() { harnessStarts.Delete(t) })
+	ordinary := fakeLab(t, root, "lrt-981", 0)
+	markLabKept(ordinary, "lazyrex-hub test -keep", "tests/a.lua: 1 passed, 0 failed, 0 problems")
+	removeIfEnded(t, ordinary)
+	if exists(ordinary) {
+		t.Error("removeIfEnded kept an ordinary -keep lab of this run")
+	}
+}
