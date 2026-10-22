@@ -2,14 +2,14 @@ package main
 
 // Prompt pushes (docs/hub.md "Prompt pushes"). Each registration of a plugin with the prompts grant
 // has one sender. The sender sends the CURRENT prompt state of one dirty agent at a time, with that
-// agent's rev, and has at most one call outstanding. A failed or unanswered call leaves the agent
-// dirty: the next call sends the state current then. So a lost reply never hides a close, and no
-// event history is kept.
+// agent's rev, and has at most one call outstanding. It takes the dirty agents in rev order, so a
+// plugin gets the close of a pane's old owner before the open of its new owner. A failed or
+// unanswered call leaves the agent dirty: the next call sends the state current then. So a lost
+// reply never hides a close, and no event history is kept.
 
 import (
 	"context"
 	"log"
-	"sort"
 	"time"
 )
 
@@ -132,16 +132,21 @@ func (h *Hub) promptSendLoop(s *promptSender) {
 				h.mu.Unlock()
 				return
 			}
-			var agents []string
+			// The pending agent whose last change is oldest (the lowest rev) goes first, so this
+			// consumer receives changes in rev order: a close of one owner before the open of the
+			// next (one prompt for each pane). A failed push keeps the agent pending and ends the
+			// pass, so no later change of this consumer passes it.
+			agent := ""
 			for a := range s.dirty {
-				agents = append(agents, a)
+				if agent == "" || h.prompts.agentRev[a] < h.prompts.agentRev[agent] ||
+					h.prompts.agentRev[a] == h.prompts.agentRev[agent] && a < agent {
+					agent = a
+				}
 			}
-			if len(agents) == 0 {
+			if agent == "" {
 				h.mu.Unlock()
 				break
 			}
-			sort.Strings(agents)
-			agent := agents[0]
 			delete(s.dirty, agent) // a change during the call marks it again
 			args := h.promptState(agent)
 			h.mu.Unlock()

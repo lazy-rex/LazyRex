@@ -266,3 +266,157 @@ func TestPromptSenderLifecycle(t *testing.T) {
 		t.Fatalf("senders %v remain", h.promptSenders)
 	}
 }
+
+// registerPlugin is registerTG for another plugin name: a second consumer with its own sender.
+func registerPlugin(h *Hub, name, instance, client string) *Plugin {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl := &Plugin{Name: name, entry: &configEntry{index: 2}, run: pluginRun{Prompts: true}}
+	h.plugins[name] = pl
+	pl.InstanceID, pl.ClientID = instance, client
+	h.startPromptSender(pl)
+	return pl
+}
+
+// ownerPushHub is promptHub with the legacy agent "zulu" (it sorts after every identity ID), whose
+// prompt is open and pushed to telegram.
+func ownerPushHub(t *testing.T, f *fakePush) (*Hub, *Agent) {
+	t.Helper()
+	h, a := promptHub(t)
+	a.ID = "zulu"
+	h.agents = map[string]*Agent{a.ID: a}
+	h.agentOrder = []string{a.ID}
+	f.install(t)
+	registerTG(h, "instance", "client")
+	t.Cleanup(func() {
+		h.mu.Lock()
+		for _, s := range h.promptSenders {
+			h.stopPromptSender(s)
+		}
+		h.mu.Unlock()
+	})
+	setStatus(h, a, statusRecord{State: "blocked", Msg: "Allow?"})
+	waitPush(t, "the legacy prompt", func() bool { return f.count() == 1 })
+	return h, a
+}
+
+// takeOver makes the identity id the pane's current owner: the alias of a's legacy ID, or a /clear
+// that supersedes the previous identity.
+func takeOver(h *Hub, a *Agent, id string, prev *Agent) *Agent {
+	c := &Agent{ID: id, Kind: "claude", IdState: "current", Session: a.Session, BlockID: a.BlockID, ChildPID: a.ChildPID, ChildStart: a.ChildStart}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c.setRecord(a.Record)
+	if h.idents == nil {
+		h.idents = map[string]*Agent{}
+	}
+	if prev != nil {
+		prev.IdState = "superseded"
+	}
+	h.idents[id] = c
+	h.aliases = map[string]string{a.ID: "claude:c1"}
+	h.syncPrompts()
+	return c
+}
+
+// pushes gives the calls of f for one client after call from: "open <agent>" or "close <agent>".
+func pushes(f *fakePush, from int, client string, clients []string) []string {
+	var out []string
+	for i := from; i < f.count(); i++ {
+		if clients != nil && clients[i] != client {
+			continue
+		}
+		c := f.call(i)
+		if c["prompt"] != nil {
+			out = append(out, "open "+c["agent"].(string))
+		} else {
+			out = append(out, "close "+c["agent"].(string))
+		}
+	}
+	return out
+}
+
+// The consumer receives each owner transfer as close, then open (the hub lead's sender rule: rev
+// order, not agent-ID order): legacy zulu -> claude:c1 (alias), then claude:c1 -> claude:b2 (a
+// /clear; b2 sorts before c1).
+func TestPromptPushOwnerTransferOrder(t *testing.T) {
+	f := &fakePush{}
+	h, a := ownerPushHub(t, f)
+	c1 := takeOver(h, a, "claude:c1", nil)
+	waitPush(t, "the alias transfer", func() bool { return f.count() >= 3 })
+	if got := pushes(f, 1, "", nil); len(got) != 2 || got[0] != "close zulu" || got[1] != "open claude:c1" {
+		t.Fatalf("alias transfer pushes %q, want close zulu, open claude:c1", got)
+	}
+	takeOver(h, a, "claude:b2", c1)
+	waitPush(t, "the /clear transfer", func() bool { return f.count() >= 5 })
+	if got := pushes(f, 3, "", nil); len(got) != 2 || got[0] != "close claude:c1" || got[1] != "open claude:b2" {
+		t.Fatalf("/clear transfer pushes %q, want close claude:c1, open claude:b2", got)
+	}
+}
+
+// The reply to the close is lost: the open waits until the close is delivered again, then both
+// arrive in order.
+func TestPromptPushLostCloseHoldsOpen(t *testing.T) {
+	f := &fakePush{}
+	f.answer = func(ctx context.Context, n int, client string) error {
+		if n == 2 {
+			return errors.New("disconnected: the reply was lost")
+		}
+		return nil
+	}
+	h, a := ownerPushHub(t, f)
+	takeOver(h, a, "claude:c1", nil)
+	waitPush(t, "the retry and the open", func() bool { return f.count() >= 4 })
+	if got := pushes(f, 1, "", nil); len(got) != 3 || got[0] != "close zulu" || got[1] != "close zulu" || got[2] != "open claude:c1" {
+		t.Fatalf("pushes %q, want close zulu (lost), close zulu, open claude:c1", got)
+	}
+}
+
+// A consumer whose close fails does not hold back another consumer: each registration has its
+// own sender and its own order.
+func TestPromptPushOtherConsumerNotHeld(t *testing.T) {
+	f := &fakePush{}
+	var clients []string
+	var mu sync.Mutex
+	failTG := make(chan struct{})
+	f.answer = func(ctx context.Context, n int, client string) error {
+		mu.Lock()
+		for len(clients) < n {
+			clients = append(clients, "")
+		}
+		clients[n-1] = client
+		mu.Unlock()
+		if client == "client" && n > 2 {
+			select {
+			case <-failTG:
+				return nil
+			default:
+				return errors.New("disconnected: the reply was lost")
+			}
+		}
+		return nil
+	}
+	h, a := ownerPushHub(t, f)
+	registerPlugin(h, "other", "instance-2", "client-2")
+	waitPush(t, "the other consumer's prompt", func() bool { return f.count() >= 2 })
+	base := f.count()
+	takeOver(h, a, "claude:c1", nil)
+	snapshot := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), clients...)
+	}
+	waitPush(t, "the other consumer's transfer", func() bool {
+		c := snapshot()
+		return len(c) == f.count() && strings.Join(pushes(f, base, "client-2", c), ",") == "close zulu,open claude:c1"
+	})
+	if got := pushes(f, base, "client", snapshot()); len(got) == 0 || strings.Contains(strings.Join(got, ","), "open claude:c1") {
+		t.Fatalf("telegram (close failing) pushes %q: the open must wait for the close", got)
+	}
+	close(failTG)
+	waitPush(t, "telegram's transfer", func() bool {
+		c := snapshot()
+		got := pushes(f, base, "client", c)
+		return len(c) == f.count() && len(got) > 0 && got[len(got)-1] == "open claude:c1"
+	})
+}
