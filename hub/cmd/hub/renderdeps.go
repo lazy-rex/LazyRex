@@ -59,7 +59,7 @@ type viewState struct {
 	inFlight bool
 	deps     *viewDeps       // nil: no declaration
 	depsErr  string          // the last malformed declaration (view_deps_invalid is emitted when it changes)
-	tables   map[string]bool // the tables that the last good, opted-in, tracked render read; nil: every SQL commit marks the view (renderreads.go)
+	tables   map[string]bool // the tables that the last good, tracked render read; nil: every SQL commit marks the view (renderreads.go)
 }
 
 // initLocked makes the maps of the render state (a test can build a viewSvc without them).
@@ -316,7 +316,7 @@ type renderCount struct {
 	Causes    map[string]int `json:"causes"`
 	// Declared is the declaration that the view has now, {prefixes, changes}; absent for none.
 	Declared any `json:"declared,omitempty"`
-	// SQLTracked: the view has a table set from an opted-in, tracked render (renderreads.go). No
+	// SQLTracked: the view has a table set from a tracked render (renderreads.go). No
 	// table names: they are the plugin's storage.
 	SQLTracked bool `json:"sql_tracked"`
 }

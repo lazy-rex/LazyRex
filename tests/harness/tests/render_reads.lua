@@ -1,4 +1,4 @@
--- SQL read tracking, opt-in for each render (docs/hub.md, "SQL read tracking"). The fixture route
+-- SQL read tracking, the default for each render (docs/hub.md, "SQL read tracking"). The fixture route
 -- /lazy/reads-<x> reads the row reads_spec(<x>) and counts the rows of reads_<x>; the row gives
 -- the refresh value of the reply and the mode of the read (fixture.lua).
 
@@ -46,9 +46,9 @@ local function open(name, refresh, mode)
   return v
 end
 
-test('an opted-in view renders again only after a write to a table that it read, or DDL', function()
-  local a = open('a', 'reads')
-  local b = open('b', 'reads')
+test('a view without refresh renders again only after a write to a table that it read, or DDL', function()
+  local a = open('a', nil)
+  local b = open('b', nil)
   settle()
   expect(count(a).sql_tracked, 'A tracked').to_be(true)
   expect(count(b).sql_tracked, 'B tracked').to_be(true)
@@ -70,14 +70,15 @@ test('an opted-in view renders again only after a write to a table that it read,
   expect(count(b).attempts, 'B after DDL').to_be(b0 + 1)
 end)
 
-test('without the opt-in, with an unknown value, or untracked: every SQL commit renders the view', function()
+test('with all, an unknown value (also reads and writes), or untracked: every SQL commit renders the view', function()
   local views = {
-    default = open('c', nil),
+    all = open('c', 'all'),
+    reads = open('j', 'reads'),
     writes = open('d', 'writes'),
     unknown = open('e', 'some-new-mode'),
-    untokened = open('f', 'reads', 'untokened'),
-    store = open('g', 'reads', 'store'),
-    refused = open('i', 'reads', 'refused'),
+    untokened = open('f', nil, 'untokened'),
+    store = open('g', nil, 'store'),
+    refused = open('i', nil, 'refused'),
   }
   settle()
   local before = {}
@@ -92,13 +93,13 @@ test('without the opt-in, with an unknown value, or untracked: every SQL commit 
   end
 end)
 
-test('a render that stops opting in returns to the default', function()
-  local h = open('h', 'reads')
+test('a render that sends all returns to broad refresh', function()
+  local h = open('h', nil)
   settle()
   expect(count(h).sql_tracked, 'H tracked').to_be(true)
-  sql("UPDATE reads_spec SET refresh = NULL WHERE name = 'h'") -- reads_spec is read: H renders again
+  sql("UPDATE reads_spec SET refresh = 'all' WHERE name = 'h'") -- reads_spec is read: H renders again
   settle()
-  expect(count(h).sql_tracked, 'H after the opt-in ends').to_be(false)
+  expect(count(h).sql_tracked, 'H after all').to_be(false)
   local h0 = count(h).attempts
   sql('INSERT INTO other VALUES (3)')
   settle()

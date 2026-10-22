@@ -284,74 +284,130 @@ func markAll(h *Hub) {
 	h.markView("p", "v2", causeTest)
 }
 
-// The opt-in: a render installs its tables only with refresh = "reads", success, tracked reads and
-// at least one table. One view's opt-in does not change another view, and a later render without
-// the opt-in clears it.
-func TestRenderOptIn(t *testing.T) {
+// The default: a render installs its tables when its reply has no refresh field (or null), it
+// succeeded, its reads stayed tracked and it read at least one table. "all" is the opt-out; any
+// other value (here "reads" and "writes" too) counts as "all" and is logged once for each
+// view. One view's setting does not change another view, and a later "all" render clears the set.
+func TestRenderDefault(t *testing.T) {
 	ta := map[string]bool{"a": true}
+	null := json.RawMessage("null")
 	for name, c := range map[string]struct {
 		step renderStep
 		want bool
 	}{
-		"reads":         {renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, true},
-		"no refresh":    {renderStep{reads: []map[string]bool{ta}}, false},
+		"no refresh":    {renderStep{reads: []map[string]bool{ta}}, true},
+		"null":          {renderStep{reads: []map[string]bool{ta}, refresh: null}, true},
+		"all":           {renderStep{reads: []map[string]bool{ta}, refresh: "all"}, false},
+		"reads":         {renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, false},
 		"writes":        {renderStep{reads: []map[string]bool{ta}, refresh: "writes"}, false},
 		"unknown value": {renderStep{reads: []map[string]bool{ta}, refresh: "some-new-mode"}, false},
 		"unknown type":  {renderStep{reads: []map[string]bool{ta}, refresh: map[string]any{"x": 1}}, false},
-		"empty set":     {renderStep{refresh: "reads"}, false},
-		"untracked":     {renderStep{reads: []map[string]bool{ta, nil}, refresh: "reads"}, false},
-		"failed read":   {renderStep{reads: []map[string]bool{ta}, failRead: true, refresh: "reads"}, false},
-		"failed":        {renderStep{reads: []map[string]bool{ta}, refresh: "reads", err: &rex.RexError{Code: "boom", Message: "test"}}, false},
-		"transient":     {renderStep{reads: []map[string]bool{ta}, refresh: "reads", err: &rex.RexError{Code: "timeout", Message: "test"}}, false},
+		"empty set":     {renderStep{}, false},
+		"untracked":     {renderStep{reads: []map[string]bool{ta, nil}}, false},
+		"failed read":   {renderStep{reads: []map[string]bool{ta}, failRead: true}, false},
+		"failed":        {renderStep{reads: []map[string]bool{ta}, err: &rex.RexError{Code: "boom", Message: "test"}}, false},
+		"transient":     {renderStep{reads: []map[string]bool{ta}, err: &rex.RexError{Code: "timeout", Message: "test"}}, false},
 	} {
 		h := renderHub(t)
 		if c.step.err != nil { // the Error tree is the snapshot: no view.changed
 			h.vs.snaps["v1"].tree = []byte(`{"back":null,"nodes":[{"id":"$error","retry_action":null,"text":"The plugin could not render this view.","type":"error"}],"title":"Error"}`)
 		}
 		markAll(h)
-		renderWith(t, h, map[string]renderStep{"v1": c.step, "v2": {reads: []map[string]bool{ta}}})
+		renderWith(t, h, map[string]renderStep{"v1": c.step, "v2": {reads: []map[string]bool{ta}, refresh: "all"}})
 		if got := tracked(h, "v1"); got != c.want {
 			t.Errorf("%s: v1 tracked %v", name, got)
 		}
 		if tracked(h, "v2") {
-			t.Errorf("%s: v2 did not opt in, but has a table set", name)
+			t.Errorf("%s: v2 sent all, but has a table set", name)
 		}
 	}
 
-	// Opt in, then a render without refresh: the filter is gone.
+	// A tracked view, then an "all" render: the filter is gone.
 	h := renderHub(t)
 	markAll(h)
-	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: "reads"}})
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}}})
 	h.markSQL("p", []string{"b"})
 	if st := h.vs.views["p"]["v1"]; st.dirty != 0 {
-		t.Fatalf("an opted-in view that read a: a commit to b marks it: %v", st.dirty)
+		t.Fatalf("a tracked view that read a: a commit to b marks it: %v", st.dirty)
 	}
-	h.markView("p", "v1", causeTest)
-	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}}})
+	h.markSQL("p", []string{"a"})
+	if h.vs.views["p"]["v1"].dirty&causeCommit == 0 {
+		t.Fatal("a tracked view that read a: a commit to a does not mark it")
+	}
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: "all"}})
 	if tracked(h, "v1") {
-		t.Fatal("a render without refresh keeps the old filter")
+		t.Fatal("an all render keeps the old filter")
 	}
 	h.markSQL("p", []string{"b"})
 	if h.vs.views["p"]["v1"].dirty&causeCommit == 0 {
-		t.Fatal("after the opt-in ends, a commit to b does not mark the view")
+		t.Fatal("after an all render, a commit to b does not mark the view")
+	}
+
+	// An unknown value is logged once for each view.
+	h = renderHub(t)
+	for i := 0; i < 2; i++ {
+		markAll(h)
+		renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: "reads"}, "v2": {reads: []map[string]bool{ta}, refresh: "reads"}})
+	}
+	h.vs.mu.Lock()
+	n := len(h.vs.logged)
+	h.vs.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("%d log keys for one unknown value in two views rendered twice; want 2", n)
+	}
+}
+
+// Read tracking filters only the SQL-commit trigger: a tracked view still renders on a
+// deps.changes name that it declared, and on an invalidate.
+func TestRenderTrackedOtherTriggers(t *testing.T) {
+	ta := map[string]bool{"a": true}
+	h := renderHub(t)
+	markAll(h)
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}}})
+	if !tracked(h, "v1") {
+		t.Fatal("v1 read a without refresh: no table set")
+	}
+	h.vs.mu.Lock()
+	st := h.vs.views["p"]["v1"]
+	st.deps = &viewDeps{prefixes: []string{}, changes: []string{"workers"}}
+	h.vs.mu.Unlock()
+	dirty := func() renderCause {
+		h.vs.mu.Lock()
+		defer h.vs.mu.Unlock()
+		d := st.dirty
+		st.dirty = 0
+		return d
+	}
+	dirty()
+	h.markSQL("p", []string{"b"})
+	if d := dirty(); d != 0 {
+		t.Fatalf("a commit to b marks the tracked view: %v", d)
+	}
+	h.markChanged("p", "workers")
+	if d := dirty(); d&causeChanged == 0 {
+		t.Fatalf("changed workers does not mark the tracked view: %v", d)
+	}
+	h.markView("p", "v1", causeInvalidate)
+	if d := dirty(); d&causeInvalidate == 0 {
+		t.Fatalf("an invalidate does not mark the tracked view: %v", d)
 	}
 }
 
 // A commit while a render is open marks the view, also when its table is not in the set that
 // the render then installs: the view renders again after it. A new registration during the
 // render installs nothing.
-func TestRenderOptInRaces(t *testing.T) {
+func TestRenderTrackedRaces(t *testing.T) {
 	ta := map[string]bool{"a": true}
 	h := renderHub(t)
 	markAll(h)
-	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: "reads"}})
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}}})
 	if !tracked(h, "v1") {
-		t.Fatal("v1 opted in and read a: no table set")
+		t.Fatal("v1 read a: no table set")
 	}
 	// The second render has the set {a} before it starts; the commit to b lands during it.
 	h.markView("p", "v1", causeTest)
 	renderWith(t, h, map[string]renderStep{
-		"v1": {reads: []map[string]bool{ta}, refresh: "reads", during: func() { h.markSQL("p", []string{"b"}) }},
+		"v1": {reads: []map[string]bool{ta}, during: func() { h.markSQL("p", []string{"b"}) }},
 	})
 	h.vs.mu.Lock()
 	st := h.vs.views["p"]["v1"]
@@ -361,13 +417,13 @@ func TestRenderOptInRaces(t *testing.T) {
 		t.Fatal("a commit to b during the render of v1 is lost")
 	}
 	if !tracked(h, "v1") {
-		t.Fatal("v1 opted in and read a: no table set")
+		t.Fatal("v1 read a: no table set")
 	}
 
 	h = renderHub(t)
 	markAll(h)
 	renderWith(t, h, map[string]renderStep{
-		"v1": {reads: []map[string]bool{ta}, refresh: "reads", during: func() { h.clearDeclarations("p") }},
+		"v1": {reads: []map[string]bool{ta}, during: func() { h.clearDeclarations("p") }},
 	})
 	if tracked(h, "v1") {
 		t.Fatal("a render from before a new registration installed its tables")

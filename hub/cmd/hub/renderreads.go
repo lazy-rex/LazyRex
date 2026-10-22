@@ -14,10 +14,11 @@ package main
 // untokened query, a closed or unknown ID, hub.store.get, any other hub action), a query that
 // failed with an error other than conflict, or a read of a sqlite_ table other than the schema.
 //
-// Selective refresh is opt-in for each render: the view.render reply has refresh = "reads". The
-// view then gets the render's tables only when the render succeeded, stayed tracked and read at
-// least one table. In every other case the view has no table set, and every SQL commit of the
-// plugin marks it (the behavior before read tracking).
+// Selective refresh is the default. A render is tracked unless its
+// view.render reply has a refresh field: "all" is the opt-out (also the SDK's answer for a render
+// with a failed hub call), and any other value counts as "all". The view gets the render's tables
+// only when the render succeeded, stayed tracked and read at least one table. In every other case
+// the view has no table set, and every SQL commit of the plugin marks it.
 
 import (
 	"crypto/rand"
@@ -123,31 +124,30 @@ func (h *Hub) renderRead(plugin, client, id string, reads map[string]bool, ok bo
 }
 
 // renderTables returns the table set that a good render installs into its view: the render's
-// tables when the reply opted in (refresh = "reads"), the render stayed tracked, and it read a
-// table. Else nil: every SQL commit of the plugin marks the view.
+// tables when the render is tracked (refreshTracked), stayed tracked, and read a table. Else nil:
+// every SQL commit of the plugin marks the view.
 func (h *Hub) renderTables(plugin string, r *openRender, refresh json.RawMessage) map[string]bool {
-	if !h.refreshReads(plugin, refresh) || r == nil || r.untracked || len(r.tables) == 0 {
+	if r == nil || r.untracked || len(r.tables) == 0 || !h.refreshTracked(plugin, r, refresh) {
 		return nil
 	}
 	return r.tables
 }
 
-// refreshReads reads the refresh field of a view.render reply: true for "reads". No field, null
-// and "writes" are false. Any other value is false too, and the hub logs it once for each plugin
-// and value: a newer SDK may send a value that this hub does not know.
-func (h *Hub) refreshReads(plugin string, raw json.RawMessage) bool {
+// refreshTracked reads the refresh field of a view.render reply: no field (or null) is tracked.
+// "all" is broad. Any other value is broad too, and the hub logs it once for each view: a plugin
+// may send a value that this hub does not know.
+func (h *Hub) refreshTracked(plugin string, r *openRender, raw json.RawMessage) bool {
 	if len(raw) == 0 || string(raw) == "null" {
-		return false
+		return true
 	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil && (s == "reads" || s == "writes") {
-		return s == "reads"
+	if s := ""; json.Unmarshal(raw, &s) == nil && s == "all" {
+		return false
 	}
 	v := string(raw)
 	if len(v) > 64 {
 		v = v[:64] + "..."
 	}
-	key := plugin + "\x00" + v
+	key := plugin + "\x00" + r.viewID + "\x00" + v
 	h.vs.mu.Lock()
 	if h.vs.logged == nil {
 		h.vs.logged = map[string]bool{}
@@ -158,7 +158,7 @@ func (h *Hub) refreshReads(plugin string, raw json.RawMessage) bool {
 	}
 	h.vs.mu.Unlock()
 	if logIt {
-		log.Printf("views %s: unknown refresh value %s in a view.render reply: every SQL commit renders the view", plugin, v)
+		log.Printf("views %s: view %s: unknown refresh %s; using all", plugin, r.viewID, v)
 	}
 	return false
 }

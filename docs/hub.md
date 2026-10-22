@@ -152,27 +152,25 @@ returns, for any outcome. Then it is closed, and the hub never makes it again.
 - The hub records the tables that each tokened query of the render reads (SQL read tracking,
   below).
 
-### SQL read tracking (opt-in for each render)
+### SQL read tracking (the default for each render)
 
-A `view.render` reply can add `"refresh"` beside `tree` (renderreads.go). It is not part of the
-tree, and the renderer never sees it.
+Read tracking is the default. A `view.render` reply can add `"refresh"` beside `tree`
+(renderreads.go). It is not part of the tree, and the renderer never sees it.
 
-- Absent, null or `"writes"`: every SQL commit of the plugin renders the view again (the default,
-  and the behavior before read tracking).
-- `"reads"`: this render opts in. The hub gives the view the tables that the render read, if the
-  render succeeded, stayed tracked, and read at least one table. Then a SQL commit renders the
-  view again only when it changed one of those tables, or the schema. In every other case the
-  view keeps the default.
-- `"reads"` is the plugin's statement that every hub call of that render reached the hub and
-  returned without error. A plugin that cannot say so (a call timed out, disconnected, or failed,
-  also when the plugin caught the error) sends no `refresh`. The SDK omits refresh when a hub call
-  failed during the render. The hub untracks the render for each `hub.sql.query` error that
-  reaches it; it cannot see a call that did not reach it.
-- Any other value counts as absent. The hub logs it once for each plugin and value (at most 64
-  lines in all), and the render does not fail: a newer SDK can send a value that an older hub does
-  not know.
-- Each render states it again. The hub keeps no opt-in state: a new registration, a hub restart
-  or a plugin rollback returns the view to the default.
+- Absent or null: the render is tracked. The hub gives the view the tables that the render read,
+  if the render succeeded, stayed tracked, and read at least one table. Then a SQL commit renders
+  the view again only when it changed one of those tables, or the schema.
+- `"all"`: the opt-out. Every SQL commit of the plugin renders the view again. A view sends it
+  when it shows state that a SQL commit does not change and that it does not invalidate. The SDK sends it for every render in which a hub call failed (also a
+  caught error, or a call that never reached the hub): the hub cannot see such a call, so absence
+  would track an incomplete read set.
+- Any other value counts as `"all"`. The hub logs it once for each view (at most 64 lines in
+  all): "view <id>: unknown refresh <value>; using all".
+- A render that read no table, an untracked render (another hub call than a tokened
+  `hub.sql.query`, a failed query; docs/sql.md section 9), and a failed render get no table set:
+  every SQL commit renders the view again.
+- Each render states it again. The hub keeps no state between renders: a new registration or a
+  hub restart drops the table sets, and the next render installs its own.
 
 A render is tracked when the hub knows each table that it read. It is untracked when, while it is
 open, the plugin makes any hub call that is not a `hub.sql.query` with the open render ID of the

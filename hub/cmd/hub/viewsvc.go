@@ -51,7 +51,7 @@ type viewSvc struct {
 	seen    map[string]map[string]string     // plugin -> route -> reason the user looked at it, not yet sent
 	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
 	renders map[string]*openRender           // render ID -> a view.render call that has not returned (renderreads.go)
-	logged  map[string]bool                  // plugin + "\x00" + value: an unknown refresh value already logged (renderreads.go)
+	logged  map[string]bool                  // plugin + "\x00" + view + "\x00" + value: an unknown refresh value already logged (renderreads.go)
 }
 
 // historyFetch is one view.history call that runs outside the hub's request queue.
@@ -657,7 +657,7 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		var out struct {
 			Tree    map[string]any  `json:"tree"`
 			Deps    json.RawMessage `json:"deps"`
-			Refresh json.RawMessage `json:"refresh"` // "reads": this render opts in to SQL read tracking (renderreads.go)
+			Refresh json.RawMessage `json:"refresh"` // absent: this render is tracked; "all": broad (renderreads.go)
 		}
 		gen := h.testRenderStart(t.id) // test mode: the requested render that this one covers
 		h.testRenderAttempt(plugin, t.id, t.route, causes)

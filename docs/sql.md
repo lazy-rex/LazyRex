@@ -173,12 +173,18 @@ authorized at CREATE.
   null), and `hub.sql.query` with `tx` and `render`, fail with `refused` ("a render cannot write").
   The refusal comes before the hub opens the database, so it changes nothing, and an open
   transaction stays usable.
-- Built: read tracking, opt-in for each render (docs/hub.md, "SQL read tracking"). A query with an
-  open render ID adds the tables that it read to the render: the authorizer READ actions, also
-  through SQL views, joins, subqueries, CTEs and `count(*)` (observed with modernc.org/sqlite
+- Built: read tracking, the default for each render (docs/hub.md, "SQL read tracking"). A query
+  with an open render ID adds the tables that it read to the render: the authorizer READ actions,
+  also through SQL views, joins, subqueries, CTEs and `count(*)` (observed with modernc.org/sqlite
   v1.61.0, renderreads_test.go). A `conflict` (`expect_rows`) adds its reads: the statement ran
-  fully. Any other error, also one before the statement runs, makes the render untracked. A view that opted in renders again only after a commit that changed a table that it read
-  (the write candidates when `total_changes()` moved), or after DDL.
+  fully. Any other error, also one before the statement runs, makes the render untracked. A
+  tracked view (no `refresh` field in its reply) renders again only after a commit that changed a
+  table that it read (the write candidates when `total_changes()` moved), or after DDL.
+- A render that read no table gets no table set: every commit renders it, also with read tracking.
+  A plugin audit looks for the other case: a render that reads tables with tokened queries and
+  also shows state outside SQL. Such a view calls `hub.ui.invalidate` (`app.refresh()`) when that
+  state changes, or replies `refresh = "all"`.
+- The opt-out is `refresh = "all"`. The SDK sends it for a render in which a hub call failed.
 
 ## 11. Rollback: hub.admin.sql_return (built)
 
