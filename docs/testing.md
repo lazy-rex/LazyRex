@@ -456,7 +456,10 @@ and action). It does not change behavior.
 ## Test mode in the hub
 
 `-test` declares the `hub.test.*` actions and refuses them at dispatch without it. The hub refuses
-`-test` with `-real-server`, and it refuses `-test` without a positive lab proof:
+`-test` with `-real-server`, and it refuses `-test` without a positive lab proof. In test mode the
+hub asks no Rex server whether the config names the real one: the proof is enough, so a test run
+never reaches the real server. The pane helpers (`testagent`, `testview`) check the same proof for
+their `REX_SERVER`. The proof:
 
 - the config server is `unix://<dir>/rex.sock`;
 - `<dir>/lab.json` belongs to the current user and names that socket and a server pid;
@@ -466,6 +469,22 @@ and action). It does not change behavior.
 `lazyrex-hub test` and `lab/server.sh` both write `lab.json`. So a hub started by hand with
 `-test` on a `lab/server.sh` lab passes the proof. `-test` also needs `test_roots` in the config
 (see "Isolation"); without `-test`, the hub refuses `test_roots`.
+
+Without `-test`, the hub (and `lazyrex-hub status` and `stop`) asks the rex CLI on PATH for its
+default server (`rex --autostart=false server status --json`, without `REX_SERVER` and `-S`,
+`hub/cmd/hub/realserver.go`). The config names the real server if:
+
+- it is the macOS path of the default server (no question to Rex);
+- it is the default endpoint, after the path is cleaned, unescaped and its links resolved;
+- it answers with the `instance_id` of the default server;
+- or the answer is uncertain: the default server answers with no `instance_id`, the default query
+  fails with an error other than "rex server is not running", or no default server runs and the
+  config server does not answer.
+
+A config server that does not answer while the default server answers at another path is not the
+real server. On Linux the real server is at another path than on macOS; before this check, the hub
+missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `server status` exits
+1 with "Error: rex server is not running".
 
 ## Harness self-tests
 

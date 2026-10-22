@@ -46,8 +46,11 @@ type helperConn struct {
 
 func helperDial(ctx context.Context, label string, actions []map[string]any) (*helperConn, error) {
 	server := os.Getenv("REX_SERVER")
-	if server == "" || isRealServer(server) {
+	if server == "" {
 		return nil, fmt.Errorf("%s: REX_SERVER must name a lab server, got %q", label, server)
+	}
+	if err := checkLabProof(server); err != nil {
+		return nil, fmt.Errorf("%s: REX_SERVER must name a lab server: %v", label, err)
 	}
 	socket, err := rex.SocketPath(server)
 	if err != nil {

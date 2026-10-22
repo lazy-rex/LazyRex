@@ -203,11 +203,8 @@ type Hub struct {
 	changedQ changedQueue // hub.changed deliveries in flight (changed.go)
 }
 
-func isRealServer(s string) bool {
-	return strings.Contains(s, "Application%20Support/rex/server.sock") || strings.Contains(s, "Application Support/rex/server.sock")
-}
 
-func loadConfig(path string, realServer bool) (Config, error) {
+func loadConfig(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -225,14 +222,6 @@ func loadConfig(path string, realServer bool) (Config, error) {
 	json.Unmarshal(b, &keys)
 	if _, ok := keys["session"]; ok {
 		return c, fmt.Errorf("%s: remove \"session\": the hub uses its own LazyRex session", path)
-	}
-	// Hard rule (AGENTS.md): never experiment on the user's real Rex server. The one approved
-	// exception (the official hub run) must say so with -real-server.
-	if isRealServer(c.Server) != realServer {
-		if realServer {
-			return c, errors.New("-real-server is set, but the config does not name the real Rex server")
-		}
-		return c, errors.New("refusing the user's real Rex server without -real-server; use a lab server (spikes/lab/server.sh)")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -336,8 +325,11 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	cfg, err := loadConfig(*configPath, *realServer)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := checkServer(cfg.Server, *realServer, *testMode); err != nil {
 		log.Fatal(err)
 	}
 	cfg.Real = *realServer

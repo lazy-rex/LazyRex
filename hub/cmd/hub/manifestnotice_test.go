@@ -49,7 +49,7 @@ func TestManifestNotice(t *testing.T) {
 		}
 	}
 	// The hub reads the notices from the manifests.
-	cfg, err := loadConfig(path, false)
+	cfg, err := loadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}

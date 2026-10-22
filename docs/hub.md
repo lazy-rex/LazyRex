@@ -574,7 +574,7 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 
 ## Stop and status
 
-`lazyrex-hub status -config <cfg> [-real-server]` and `lazyrex-hub stop -config <cfg> [-real-server]` (`hub/cmd/hub/restartctl.go`). Both read the config with `loadConfig`, so the real Rex server needs `-real-server`, as for the hub. Then they look at two things:
+`lazyrex-hub status -config <cfg> [-real-server]` and `lazyrex-hub stop -config <cfg> [-real-server]` (`hub/cmd/hub/restartctl.go`). Both read the config and apply the real-server check (`checkServer`), so the real Rex server needs `-real-server`, as for the hub. Then they look at two things:
 
 - The hub of this config: a connected Rex client labeled `lazyrex-hub` whose `hub.info` state equals the config's canonical state. A hub of another state on the same server is reported as another hub, never stopped.
 - The restart wrapper of that state: the holder of the lock on `<state>/restart.lock` (fcntl F_GETLK; a reader never creates the file and never takes the lock), and `<state>/restart.json`. The status file counts only when its pid is the holder and that pid has the start time in the file.

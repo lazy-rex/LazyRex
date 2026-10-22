@@ -99,7 +99,7 @@ func TestManagedEntries(t *testing.T) {
 	p := filepath.Join(dir, "cfg", "hub.json")
 	os.WriteFile(p, []byte(body), 0o600)
 	plugDir(t, dir, "cfg/a", `{"name":"a","main":"a.lua"}`, "a.lua") // config source "a" is relative to cfg/
-	c, err := loadConfig(p, false)
+	c, err := loadConfig(p)
 	if err != nil || c.managedErr != nil {
 		t.Fatal(err, c.managedErr)
 	}
@@ -135,7 +135,7 @@ func TestManagedEntries(t *testing.T) {
 	// The same directory in both files: the managed entry is refused, the config entry resolves.
 	os.WriteFile(filepath.Join(dir, "conf", "managed.json"), []byte(`{"plugins":[
 		{"id":"same","source":"`+filepath.Join(dir, "cfg", "a")+`/"}]}`), 0o600)
-	c, err = loadConfig(p, false)
+	c, err = loadConfig(p)
 	if err != nil {
 		t.Fatal(err)
 	}

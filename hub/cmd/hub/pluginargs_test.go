@@ -17,7 +17,7 @@ func TestPluginArgsConfig(t *testing.T) {
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		return loadConfig(p, false)
+		return loadConfig(p)
 	}
 	c, err := write(`{"worktrees_root":"/tmp/x"}`)
 	if err != nil || len(c.entries) != 1 || c.entries[0].Args["worktrees_root"] != "/tmp/x" {

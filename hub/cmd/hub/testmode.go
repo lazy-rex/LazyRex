@@ -109,7 +109,7 @@ func newTestState() *testState {
 // lab/server.sh) owns: <dir>/rex.sock, <dir>/lab.json written by that owner, and a live server
 // process whose argv names that socket and <dir>/state.
 func checkLabProof(server string) error {
-	if isRealServer(server) {
+	if macRealServer(server) {
 		return errors.New("-test refuses the real Rex server")
 	}
 	socket, err := rexSocket(server)

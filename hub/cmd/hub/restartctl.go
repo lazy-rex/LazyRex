@@ -67,7 +67,10 @@ func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "usage: lazyrex-hub %s -config <cfg> [-real-server]\n", cmd)
 		return ctlUsage
 	}
-	cfg, err := loadConfig(*cfgPath, *realServer)
+	cfg, err := loadConfig(*cfgPath)
+	if err == nil {
+		err = checkServer(cfg.Server, *realServer, false)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return ctlUsage

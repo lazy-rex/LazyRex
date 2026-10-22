@@ -17,7 +17,7 @@ func noLock(cfgPath string) lockSnapshot {
 // load loads the config at p, with its entries.
 func (env *cmdEnv) load(p string) Config {
 	env.t.Helper()
-	c, err := loadConfig(p, false)
+	c, err := loadConfig(p)
 	if err != nil {
 		env.t.Fatal(err)
 	}

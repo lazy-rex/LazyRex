@@ -18,7 +18,7 @@ func writeConfig(t *testing.T, dir, plugins string) (Config, error) {
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return loadConfig(p, false)
+	return loadConfig(p)
 }
 
 // A malformed plugins field stops hub start (docs/plugin-sources.md, section 1).
