@@ -29,19 +29,46 @@ import (
 // gitErrLimit bounds the git error output that a text quotes.
 const gitErrLimit = 4 << 10
 
-// runGit runs git in dir. Git uses the user's credential helper and url.insteadOf, and never asks
-// for a password (GIT_TERMINAL_PROMPT=0). The error quotes git's standard error.
-func runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
+// gitRunner runs one git command in dir. With out nil, it collects git's stdout and returns it.
+// With out set, it streams git's stdout into out, which reads to EOF, and returns no bytes. The
+// error is out's own error first, then git's standard error (at most gitErrLimit), else the exit
+// error. Every git call of the commands and of the plugin manager goes through a runner: execGit
+// for the commands, the fetch child for the manager.
+type gitRunner func(ctx context.Context, dir string, out func(io.Reader) error, args ...string) ([]byte, error)
+
+// execGit is the runner of the commands: git as a child of this process. Git uses the user's
+// credential helper and url.insteadOf, and never asks for a password (GIT_TERMINAL_PROMPT=0).
+func execGit(ctx context.Context, dir string, out func(io.Reader) error, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	var out bytes.Buffer
 	stderr := &limitedBuffer{max: gitErrLimit}
-	cmd.Stdout, cmd.Stderr = &out, stderr
-	if err := cmd.Run(); err != nil {
-		return nil, gitError(err, stderr)
+	cmd.Stderr = stderr
+	if out == nil {
+		var b bytes.Buffer
+		cmd.Stdout = &b
+		if err := cmd.Run(); err != nil {
+			return nil, gitError(err, stderr)
+		}
+		return b.Bytes(), nil
 	}
-	return out.Bytes(), nil
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	xerr := out(pipe)
+	io.Copy(io.Discard, pipe)
+	werr := cmd.Wait()
+	if xerr != nil {
+		return nil, xerr
+	}
+	if werr != nil {
+		return nil, gitError(werr, stderr)
+	}
+	return nil, nil
 }
 
 // gitError is the error of a git command: its trimmed standard error, else the exit error.
@@ -73,7 +100,7 @@ func (b *limitedBuffer) String() string { return b.buf.String() }
 // checkRef checks the form of a ref (section 5, "Ref forms"): 40 lowercase hex (a commit),
 // refs/heads/<name>, refs/tags/<name>, or a name. A short hex is a name. git check-ref-format
 // checks the full ref; a name is checked as refs/heads/<name>.
-func checkRef(ctx context.Context, dir, ref string) error {
+func checkRef(ctx context.Context, git gitRunner, dir, ref string) error {
 	invalid := fmt.Errorf("%s is not a valid ref", ref)
 	full := ref
 	switch {
@@ -85,7 +112,7 @@ func checkRef(ctx context.Context, dir, ref string) error {
 	default:
 		full = "refs/heads/" + ref
 	}
-	if _, err := runGit(ctx, dir, "check-ref-format", full); err != nil {
+	if _, err := git(ctx, dir, nil, "check-ref-format", full); err != nil {
 		return invalid
 	}
 	return nil
@@ -100,7 +127,7 @@ type resolved struct {
 // equals one of the asked refs count; ls-remote also gives suffix matches such as
 // refs/heads/team/<name>, which are dropped. A name that is both a branch and a tag is refused. A
 // tag resolves to its peeled commit when it is annotated. A commit ID is not resolved.
-func resolveRef(ctx context.Context, dir, url, ref string) (resolved, error) {
+func resolveRef(ctx context.Context, git gitRunner, dir, url, ref string) (resolved, error) {
 	if commitID.MatchString(ref) {
 		return resolved{Commit: ref, Kind: "commit", FetchRef: ref}, nil
 	}
@@ -120,7 +147,7 @@ func resolveRef(ctx context.Context, dir, url, ref string) (resolved, error) {
 	if tag != "" {
 		args = append(args, tag+"^{}")
 	}
-	out, err := runGit(ctx, dir, args...)
+	out, err := git(ctx, dir, nil, args...)
 	if err != nil {
 		return resolved{}, err
 	}
@@ -160,9 +187,9 @@ type taggedRef struct {
 // resolveTag resolves the tag name at url with one ls-remote: refs/tags/<name>, its peeled line,
 // and refs/heads/<name>. Only the exact tag ref counts, so a name that only a branch has is not a
 // tag. An annotated tag resolves to its peeled commit.
-func resolveTag(ctx context.Context, dir, url, name string) (taggedRef, error) {
+func resolveTag(ctx context.Context, git gitRunner, dir, url, name string) (taggedRef, error) {
 	tag, head := "refs/tags/"+name, "refs/heads/"+name
-	out, err := runGit(ctx, dir, "ls-remote", "--", url, tag, tag+"^{}", head)
+	out, err := git(ctx, dir, nil, "ls-remote", "--", url, tag, tag+"^{}", head)
 	if err != nil {
 		return taggedRef{}, err
 	}
@@ -206,20 +233,20 @@ type fetchedTree struct {
 // set, names the plugin directory in it. fetchRef is the exact ref to fetch (a branch or tag ref),
 // or the commit ID itself. byID tells that fetchRef is a commit ID: a failed fetch is then an
 // unavailable commit. Nothing is published when a check fails.
-func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, subdir, fetchRef, commit string, byID bool) (*fetchedTree, error) {
+func fetchCommit(ctx context.Context, git gitRunner, stateDir, tmp, url, owner, repo, subdir, fetchRef, commit string, byID bool) (*fetchedTree, error) {
 	gitDir := filepath.Join(tmp, "git")
-	if _, err := runGit(ctx, tmp, "init", "-q", "--bare", gitDir); err != nil {
+	if _, err := git(ctx, tmp, nil, "init", "-q", "--bare", gitDir); err != nil {
 		return nil, err
 	}
-	if _, err := runGit(ctx, gitDir, "fetch", "-q", "--depth", "1", "--", url, fetchRef); err != nil {
+	if _, err := git(ctx, gitDir, nil, "fetch", "-q", "--depth", "1", "--", url, fetchRef); err != nil {
 		if byID {
 			return nil, &errUnavailable{commit, err}
 		}
 		return nil, err
 	}
-	got, err := runGit(ctx, gitDir, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
+	got, err := git(ctx, gitDir, nil, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
 	if err != nil {
-		if t, terr := runGit(ctx, gitDir, "cat-file", "-t", "FETCH_HEAD"); terr == nil {
+		if t, terr := git(ctx, gitDir, nil, "cat-file", "-t", "FETCH_HEAD"); terr == nil {
 			return nil, fmt.Errorf("%s is a %s, not a commit", commit, strings.TrimSpace(string(t)))
 		}
 		return nil, err
@@ -227,10 +254,10 @@ func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, subdir, f
 	if strings.TrimSpace(string(got)) != commit {
 		return nil, fmt.Errorf("ref %s moved during the fetch; run the command again", fetchRef)
 	}
-	if t, err := runGit(ctx, gitDir, "cat-file", "-t", commit); err != nil || strings.TrimSpace(string(t)) != "commit" {
+	if t, err := git(ctx, gitDir, nil, "cat-file", "-t", commit); err != nil || strings.TrimSpace(string(t)) != "commit" {
 		return nil, fmt.Errorf("%s is not a commit", commit)
 	}
-	tree, err := lsTree(ctx, gitDir, commit)
+	tree, err := lsTree(ctx, git, gitDir, commit)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +270,7 @@ func fetchCommit(ctx context.Context, stateDir, tmp, url, owner, repo, subdir, f
 	if err != nil {
 		return nil, err
 	}
-	files, err := archiveInto(ctx, gitDir, commit, tree, stage.Dir)
+	files, err := archiveInto(ctx, git, gitDir, commit, tree, stage.Dir)
 	if err != nil {
 		stage.discard()
 		return nil, err
@@ -269,8 +296,8 @@ type treeFile struct {
 
 // lsTree lists the files of commit (section 5, step 4). Mode 100644 is a file and 100755 an
 // executable file. A symlink (120000), a submodule (160000) and any other mode are refused.
-func lsTree(ctx context.Context, gitDir, commit string) (map[string]treeFile, error) {
-	out, err := runGit(ctx, gitDir, "ls-tree", "-r", "-z", "--full-tree", commit)
+func lsTree(ctx context.Context, git gitRunner, gitDir, commit string) (map[string]treeFile, error) {
+	out, err := git(ctx, gitDir, nil, "ls-tree", "-r", "-z", "--full-tree", commit)
 	if err != nil {
 		return nil, err
 	}
@@ -316,28 +343,26 @@ func checkTreePath(p string) error {
 	return nil
 }
 
-// archiveInto runs git archive and extracts the archive into dir (section 5, step 5).
-func archiveInto(ctx context.Context, gitDir, commit string, tree map[string]treeFile, dir string) ([]digestFile, error) {
-	cmd := exec.CommandContext(ctx, "git", "archive", "--format=tar", commit)
-	cmd.Dir = gitDir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	stderr := &limitedBuffer{max: gitErrLimit}
-	cmd.Stderr = stderr
-	out, err := cmd.StdoutPipe()
+// archiveRead is a test hook: it wraps the archive stream before extractTar reads it. nil in
+// production.
+var archiveRead func(io.Reader) io.Reader
+
+// archiveInto runs git archive and extracts the archive into dir (section 5, step 5). The runner
+// streams the archive into extractTar. files is read only after the runner returns without an
+// error: then the extraction has ended (a runner that returns while it still runs returns an
+// error).
+func archiveInto(ctx context.Context, git gitRunner, gitDir, commit string, tree map[string]treeFile, dir string) ([]digestFile, error) {
+	var files []digestFile
+	_, err := git(ctx, gitDir, func(r io.Reader) error {
+		if archiveRead != nil {
+			r = archiveRead(r)
+		}
+		var xerr error
+		files, xerr = extractTar(bufio.NewReader(r), commit, tree, dir)
+		return xerr
+	}, "archive", "--format=tar", commit)
 	if err != nil {
 		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	files, xerr := extractTar(bufio.NewReader(out), commit, tree, dir)
-	io.Copy(io.Discard, out)
-	werr := cmd.Wait()
-	if xerr != nil {
-		return nil, xerr
-	}
-	if werr != nil {
-		return nil, gitError(werr, stderr)
 	}
 	return files, nil
 }
