@@ -195,3 +195,91 @@ func (h *Hub) admitUnderHold(ctx context.Context, insert func(c *sql.Conn) error
 		return insert(c)
 	})
 }
+
+// attemptResolve answers hub.plugins.attempt.resolve {op_id, attempt, outcome, note} (operator
+// only, never on the agent face; lead-b8-add2 C and its audit). It records the operator's decision
+// about an unresolved attempt after a look at Rex. It is attribution, not proof: resolved_by is a
+// separate field, written once, and the attempt's outcome and proof stay as they are. It never
+// retries a mutation.
+//   - outcome: applied or not_applied; note: 1 to 1000 bytes, kept as written.
+//   - The same outcome and note again returns the same record. Another outcome or note for a
+//     resolved attempt, a proved attempt, or an open attempt (no outcome yet: its call or its
+//     observation can still end it) is conflict, and nothing changes.
+//   - An unknown op or attempt fails, and nothing changes.
+func (h *Hub) attemptResolve(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+	var op, attempt, outcome, note string
+	for k, raw := range args {
+		var dst *string
+		switch k {
+		case "op_id":
+			dst = &op
+		case "attempt":
+			dst = &attempt
+		case "outcome":
+			dst = &outcome
+		case "note":
+			dst = &note
+		default:
+			return nil, refuse("invalid_input", "unknown field %s", k)
+		}
+		if json.Unmarshal(raw, dst) != nil {
+			return nil, refuse("invalid_input", "%s must be a string", k)
+		}
+	}
+	switch {
+	case op == "" || attempt == "":
+		return nil, refuse("invalid_input", "op_id and attempt are required")
+	case outcome != "applied" && outcome != "not_applied":
+		return nil, refuse("invalid_input", "outcome must be applied or not_applied")
+	case note == "" || len(note) > 1000:
+		return nil, refuse("invalid_input", "note must be 1 to 1000 bytes")
+	}
+	var record string
+	stored := false
+	err := h.immediate(ctx, func(c *sql.Conn) error {
+		var cur, proof, done string
+		err := c.QueryRowContext(ctx, `SELECT resolved_by, proof, outcome FROM plugin_op_attempts WHERE op_id = ? AND attempt = ?`, op, attempt).Scan(&cur, &proof, &done)
+		if errors.Is(err, sql.ErrNoRows) {
+			return refuse("not_found", "op %s has no attempt %s; nothing changed", op, attempt)
+		}
+		if err != nil {
+			return err
+		}
+		if cur != "" {
+			var r struct{ Outcome, Note string }
+			json.Unmarshal([]byte(cur), &r)
+			if r.Outcome != outcome || r.Note != note {
+				return refuse("conflict", "attempt %s is resolved already (%s); nothing changed", attempt, cur)
+			}
+			record = cur
+			return nil
+		}
+		switch {
+		case proof != "":
+			return refuse("conflict", "attempt %s is proved (%s); an operator cannot resolve it", attempt, proof)
+		case done == "":
+			return refuse("conflict", "attempt %s is still open: its call or its observation can still end it", attempt)
+		}
+		b, _ := json.Marshal(map[string]string{"by": "operator", "at": time.Now().UTC().Format(time.RFC3339Nano), "outcome": outcome, "note": note})
+		record = string(b)
+		res, err := c.ExecContext(ctx, `UPDATE plugin_op_attempts SET resolved_by = ? WHERE op_id = ? AND attempt = ? AND resolved_by = '' AND proof = ''`, record, op, attempt)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return refuse("conflict", "attempt %s changed during the resolution; nothing changed", attempt)
+		}
+		stored = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if stored {
+		h.ev.emit("plugin_op_resolved", map[string]any{"op_id": op, "attempt": attempt, "outcome": outcome})
+		h.changed("plugins")
+	}
+	var r map[string]any
+	json.Unmarshal([]byte(record), &r)
+	return map[string]any{"op_id": op, "attempt": attempt, "resolved_by": r, "note": "resolved by operator (attribution, not proof)"}, nil
+}
