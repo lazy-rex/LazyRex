@@ -699,6 +699,9 @@ function View:tab_label()
   return nil
 end
 function View:status() return perform(self.client, 'testview.status', {}) end
+-- crash ends the renderer process (status 2) with no word to the hub, as a renderer crash does. The
+-- hub sees the pane's child exit.
+function View:crash() return perform(self.client, 'testview.crash', {}) end
 
 -- A table field, not a local: a closure write to a captured local can be lost after a catch
 -- (docs/rex-protocol.md, "Rex Lua runtime").
