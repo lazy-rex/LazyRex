@@ -162,6 +162,9 @@ type opResolved struct {
 	Tag      string `json:"tag"` // the release tag of a latest source, else ""
 	Commit   string `json:"commit"`
 	FetchRef string `json:"fetch_ref"`
+	// LockBase is the lock entry of Source when the target was stored (lockBase: its pin, or
+	// "absent"). The locking phase writes only while the entry is still that base.
+	LockBase string `json:"lock_base"`
 }
 
 // opNewSource is the source of an update: the entry's source up to its last "@", then the new ref.
@@ -262,6 +265,13 @@ func (h *Hub) opResolve(ctx context.Context, op *pluginOp) error {
 		if h.opFault("plugin-op-after-resolve") {
 			return errOpCrash
 		}
+		// The base of the lock write: read with the target, the first moment that the lock key is
+		// known. A replay never reads it again.
+		lock, err := readLock(lockPath(h.cfg.path, h.cfg.Lock))
+		if err != nil {
+			return h.setOpPhase(ctx, op, "failed", "", err.Error()+"; nothing was written")
+		}
+		t.LockBase = lockBase(lock, t.Source)
 		b, _ := json.Marshal(t)
 		if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET target = ?, updated = ? WHERE op_id = ? AND target = ''`, string(b), time.Now().UnixMilli(), op.ID); err != nil {
 			return err
