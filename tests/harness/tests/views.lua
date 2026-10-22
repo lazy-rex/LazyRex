@@ -44,6 +44,82 @@ test('a form effect opens a form; its submit closes the form and the result stay
   expect(operation(done.operation_key).status).to_be('succeeded')
 end)
 
+-- events are the hub's events with this name for one view.
+local function events(name, view_id)
+  local out = {}
+  for _, e in ipairs(H.hub('hub.test.events', {event = name}).events or {}) do
+    if e.view_id == view_id then out[#out + 1] = e end
+  end
+  return out
+end
+
+-- open_view is the open view id, or nil (hub.test.views lists only open views).
+local function open_view(id)
+  for _, w in ipairs(views()) do
+    if w.view_id == id then return w end
+  end
+  return nil
+end
+
+-- cancel ends a form as its Cancel does: the renderer exits (view/menu.go cancelForm), and the
+-- hub closes the form with by = exit (ui.go). testview's exit is View:crash.
+local function cancel(form)
+  form:crash()
+  wait('the form ' .. form.id .. ' closed', function() return open_view(form.id) == nil end)
+  expect(#events('form_closed', form.id), 'form_closed of the cancelled form').to_be(1)
+end
+
+-- The home view opens form A; A's action returns {form}. The new form B takes A's place.
+local function form_from_home()
+  local home = user:view('home')
+  home:render()
+  expect(home:action('open_form', 'open', {}).effects).to_be('done')
+  local a = user:view('/forms/fix')
+  expect(a.context.source_view_id, 'form A names the home view').to_be(home.id)
+  expect(a.context.source_route).to_be('/home')
+  return home, a
+end
+
+test('a form effect from a form chains: the new form has the same window and context; the hub closes the first', function()
+  local home, a = form_from_home()
+  local op = a:action('chain', 'chain', {})
+  expect(op.status).to_be('succeeded')
+  expect(op.effects).to_be('done')
+  local b = user:view('/forms/chain')
+  expect(b.id ~= a.id, 'a new view').to_be(true)
+  expect(b.session).to_be(a.session)
+  expect(b.window).to_be(a.window)
+  expect(b.context.source_view_id, 'the source view stays the home view').to_be(home.id)
+  expect(b.context.source_route).to_be('/home')
+  wait('form A closed', function() return open_view(a.id) == nil end)
+  local closed = events('form_closed', a.id)
+  expect(#closed, 'form_closed of form A').to_be(1)
+  expect(closed[1].by).to_be('hub')
+  expect(closed[1].why).to_be('replaced')
+  b:render()
+  cancel(b)
+end)
+
+test('a failed effect from a form keeps the form open and records the failure', function()
+  local _, a = form_from_home()
+  local op = a:action('bad_form', 'bad', {})
+  expect(op.status).to_be('succeeded')
+  expect(op.effects).to_be('failed')
+  expect(op.effects_error).to_match('/forms/')
+  local failed = {}
+  for _, e in ipairs(events('view_effect_failed', a.id)) do
+    if e.op_key == op.operation_key then failed[#failed + 1] = e end
+  end
+  expect(#failed, 'view_effect_failed of this operation').to_be(1)
+  rex.sleep(1) -- a close would have happened by now
+  local w = open_view(a.id)
+  expect(w ~= nil, 'form A still open').to_be(true)
+  expect(w.attached, 'form A still attached').to_be(true)
+  expect(w.window_id).to_be(a.window)
+  expect(#events('form_closed', a.id), 'form_closed of form A').to_be(0)
+  cancel(a)
+end)
+
 test('an effect that fails is final and reported', function()
   local home = user:view('home')
   local op = home:action('bad_nav', 'go', {})

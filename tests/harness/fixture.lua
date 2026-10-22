@@ -182,6 +182,8 @@ local function form_tree()
     {id = 'form', type = 'form', fields = {{id = 'value', label = 'Value', kind = 'text', value = ''}},
       submit_action = {name = 'submit', label = 'Save', enabled = true, tool = 'fix.put'}},
     {id = 'go_home', type = 'widget', text = 'Tab fixture home', action = {name = 'go', label = 'Go', enabled = true, user_only = 'navigation'}},
+    {id = 'chain', type = 'widget', text = 'Chain', action = {name = 'chain', label = 'Chain', enabled = true, user_only = 'test: opens another form'}},
+    {id = 'bad_form', type = 'widget', text = 'Bad form', action = {name = 'bad', label = 'Bad', enabled = true, user_only = 'test: a failing effect'}},
     {id = 'cancel', type = 'widget', text = 'Cancel', action = {name = '$cancel', label = 'Cancel', enabled = true}},
   }}
 end
@@ -239,7 +241,7 @@ local function view(action, args)
   if action == 'view.seen' then put('seen', {route = args.route, reason = args.reason}); return {} end
   if action == 'view.render' then
     if args.route == '/home' then return {tree = home_tree()} end
-    if args.route == '/forms/fix' then return {tree = form_tree()} end
+    if args.route == '/forms/fix' or args.route == '/forms/chain' then return {tree = form_tree()} end
     -- /lazy/deps-<x> (render_deps.lua): the record spec/deps-<x> is the deps declaration of the
     -- reply ('fail' fails the render); the text shows the record data/deps-<x>.
     local dname = args.route:match('^/lazy/(deps%-.+)$')
@@ -296,6 +298,9 @@ local function view(action, args)
     if args.route == '/home' and args.node_id == 'gated_nav' then return {navigate = {plugin = 'harnessfix', tab = 'gated/a'}} end
     if args.route:match('^/lazy/deps%-') and args.node_id == 'lazy' then return {} end -- the tree stays the same
     if args.route == '/forms/fix' and args.node_id == 'go_home' then return {navigate = {plugin = 'tabfix', tab = 'home'}} end
+    -- views.lua: a form effect from a form (a chained form), and an effect that fails.
+    if args.route == '/forms/fix' and args.node_id == 'chain' then return {form = '/forms/chain'} end
+    if args.route == '/forms/fix' and args.node_id == 'bad_form' then return {form = 'nope'} end
     if args.route == '/forms/fix' and args.node_id == 'form' then
       put('form', {value = args.input and args.input.values and args.input.values.value or ''})
       return {close_form = true}
