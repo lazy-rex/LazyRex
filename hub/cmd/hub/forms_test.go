@@ -57,6 +57,16 @@ func TestPaletteLua(t *testing.T) {
 	if strings.Index(a, "lazyrex_messaging_new_thread") > strings.Index(a, "lazyrex_worktrees_new") {
 		t.Error("plugins are sorted")
 	}
+	// The hub's own entries, also without any plugin command.
+	for _, want := range []string{
+		`run = lazyrex_admin("hub.admin.resume", "resume", {}),`,
+		`run = lazyrex_admin("hub.admin.restart", "restart-codex", { kind = "codex" }),`,
+		`run = lazyrex_admin("hub.admin.restart", "restart-claude", { kind = "claude" }),`,
+	} {
+		if !strings.Contains(paletteLua(nil), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
 }
 
 func TestCleanTitle(t *testing.T) {
