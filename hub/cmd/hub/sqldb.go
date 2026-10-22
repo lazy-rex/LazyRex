@@ -214,6 +214,19 @@ func (k *sqlConn) hub(ctx context.Context, q string, args ...any) error {
 	return err
 }
 
+// inTx reports whether the connection is in a transaction: BEGIN fails inside one. Any other answer
+// counts as no transaction, and a transaction that the probe began is rolled back at once.
+func (k *sqlConn) inTx(ctx context.Context) bool {
+	err := k.hub(ctx, "BEGIN")
+	if err != nil && strings.Contains(err.Error(), "within a transaction") {
+		return true
+	}
+	if err == nil {
+		k.hub(context.WithoutCancel(ctx), "ROLLBACK")
+	}
+	return false
+}
+
 func (k *sqlConn) hubInt(ctx context.Context, q string) (int64, error) {
 	k.trusted = true
 	defer func() { k.trusted = false }()

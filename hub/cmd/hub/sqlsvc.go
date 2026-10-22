@@ -81,6 +81,9 @@ type pluginSQL struct {
 	// params: the parameters of each statement of the open write transaction, for the commit fault
 	// point (testmode.go). It changes under lock.
 	params []any
+	// lost: a statement error ended SQLite's write transaction (an OR ROLLBACK conflict,
+	// RAISE(ROLLBACK), some engine errors). withWriter ends the handler transaction. Under lock.
+	lost bool
 
 	mu       sync.Mutex // guards tx, expired and retrying
 	retrying bool       // a drainLater goroutine runs (sqlnotice.go)
@@ -345,7 +348,12 @@ func (s *sqlService) withWriter(p *pluginSQL, c sqlCall, token string, fn func(t
 				return nil, err
 			}
 			defer p.release()
-			return fn(tx)
+			out, err := fn(tx)
+			if p.lost {
+				p.lost = false
+				p.end(context.Background(), "tx_expired") // the token's work is undone
+			}
+			return out, err
 		}
 		p.mu.Lock()
 		open := p.tx
@@ -356,6 +364,7 @@ func (s *sqlService) withWriter(p *pluginSQL, c sqlCall, token string, fn func(t
 		}
 		if open == nil {
 			defer p.release()
+			defer func() { p.lost = false }() // a call of its own: alone rolls back
 			return fn(nil)
 		}
 		p.release()
@@ -496,6 +505,15 @@ func (s *sqlService) stmt(ctx context.Context, p *pluginSQL, args map[string]any
 	if err != nil {
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK TO lazyrex_stmt")
 		p.w.hub(context.WithoutCancel(ctx), "RELEASE lazyrex_stmt")
+		// Without this check, the next SAVEPOINT would begin a new transaction that its RELEASE
+		// commits (Codex review of 8510d50).
+		if !p.w.inTx(context.WithoutCancel(ctx)) {
+			p.lost = true
+			var se *storeError
+			if errors.As(err, &se) {
+				err = &storeError{msg: se.msg + "; SQLite rolled back the transaction", code: se.code}
+			}
+		}
 		return nil, err
 	}
 	if err := p.w.hub(ctx, "RELEASE lazyrex_stmt"); err != nil {
