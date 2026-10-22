@@ -76,8 +76,8 @@ CREATE TABLE IF NOT EXISTS agent_op_targets (op_id TEXT NOT NULL, identity TEXT 
   block_id TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL,
   admitted TEXT NOT NULL DEFAULT '', -- identities.updated at admission: the generation that may launch
   child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', -- the new pane's program, at its first look;
-  -- for a restart, first the program to stop. stop_block, stop_session and program (added in workers.go):
-  -- a restart's pane and configured program.
+  -- for a restart, first the program to stop. stop_block, stop_session, program and stop_result (added in
+  -- workers.go): a restart's pane, its configured program, and the stop's outcome (kept through the resume).
   PRIMARY KEY (op_id, identity));
 -- One active target for each identity, across operations and keys.
 CREATE UNIQUE INDEX IF NOT EXISTS agent_op_active ON agent_op_targets (identity)
@@ -106,7 +106,7 @@ type opTarget struct {
 	op, identity, phase, sourceSpawn, spawn, block, detail, updated, admitted string
 	seq, childPID                                                             int
 	childStart                                                                string
-	stopBlock, stopSession, program                                           string // a restart: the pane to stop and its configured program
+	stopBlock, stopSession, program, stopResult                               string // a restart: the pane to stop, its configured program, the stop's outcome
 }
 
 // adminResume is hub.admin.resume {key, agent} | {key, kind?, session_id?} | {key, release}. The
@@ -310,7 +310,7 @@ func (h *Hub) releaseTarget(ctx context.Context, key, request, identity string) 
 
 func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTarget, error) {
 	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted, child_pid, child_start,
-		stop_block, stop_session, program
+		stop_block, stop_session, program, stop_result
 		FROM agent_op_targets WHERE `+where+` ORDER BY updated, seq`, args...)
 	if err != nil {
 		return nil, err
@@ -320,7 +320,7 @@ func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTar
 	for rows.Next() {
 		var t opTarget
 		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted, &t.childPID, &t.childStart,
-			&t.stopBlock, &t.stopSession, &t.program); err != nil {
+			&t.stopBlock, &t.stopSession, &t.program, &t.stopResult); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -338,7 +338,7 @@ func (h *Hub) opReply(ctx context.Context, opID string) (any, error) {
 	done := true
 	for _, t := range ts {
 		e := map[string]any{"agent": t.identity, "phase": t.phase}
-		for k, v := range map[string]string{"detail": t.detail, "block_id": t.block, "spawn_id": t.spawn} {
+		for k, v := range map[string]string{"detail": t.detail, "block_id": t.block, "spawn_id": t.spawn, "stop": t.stopResult} {
 			if v != "" {
 				e[k] = v
 			}
@@ -353,7 +353,7 @@ func (h *Hub) opReply(ctx context.Context, opID string) (any, error) {
 // from (a release, or another step): the caller then stops.
 func (h *Hub) setPhase(ctx context.Context, t *opTarget, from, to, detail string, cols map[string]string) bool {
 	set, vals := "phase = ?, detail = ?, updated = ?", []any{to, detail, time.Now().UTC().Format(time.RFC3339Nano)}
-	for _, c := range []string{"spawn_id", "block_id"} {
+	for _, c := range []string{"spawn_id", "block_id", "stop_result"} {
 		if v, ok := cols[c]; ok {
 			set += ", " + c + " = ?"
 			vals = append(vals, v)
@@ -631,6 +631,7 @@ type paneState struct {
 	path         string // the child's executable
 	invoked      string // the child's exec path (Rex invoked_path): the path given to exec, not argv0
 	foreground   int    // the pid in the terminal's foreground
+	read         bool   // the process answer was read (child 0 then means no child)
 }
 
 // paneProgram reads the pane's child process (terminal.process) and its root status record. Rex
@@ -655,6 +656,7 @@ func (h *Hub) paneProgram(ctx context.Context, sess, block string) (paneState, e
 	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.process", sess, block, nil, &proc); err != nil {
 		return p, err
 	}
+	p.read = true
 	if proc.Child != nil {
 		p.child, p.path, p.invoked = proc.Child.PID, proc.Child.Path, proc.Child.Invoked
 	}

@@ -209,6 +209,7 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		`ALTER TABLE agent_op_targets ADD COLUMN stop_block TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agent_op_targets ADD COLUMN stop_session TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agent_op_targets ADD COLUMN program TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE agent_op_targets ADD COLUMN stop_result TEXT NOT NULL DEFAULT ''`,
 		// The exec facts of a pane's process generation (identity.go); '' on rows from before.
 		`ALTER TABLE identity_panes ADD COLUMN child_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE identity_panes ADD COLUMN child_invoked TEXT NOT NULL DEFAULT ''`,

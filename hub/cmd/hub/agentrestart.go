@@ -67,12 +67,26 @@ type paneRecord struct {
 //     refused. This detects a changed path; it does not prove that no exec of the same path ran.
 //   - A row from before the record (no values): the live exec path must equal program; a null one
 //     refuses.
-func restartCheck(p paneState, rec paneRecord, liveStart, program string) string {
+//   - The exec path's base name is the CLI of the identity's kind (claude, codex): v1 restarts a
+//     direct agent CLI only. A pane shell reports the shell, and a script launcher its interpreter
+//     (lab, 2026-10-22). This is a name rule on the exec path, not on argv0; it cannot tell a
+//     program deliberately named after the CLI.
+//
+// Missing evidence refuses: no recorded pid or start time, or a start time that cannot be read now.
+func restartCheck(p paneState, rec paneRecord, liveStart, program, kind string) string {
+	cli := rec.invoked
+	if cli == "" {
+		cli = p.invoked
+	}
 	switch {
+	case rec.pid <= 0 || rec.start == "":
+		return "the pane's process generation was not recorded"
 	case p.child == 0:
 		return "the pane has no program"
 	case p.child != rec.pid:
 		return fmt.Sprintf("the pane's program is pid %d, not the agent's pid %d", p.child, rec.pid)
+	case liveStart == "":
+		return fmt.Sprintf("the start time of pid %d cannot be read", rec.pid)
 	case liveStart != rec.start:
 		return fmt.Sprintf("pid %d is another process now", rec.pid)
 	case p.path == "":
@@ -87,6 +101,8 @@ func restartCheck(p paneState, rec paneRecord, liveStart, program string) string
 		return "the exec path cannot be verified: none was recorded at the agent's report, and Rex reports none now (an update since its start?)"
 	case rec.invoked == "" && p.invoked != program:
 		return fmt.Sprintf("the pane runs %s, not the configured program %s", p.invoked, program)
+	case filepath.Base(cli) != kind:
+		return fmt.Sprintf("the pane runs %s, not the %s CLI: a shell or a launcher is not restarted", cli, kind)
 	}
 	return ""
 }
@@ -105,10 +121,12 @@ func (h *Hub) restartLook(ctx context.Context, t *opTarget) (p paneState, why st
 	if rec.pid != t.childPID || rec.start != t.childStart {
 		return p, "the pane's recorded program changed", nil
 	}
+	var kind string
+	h.db.QueryRowContext(ctx, `SELECT kind FROM identities WHERE identity = ?`, t.identity).Scan(&kind)
 	if p, err = h.paneProgram(ctx, t.stopSession, t.stopBlock); err != nil {
 		return p, "", err
 	}
-	return p, restartCheck(p, rec, startTime(p.child), t.program), nil
+	return p, restartCheck(p, rec, startTime(p.child), t.program, kind), nil
 }
 
 // restartTargets resolves the request once, at admission. A target is admitted only if its process
@@ -193,36 +211,56 @@ func (h *Hub) restartTargets(ctx context.Context, req map[string]any) ([]opTarge
 
 // restartAdvance takes one step of a restart's stop. Each step looks again, and writes or signals
 // only after restartCheck passes. The phase is stored before the action: after a hub stop the next
-// step waits, then escalates.
+// step waits, then escalates. The stop's outcome is stored apart from the phase (stop_result), so
+// the reply still has it after the resume.
 func (h *Hub) restartAdvance(ctx context.Context, t *opTarget, since time.Time) error {
-	if !alive(t.childPID, t.childStart) {
-		return h.restartStopped(ctx, t)
+	gone, err := procGone(t.childPID, t.childStart)
+	if err != nil {
+		// No answer is no proof of an exit: look again, then fail.
+		if time.Since(since) > restartTermWait {
+			h.stopFailed(ctx, t, "the process state cannot be read: "+err.Error())
+		}
+		return nil
+	}
+	if gone {
+		return h.restartStopped(ctx, t, stopResults[t.phase], since)
 	}
 	if state, block := h.identityAt(ctx, t.identity); state != "current" || block != t.stopBlock {
-		h.setPhase(ctx, t, t.phase, "failed", fmt.Sprintf("the agent changed during its stop (now %s); nothing more was sent", state), nil)
+		h.stopFailed(ctx, t, fmt.Sprintf("the agent changed during its stop (now %s); nothing more was sent", state))
 		return nil
 	}
 	p, why, err := h.restartLook(ctx, t)
 	if err != nil {
 		if time.Since(since) > restartTermWait {
-			h.setPhase(ctx, t, t.phase, "failed", "the pane could not be read: "+err.Error(), nil)
+			h.stopFailed(ctx, t, "the pane could not be read: "+err.Error())
 		}
 		return nil
 	}
 	if why != "" {
-		h.setPhase(ctx, t, t.phase, "failed", why+"; nothing more was sent", nil)
+		// The process may have exited since the first look: Rex, its parent, reports no child, or the
+		// pid is gone. That is the stop's end, not a failed check.
+		if gone, _ := procGone(t.childPID, t.childStart); gone || p.read && p.child == 0 {
+			return h.restartStopped(ctx, t, stopResults[t.phase], since)
+		}
+		h.stopFailed(ctx, t, why+"; nothing more was sent")
 		return nil
 	}
-	signal := func(to string, sig syscall.Signal, detail string) {
-		if h.setPhase(ctx, t, t.phase, to, detail, nil) {
-			syscall.Kill(t.childPID, sig)
+	signal := func(to string, sig syscall.Signal, name, why string) {
+		if !h.setPhase(ctx, t, t.phase, to, why+"; "+name+" sent", nil) {
+			return
+		}
+		switch err := syscall.Kill(t.childPID, sig); {
+		case errors.Is(err, syscall.ESRCH):
+			h.restartStopped(ctx, t, "exited before "+name, since)
+		case err != nil:
+			h.stopFailed(ctx, t, name+" failed: "+err.Error())
 		}
 	}
 	switch t.phase {
 	case "restart_admitted":
 		// Exit keys go only to the agent itself: another foreground process would read them.
 		if p.foreground != t.childPID {
-			signal("terminating", syscall.SIGTERM, fmt.Sprintf("the agent (pid %d) is not in the foreground: no exit keys; SIGTERM sent", t.childPID))
+			signal("terminating", syscall.SIGTERM, "SIGTERM", fmt.Sprintf("the agent (pid %d) is not in the foreground: no exit keys", t.childPID))
 			return nil
 		}
 		if !h.setPhase(ctx, t, "restart_admitted", "stopping", "exit keys sent", nil) {
@@ -233,18 +271,47 @@ func (h *Hub) restartAdvance(ctx context.Context, t *opTarget, since time.Time) 
 		}
 	case "stopping":
 		if time.Since(since) > restartKeysWait {
-			signal("terminating", syscall.SIGTERM, fmt.Sprintf("no exit within %s of the exit keys; SIGTERM sent", restartKeysWait))
+			signal("terminating", syscall.SIGTERM, "SIGTERM", fmt.Sprintf("no exit within %s of the exit keys", restartKeysWait))
 		}
 	case "terminating":
 		if time.Since(since) > restartTermWait {
-			signal("killing", syscall.SIGKILL, fmt.Sprintf("no exit within %s of SIGTERM; SIGKILL sent", restartTermWait))
+			signal("killing", syscall.SIGKILL, "SIGKILL", fmt.Sprintf("no exit within %s of SIGTERM", restartTermWait))
 		}
 	case "killing":
 		if time.Since(since) > restartKillWait {
-			h.setPhase(ctx, t, "killing", "failed", fmt.Sprintf("pid %d did not exit within %s of SIGKILL", t.childPID, restartKillWait), nil)
+			h.stopFailed(ctx, t, fmt.Sprintf("pid %d did not exit within %s of SIGKILL", t.childPID, restartKillWait))
 		}
 	}
 	return nil
+}
+
+// stopResults is the stop's outcome by the phase in which the process was seen gone.
+var stopResults = map[string]string{
+	"restart_admitted": "exited before any key or signal",
+	"stopping":         "exited after the exit keys",
+	"terminating":      "exited after SIGTERM",
+	"killing":          "exited after SIGKILL",
+}
+
+// procGone reports whether the process lifetime pid/start has ended: the system has no such pid, or
+// the pid is another process (another start time). A failed read is no answer: an error.
+func procGone(pid int, start string) (bool, error) {
+	if pid <= 0 || start == "" {
+		return false, errors.New("no recorded process")
+	}
+	r, err := procRead(pid)
+	if errors.Is(err, errProcGone) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return r.start != start, nil
+}
+
+// stopFailed ends a restart target whose stop did not finish; the agent was not stopped.
+func (h *Hub) stopFailed(ctx context.Context, t *opTarget, why string) {
+	h.setPhase(ctx, t, t.phase, "failed", why, map[string]string{"stop_result": "not stopped: " + why})
 }
 
 // exitKeys writes the exit keys of the agent's kind: one Ctrl-C for Codex, two for Claude.
@@ -267,23 +334,28 @@ func (h *Hub) exitKeys(ctx context.Context, t *opTarget) error {
 
 // restartStopped ends the stop when the verified process is gone. The identity is detached as its
 // pane's exit event would detach it (the event may come later); then the target is an admitted
-// resume of the same generation.
-func (h *Hub) restartStopped(ctx context.Context, t *opTarget) error {
+// resume of the same generation. result is the stop's outcome (stop_result). While the identity is
+// still current in its pane (the exit is not complete yet), the next step looks again.
+func (h *Hub) restartStopped(ctx context.Context, t *opTarget, result string, since time.Time) error {
 	h.identityChildExited(ctx, t.stopBlock)
 	var state, block, updated string
 	h.db.QueryRowContext(ctx, `SELECT state, block_id, updated FROM identities WHERE identity = ?`, t.identity).Scan(&state, &block, &updated)
+	if state == "current" && block == t.stopBlock && time.Since(since) <= restartTermWait {
+		return nil
+	}
 	if state != "detached" || block != t.stopBlock {
-		h.setPhase(ctx, t, t.phase, "failed", fmt.Sprintf("the program stopped, but the agent is %s, not detached from its pane", state), nil)
+		h.setPhase(ctx, t, t.phase, "failed", fmt.Sprintf("the program stopped, but the agent is %s, not detached from its pane", state),
+			map[string]string{"stop_result": result})
 		return nil
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := h.db.ExecContext(ctx, `UPDATE agent_op_targets SET phase = 'admitted', admitted = ?, child_pid = 0, child_start = '', detail = ?, updated = ?
-		WHERE op_id = ? AND identity = ? AND phase = ?`, updated, fmt.Sprintf("pid %d stopped", t.childPID), now, t.op, t.identity, t.phase)
+	res, err := h.db.ExecContext(ctx, `UPDATE agent_op_targets SET phase = 'admitted', admitted = ?, child_pid = 0, child_start = '', detail = ?, stop_result = ?, updated = ?
+		WHERE op_id = ? AND identity = ? AND phase = ?`, updated, fmt.Sprintf("pid %d %s", t.childPID, result), result, now, t.op, t.identity, t.phase)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 1 {
-		h.ev.emit("agent_op_phase", map[string]any{"op_id": t.op, "agent": t.identity, "phase": "admitted", "detail": "stopped"})
+		h.ev.emit("agent_op_phase", map[string]any{"op_id": t.op, "agent": t.identity, "phase": "admitted", "stop_result": result})
 		h.kickResume()
 	}
 	return nil

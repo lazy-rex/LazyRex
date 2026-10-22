@@ -449,6 +449,9 @@ func testAgentMain(argv []string) int {
 	if len(argv) > 0 && argv[0] == "report" {
 		return testAgentReport(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == "cli" {
+		return testCLIMain(argv[1:]) // testcli.go
+	}
 	fs := flag.NewFlagSet("testagent", flag.ContinueOnError)
 	id := fs.String("id", "", "test agent name (its label is lazyrex-testagent:<id>)")
 	join := fs.String("join", "", "roster agent to join as (hub.join), from this pane")
