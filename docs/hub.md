@@ -754,11 +754,23 @@ Every child, also a crash respawn, runs the resolved path. So a later switch of 
 | --- | --- |
 | 0 (SIGTERM, `hub.admin.shutdown`) | exits 0, no restart |
 | 3 (another state) | exits 3, no restart |
+| 4 after a ready (`hub.admin.relaunch`) | a relaunch: the wrapper execs itself (below); no backoff, no restart count |
 | Another failure before the first ready of this wrapper | exits with the child's status (1 for a signal death), no restart |
 | Another failure after a ready | restarts after 1, 2, 4 ... 60 s; a fifth restart within 10 minutes is refused: `gave up`, exit 1 |
 | A ready line for another state (a defect) | stops the child, exits 1 |
 
 A restarted child that fails before its own ready counts as a restart.
+
+**Relaunch** (`hub/cmd/hub/restartexec.go`). A child that exits 4 after its ready asks for a relaunch. The wrapper runs its invoked path again in the same process (`syscall.Exec`), with the same arguments, so the wrapper code, the hub code and the binary change together while the pane and the wrapper pid stay. An exit 4 before the first ready is a failure like any other.
+
+- Generation: `exec` is 0 at a first start and grows by 1 at each exec. A crash respawn keeps it.
+- Before it changes anything, the wrapper at exec n writes `restart.json` with phase `exec` and `exec_target` n+1. If that write fails, there is no exec (below).
+- Then it closes its log, clears close-on-exec on its `restart.lock` fd, and execs with `LAZYREX_RESTART_LOCK_FD=<fd>` and `LAZYREX_RESTART_EXEC=<n+1>`. The lock is an fcntl lock: it belongs to the process and survives the exec, so no second wrapper can take the state in between. The process loses the lock when it closes any fd for that file, so the wrapper opens `restart.lock` only once.
+- The new wrapper reads and unsets both variables as one state. Both absent: a fresh wrapper. It adopts the fd only if the fd is open read-write on `<state>/restart.lock` (same device and inode) and `restart.json` names this process (pid and start time) in phase `exec` with the same target. Then it takes the lock on that fd again, sets close-on-exec, sets `exec` to the target and `last_exec` to ok, and starts its child at once. Any other value (one variable alone, a value that is not a number, a closed fd, another file, a read-only fd, another target, pid or phase) exits 1 with one line. A refusal never closes an fd for `restart.lock`.
+- A failed exec (a missing or unrunnable file at the invoked path, a failed status write): the wrapper keeps the lock and exec n, opens its log again, writes `restart: exec <invoked> failed: <error>; the hub starts again from <resolved>`, sets `last_exec` to failed, and starts the child again at once from its resolved path, the old version. A later relaunch can work.
+- A signal in the exec gap meets the new process before its handler: SIGTERM then kills the wrapper. Its child has already exited, so a later start works.
+
+Tests (`restartexec_test.go`, a wrapper from the test binary that execs itself): five relaunches in a row (exec 5, same pid, no `gave up`; the last child has no wrapper variable and no fd for `restart.lock`), exit 4 before ready, a second wrapper refused while the new wrapper waits before its adoption, an exec failure that starts the old hub and a later relaunch that works, a relaunch through a switched link that runs the new version, and the adoption checks.
 
 **Signals.** SIGTERM, SIGINT or SIGHUP to the wrapper (Ctrl-C in its pane, or closing the pane) stops it and never restarts:
 
@@ -767,7 +779,7 @@ A restarted child that fails before its own ready counts as a restart.
 - The child runs in its own process group, so a terminal signal (Ctrl-C, a closed pane) reaches only the wrapper. A wrapper killed with SIGKILL leaves its hub running; a new wrapper then fails at the hub lock before ready and exits 1.
 - Before the first start: the wrapper exits 0. No child starts.
 
-**Lines and status.** The wrapper writes its own lines, with the time, to its pane (its stderr) and to the log: started (pid, attempt), ready, the exit status or signal of each child, the restart delay, gave up. When the hub fails before its first ready, the wrapper first writes the last lines of that run's output (at most 10, from its last 2 KiB) to the pane as `restart: hub: <line>`: the hub's output goes to the log only, and those lines say why it failed. Each control character in those lines except tab becomes `?` (C0, DEL, C1, and a byte that is not UTF-8), because the pane is the user's terminal. `<state>/restart.json` is the wrapper's status for readers, replaced as a whole (a temp file, then a rename): `{"version":1,"pid","start","phase","attempt","last_exit","next_start","since"}`. The phase is one of `starting`, `running`, `backoff`, `gave_up`, `stopped`. A reader trusts the file only while the wrapper holds `restart.lock` with the same pid and that pid has the same start time.
+**Lines and status.** The wrapper writes its own lines, with the time, to its pane (its stderr) and to the log: started (pid, attempt), ready, the exit status or signal of each child, the restart delay, gave up. When the hub fails before its first ready, the wrapper first writes the last lines of that run's output (at most 10, from its last 2 KiB) to the pane as `restart: hub: <line>`: the hub's output goes to the log only, and those lines say why it failed. Each control character in those lines except tab becomes `?` (C0, DEL, C1, and a byte that is not UTF-8), because the pane is the user's terminal. `<state>/restart.json` is the wrapper's status for readers, replaced as a whole (a temp file, then a rename): `{"version":1,"pid","start","phase","attempt","last_exit","next_start","since","exec","exec_target","last_exec"}`. The phase is one of `starting`, `running`, `backoff`, `gave_up`, `stopped`, `exec`. `exec` is the generation (below); `exec_target` is set in phase `exec` only; `last_exec` is `{"target","outcome","error","at"}`, the last exec attempt (`ok` or `failed`), kept until the next attempt begins. A reader trusts the file only while the wrapper holds `restart.lock` with the same pid and that pid has the same start time.
 
 **Log** (`hub/cmd/hub/restartlog.go`). Under the wrapper, the hub's stdout and stderr are one pipe to the wrapper (so their order is kept), and the wrapper is the only writer of `<state>/hub.log`. The hub's output goes to that file only, not to the pane. A crash trace of the hub is in that file too, best effort (below). dev.sh writes `<state>/dev/hub.log`; that file has no size bound.
 

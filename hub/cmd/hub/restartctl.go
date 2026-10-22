@@ -271,6 +271,8 @@ func (v *ctlView) wrapperText() string {
 			wait = "in " + max(time.Until(t), 0).Round(time.Second).String()
 		}
 		return fmt.Sprintf("backoff: the restart wrapper (pid %d) restarts the hub %s (attempt %d; last exit %s)", s.PID, wait, s.Attempt, s.LastExit)
+	case "exec":
+		return fmt.Sprintf("relaunching: the restart wrapper (pid %d) runs its executable again (exec %d)", s.PID, s.ExecTarget)
 	default: // running, or a stale phase: the wrapper holds the lock, and no hub of this state is connected
 		return fmt.Sprintf("starting: the restart wrapper (pid %d) reports %s, but no hub of this state is seen", s.PID, s.Phase)
 	}

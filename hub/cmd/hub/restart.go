@@ -11,6 +11,7 @@ package main
 //     within 10 minutes is refused (gave_up, exit 1).
 //   - SIGTERM, SIGINT or SIGHUP: SIGTERM to the child, at most 10 s, then SIGKILL; never a restart.
 //   - <state>/restart.json is the status for readers (stop and status), replaced as a whole.
+//   - Exit 4 after a ready is a relaunch request: the wrapper execs itself (restartexec.go).
 //   - Paths (wrapperPaths): at its start, the wrapper finds its invoked path and resolves it once.
 //     Every child, also a crash respawn, runs the resolved file. A later switch of a symlink in the
 //     invoked path changes no child of this wrapper.
@@ -42,8 +43,11 @@ const (
 )
 
 type wrapper struct {
-	bin      string // the resolved executable: every child runs it
-	invoked  string // the executable path as invoked, absolute, symlinks kept
+	bin      string                                      // the resolved executable: every child runs it
+	invoked  string                                      // the executable path as invoked, absolute, symlinks kept
+	argv     []string                                    // the wrapper's own arguments (os.Args[1:]): a relaunch passes them again
+	execFn   func(path string, argv, env []string) error // syscall.Exec; returns only on a failure
+	adopt    *adoption                                   // the lock and exec target of a self-exec; nil for a fresh wrapper
 	args     []string
 	pane     io.Writer   // the wrapper's pane (its stderr)
 	out      *log.Logger // the wrapper's own lines: the pane, and the log once it is open
@@ -57,20 +61,26 @@ type wrapper struct {
 	refusals func(ctx context.Context, pid int) []string // the refused plugins of the hub with this pid; nil: no read
 
 	state    string // canonical, set by main
+	lock     *os.File
 	attempt  int
 	lastExit string
+	exec     int       // the generation: 0 at a first start, +1 at each exec
+	last     *lastExec // the last exec attempt, until the next one begins
 }
 
 // restartStatus is <state>/restart.json.
 type restartStatus struct {
-	Version   int    `json:"version"`
-	PID       int    `json:"pid"`
-	Start     string `json:"start"` // the wrapper's process start time (process.go)
-	Phase     string `json:"phase"` // starting, running, backoff, gave_up, stopped
-	Attempt   int    `json:"attempt"`
-	LastExit  string `json:"last_exit,omitempty"`
-	NextStart string `json:"next_start,omitempty"`
-	Since     string `json:"since"`
+	Version    int       `json:"version"`
+	PID        int       `json:"pid"`
+	Start      string    `json:"start"` // the wrapper's process start time (process.go)
+	Phase      string    `json:"phase"` // starting, running, backoff, gave_up, stopped, exec
+	Attempt    int       `json:"attempt"`
+	LastExit   string    `json:"last_exit,omitempty"`
+	NextStart  string    `json:"next_start,omitempty"`
+	Since      string    `json:"since"`
+	Exec       int       `json:"exec"`
+	ExecTarget int       `json:"exec_target,omitempty"` // phase exec only: the generation that the exec starts
+	LastExec   *lastExec `json:"last_exec,omitempty"`
 }
 
 // restartMain runs the wrapper. args are the hub's arguments without -restart. ctx ends at the
@@ -81,15 +91,28 @@ func restartMain(ctx context.Context, cfg Config, args []string) int {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stopOnDone(ctx, sigs)()
-	invoked, bin, err := wrapperPaths(os.Args[0])
+	w, err := newWrapper(args, sigs)
 	if err != nil {
 		log.Printf("restart: %v", err)
 		return 1
 	}
-	w := &wrapper{bin: bin, invoked: invoked, args: args, pane: os.Stderr, now: time.Now,
-		after: time.After, backoff: time.After, stopWait: childStopWait, sigs: sigs}
 	w.refusals = func(ctx context.Context, pid int) []string { return hubRefusals(cfg, w.state)(ctx, pid) }
 	return w.main(cfg.State)
+}
+
+// newWrapper takes the inherited exec state and the wrapper's paths, and builds the wrapper that
+// runs children with args.
+func newWrapper(args []string, sigs chan os.Signal) (*wrapper, error) {
+	adopt, err := takeAdoption()
+	if err != nil {
+		return nil, err
+	}
+	invoked, bin, err := wrapperPaths(os.Args[0])
+	if err != nil {
+		return nil, err
+	}
+	return &wrapper{bin: bin, invoked: invoked, argv: os.Args[1:], execFn: syscall.Exec, adopt: adopt, args: args,
+		pane: os.Stderr, now: time.Now, after: time.After, backoff: time.After, stopWait: childStopWait, sigs: sigs}, nil
 }
 
 // wrapperPaths returns the wrapper's invoked path and its resolved path. invoked is arg0 made
@@ -184,21 +207,36 @@ func (w *wrapper) main(stateDir string) int {
 		return 1
 	}
 	w.state = state
-	lock, err := takeRestartLock(state)
+	var lock *os.File
+	if w.adopt != nil {
+		lock, err = adoptRestartLock(state, w.adopt)
+	} else {
+		lock, err = takeRestartLock(state)
+	}
 	if err != nil {
 		w.out.Printf("restart: %v", err)
 		return 1
 	}
+	w.lock = lock
 	defer lock.Close()
-	// The log opens only under the lock: the wrapper is the only writer of <state>/hub.log.
-	w.log = newRestartLog(state, w.pane)
+	if w.adopt != nil {
+		w.exec = w.adopt.target
+		w.last = &lastExec{Target: w.exec, Outcome: "ok", At: w.now().UTC().Format(time.RFC3339)}
+	}
+	w.openLog()
+	defer func() { w.log.close(logEndWait) }() // a failed relaunch replaces w.log
+	return w.run()
+}
+
+// openLog opens the log and points the wrapper's lines at it. The log opens only under the lock:
+// the wrapper is the only writer of <state>/hub.log.
+func (w *wrapper) openLog() {
+	w.log = newRestartLog(w.state, w.pane)
 	if w.logHook != nil {
 		w.logHook(w.log)
 	}
 	w.log.start()
-	defer w.log.close(logEndWait)
 	w.out = log.New(w.log, "", log.LstdFlags)
-	return w.run()
 }
 
 // takeRestartLock takes the write lock on <state>/restart.lock without waiting. A lock held by
@@ -245,8 +283,21 @@ func lockHolder(f *os.File) (int, error) {
 }
 
 func (w *wrapper) writeStatus(phase string, next time.Time) {
+	if err := w.putStatus(phase, next, 0); err != nil {
+		w.out.Printf("restart: status: %v", err)
+	}
+}
+
+// writeStatusErr writes phase "exec" with its target, and returns the error: a relaunch does not
+// exec without it.
+func (w *wrapper) writeStatusErr(phase string, target int) error {
+	return w.putStatus(phase, time.Time{}, target)
+}
+
+func (w *wrapper) putStatus(phase string, next time.Time, target int) error {
 	s := restartStatus{Version: 1, PID: os.Getpid(), Start: startTime(os.Getpid()), Phase: phase,
-		Attempt: w.attempt, LastExit: w.lastExit, Since: w.now().UTC().Format(time.RFC3339)}
+		Attempt: w.attempt, LastExit: w.lastExit, Since: w.now().UTC().Format(time.RFC3339),
+		Exec: w.exec, ExecTarget: target, LastExec: w.last}
 	if !next.IsZero() {
 		s.NextStart = next.UTC().Format(time.RFC3339)
 	}
@@ -254,12 +305,9 @@ func (w *wrapper) writeStatus(phase string, next time.Time) {
 	path := filepath.Join(w.state, "restart.json")
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		w.out.Printf("restart: status: %v", err)
-		return
+		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		w.out.Printf("restart: status: %v", err)
-	}
+	return os.Rename(tmp, path)
 }
 
 // childEnd is how one child ended. stop >= 0: the wrapper exits with stop.
@@ -287,6 +335,10 @@ func (w *wrapper) run() int {
 			return end.stop
 		}
 		everReady = everReady || end.ready
+		if end.code == exitRelaunch && end.ready {
+			w.relaunch() // returns only when the exec failed: start the child again at once
+			continue
+		}
 		switch {
 		case end.code == 0:
 			w.writeStatus("stopped", time.Time{})

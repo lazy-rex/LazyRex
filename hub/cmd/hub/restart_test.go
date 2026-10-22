@@ -53,7 +53,8 @@ func TestFakeHub(t *testing.T) {
 	b, _ := os.ReadFile(os.Getenv("FAKE_HUB_STARTS"))
 	n := strings.Count(string(b), "\n")
 	f, _ := os.OpenFile(os.Getenv("FAKE_HUB_STARTS"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	f.WriteString("start\n")
+	exe, _ := os.Executable()
+	f.WriteString("start " + exe + "\n")
 	f.Close()
 	steps, _ := os.ReadFile(plan)
 	lines := strings.Fields(string(steps))
@@ -68,6 +69,33 @@ func TestFakeHub(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "hub: starting")
 		fmt.Fprintln(os.Stderr, "hub: another hub holds the state lock")
 		os.Exit(1)
+	case "exit4":
+		os.Exit(exitRelaunch)
+	case "ready-exit4":
+		signalReady(env.readyFD, env.expectState)
+		os.Exit(exitRelaunch)
+	case "ready-gate-exit4":
+		// Ready, then exit 4 when the test makes <starts>.go<n> (n: this start, from 1).
+		signalReady(env.readyFD, env.expectState)
+		gate := fmt.Sprintf("%s.go%d", os.Getenv("FAKE_HUB_STARTS"), n+1)
+		for _, err := os.Stat(gate); err != nil; _, err = os.Stat(gate) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		os.Exit(exitRelaunch)
+	case "ready-fds":
+		// Ready, then record the wrapper variables and any fd for restart.lock, then exit 0.
+		signalReady(env.readyFD, env.expectState)
+		var lock syscall.Stat_t
+		syscall.Stat(filepath.Join(env.expectState, "restart.lock"), &lock)
+		rec := "env=" + os.Getenv("LAZYREX_RESTART_LOCK_FD") + os.Getenv("LAZYREX_RESTART_EXEC")
+		for fd := 0; fd < 256; fd++ {
+			var st syscall.Stat_t
+			if syscall.Fstat(fd, &st) == nil && st.Dev == lock.Dev && st.Ino == lock.Ino {
+				rec += fmt.Sprintf(" lockfd=%d", fd)
+			}
+		}
+		os.WriteFile(os.Getenv("FAKE_HUB_STARTS")+".fds", []byte(rec), 0o600)
+		os.Exit(0)
 	case "ready-exit0":
 		signalReady(env.readyFD, env.expectState)
 		os.Exit(0)
