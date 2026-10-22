@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -881,7 +882,7 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	delete(h.pops.busy, op.ID)
 	path := h.cfg.managedPath
 	b, list, err := readManaged(path)
-	if err := h.settleFileAttempt(ctx, op, b); err != nil {
+	if err := h.settleFileAttempt(ctx, op, "write:managed", b); err != nil {
 		return err
 	}
 	if err != nil {
@@ -932,13 +933,25 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	if _, err := parseManagedBytes(nb); err != nil {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the new managed file is not valid: %v; nothing was written", err))
 	}
+	if err := h.renameAttempt(ctx, op, "write:managed", path, nb, "rename"); err != nil {
+		return err
+	}
+	return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "")
+}
+
+// renameAttempt replaces path with nb by one rename, with a file attempt of call (write:managed or
+// write:lock) whose intended hash is the hash of nb. The caller holds both plugin command flocks.
+// The fault points are plugin-op-before-<fault> and plugin-op-after-<fault>.
+func (h *Hub) renameAttempt(ctx context.Context, op *pluginOp, call, path string, nb []byte, fault string) error {
 	out := hashBytes(nb)
-	attempt, err := h.beginFileAttempt(ctx, op, out)
+	attempt, err := h.beginFileAttempt(ctx, op, call, out)
 	if err != nil {
 		return err
 	}
-	op.Output = out
-	if h.opFault("plugin-op-before-rename") {
+	if call == "write:managed" {
+		op.Output = out
+	}
+	if h.opFault("plugin-op-before-" + fault) {
 		return errOpCrash
 	}
 	if _, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET sent_at = ? WHERE attempt = ?`, time.Now().UTC().Format(time.RFC3339Nano), attempt); err != nil {
@@ -948,7 +961,7 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 		var re *replacedError
 		if !errors.As(err, &re) {
 			// The writer returned, under both flocks: the file shows whether the rename happened.
-			now, _ := readManagedBytes(path)
+			now, _ := os.ReadFile(path)
 			proof, outcome := "not_applied: the writer returned, and the file is not its output", "not written: "+err.Error()
 			if now != nil && hashBytes(now) == out {
 				proof, outcome = "applied: the writer returned, and the file is its output", "written"
@@ -960,18 +973,16 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 		}
 		log.Printf("plugin op %s: %v (the new file is in place)", op.ID, err)
 	}
-	if h.opFault("plugin-op-after-rename") {
+	if h.opFault("plugin-op-after-" + fault) {
 		return errOpCrash
 	}
-	if err := h.finishFileAttempt(ctx, attempt, "written", "applied: the rename returned"); err != nil {
-		return err
-	}
-	return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "")
+	return h.finishFileAttempt(ctx, attempt, "written", "applied: the rename returned")
 }
 
-// beginFileAttempt stores the op's output hash and a new file attempt with that intended hash in
-// one transaction, before the rename.
-func (h *Hub) beginFileAttempt(ctx context.Context, op *pluginOp, out string) (string, error) {
+// beginFileAttempt stores a new file attempt of call with the intended hash out, before the
+// rename. For write:managed, the op's output hash is stored in the same transaction (opWrite's
+// recovery reads it).
+func (h *Hub) beginFileAttempt(ctx context.Context, op *pluginOp, call, out string) (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -983,11 +994,13 @@ func (h *Hub) beginFileAttempt(ctx context.Context, op *pluginOp, out string) (s
 	}
 	defer tx.Rollback()
 	now := time.Now()
-	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET output = ?, updated = ? WHERE op_id = ?`, out, now.UnixMilli(), op.ID); err != nil {
-		return "", err
+	if call == "write:managed" {
+		if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET output = ?, updated = ? WHERE op_id = ?`, out, now.UnixMilli(), op.ID); err != nil {
+			return "", err
+		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, intended) VALUES (?, ?, 'write:managed', ?, ?, ?)`,
-		attempt, op.ID, now.UnixMilli(), now.UTC().Format(time.RFC3339Nano), out); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, intended) VALUES (?, ?, ?, ?, ?, ?)`,
+		attempt, op.ID, call, now.UnixMilli(), now.UTC().Format(time.RFC3339Nano), out); err != nil {
 		return "", err
 	}
 	return attempt, tx.Commit()
@@ -998,16 +1011,16 @@ func (h *Hub) finishFileAttempt(ctx context.Context, attempt, outcome, proof str
 	return err
 }
 
-// settleFileAttempt ends the op's open file attempt, which a hub stop interrupted (the writer cannot
+// settleFileAttempt ends the op's open file attempt of call, which a hub stop interrupted (the writer cannot
 // act any more), from the file b that the caller read under both flocks:
 //   - no sent_at: the rename never ran: not_applied;
 //   - the file hash is the intended hash: applied;
 //   - else unresolved: the rename may have run, and another writer changed the file later.
 //
 // The op's own recovery (opWrite) then decides its phase, as before.
-func (h *Hub) settleFileAttempt(ctx context.Context, op *pluginOp, b []byte) error {
+func (h *Hub) settleFileAttempt(ctx context.Context, op *pluginOp, call string, b []byte) error {
 	var attempt, sent, intended string
-	err := h.db.QueryRowContext(ctx, `SELECT attempt, sent_at, intended FROM plugin_op_attempts WHERE op_id = ? AND call = 'write:managed' AND outcome = ''`, op.ID).
+	err := h.db.QueryRowContext(ctx, `SELECT attempt, sent_at, intended FROM plugin_op_attempts WHERE op_id = ? AND call = ? AND outcome = ''`, op.ID, call).
 		Scan(&attempt, &sent, &intended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
