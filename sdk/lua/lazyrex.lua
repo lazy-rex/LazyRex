@@ -523,9 +523,15 @@ function M.plugin(name)
     return 'u/' .. part(key)
   end
 
+  -- call_action checks the arguments and runs action a. An agent gives its key as an argument. The
+  -- user path keeps the UI operation key (ctx.key from user_ctx); an argument key is refused there.
   local function call_action(a, ctx, call_args)
     check(a.schema, call_args)
-    ctx.key = call_args.key
+    if ctx.user then
+      if call_args.key ~= nil then fail('invalid_input', 'The user path takes the operation key, not a key argument') end
+    else
+      ctx.key = call_args.key
+    end
     local inner = {}
     for k, v in pairs(call_args) do if k ~= 'key' then inner[k] = v end end
     local fp = a.opts.fingerprint and a.opts.fingerprint(inner) or M.fingerprint({action = a.name, args = inner})
@@ -628,7 +634,9 @@ function M.plugin(name)
     end
     for _, n in ipairs(order) do
       local a = actions[n]
-      keymap[#keymap + 1] = {name = n, kind = 'client', title = a.opts.title or n, description = a.opts.description, args = a.schema}
+      -- The hub calls a user-only action with {user, operation_key, args}; the SDK checks args itself.
+      local wire = a.opts.user_only and {type = 'object', additionalProperties = true} or a.schema
+      keymap[#keymap + 1] = {name = n, kind = 'client', title = a.opts.title or n, description = a.opts.description, args = wire}
       if not a.opts.user_only then exports[#exports + 1] = n end
     end
     keymap[#keymap + 1] = {name = 'hub.forward', kind = 'client', title = 'Forward an agent action',

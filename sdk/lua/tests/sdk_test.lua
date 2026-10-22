@@ -434,3 +434,16 @@ test('fingerprints tell an array from an object with text keys', function()
   expect(sdk.fingerprint({value = {'x'}}) ~= sdk.fingerprint({value = {['1'] = 'x'}}), 'array and object').to_be(true)
   expect(sdk.fingerprint({value = {[2] = 'x'}}) ~= sdk.fingerprint({value = {['2'] = 'x'}}), 'number and text key').to_be(true)
 end)
+
+test('a user-only action keeps the UI operation key: a repeat runs once; an argument key cannot replace it', function()
+  local s = plugin([[
+runs = 0
+app.action('p.mine', {}, function(ctx) runs = runs + 1; return {runs = runs, key = ctx.key} end, {user_only = true})]])
+  local function ui(args) return s:call('p.mine', {user = 'user', operation_key = 'ui-key', args = args or {}}) end
+  expect(ui().result).to_equal({runs = 1, key = 'ui-key'})
+  expect(ui().result, 'the repeat replays').to_equal({runs = 1, key = 'ui-key'})
+  expect(ui({key = 'other'}).error.code, 'an argument key').to_be('invalid_input')
+  local entry = find(s.keymap, function(a) return a.name == 'p.mine' end)
+  expect(entry.args.additionalProperties, 'the hub sends {user, operation_key, args}').to_be(true)
+  expect(s.registered.exports, 'not exported').to_be(nil)
+end)
