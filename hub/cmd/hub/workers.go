@@ -1462,6 +1462,9 @@ func candidateChange(cand, run *pluginRun) map[string]any {
 // An entry that no manifest named has name null.
 func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 	h.entriesMu.Lock()
+	// pinned_commit is the current lock's commit: an automatic start keeps the selected run, so it
+	// can differ from commit (the running commit) until the next explicit start.
+	snap := readLockSnapshot(&h.cfg, h.entries)
 	h.mu.Lock()
 	var running []pluginRun
 	entries, refused := []any{}, []any{}
@@ -1475,6 +1478,10 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			errText = e.err.Error()
 		}
 		item := e.ref()
+		item["pinned_commit"] = ""
+		if le := snap.lock.Plugins[e.Source]; e.github && snap.err == nil && le != nil {
+			item["pinned_commit"] = le.Commit
+		}
 		if pl := h.plugins[e.name]; e.name != "" && pl != nil {
 			name, state = e.name, pl.reportedState()
 			if pl.state != "" {
