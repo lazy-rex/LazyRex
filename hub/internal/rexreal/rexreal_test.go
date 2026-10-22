@@ -8,7 +8,8 @@ import (
 )
 
 // The known default sockets of both systems count on either host: a false answer means only "not
-// a known default path", and the identity checks still follow.
+// a known default path", and the identity checks still follow. view/socket_test.go has the same
+// table for its copy of knownDefault (view/wire.go): keep the two tables equal.
 func TestKnownDefault(t *testing.T) {
 	home, xdg := "/Users/u", "/run/user/501"
 	mac := "/Users/u/Library/Application Support/rex/server.sock"
