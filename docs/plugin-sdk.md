@@ -35,14 +35,11 @@ end)
 app.panel('Todos', function(view)
   local items = {}
   for _, t in ipairs(app.db.query('SELECT id, text, done FROM todos ORDER BY id')) do
-    items[#items + 1] = {id = t.id, label = t.text, detail = t.done == 1 and 'done' or '', action = 'toggle'}
+    items[#items + 1] = {id = t.id, label = t.text, detail = t.done == 1 and 'done' or '',
+      on_select = function(ctx) app.db.exec('UPDATE todos SET done = 1 - done WHERE id = ?', t.id) end}
   end
   return {app.ui.list('todos', items)}
-end, {
-  toggle = function(ctx, item)
-    app.db.exec('UPDATE todos SET done = 1 - done WHERE id = ?', item.id)
-  end,
-})
+end)
 ```
 
 That is the whole plugin. An agent adds an item with `todo.add {text = "buy milk"}`; the user
@@ -63,6 +60,8 @@ selects an item in the panel to toggle it.
   comes back as a decimal string.
 - **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs
   again after each write to a table that it read.
+- **Clicks.** An item's `on_select` runs when the user selects it. The SDK runs the panel function
+  again first, so the handler sees the current row. An item that is gone gives a visible error.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
   run: `app.action(name, schema, fn, {user_only = true})`.
 - **Retries.** A UI action that the user's renderer sends again runs once. An agent that sends a call
