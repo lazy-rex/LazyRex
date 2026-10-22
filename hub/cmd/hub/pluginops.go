@@ -759,6 +759,8 @@ func (h *Hub) runOp(ctx context.Context, op *pluginOp) error {
 			err = h.opCall(ctx, op, "stop")
 		case "resolving":
 			err = h.opResolve(ctx, op)
+		case "fetching":
+			err = h.opFetch(ctx, op)
 		case "writing":
 			err = h.opWrite(ctx, op)
 		case "reloading":
