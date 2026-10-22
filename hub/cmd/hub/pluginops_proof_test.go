@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -529,5 +531,98 @@ func TestPluginOpLaterObservationResolutionRace(t *testing.T) {
 	}
 	if proof != "" || got != by {
 		t.Errorf("proof %q, resolved_by %q", proof, got)
+	}
+}
+
+// fileProofs are the proofs of the op's file attempts, in order.
+func fileProofs(t *testing.T, h *Hub, id string) []string {
+	t.Helper()
+	rows, err := h.db.Query(`SELECT proof FROM plugin_op_attempts WHERE op_id = ? AND call = 'write:managed' ORDER BY rowid`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		rows.Scan(&p)
+		out = append(out, p)
+	}
+	return out
+}
+
+// Each managed-file write has its own attempt, with the intended hash, before the rename:
+//   - a write in this process: applied when the rename returns;
+//   - a crash before the rename (no sent_at): not_applied, and the next run writes with a new attempt;
+//   - a crash after the rename, file unchanged: applied (the hash is the intended hash);
+//   - a crash after the rename, and another writer changed the file: unresolved (the hash differs).
+func TestPluginOpFileAttempts(t *testing.T) {
+	for _, c := range []struct {
+		point string
+		edit  bool
+		want  []string // proof prefixes; "" is unresolved
+	}{
+		{"", false, []string{"applied: the rename returned"}},
+		{"plugin-op-before-rename", false, []string{"not_applied", "applied: the rename returned"}},
+		{"plugin-op-after-rename", false, []string{"applied: the file is the intended output"}},
+		{"plugin-op-after-rename", true, []string{""}},
+	} {
+		t.Run(fmt.Sprintf("%s edit=%v", c.point, c.edit), func(t *testing.T) {
+			h, _, dir := opsTestHub(t, "")
+			pd := t.TempDir()
+			writeManaged(t, dir, opsLocal(t, pd, "x", "y"))
+			opsLoadEntries(t, h)
+			id := opsMust(t, h, "s", opRequest{Op: "settings", Entry: "managed:x", Input: json.RawMessage(`{"args":{"k":"v"}}`)})
+			if c.point != "" {
+				h.pops.fault = func(p string) bool { return p == c.point }
+				h.opsRun(context.Background())
+				h.pops.fault = nil
+			}
+			if c.edit {
+				// Another writer changes y after the rename.
+				list, _ := parseManaged(h.cfg.managedPath)
+				var f struct {
+					Plugins []managedFileEntry `json:"plugins"`
+				}
+				for _, e := range list {
+					if e.managed == "y" {
+						e.Args = map[string]string{"y": "hand"}
+					}
+					f.Plugins = append(f.Plugins, fileEntry(e))
+				}
+				b, _ := json.Marshal(f)
+				writeManaged(t, dir, string(b))
+			}
+			h.opsRun(context.Background())
+			if op := opsOf(t, h, id); op.Phase != "done" {
+				t.Fatalf("op %+v", op)
+			}
+			got := fileProofs(t, h, id)
+			if len(got) != len(c.want) {
+				t.Fatalf("file proofs %q; want %q", got, c.want)
+			}
+			for i, w := range c.want {
+				if !strings.HasPrefix(got[i], w) || (w == "" && got[i] != "") {
+					t.Fatalf("file proofs %q; want %q", got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// The proof of a reload's return: a success is applied; "invalid" changes no entry (not_applied);
+// any other error is unresolved.
+func TestReloadProof(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "applied"},
+		{refuse("invalid", "managed plugin file: bad"), "not_applied"},
+		{errors.New("context canceled"), ""},
+	} {
+		if got := reloadProof(c.err); !strings.HasPrefix(got, c.want) || (c.want == "" && got != "") {
+			t.Errorf("%v: %q; want %q", c.err, got, c.want)
+		}
 	}
 }
