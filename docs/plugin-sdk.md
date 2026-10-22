@@ -194,12 +194,15 @@ docs/testing.md.
 
 ## Start a new plugin
 
-The release archive has only the SDK runtime (`sdk/lua/boot.lua` and `sdk/lua/lazyrex.lua`), not the
+`lazyrex-hub plugin new <name> [-dir <path>]` writes a new SDK plugin (`lazyrex.json`, `main.lua`,
+`tests/<name>.lua`, `README.md`; docs/plugin-sources.md). It needs no checkout.
+
+For a fuller start, copy the to-do example. The release archive has only the SDK runtime (`sdk/lua/boot.lua` and `sdk/lua/lazyrex.lua`), not the
 example. Take the example from the repository at the tag of your release (`lazyrex-hub version`
 prints it): `https://github.com/lazy-rex/LazyRex/tree/<tag>/sdk/lua/examples/todo`. While the
 repository is private: `gh repo clone lazy-rex/LazyRex -- --branch <tag> --depth 1`, then copy
 `sdk/lua/examples/todo` from it. In your copy, change the name in `lazyrex.json`, in `lazyrex.plugin(...)` and in
-the action names. (Proposed, not built: `lazyrex-hub plugin new` and `plugin dev`.)
+the action names. (Proposed, not built: `lazyrex-hub plugin dev`.)
 
 ## Forms
 
