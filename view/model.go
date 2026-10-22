@@ -885,6 +885,12 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	// Focus on Browse… keeps the picker wait. The picked path is a paste: it goes to the field.
+	if _, paste := msg.(tea.PasteMsg); paste && m.browse != nil && m.focus == "browse:"+m.browse.Editor {
+		cmd := m.setFocus("edit:" + m.browse.Editor)
+		_, input := m.update(msg)
+		return m, tea.Batch(cmd, input)
+	}
 	if strings.HasPrefix(m.focus, "edit:") {
 		id := strings.TrimPrefix(m.focus, "edit:")
 		e := m.editors[id]

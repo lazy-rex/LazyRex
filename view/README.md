@@ -416,6 +416,8 @@ The renderer keeps the value until a paste arrives. The paste replaces the value
 and ends the wait. A key press with text ends the wait and edits the value normally.
 This also applies to a manual paste while the picker waits.
 Escape, another Browse activation, or a change of editor focus ends the wait.
+Focus on the field's own Browse… (by Tab or Enter) keeps the wait. A paste then goes to the
+field: it replaces the value, ends the wait and focuses the field.
 These actions preserve the value. App blur does not end the wait.
 A refusal shows an error and preserves the value. The renderer does not retry
 the app action automatically. The plugin can keep its folder list as a fallback.

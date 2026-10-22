@@ -250,3 +250,50 @@ func TestCleanFieldTakesChangedTreeValue(t *testing.T) {
 		t.Fatal("Tree changed the value while the picker waited")
 	}
 }
+
+// The reviewer's case: Enter moved focus to Browse… while the picker waited, and the picked path
+// was lost.
+func TestReviewerPickerPasteAfterEnter(t *testing.T) {
+	m := browseModel()
+	m.startBrowse(browseControl())
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.PasteMsg{Content: "/chosen/"})
+	if got := m.editors[editorID("start", "dir")].recoveryText(); got != "/chosen/" || m.browse != nil {
+		t.Fatalf("picker paste left text %q, focus %q, wait=%v", got, m.focus, m.browse != nil)
+	}
+}
+
+// Enter or Tab to Browse… keeps the picker wait. A picked path or a manual paste then replaces the
+// value, ends the wait and focuses the field. A move away ends the wait and keeps the value.
+func TestPickerPasteWithFocusOnBrowse(t *testing.T) {
+	id := editorID("start", "dir")
+	for _, move := range []tea.KeyPressMsg{{Code: tea.KeyEnter}, {Code: tea.KeyTab}} {
+		for _, paste := range []string{"/picked/", "manual text"} {
+			m := browseModel()
+			m.startBrowse(browseControl())
+			m.Update(move)
+			if m.focus != "browse:"+id || m.browse == nil {
+				t.Fatalf("%s: focus %q, wait %v", move, m.focus, m.browse != nil)
+			}
+			m.Update(tea.PasteMsg{Content: paste})
+			if got := m.editors[id].text(); got != paste || m.browse != nil || m.focus != "edit:"+id {
+				t.Fatalf("%s %q: text %q, focus %q, wait %v", move, paste, got, m.focus, m.browse != nil)
+			}
+		}
+		// The start form has a control after Browse…: a move to it is a move away.
+		m := testModel()
+		s := flowSnapshot()
+		s.Tree.Nodes[0].Fields[0].Value = "/old"
+		m.apply(s)
+		m.startBrowse(browseControl())
+		m.Update(move)
+		m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		if m.browse != nil || m.editors[id].text() != "/old" {
+			t.Fatalf("%s then away: wait %v, text %q", move, m.browse != nil, m.editors[id].text())
+		}
+		m.Update(tea.PasteMsg{Content: "/late/"})
+		if m.editors[id].text() != "/old" {
+			t.Fatalf("%s: a paste after the wait ended changed the field to %q", move, m.editors[id].text())
+		}
+	}
+}
