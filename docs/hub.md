@@ -511,13 +511,13 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 | --- | --- | --- |
 | `running` | the hub of this config is connected (with the wrapper pid when a wrapper owns the state) | 0 |
 | `not running` | no wrapper, and Rex lists every connected hub with its `hub.info` state: none is this state. A `gave_up` status file adds when and the last exit | 1 |
-| `backoff`, `starting` | a wrapper owns the state, and no hub of it is connected | 3 |
+| `backoff`, `starting` | a wrapper owns the state, and no hub of it is seen. When the Rex server cannot be asked, this is no proof that no hub is connected | 3 |
 | `unknown` | a wrapper holds the lock, but the status file does not match it; two connected hubs report this state; the state or `restart.lock` cannot be read; or, with no wrapper, the Rex server cannot be asked or a connected hub does not answer `hub.info`. A failed look is never `not running` | 4 |
 | (usage or config error) | | 2 |
 
 `stop` sends no signal:
 
-- `running`: `hub.admin.shutdown` to that hub (the admin guard applies, so an agent or plugin pane is refused), then it waits until a successful `rex client ls` no longer lists that client and, when a process held `restart.lock` (with a matching status file or not), until the lock is free and can be asked. All of stop, the shutdown call included, has one 10 s bound. Prints `stopped`, exit 0. A hub that is still listed, or a listing that fails, until the bound: exit 1, never `stopped`.
+- `running`: `hub.admin.shutdown` to that hub (the admin guard applies, so an agent or plugin pane is refused), then it waits until a successful `rex client ls` no longer lists that client and, when a process held `restart.lock` (with a matching status file or not), until the lock is free and can be asked. The shutdown call and the exit observation share one 10 s bound, which starts when the shutdown is sent. The first look (status) is before it, and a killed rex call can add up to 500 ms for its pipes. Prints `stopped`, exit 0. A hub that is still listed, or a listing that fails, until the bound: exit 1, never `stopped`.
 - `backoff`, `starting`: prints the phase and `stop it in its pane: Ctrl-C, or close that pane`, exit 3. The wrapper keeps running.
 - `not running`: exit 0. `unknown`: no action, exit 4.
 
