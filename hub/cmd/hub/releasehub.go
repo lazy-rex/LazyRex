@@ -442,12 +442,15 @@ func hubPrecheck(r *releaser) error {
 	if err != nil {
 		return err
 	}
-	tool, err := r.toolPath()
-	if err != nil {
-		return err
-	}
-	if err := r.checkRehearsal(tool); err != nil {
-		return err
+	// The rehearsal gate binds a live run. A lab run is the rehearsal: it has no record.
+	if !r.spec.Lab {
+		tool, err := r.toolPath()
+		if err != nil {
+			return err
+		}
+		if err := r.checkRehearsal(tool); err != nil {
+			return err
+		}
 	}
 	if err := r.needHead(c.From.Commit, "OLD"); err != nil {
 		return err

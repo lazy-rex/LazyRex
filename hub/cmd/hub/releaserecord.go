@@ -30,13 +30,15 @@ const (
 
 // relRehearsal is the rehearsal record.
 type relRehearsal struct {
-	Pass        bool              `json:"pass"`
-	At          string            `json:"at"`
-	Bound       map[string]string `json:"bound"` // the sha256 of each bound value, by field
-	Tier        string            `json:"tier"`
-	TierReasons []string          `json:"tier_reasons"`
-	Phases      []relPhase        `json:"phases"`
-	Lab         string            `json:"lab"` // the lab directory (deleted after a pass)
+	Pass        bool                `json:"pass"`
+	At          string              `json:"at"`
+	Bound       map[string]string   `json:"bound"` // the sha256 of each bound value, by field
+	Tier        string              `json:"tier"`
+	TierReasons []string            `json:"tier_reasons"`
+	Phases      []relPhase          `json:"phases"`
+	Lab         string              `json:"lab"`               // the lab directory (deleted after a pass)
+	Mirrors     map[string]string   `json:"mirrors,omitempty"` // rehearse: the HEAD of each GitHub mirror of the lab
+	Commits     map[string][]string `json:"commits,omitempty"` // rehearse: the commits that the mirrors held, by owner/repo
 }
 
 type relPhase struct {

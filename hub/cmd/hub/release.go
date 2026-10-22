@@ -157,6 +157,8 @@ type releaser struct {
 	syncDigest func(source string) (string, error) // the digest of a commit-form source
 	// testStop allows RELEASE_TEST_STOP outside a proved lab (unit tests only).
 	testStop string
+	// rehearseLab and rehearseTier are the -lab and -tier flags of rehearse.
+	rehearseLab, rehearseTier string
 }
 
 func (r *releaser) say(format string, args ...any) {
@@ -529,6 +531,8 @@ func relStepFor(name string) (relStep, bool) {
 		return hub(hubRollback)
 	case "resume":
 		return hub(hubResume)
+	case "rehearse":
+		return relStep{open: openRehearse, run: relKind("hub", hubRehearse)}, true
 	}
 	return relStep{}, false
 }
