@@ -834,3 +834,28 @@ app.action('p.each', {}, function() return {count = app.db.each('SELECT n FROM t
   expect(r.result.count).to_be(25)
   expect(seen.calls[2].sql).to_be('SELECT * FROM (SELECT n FROM t -- all of them\n) LIMIT -1 OFFSET ?1')
 end)
+
+test('a render never opens a transaction: db.each pages without one; a write or db.transaction fails clearly', function()
+  -- The hub sends no render token in view.render yet, so the frame must know that it is a render
+  -- without one (hub lead, the render rule: a render reads the committed state, never in a transaction).
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)'}
+app.panel('Each', function()
+  local items = {}
+  app.db.each('SELECT id, text FROM todos', function(row) items[#items + 1] = {id = row.id, label = row.text} end)
+  return {app.ui.list('todos', items)}
+end, {id = 'each'})
+app.panel('Write', function() app.db.exec('INSERT INTO todos (text) VALUES (?)', 'x'); return {} end, {id = 'write'})
+app.panel('Tx', function() app.db.transaction(function() end); return {} end, {id = 'tx'})]])
+  local before = s.sql.count('hub.sql.begin')
+  local r = s:call('view.render', {route = '/panels/each', user = 'user'})
+  expect(r.error, show(r)).to_be(nil)
+  expect(s.sql.count('hub.sql.begin') - before, 'no hub.sql.begin in a render').to_be(0)
+  local w = s:call('view.render', {route = '/panels/write', user = 'user'})
+  expect(w.error and w.error.code, show(w)).to_be('refused')
+  expect(w.error.message).to_be('A render cannot write: db.exec runs in an action or a select handler')
+  expect(#s.sql.rows('todos'), 'nothing written').to_be(0)
+  local t = s:call('view.render', {route = '/panels/tx', user = 'user'})
+  expect(t.error and t.error.message).to_be('A render cannot write: db.transaction runs in an action or a select handler')
+  expect(s.sql.count('hub.sql.begin') - before, 'still no hub.sql.begin').to_be(0)
+end)

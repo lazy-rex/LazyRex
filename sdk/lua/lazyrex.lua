@@ -208,7 +208,9 @@ end
 -- (default true). It commits at the end: with key and store, the reply is saved in the same commit,
 -- unless it is a running reply. An error rolls back and raises again.
 local function run(spec, fn, ...)
-  local f = {tx = spec.tx ~= false, render = spec.render, notices = {}}
+  -- in_render marks a view render. A render never opens a transaction (hub contract); the render token
+  -- only names the render for read tracking, and no hub sends it yet.
+  local f = {tx = spec.tx ~= false, render = spec.render, in_render = spec.in_render, notices = {}}
   local outer = S.frame
   S.frame = f
   local ok, result = pcall(fn, ...)
@@ -258,8 +260,14 @@ end
 -- Database ---------------------------------------------------------------------------------------
 
 local db = {}
+-- no_write refuses a write in a view render: a render reads the committed state only.
+local function no_write(name)
+  local f = frame()
+  if f and f.in_render then fail('refused', 'A render cannot write: ' .. name .. ' runs in an action or a select handler') end
+end
 -- db.exec(sql, ...) runs one statement. It answers {changes, id}, and rows for RETURNING.
 function db.exec(sql, ...)
+  no_write('db.exec')
   if type(sql) ~= 'string' then fail('invalid_input', 'db.exec needs SQL text') end
   local r = sql_call('hub.sql.exec', {sql = sql, params = params(select('#', ...), ...)})
   local out = {changes = r.changes, id = decode_value(r.id)}
@@ -294,9 +302,9 @@ function db.each(sql, ...)
   if type(sql) ~= 'string' then fail('invalid_input', 'db.each needs SQL text') end
   if type(fn) ~= 'function' then fail('invalid_input', 'db.each needs a function as its last argument') end
   local list = params(n - 1, ...)
-  -- A render reads with no transaction (the hub tracks its reads); there the pages are not one snapshot.
+  -- A render reads with no transaction; there the pages are not one snapshot.
   local f = frame()
-  local within = (f and f.render) and function(g) return g() end or db.transaction
+  local within = (f and f.in_render) and function(g) return g() end or db.transaction
   local rows = within(function()
     local r = sql_call('hub.sql.query', {sql = sql, params = list})
     local out = rows_of(r)
@@ -317,6 +325,7 @@ end
 -- db.batch(statements) runs {sql, ...values} statements in one transaction, all or nothing. In a
 -- handler transaction it runs inside it.
 function db.batch(statements)
+  no_write('db.batch')
   local list = {}
   for i, s in ipairs(statements) do
     list[i] = {sql = s[1], params = params(math.max(#s - 1, s.n and s.n - 1 or 0), unpack(s, 2, s.n or #s))}
@@ -329,6 +338,7 @@ end
 -- db.transaction(fn) runs fn in one transaction: for {tx = false} handlers, timers with
 -- {tx = false} and start code. Inside a handler transaction it only calls fn.
 function db.transaction(fn, ...)
+  no_write('db.transaction')
   local f = frame()
   if f and f.tx then return fn(...) end
   return run({tx = true}, fn, ...)
@@ -787,10 +797,10 @@ function M.plugin(name)
     local panel = panels[a.route]
     if action == 'view.render' then
       if panel then
-        return sized({tree = run({tx = false, render = a.render}, function() return tree(panel, panel.fn(user_ctx(a))) end)})
+        return sized({tree = run({tx = false, render = a.render, in_render = true}, function() return tree(panel, panel.fn(user_ctx(a))) end)})
       end
       local v = view_of(a.route)
-      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render}, v.handlers.render, user_ctx(a), a)}) end
+      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render, in_render = true}, v.handlers.render, user_ctx(a), a)}) end
       fail('not_found', 'Unknown route ' .. tostring(a.route))
     end
     local ctx = user_ctx(a)
