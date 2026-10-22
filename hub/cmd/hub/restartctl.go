@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -35,7 +36,7 @@ const (
 	ctlUnknown    = 4
 )
 
-const ctlStopWait = 10 * time.Second
+var ctlStopWait = 10 * time.Second // a test shortens it
 
 type ctlView struct {
 	cfg      Config
@@ -131,10 +132,12 @@ func readRestart(state string) (holder int, st *restartStatus, trusted bool, err
 	return holder, st, trusted, err
 }
 
-func (v *ctlView) rexCmd(timeout time.Duration, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+// rexCmd runs rex until the deadline.
+func (v *ctlView) rexCmd(deadline time.Time, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, v.rex, append([]string{"-S", v.cfg.Server, "--autostart=false", "--timeout", "3s"}, args...)...)
+	cmd.WaitDelay = 500 * time.Millisecond // a killed rex whose child keeps the pipes open
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -143,10 +146,9 @@ func (v *ctlView) rexCmd(timeout time.Duration, args ...string) ([]byte, error) 
 	return out.Bytes(), nil
 }
 
-// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). A hub that
-// does not answer hub.info (an older hub) is listed with an empty state.
-func (v *ctlView) hubs() ([]hubClient, error) {
-	out, err := v.rexCmd(5*time.Second, "client", "ls", "--json")
+// hubIDs lists the client IDs of the connected lazyrex-hub clients.
+func (v *ctlView) hubIDs(deadline time.Time) ([]string, error) {
+	out, err := v.rexCmd(deadline, "client", "ls", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -162,13 +164,26 @@ func (v *ctlView) hubs() ([]hubClient, error) {
 	if err := json.Unmarshal(out, &listing); err != nil {
 		return nil, fmt.Errorf("rex client ls: %v", err)
 	}
-	var hubs []hubClient
+	var ids []string
 	for _, c := range listing.Clients {
-		if c.Info.Label != "lazyrex-hub" || c.ConnectionState != "connected" {
-			continue
+		if c.Info.Label == "lazyrex-hub" && c.ConnectionState == "connected" {
+			ids = append(ids, c.ClientID)
 		}
-		h := hubClient{ID: c.ClientID}
-		if out, err := v.rexCmd(5*time.Second, "-C", c.ClientID, "do", "hub.info"); err == nil {
+	}
+	return ids, nil
+}
+
+// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). A hub that
+// does not answer hub.info (an older hub) is listed with an empty state.
+func (v *ctlView) hubs() ([]hubClient, error) {
+	ids, err := v.hubIDs(time.Now().Add(5 * time.Second))
+	if err != nil {
+		return nil, err
+	}
+	var hubs []hubClient
+	for _, id := range ids {
+		h := hubClient{ID: id}
+		if out, err := v.rexCmd(time.Now().Add(5*time.Second), "-C", id, "do", "hub.info"); err == nil {
 			var info struct {
 				State string `json:"state"`
 				PID   int    `json:"pid"`
@@ -277,20 +292,18 @@ func (v *ctlView) stop(stdout io.Writer) int {
 		}
 		return code
 	}
-	if out, err := v.rexCmd(15*time.Second, "-C", v.own.ID, "do", "hub.admin.shutdown"); err != nil {
+	deadline := time.Now().Add(ctlStopWait) // one bound for all of stop
+	if out, err := v.rexCmd(deadline, "-C", v.own.ID, "do", "hub.admin.shutdown"); err != nil {
 		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", err, strings.TrimSpace(string(out)))
 		return 1
 	}
 	wrapped := v.trusted
-	for deadline := time.Now().Add(ctlStopWait); ; time.Sleep(200 * time.Millisecond) {
-		gone := true
-		if hubs, err := v.hubs(); err == nil {
-			for _, h := range hubs {
-				if h.ID == v.own.ID {
-					gone = false
-				}
-			}
-		}
+	// Only a successful listing without the client shows that the hub is gone.
+	var seenErr error // the last look, when it failed
+	for ; ; time.Sleep(200 * time.Millisecond) {
+		ids, err := v.hubIDs(deadline)
+		gone := err == nil && !slices.Contains(ids, v.own.ID)
+		seenErr = err
 		if gone && wrapped {
 			if holder, _, _, _ := readRestart(v.state); holder > 0 {
 				gone = false
@@ -301,7 +314,10 @@ func (v *ctlView) stop(stdout io.Writer) int {
 			return 0
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintf(stdout, "the hub did not stop within %s\n", ctlStopWait)
+			fmt.Fprintf(stdout, "the hub was not seen to stop within %s\n", ctlStopWait)
+			if seenErr != nil {
+				fmt.Fprintf(stdout, "the last failed look: %v\n", seenErr)
+			}
 			return 1
 		}
 	}
