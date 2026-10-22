@@ -616,6 +616,10 @@ func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, 
 			return nil
 		}
 	}
+	// A local source runs its snapshot; a failure refuses before the retirement.
+	if cand, err = h.publishLocal(e, cand); err != nil {
+		return h.refuseStart(pl, err)
+	}
 	if pl.BlockID != "" {
 		ok, err := h.retire(ctx, pl)
 		if err != nil {
@@ -800,6 +804,23 @@ func (h *Hub) checkStart(pl *Plugin) (*configEntry, *pluginRun, error) {
 		return nil, nil, refuse("refused", "%v", err)
 	}
 	return e, cand, nil
+}
+
+// refuseStart gives pl state refused (retained while its recorded instance lives) with the text
+// of err, after the start passed checkStart: nothing was retired. It returns err as a refusal.
+func (h *Hub) refuseStart(pl *Plugin, err error) error {
+	text := strings.TrimPrefix(err.Error(), "refused: ")
+	h.mu.Lock()
+	pl.state, pl.refusal, pl.waiting = "refused", text, nil
+	if pl.BlockID != "" && pl.ChildPID > 0 && alive(pl.ChildPID, pl.ChildStart) {
+		pl.state = "retained"
+	}
+	state := pl.state
+	h.mu.Unlock()
+	h.ev.emit("plugin_refused", map[string]any{"plugin": pl.Name, "state": state, "error": text})
+	h.kickWaiting()
+	go h.changed("plugins")
+	return refuse("refused", "%s", text)
 }
 
 // errKept is checkStart's result for a record whose entry is gone at admission: the start takes
