@@ -8,15 +8,34 @@
 -- s.sql is the fake hub.sql; s.keymap, s.registered and s.replies record what the plugin sent.
 return function(sdk_dir, base, opts)
   opts = opts or {}
-  local s = {timers = {}, events = {}, replies = {}, hub_calls = {}, printed = {}, agents = opts.agents or {[7] = 'alice', [8] = 'bob'}}
+  local s = {timers = {}, events = {}, replies = {}, hub_calls = {}, parts = {}, part_sets = {}, printed = {}, agents = opts.agents or {[7] = 'alice', [8] = 'bob'}}
   s.sql = dofile(sdk_dir .. '/tests/fake_sql.lua')()
+  -- A commit with reply_parts saves the joined set, as the hub does.
+  s.sql.resolve_parts = function(rp) return rex.json.decode(table.concat(s.part_sets[rp.id] or {})) end
   local args = {hub_client_id = 'hub', instance_id = 'todo-1', plugin_session = 'session-1'}
   for k, v in pairs(opts.args or {}) do args[k] = v end
   local function hub_call(action, a)
     s.hub_calls[#s.hub_calls + 1] = action
-    if opts.hub and opts.hub[action] then return opts.hub[action](a) end
+    local limits = opts.limits ~= false and (opts.limits or {inline_max = 45056, part_bytes = 57344, max_total = 786432}) or nil
+    if opts.hub and opts.hub[action] then
+      local r, e = opts.hub[action](a)
+      -- An override of hub.register still gets the limits, as the hub sends them.
+      if action == 'hub.register' and type(r) == 'table' and r.limits == nil then r.limits = limits end
+      return r, e
+    end
     if action:sub(1, 8) == 'hub.sql.' then return s.sql.handle(action, a) end
-    if action == 'hub.register' then s.registered = a; return {} end
+    -- The limits are the hub's (chunking v1.1); opts.limits replaces them, opts.limits = false sends none.
+    if action == 'hub.register' then
+      s.registered = a
+      return {limits = limits}
+    end
+    -- hub.reply.part: s.parts records each call; s.part_sets keeps the data of each set by index.
+    if action == 'hub.reply.part' then
+      s.parts[#s.parts + 1] = a
+      s.part_sets[a.id] = s.part_sets[a.id] or {}
+      s.part_sets[a.id][a.index + 1] = a.data
+      return {}
+    end
     if action == 'hub.identify' then
       local agent = s.agents[a.pid]
       if not agent then return {found = false} end

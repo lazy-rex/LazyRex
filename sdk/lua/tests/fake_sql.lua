@@ -155,7 +155,7 @@ return function()
       end
     end
     fake.state = t.db
-    if args.key then fake.ops[args.key] = {fingerprint = args.fingerprint, reply = copy(args.reply)} end
+    if args.key then fake.ops[args.key] = {fingerprint = args.fingerprint, reply = args.reply_parts and fake.resolve_parts(args.reply_parts) or copy(args.reply)} end
     fake.notices = fake.notices or {}
     for _, n in ipairs(args.notices or {}) do fake.notices[#fake.notices + 1] = n end
     fake.open = nil
