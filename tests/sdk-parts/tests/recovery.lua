@@ -15,10 +15,9 @@ end
 test('a lost commit reply, then a retry with the same key: one write and the whole first answer', function()
   -- The commit runs and stands; its reply to the plugin becomes disconnected.
   local f = fault({point = 'action', action = 'hub.sql.commit', when = 'after', mode = 'lose-reply', plugin = 'sp'})
-  local ok, first = pcall(function() return alice:call_short('sp.save', {kb = 150, key = 'k1'}) end)
+  -- The SDK takes its error path: the call fails, although the commit stands.
+  expect_error(function() alice:call_short('sp.save', {kb = 150, key = 'k1'}) end, 'unavailable')
   expect(fault_fired(f), 'the fault fired').to_be(true)
-  print('first call: ' .. (ok and 'answered' or ('failed: ' .. tostring(type(first) == 'table' and (first.code or first.message) or first))))
-  if ok then whole(first, 'first call') end
   local again = alice:call_short('sp.save', {kb = 150, key = 'k1'})
   whole(again, 'retry')
   expect(alice:call('sp.count', {}).n, 'one write').to_be(1)
