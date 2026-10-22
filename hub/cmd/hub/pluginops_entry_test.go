@@ -275,3 +275,35 @@ func TestPluginOpAdmissionReloadRace(t *testing.T) {
 	}
 	<-done
 }
+
+// A rollback hub (OLD) does not write entry_identity. If OLD binds the name x to another entry,
+// starts it and stops it, the row keeps managed:x's identity. A stop of managed:x that a crash
+// interrupted before the rollback must not take that stopped row as its outcome: the stop attempt
+// names the instance it was for, and OLD's instance is another one (codex-26).
+func TestPluginOpStopObservationAfterOldHub(t *testing.T) {
+	h, _, dir := opsTestHub(t, "")
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "x"))
+	opsLoadEntries(t, h)
+	pl := &Plugin{Name: "x", entry: opsEntry(t, h, "managed:x")}
+	if err := h.loadPluginRow(context.Background(), pl); err != nil {
+		t.Fatal(err)
+	}
+	pl.InstanceID, pl.BlockID = "x-1-aaaaaaaa", "block:x1"
+	if err := h.savePlugin(context.Background(), pl); err != nil {
+		t.Fatal(err)
+	}
+	h.plugins["x"] = pl
+	id := opsMust(t, h, "stop-old", opRequest{Op: "stop", Entry: "managed:x"})
+	h.pops.fault = func(p string) bool { return p == "plugin-op-after-stop" }
+	h.opsRun(context.Background())
+	h.pops.fault = nil
+	// OLD's savePlugin, which names its columns and has no entry_identity: another instance ran
+	// and was stopped.
+	if _, err := h.db.Exec(`UPDATE plugins SET desired = 'stopped', instance_id = 'x-2-bbbbbbbb', block_id = '' WHERE name = 'x'`); err != nil {
+		t.Fatal(err)
+	}
+	h.opsRun(context.Background())
+	if op := opsOf(t, h, id); op.Phase != "unknown" {
+		t.Fatalf("the observation took OLD's stop as the op's: %+v", op)
+	}
+}
