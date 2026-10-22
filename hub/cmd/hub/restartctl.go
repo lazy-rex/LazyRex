@@ -47,7 +47,7 @@ type ctlView struct {
 	rexErr   error       // the Rex server could not be asked
 	holder   int         // the restart.lock holder; 0 when none
 	status   *restartStatus
-	trusted  bool // status belongs to holder
+	trusted  bool  // status belongs to holder
 	ownTwice bool  // more than one connected hub reports this state
 	localErr error // the state or its restart lock cannot be read: nothing about this state is known
 }
