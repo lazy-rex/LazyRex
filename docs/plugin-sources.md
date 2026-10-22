@@ -89,6 +89,8 @@ reloads.
 Pin sync step 1 (section 6a): `lazyrex-hub plugin export` and `lazyrex-hub plugin pull -file`
 (`pinsync.go`). Step 2 (hub to hub) is not designed in detail.
 
+`@latest`, the highest release tag (`pluginlatest.go`): sections 3, 5, 6, 6a and 7.
+
 ## Terms
 
 - **Source**: where a plugin comes from. A local directory, or a GitHub repository at a ref.
@@ -124,7 +126,8 @@ Pin sync step 1 (section 6a): `lazyrex-hub plugin export` and `lazyrex-hub plugi
   contain `@`, so the first `@` ends the path and the ref is the rest. (A ref can contain `#`, so a
   `@ref#subdir` form would be ambiguous.) Text: `source <s>: subdir <d> must be a relative path of
   names (A-Z, a-z, 0-9, ., _, -)`.
-- `<ref>` is required. See section 5 for its forms.
+- `<ref>` is required. See section 5 for its forms. The ref `latest` is reserved: it selects the
+  highest release tag (section 5, "@latest").
 - The fields `name`, `path`, `events` and `notice` are refused in an entry. There is no
   compatibility path. Example text: `plugin entry 2: "path" is removed: use "source" (a directory
   with lazyrex.json, or github:owner/repo@ref)`.
@@ -173,10 +176,23 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
 
 ```json
 {"version": 1, "plugins": {"<exact source string>": {
-  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "branch|tag|commit",
-  "commit": "<40 hex>", "digest": "sha256:<hex>", "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "",
+  "ref_kind": "branch|tag|commit|latest", "tag": "vX.Y.Z", "commit": "<40 hex>", "digest": "sha256:<hex>",
+  "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
 ```
 
+- `version` follows the content of the file. A lock with a latest entry (`ref_kind` `latest`, or
+  a `tag` field) is version 2. Every other lock is version 1, with the bytes of a hub before
+  `@latest`: no `tag` field. When the last latest entry goes, the lock is version 1 again. A hub
+  reads versions 1 and 2. A version 1 lock with a latest form is refused: `the entry for <source>:
+  a latest entry needs version 2`. Another version: `version N is not supported (this hub reads
+  versions 1 and 2)`.
+- A hub before `@latest` refuses a version 2 lock (`version 2 is not supported (this hub reads
+  version 1)`): it refuses every GitHub entry, and its local entries start. It reads a version 1
+  lock of this hub as its own: the bytes are equal except for the random cache token, and its
+  `plugin sync` leaves that lock unchanged (lab: `TestLatestOldBinaryLab`, old hub 6ed5c58).
+- `tag` is the release tag that `@latest` selected (section 5). Only a latest entry has it; it is
+  absent, never empty or null, on every other entry.
 - The key is the source string exactly as the config writes it. A changed source string (for
   example `@main` to `@v2`) is a new key: `sync` installs it. It is not an update of the old key.
 - `dir` is relative to `<state>/plugins`.
@@ -190,6 +206,7 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
 - `owner`, `repo`, `subdir` and `ref` equal the parsed source;
 - `ref_kind` matches the ref form;
 - `commit` is 40 lowercase hex, and equals the ref when the ref is a commit;
+- a latest entry has a `tag` of the release form (section 5); no other entry has a `tag`;
 - `dir` is `<owner>/<repo>/<commit>.<token>` under `github/`;
 - the manifest name in the cache entry equals the lock `name`;
 - the digest matches.
@@ -199,7 +216,9 @@ lazyrex-hub plugin sync`.
 
 **Repair.** The key and the commit are the pin. Every other field is derived from them.
 
-- A commit is **trusted** when it is 40 lowercase hex and, for a commit ref, equal to the ref.
+- A commit is **trusted** when it is 40 lowercase hex and, for a commit ref, equal to the ref. The
+  commit of a latest entry also needs a `tag` of the release form: sync cannot rebuild the tag
+  from the commit. A `tag` on another entry is a field that sync rebuilds: sync drops it.
 - `sync` keeps a trusted commit and rebuilds every other field. It fetches that exact commit,
   publishes a new dir, computes the digest, and reads the name from the fetched manifest.
 - An untrusted commit is malformed, not equal to a commit ref, not a commit, or not available.
@@ -252,8 +271,10 @@ The hub uses the git CLI for `plugin sync` and `plugin update` only, never at st
 exception approved by the coordinator). Git runs with `GIT_TERMINAL_PROMPT=0`. It uses the user's
 credential helper and `url.insteadOf` (for SSH).
 
-**Ref forms**: `<name>`, `refs/heads/<name>`, `refs/tags/<name>`, or 40 lowercase hex. A short hex
-is a name, not a commit. `git check-ref-format` validates `refs/heads/<name>` and
+**Ref forms**: `latest`, `<name>`, `refs/heads/<name>`, `refs/tags/<name>`, or 40 lowercase hex.
+The ref `latest` has the kind `latest` only (see "@latest" below): a branch or a tag named
+`latest` needs its full ref, `refs/heads/latest` or `refs/tags/latest`. A short hex is a name, not
+a commit. `git check-ref-format` validates `refs/heads/<name>` and
 `refs/tags/<name>`. Error: `github:o/r@<ref>: <ref> is not a valid ref`.
 
 **Resolve**: `git ls-remote <url> refs/heads/<n> refs/tags/<n> refs/tags/<n>^{}`.
@@ -265,6 +286,27 @@ is a name, not a commit. `git check-ref-format` validates `refs/heads/<name>` an
 - An annotated tag resolves to its `^{}` commit.
 - A 40-hex ref is not resolved.
 - No line matches: `github:o/r@<ref>: ref <ref> is not found`.
+
+**@latest** selects the highest release tag that points to a commit (`pluginlatest.go`).
+
+- A release tag matches `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`: `v`, then three
+  decimal numbers without a leading zero. A pre-release (`v1.0.0-rc1`), build metadata, an
+  upper-case `V` and every other name are not release tags.
+- Order: major, then minor, then patch, as decimal numbers with no length limit (`v1.10.0` is
+  higher than `v1.9.0`).
+- `git ls-remote --tags -- <url> refs/tags/v*` lists the candidates. ls-remote gives no object
+  types. So the command fetches each candidate, highest first, into a bare repository in
+  `<state>/plugins/.tmp/<random>/` (`git fetch -q --no-tags --depth 1`), and reads `git cat-file
+  -t <tag ref>^{}`. The `^{}` peels every level of annotated tags.
+  - `commit`: this tag is the release.
+  - `tree` or `blob`: the command skips the tag and names it in an `ignored` line (section 6).
+  - Any other type: `refs/tags/<t> points to the object type "<type>"`.
+  - A git failure fails the resolution. A failure never selects an older release.
+- No release tag points to a commit: `the repository has no version tag vX.Y.Z that points to a
+  commit`. There is no fallback to a branch.
+- Then the release goes through the fetch below, by its tag ref: a tag that moves after the
+  selection is refused (`moved during the fetch`). The lock entry gets `ref` `latest`, `ref_kind`
+  `latest`, `tag` and the commit.
 
 **Fetch** into a bare repository in `<state>/plugins/.tmp/<random>/` (`git init -q --bare`, then
 `git fetch -q --depth 1`). The tree is extracted into the stage of section 4, "Publication":
@@ -321,8 +363,33 @@ The commands are CLI only. A hub action must answer fast, because the hub has on
     "Repair").
   - It never moves an existing locked commit.
   - It drops lock entries whose source is no longer in the config.
+  - A latest source: the first sync selects the highest release (section 5). A later sync keeps
+    the locked tag and commit, also when a higher release exists. A repair fetches the locked
+    commit by its ID and keeps the locked tag, also when the tag is gone from the repository.
 - `lazyrex-hub plugin update -config <cfg> [name|source ...]`: resolve the refs again (all, or the
-  named entries), fetch, and rewrite the lock.
+  named entries), fetch, and rewrite the lock. A latest entry selects the highest release again:
+  - the same tag at the same commit, with a good cache entry: unchanged (no line);
+  - a higher tag: `updated`;
+  - the same tag at another commit: refused, `the tag <t> moved from <old> to <new>; a release tag
+    must not move: check the repository`;
+  - a highest tag lower than the locked tag: refused, `the newest version tag is <t>, lower than
+    the locked <locked>`. Update never goes to a lower release;
+  - a latest entry whose commit is not trusted (section 3): replaced by the selected release.
+- Each tag that the selection skips gives a line before the verb line of its entry: `ignored
+  <source>: refs/tags/<t> points to a <tree|blob>, not a commit`. The line also prints when the
+  lock does not change. If that write fails: `plugin <cmd>: the lock is unchanged, but the result
+  lines are not written: ...`.
+- **A legacy entry**: a lock entry of the source ref `latest` with `ref_kind` `branch` or `tag`,
+  written before `@latest` (a branch or a tag named latest). sync, pull and the hub refuse it with
+  this text; the hub refuses only that plugin:
+
+  `@latest now means the highest version tag vX.Y.Z. To convert this entry (it replaces the
+  pinned <kind> commit <c>), run: lazyrex-hub plugin update -config <cfg> <source>. To keep
+  following the <kind> named latest, change the source to @refs/heads/latest` (`@refs/tags/latest`
+  for a tag).
+
+  Only update converts it. The converted entry is a latest entry; its line is `converted <source>:
+  <kind> latest <old commit> -> <tag> <commit>`, and it has no other verb line.
 - `lazyrex-hub plugin status -config <cfg>`: the source, ref, locked commit and cache state (ok,
   missing, changed) of each entry, and the changed entries that no lock references. A latest
   entry names its locked release tag in the ref field: `ref latest v1.2.0`; the field count stays
@@ -370,7 +437,8 @@ the old lock or the new lock, never a mix.
 The machines of the user select the same pins (commit and digest) for the GitHub sources that
 their configs share. Pull changes only the selected pins in the local lock. A running instance
 keeps its run commit: `hub.plugins.reload` or a start attempt shows the new candidate, and a stop
-and a start apply it (section 7). The local lock format does not change.
+and a start apply it (section 7). Pull writes the lock of section 3: version 2 only while the lock
+has a latest entry.
 
 Each machine fetches each commit from GitHub itself. No cache entry moves between machines. The
 digest shows that two machines have the same tree. Observed for one tree
@@ -387,9 +455,18 @@ digest. A source name can name a private repository.
 
 ```json
 {"version": 1, "hub": "<32 lowercase hex>", "entries": [{"source": "<exact source>",
-  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "commit": "", "digest": ""}]}
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "tag": "",
+  "commit": "", "digest": ""}]}
 ```
 
+- `version` follows the content, as for the lock (section 3): 2 when an entry is a latest entry,
+  else 1, with no `tag` field. A hub reads 1 and 2. A version 1 document with a latest entry is
+  refused: `entry N (<source>): a latest entry needs pin document version 2`. Another version:
+  `pin document version N is not supported by this hub (it reads versions 1 and 2)`. A hub before
+  `@latest` refuses a version 2 document with its text (`pin document version 2 is not supported
+  by this hub (it reads version 1)`), and its lock stays unchanged (lab: `TestLatestOldBinaryLab`).
+- `tag`: only on a latest entry, and required there. Texts: `tag is missing`, `tag "<t>" is not a
+  version tag vX.Y.Z`, `tag is set, but ref_kind is <kind>`.
 - The entries are sorted by source. The same pull identity (`hub`) and the same pins give the same
   bytes; two locks with the same pins give different documents. The document has no path
   and no cache token. An empty document has `"entries": []`.
@@ -407,9 +484,10 @@ one lock share them.
   export makes it (a new file, fsync). A malformed file: `<path> is not valid: ...; remove it to
   make a new pull identity (peers then have no base for this lock)`.
 - `<lock>.peers.json`: `{"version": 1, "peers": {"<id>": {"<source>": {"commit", "digest"}}}}`,
-  the merge base: for each peer identity, the pins of the last pull from it. A malformed file
-  refuses the pull before any fetch: `<path> is not valid: ...; repair it, or remove it (the next
-  pull then reports each differing key as a conflict)`.
+  the merge base: for each peer identity, the pins of the last pull from it. A base pin of a
+  latest entry also has `tag`; the file is then version 2, else version 1 with no `tag` field.
+  A malformed file refuses the pull before any fetch: `<path> is not valid: ...; repair it, or
+  remove it (the next pull then reports each differing key as a conflict)`.
 
 **Export.** Under both flocks, export reads the lock and the managed file as one snapshot. It
 exports each GitHub entry of the config and of the managed file, and only when each one passes
@@ -418,7 +496,8 @@ entry's text, writes nothing and makes no pull identity. An orphaned lock entry 
 are not exported.
 
 **The merge.** For each GitHub source of the local config or managed file that the document has
-(base = the base of the document's `hub`; equal = the same commit and digest):
+(base = the base of the document's `hub`; equal = the same commit, digest and tag; so a tag
+alone is a difference):
 
 - not installed: taken;
 - local equals peer: unchanged, and the base advances;
@@ -436,6 +515,11 @@ and its base stays.
 **Pull.** Pull selects imported commits. It does not resolve a ref.
 
 - A document whose `hub` is this lock's own identity is refused.
+- A legacy entry in the local lock (section 6) refuses the pull before any fetch, with the
+  conversion text.
+- A taken pin keeps the tag of the document. A taken tag lower than the local tag is taken (the
+  peer went back on purpose), with one line on standard error: `plugin pull: warning: <source>:
+  lower version <t> than the local <local>`. The result lines on standard output keep their form.
 - Each taken pin is fetched by its commit from the repository of the local source. A full ref form
   gives the kind; for a short ref, the imported `ref_kind` decides. The name comes from the fetched
   manifest. The digest must equal the document: `plugin <name>: the tree of <commit> differs from
@@ -768,6 +852,16 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
 | A latest run in `hub.plugins` | `tag` in the entry and in a kept record; no `tag` key for another run; candidate `"tag"`: the new tag, or `null` for a candidate without one; no key when equal; a saved run keeps its tag across a load | U |
+| A latest run in a hub: a new release, update, reload, then replace with the old and the new `expect_run` | the candidate has the new commit and tag, the instance is the same; `candidate_changed`; a new instance with the new tag and no candidate | L (`TestLatestLab`) |
+| A release tag: each form; the order (`v1.10.0` > `v1.9.0`, no length limit) | only `vX.Y.Z` without a leading zero; decimal order | U |
+| @latest resolution: higher tags to a tree or a blob; no release; a failed fetch or ls-remote; a tag that moves before the fetch | skipped and named; refused, no branch fallback; the resolution fails, no older release; refused | U |
+| sync of a latest source: first; later with a higher release; a cache repair after the tag is gone; a missing or malformed tag | the highest release; unchanged; the locked tag and commit; refused with the update text | U |
+| update of a latest entry: the same release; a higher one; a moved tag; a lower tag; skipped tags with an unchanged lock | unchanged; updated; refused; refused; the ignored lines, the lock bytes unchanged | U |
+| A legacy entry (ref latest, kind branch or tag) | sync, pull and the hub refuse it with the conversion text; only its plugin is refused; update converts it | U, L (`TestLatestLegacyLab`) |
+| The lock, pin document and base versions | version 2 only with a latest form, else the bytes before `@latest`; a version 1 file with a latest form refused; back to version 1 when the last latest entry goes | U |
+| pull with tags: the same commit with another tag; a lower tag; a conflict with `-take`, `-keep` | a difference (taken, or a conflict without a base); taken, a warning on standard error only; resolved | U |
+| A hub before `@latest` (6ed5c58) with the files of this hub | version 2 lock: every GitHub entry refused, local entries start; version 1 lock: equal after the cache token, unchanged by its sync, its GitHub entry runs; version 2 pin document: refused, the lock unchanged | L (`TestLatestOldBinaryLab`, needs `LAZYREX_OLD_HUB`) |
+| `plugin status` of a latest, a tag and a branch entry | `ref latest v1.0.0`; `ref v0.2.0`; `ref main` | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
 | sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
 | sync fails on the second of two plugins | the lock is unchanged; no referenced dir changed | U |
