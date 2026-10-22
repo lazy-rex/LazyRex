@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS agent_op_targets (op_id TEXT NOT NULL, identity TEXT 
   phase TEXT NOT NULL, source_spawn TEXT NOT NULL DEFAULT '', spawn_id TEXT NOT NULL DEFAULT '',
   block_id TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL,
   admitted TEXT NOT NULL DEFAULT '', -- identities.updated at admission: the generation that may launch
+  child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', -- the new pane's program, at its first look
   PRIMARY KEY (op_id, identity));
 -- One active target for each identity, across operations and keys.
 CREATE UNIQUE INDEX IF NOT EXISTS agent_op_active ON agent_op_targets (identity)
@@ -99,7 +100,8 @@ var activePhases = []string{"admitted", "launching", "launched", "prompt_sending
 
 type opTarget struct {
 	op, identity, phase, sourceSpawn, spawn, block, detail, updated, admitted string
-	seq                                                             int
+	seq, childPID                                                             int
+	childStart                                                                string
 }
 
 // adminResume is hub.admin.resume {key, agent} | {key, kind?, session_id?} | {key, release}. The
@@ -289,7 +291,7 @@ func (h *Hub) releaseTarget(ctx context.Context, key, request, identity string) 
 }
 
 func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTarget, error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted
+	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted, child_pid, child_start
 		FROM agent_op_targets WHERE `+where+` ORDER BY updated, seq`, args...)
 	if err != nil {
 		return nil, err
@@ -298,7 +300,7 @@ func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTar
 	var out []opTarget
 	for rows.Next() {
 		var t opTarget
-		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted); err != nil {
+		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted, &t.childPID, &t.childStart); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -464,8 +466,27 @@ func (h *Hub) resumeAdvance(ctx context.Context, t *opTarget) error {
 			h.setPhase(ctx, t, "launched", "failed", "the pane closed before its first prompt", nil)
 			return nil
 		}
-		rec, err := h.readStatus(ctx, s.Session, s.Block, "")
-		if err != nil || (rec.State != "idle" && rec.State != "done") {
+		p, err := h.paneProgram(ctx, s.Session, s.Block)
+		switch {
+		case err == nil && p.child == 0:
+			h.setPhase(ctx, t, "launched", "failed", "the program exited before its first prompt", nil)
+			return nil
+		case err == nil && t.childPID == 0:
+			// The first look records the launched program: the prompt goes only to it.
+			t.childPID, t.childStart = p.child, startTime(p.child)
+			h.db.ExecContext(ctx, `UPDATE agent_op_targets SET child_pid = ?, child_start = ? WHERE op_id = ? AND identity = ? AND phase = 'launched'`,
+				t.childPID, t.childStart, t.op, t.identity)
+		case err == nil && (p.child != t.childPID || startTime(p.child) != t.childStart):
+			h.setPhase(ctx, t, "launched", "unknown", fmt.Sprintf("the pane's program changed (pid %d, launched %d)", p.child, t.childPID), nil)
+			return nil
+		}
+		ready := err == nil && (p.state == "idle" || p.state == "done")
+		if ready && p.owner != t.childPID {
+			// Another process reports the status: it is not proof that the launched program waits.
+			h.setPhase(ctx, t, "launched", "unknown", fmt.Sprintf("the status owner (pid %d) is not the launched program (pid %d)", p.owner, t.childPID), nil)
+			return nil
+		}
+		if !ready {
 			if time.Since(since) > resumeReadyWait {
 				h.setPhase(ctx, t, "launched", "unknown", fmt.Sprintf("no ready program status within %s", resumeReadyWait), nil)
 			}
@@ -574,4 +595,50 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 		h.setPhase(ctx, t, "launching", "unknown", "the create request had no answer; the pane may exist", nil)
 	}
 	return nil
+}
+
+// paneState is a pane's program and the root program status record, read one after the other.
+type paneState struct {
+	child, owner int // 0: no child (it exited), no owner
+	state        string
+}
+
+// paneProgram reads the pane's child process (terminal.process) and its root status record. Rex
+// reports as the owner the process in the foreground when the status was written (lab, Rex 1203).
+func (h *Hub) paneProgram(ctx context.Context, sess, block string) (paneState, error) {
+	var p paneState
+	if sess != h.workSession() {
+		if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
+			return p, err
+		}
+	}
+	var proc struct {
+		Child *struct {
+			PID int `json:"pid"`
+		} `json:"child"`
+	}
+	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.process", sess, block, nil, &proc); err != nil {
+		return p, err
+	}
+	if proc.Child != nil {
+		p.child = proc.Child.PID
+	}
+	var status struct {
+		Records []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+			Owner struct {
+				PID int `json:"pid"`
+			} `json:"owner"`
+		} `json:"records"`
+	}
+	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.program_status", sess, block, nil, &status); err != nil {
+		return p, err
+	}
+	for _, r := range status.Records {
+		if r.ID == "" {
+			p.state, p.owner = r.State, r.Owner.PID
+		}
+	}
+	return p, nil
 }

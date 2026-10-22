@@ -12,9 +12,19 @@ local function profile(id, resume_when, delay)
 end
 
 write_profiles({profiles = {profile('codexlike', 'prompt'), profile('claudelike', 'start'),
-    profile('silent', 'never'), profile('late', 'prompt', '4'),
+    profile('silent', 'never'), profile('late', 'prompt', '4'), profile('foreign', 'foreign'),
     {id = 'noresume', name = 'noresume', kind = 'agent', cwd = lab,
       command = {'/bin/sh', fake, 'codex', '${conv}', 'startup', 'start'}, args = {{name = 'conv', required = true}}}}})
+
+-- prompts counts the first prompts that reached the fake agents of a conversation (their input log).
+local function prompts(conv)
+  local f = io.open(lab .. '/fake-' .. conv .. '.log')
+  if not f then return 0 end
+  local n = 0
+  for l in f:lines() do if l:find('messaging_read', 1, true) then n = n + 1 end end
+  f:close()
+  return n
+end
 
 local function identity(id)
   for _, i in ipairs(H.hub('hub.identity.list', {}).identities or {}) do
@@ -76,6 +86,7 @@ test('a Codex-like agent resumes in a new pane: one first prompt, then its hook 
   local again = resume({key = 'r-c1', agent = id})
   expect(again.op_id).to_be(r.op_id)
   expect(target(again, id).block_id).to_be(t.block_id)
+  expect(prompts('c1')).to_be(1)
   -- The key with another request is refused.
   H.expect_error(function() resume({key = 'r-c1', kind = 'codex'}) end, 'different request')
 end)
@@ -141,4 +152,17 @@ test('a lost create answer is unknown: the reservation stays, a retry launches n
   expect(target(resume({key = 'r-c5x', agent = id}), id).detail).to_match('busy')
   resume({key = 'r-c5rel', release = id})
   expect(target(resume({key = 'r-c5', agent = id}), id).phase).to_be('released')
+end)
+
+test('the prompt goes only to the launched program: a status from another process gives unknown and no prompt', function()
+  local id, old, sess = started('foreign', 'c6')
+  detached(id, old, sess)
+  local t = H.wait('unknown', function()
+    local x = target(resume({key = 'r-c6', agent = id}), id)
+    return x.phase == 'unknown' and x
+  end, 20)
+  expect(t.detail).to_match('owner')
+  expect(prompts('c6')).to_be(0)
+  -- The reservation stays.
+  expect(target(resume({key = 'r-c6b', agent = id}), id).detail).to_match('busy')
 end)
