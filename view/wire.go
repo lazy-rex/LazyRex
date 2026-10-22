@@ -49,28 +49,44 @@ type wire struct {
 	event   func(json.RawMessage)
 }
 
+// serverEndpoint is the renderer's Rex server: -server, which the hub passes (its own endpoint),
+// else REX_SERVER (a renderer that an older hub started, and that reloads into this binary). The
+// renderer never chooses a socket itself: a Linux pane has no REX_SERVER, so without -server there
+// is no endpoint, and the renderer refuses. A -server and a REX_SERVER that differ also refuse.
+func serverEndpoint(flagServer, env string) (string, error) {
+	if flagServer != "" && env != "" && !sameEndpoint(flagServer, env) {
+		return "", fmt.Errorf("-server %s and REX_SERVER %s are different Rex servers", flagServer, env)
+	}
+	if flagServer != "" {
+		return flagServer, nil
+	}
+	if env != "" {
+		return env, nil
+	}
+	return "", fmt.Errorf("No Rex server: the hub passes -server, and REX_SERVER is empty")
+}
+
+// sameEndpoint compares two unix:// endpoints by their socket paths (unescaped, cleaned, with
+// symbolic links resolved), as SameEndpoint in hub/internal/rexreal does.
+func sameEndpoint(a, b string) bool {
+	pa, oka := socketPath(a)
+	pb, okb := socketPath(b)
+	return oka && okb && pa == pb
+}
+
 // realSocket accepts only a default Rex server socket (knownDefault). The hub passes -real-server
-// to renderers only when it runs with -real-server itself (an approved run). A Linux pane has no
-// REX_SERVER: then the renderer takes this user's default socket that exists.
+// to renderers only when it runs with -real-server itself (an approved run).
 func realSocket(server string) (string, error) {
 	home, _ := os.UserHomeDir()
 	return realSocketFor(server, home, os.Getenv("XDG_RUNTIME_DIR"), os.Getuid())
 }
 
 func realSocketFor(server, home, xdg string, uid int) (string, error) {
-	if server == "" {
-		for _, c := range defaultSockets(home, xdg, uid) {
-			if fi, err := os.Stat(c); err == nil && fi.Mode()&os.ModeSocket != 0 {
-				return c, nil
-			}
-		}
-		return "", fmt.Errorf("-real-server is set, REX_SERVER is empty, and no default Rex socket exists")
-	}
 	if !strings.HasPrefix(server, "unix://") {
 		return "", fmt.Errorf("A Unix socket is required")
 	}
 	if !knownDefault(server, home, xdg, uid) {
-		return "", fmt.Errorf("-real-server is set, but REX_SERVER is not the real Rex server")
+		return "", fmt.Errorf("-real-server is set, but %s is not the real Rex server", server)
 	}
 	p, _ := url.PathUnescape(strings.TrimPrefix(server, "unix://"))
 	return filepath.Clean(p), nil

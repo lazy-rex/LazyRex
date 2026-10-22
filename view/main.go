@@ -15,6 +15,7 @@ import (
 
 func main() {
 	id := flag.String("view-id", "", "the durable view ID assigned by the hub")
+	server := flag.String("server", "", "the Rex server, which the hub passes (default: $REX_SERVER)")
 	real := flag.Bool("real-server", false, "run on the user's real Rex server (the hub sets it on approved runs only)")
 	transcriptFlag := flag.Bool("transcript", false, "print the thread history into the pane's scrollback (scrollback prototype)")
 	fixture := flag.String("fixture", "", "demo thread file (JSON Lines); runs without a hub")
@@ -40,7 +41,7 @@ func main() {
 		return
 	}
 	if *id == "" || flag.NArg() != 2 {
-		fmt.Fprintln(os.Stderr, "Usage: lazyrex-view -view-id <id> [-real-server] [-transcript] <plugin> <route>")
+		fmt.Fprintln(os.Stderr, "Usage: lazyrex-view -view-id <id> [-server unix://...] [-real-server] [-transcript] <plugin> <route>")
 		fmt.Fprintln(os.Stderr, "       lazyrex-view -fixture <thread.jsonl> [-transcript] [-style a|c|d]")
 		os.Exit(2)
 	}
@@ -52,7 +53,12 @@ func main() {
 	if *real {
 		pick = realSocket
 	}
-	socket, err := pick(os.Getenv("REX_SERVER"))
+	endpoint, err := serverEndpoint(*server, os.Getenv("REX_SERVER"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	socket, err := pick(endpoint)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

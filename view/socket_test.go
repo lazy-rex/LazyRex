@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,42 +53,39 @@ func TestKnownDefault(t *testing.T) {
 	}
 }
 
-// A Linux pane has no REX_SERVER: with -real-server, the renderer takes this user's default socket
-// that exists. Without one, it refuses. A Linux path in REX_SERVER is accepted.
-func TestRealSocketOnLinux(t *testing.T) {
+// The renderer never chooses among default sockets: an empty endpoint is refused even when a
+// socket listens at each candidate path, a macOS path under HOME and the XDG path (codex-24's
+// review of 598b8e5). The hub passes its endpoint with -server; a Linux path is accepted.
+func TestRealSocketNeedsAnEndpoint(t *testing.T) {
 	// A short directory: a Unix socket path has a length limit (104 bytes on macOS).
-	xdg, err := os.MkdirTemp("/tmp", "rs-")
+	root, err := os.MkdirTemp("/tmp", "rs-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(xdg) })
+	t.Cleanup(func() { os.RemoveAll(root) })
+	home, xdg := filepath.Join(root, "h"), filepath.Join(root, "x")
+	mac := filepath.Join(home, "Library", "Application Support", "rex", "server.sock")
 	sock := filepath.Join(xdg, "rex", "server.sock")
-	if p, err := realSocketFor("", "/nohome", xdg, 501); err == nil {
-		t.Fatalf("no socket exists, but got %q", p)
+	for _, p := range []string{mac, sock} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		l, err := net.Listen("unix", p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
 	}
-	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
-		t.Fatal(err)
+	if p, err := realSocketFor("", home, xdg, 501); err == nil {
+		t.Fatalf("an empty endpoint chose %q", p)
 	}
-	// A stray file at the default path is not a socket.
-	if err := os.WriteFile(sock, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if p, err := realSocketFor("", "/nohome", xdg, 501); err == nil {
-		t.Fatalf("a plain file was taken as the socket: %q", p)
-	}
-	os.Remove(sock)
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	if p, err := realSocketFor("", "/nohome", xdg, 501); err != nil || p != sock {
-		t.Fatalf("empty REX_SERVER: %q %v", p, err)
-	}
-	if p, err := realSocketFor("unix://"+sock, "/nohome", xdg, 501); err != nil || p != sock {
+	if p, err := realSocketFor("unix://"+sock, home, xdg, 501); err != nil || p != sock {
 		t.Fatalf("the XDG path: %q %v", p, err)
 	}
-	if _, err := realSocketFor("unix:///tmp/rexlab/rex.sock", "/nohome", xdg, 501); err == nil {
+	if p, err := realSocketFor("unix://"+strings.ReplaceAll(mac, " ", "%20"), home, xdg, 501); err != nil || p != mac {
+		t.Fatalf("the macOS path: %q %v", p, err)
+	}
+	if _, err := realSocketFor("unix:///tmp/rexlab/rex.sock", home, xdg, 501); err == nil {
 		t.Fatal("accepted a lab socket")
 	}
 }
@@ -130,5 +128,56 @@ func TestLabSocketRefusesTheRealServer(t *testing.T) {
 	}
 	if _, err := labSocket(""); err == nil {
 		t.Fatal("labSocket accepted an empty REX_SERVER")
+	}
+}
+
+// The renderer's endpoint: -server from the hub, else REX_SERVER (an older renderer that reloads
+// into this binary has no -server). No endpoint, or two that differ, refuse. Equal spellings of
+// one socket (escaped or plain, through a symbolic link) are one endpoint.
+func TestServerEndpoint(t *testing.T) {
+	// Under /tmp, so that labSocket accepts the lab endpoint.
+	root, err := os.MkdirTemp("/tmp", "se-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	if err := os.MkdirAll(filepath.Join(root, "lab"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "lab"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	lab := "unix://" + filepath.Join(root, "lab", "rex.sock")
+	linked := "unix://" + filepath.Join(root, "link", "rex.sock")
+	other := "unix://" + filepath.Join(root, "other", "rex.sock")
+	mac := "unix:///Users/u/Library/Application Support/rex/server.sock"
+	macEscaped := "unix:///Users/u/Library/Application%20Support/rex/server.sock"
+	for _, c := range []struct {
+		name, flag, env, want string
+		ok                    bool
+	}{
+		{"no endpoint", "", "", "", false},
+		{"-server only (a Linux pane)", lab, "", lab, true},
+		{"REX_SERVER only (an older renderer reloads)", "", lab, lab, true},
+		{"both, equal", lab, lab, lab, true},
+		{"escaped and plain", mac, macEscaped, mac, true},
+		{"through a symbolic link", linked, lab, linked, true},
+		{"different servers", lab, other, "", false},
+		{"malformed REX_SERVER", lab, "unix:///tmp/x%zz/rex.sock", "", false},
+		{"relative -server", "unix://rex.sock", lab, "", false},
+		{"not unix", "tcp://127.0.0.1:1", lab, "", false},
+	} {
+		got, err := serverEndpoint(c.flag, c.env)
+		if got != c.want || (err == nil) != c.ok {
+			t.Errorf("%s: %q, %v", c.name, got, err)
+		}
+	}
+	// -server goes to the same checks as REX_SERVER did: a lab socket for labSocket only, the real
+	// server for realSocket only.
+	if _, err := labSocket(lab); err != nil {
+		t.Errorf("labSocket refused the lab endpoint: %v", err)
+	}
+	if _, err := realSocket(lab); err == nil {
+		t.Error("realSocket accepted a lab endpoint")
 	}
 }
