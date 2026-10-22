@@ -56,6 +56,7 @@ func openDB(path string) (*DB, error) {
 		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`,    // Plugin.run as JSON; '' = no run
 		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`, // the exact source of the entry that bound the name
 		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`, // the agent read since the last revision
+		`ALTER TABLE plugins ADD COLUMN entry_identity TEXT NOT NULL DEFAULT ''`, // entryIdentity of the entry that the record was last saved with; '' = unknown
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return nil, err
