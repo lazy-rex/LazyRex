@@ -38,7 +38,7 @@ hub.
 
 - Without `tx`: an exec or a batch runs in a transaction of its own (a batch is all or nothing); a
   query reads the committed state.
-- `rows` are arrays in column order. `id` is `last_insert_rowid()`. `changes` counts the statement's
+- `rows` are arrays in column order. `id` is `last_insert_rowid()`, in the integer form of a cell: beyond 2^53 it is `{"int": "<decimal>"}`. `changes` counts the statement's
   own rows; it is 0 when the statement changed nothing.
 - `hub.store.ops_scan` lists the caller's saved hub.store operations in key order, one snapshot per
   page, with the page rules of `hub.store.scan`. A plugin uses it once, to import its saved replies
