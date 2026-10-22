@@ -14,9 +14,10 @@ import (
 
 // fakePush replaces promptPush. answer decides each call's result; calls records the args.
 type fakePush struct {
-	mu     sync.Mutex
-	calls  []map[string]any
-	answer func(ctx context.Context, n int, client string) error
+	mu      sync.Mutex
+	calls   []map[string]any
+	clients []string // the client of each call
+	answer  func(ctx context.Context, n int, client string) error
 }
 
 func (f *fakePush) install(t *testing.T) {
@@ -26,6 +27,7 @@ func (f *fakePush) install(t *testing.T) {
 	promptPush = func(ctx context.Context, h *Hub, client string, args map[string]any) error {
 		f.mu.Lock()
 		f.calls = append(f.calls, args)
+		f.clients = append(f.clients, client)
 		n := len(f.calls)
 		f.mu.Unlock()
 		if f.answer == nil {
@@ -319,18 +321,20 @@ func takeOver(h *Hub, a *Agent, id string, prev *Agent) *Agent {
 	return c
 }
 
-// pushes gives the calls of f for one client after call from: "open <agent>" or "close <agent>".
-func pushes(f *fakePush, from int, client string, clients []string) []string {
+// pushes takes one snapshot of f under its lock and gives the calls from index from (client ""
+// means any client): "open <agent>" or "close <agent>", oldest first.
+func pushes(f *fakePush, from int, client string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []string
-	for i := from; i < f.count(); i++ {
-		if clients != nil && clients[i] != client {
+	for i := from; i < len(f.calls); i++ {
+		if client != "" && f.clients[i] != client {
 			continue
 		}
-		c := f.call(i)
-		if c["prompt"] != nil {
-			out = append(out, "open "+c["agent"].(string))
+		if f.calls[i]["prompt"] != nil {
+			out = append(out, "open "+f.calls[i]["agent"].(string))
 		} else {
-			out = append(out, "close "+c["agent"].(string))
+			out = append(out, "close "+f.calls[i]["agent"].(string))
 		}
 	}
 	return out
@@ -344,12 +348,12 @@ func TestPromptPushOwnerTransferOrder(t *testing.T) {
 	h, a := ownerPushHub(t, f)
 	c1 := takeOver(h, a, "claude:c1", nil)
 	waitPush(t, "the alias transfer", func() bool { return f.count() >= 3 })
-	if got := pushes(f, 1, "", nil); len(got) != 2 || got[0] != "close zulu" || got[1] != "open claude:c1" {
+	if got := pushes(f, 1, ""); len(got) != 2 || got[0] != "close zulu" || got[1] != "open claude:c1" {
 		t.Fatalf("alias transfer pushes %q, want close zulu, open claude:c1", got)
 	}
 	takeOver(h, a, "claude:b2", c1)
 	waitPush(t, "the /clear transfer", func() bool { return f.count() >= 5 })
-	if got := pushes(f, 3, "", nil); len(got) != 2 || got[0] != "close claude:c1" || got[1] != "open claude:b2" {
+	if got := pushes(f, 3, ""); len(got) != 2 || got[0] != "close claude:c1" || got[1] != "open claude:b2" {
 		t.Fatalf("/clear transfer pushes %q, want close claude:c1, open claude:b2", got)
 	}
 }
@@ -367,7 +371,7 @@ func TestPromptPushLostCloseHoldsOpen(t *testing.T) {
 	h, a := ownerPushHub(t, f)
 	takeOver(h, a, "claude:c1", nil)
 	waitPush(t, "the retry and the open", func() bool { return f.count() >= 4 })
-	if got := pushes(f, 1, "", nil); len(got) != 3 || got[0] != "close zulu" || got[1] != "close zulu" || got[2] != "open claude:c1" {
+	if got := pushes(f, 1, ""); len(got) != 3 || got[0] != "close zulu" || got[1] != "close zulu" || got[2] != "open claude:c1" {
 		t.Fatalf("pushes %q, want close zulu (lost), close zulu, open claude:c1", got)
 	}
 }
@@ -376,17 +380,9 @@ func TestPromptPushLostCloseHoldsOpen(t *testing.T) {
 // own sender and its own order.
 func TestPromptPushOtherConsumerNotHeld(t *testing.T) {
 	f := &fakePush{}
-	var clients []string
-	var mu sync.Mutex
 	failTG := make(chan struct{})
 	f.answer = func(ctx context.Context, n int, client string) error {
-		mu.Lock()
-		for len(clients) < n {
-			clients = append(clients, "")
-		}
-		clients[n-1] = client
-		mu.Unlock()
-		if client == "client" && n > 2 {
+		if client == "client" && n > 2 { // telegram's pushes after its first prompt and the other's
 			select {
 			case <-failTG:
 				return nil
@@ -401,22 +397,15 @@ func TestPromptPushOtherConsumerNotHeld(t *testing.T) {
 	waitPush(t, "the other consumer's prompt", func() bool { return f.count() >= 2 })
 	base := f.count()
 	takeOver(h, a, "claude:c1", nil)
-	snapshot := func() []string {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]string(nil), clients...)
-	}
 	waitPush(t, "the other consumer's transfer", func() bool {
-		c := snapshot()
-		return len(c) == f.count() && strings.Join(pushes(f, base, "client-2", c), ",") == "close zulu,open claude:c1"
+		return strings.Join(pushes(f, base, "client-2"), ",") == "close zulu,open claude:c1"
 	})
-	if got := pushes(f, base, "client", snapshot()); len(got) == 0 || strings.Contains(strings.Join(got, ","), "open claude:c1") {
+	if got := pushes(f, base, "client"); len(got) == 0 || strings.Contains(strings.Join(got, ","), "open claude:c1") {
 		t.Fatalf("telegram (close failing) pushes %q: the open must wait for the close", got)
 	}
 	close(failTG)
 	waitPush(t, "telegram's transfer", func() bool {
-		c := snapshot()
-		got := pushes(f, base, "client", c)
-		return len(c) == f.count() && len(got) > 0 && got[len(got)-1] == "open claude:c1"
+		got := pushes(f, base, "client")
+		return len(got) >= 2 && got[len(got)-1] == "open claude:c1" && got[len(got)-2] == "close zulu"
 	})
 }
