@@ -492,3 +492,13 @@ test('a retry finds a reply that the agent saved under one of its legacy IDs', f
   -- Other content under the same key is still a conflict.
   expect(s:agent('todo.add', {text = 'new', key = 'k1'}, 7).error.code).to_be('operation_conflict')
 end)
+
+test('the same operation key from another view is an operation conflict, as in the hub', function()
+  local s = todo()
+  s:agent('todo.add', {text = 'a'})
+  local function sel(view) return s:call('view.action', {view_id = view, route = '/panels/todos', node_id = 'todos', action = 'select', input = {item_id = '1'}, user = 'user', operation_key = 'same'}) end
+  expect(sel('view:1').result).to_equal({id = 1})
+  expect(sel('view:1').result, 'a retry of the same view replays').to_equal({id = 1})
+  expect(sel('view:2').error.code).to_be('operation_conflict')
+  expect(s.sql.rows('todos')[1].done, 'the handler ran once').to_be(1)
+end)

@@ -572,7 +572,9 @@ function M.plugin(name)
     end
     local ctx = user_ctx(a)
     local key = op_key(ctx, a.operation_key)
-    local fp = M.fingerprint({action = action, route = a.route, node_id = a.node_id, name = a.action, input = a.input, text = a.text,
+    -- As the hub's view_ops fingerprint (viewsvc.go viewAdmit): the view, its route and its context
+    -- are part of it, so the same key from another view is an operation conflict.
+    local fp = M.fingerprint({action = action, view_id = a.view_id, context = a.context, route = a.route, node_id = a.node_id, name = a.action, input = a.input, text = a.text,
       base_revision = a.base_revision, draft_revision = a.draft_revision})
     if panel and action == 'view.action' then
       -- The panel runs again in the click's transaction, so the handler sees the current row.
