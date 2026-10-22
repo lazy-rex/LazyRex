@@ -1134,7 +1134,7 @@ A permanent legacy alias follows its first conversation, including after the pan
 Spawns follow the alias at lookup (the coordinator, 2026-10-19; replaces a row rewrite at alias time that missed work made after the alias). A spawn row keeps the ID that made it; `hub.workers` reports that recorded `parent`. The agent of an ID is its identity plus each legacy ID that the identity took over (`identity_aliases`, read at each call; a legacy ID belongs only to its first identity). `hub.spawn` and `hub.spawn_window` replay a key made by any ID of the caller's agent, and `hub.stop` accepts any ID of the parent's agent. A key that two IDs of one agent used before they became one is refused (`conflict`), even for equal requests: a replay cannot tell which request it repeats. Each of those workers stays stoppable by its spawn ID. The admission transaction checks the alias set again before it inserts: the hub's database has one connection, so the check and the insert are atomic with every other admission and every alias write. A second ID of one agent that admits the same key at the same time gets `conflict`; a retry with that key replays the first row. Observed before the fix (lab, `tests/harness/tests/spawn_migration.lua` and `spawn_resume.lua`): the same key from the identity created a second worker.
 A conflicting pair of nonempty drafts stops migration with an error and preserves both drafts.
 
-See `tests/README.md` for verification and `../../skills/lazyrex/SKILL.md` for agent instructions.
+See `../skills/lazyrex/SKILL.md` for agent instructions.
 The skill is stored in this repository. Installing it in an agent's configuration is a separate step.
 
 ### Thread titles from Rex tabs
