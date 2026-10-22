@@ -638,8 +638,14 @@ func (h *Hub) closeForm(ctx context.Context, id, why string) error {
 			}
 		}
 	}
-	h.closeViewRow(ctx, id, "hub")
-	h.ev.emit("form_closed", map[string]any{"view_id": id, "by": "hub", "why": why})
+	// The row closes only after Rex closed the pane, so a failed close can be tried again.
+	won, err := h.closeViewOnce(ctx, id, "hub", false)
+	if err != nil {
+		return fmt.Errorf("close form %s: %w", id, err)
+	}
+	if won {
+		h.ev.emit("form_closed", map[string]any{"view_id": id, "by": "hub", "why": why})
+	}
 	return nil
 }
 

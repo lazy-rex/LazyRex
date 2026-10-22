@@ -315,6 +315,27 @@ func (h *Hub) closeViewRow(ctx context.Context, id, by string) {
 	h.closeTranscript(ctx, id)
 }
 
+// closeViewOnce closes a view row that is not closed yet, and reports whether this call closed
+// it. A renderer's exit, its pane's close and a close from the view or the hub can arrive
+// together: only the call that closes the row reports the close and starts its effects.
+// keepAttach keeps the client and attachment, for viewClose's check of a lost answer.
+func (h *Hub) closeViewOnce(ctx context.Context, id, by string, keepAttach bool) (bool, error) {
+	q := `UPDATE views SET status = 'closed', closed_by = ?, client_id = '', attachment = '' WHERE view_id = ? AND status != 'closed'`
+	if keepAttach {
+		q = `UPDATE views SET status = 'closed', closed_by = ? WHERE view_id = ? AND status != 'closed'`
+	}
+	res, err := h.db.ExecContext(ctx, q, by, id)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return false, err
+	}
+	h.forgetView(id)
+	h.closeTranscript(ctx, id)
+	return true, nil
+}
+
 // appSession returns the session recorded under key, labeled label. It adopts or creates one.
 func (h *Hub) appSession(ctx context.Context, key, label string) (string, error) {
 	var sess string
@@ -1097,7 +1118,12 @@ func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool
 	if tabKey == formTab {
 		if !self {
 			fc, _ := h.formOf(ctx, id)
-			h.closeViewRow(ctx, id, "user")
+			if won, err := h.closeViewOnce(ctx, id, "user", false); !won {
+				if err != nil {
+					log.Printf("ui: close form %s: %v", id, err)
+				}
+				return true // another close of this form reported it
+			}
 			h.slotOldClosed(ctx, id)
 			h.ev.emit("form_closed", map[string]any{"plugin": plugin, "view_id": id, "by": "user"})
 			go h.formEnded(context.Background(), id, fc, false, "")
@@ -1149,11 +1175,14 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 		if fc, _ := h.formOf(ctx, v.ID); !fc.Panel {
 			return nil, bad("a form closes with its cancel action")
 		}
-		h.slotOldClosed(ctx, v.ID)
-		if _, err := h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = 'user-view' WHERE view_id = ?`, v.ID); err != nil {
+		won, err := h.closeViewOnce(ctx, v.ID, "user-view", true)
+		if err != nil {
 			return nil, err
 		}
-		h.forgetView(v.ID)
+		if !won {
+			return map[string]any{"status": "closed"}, nil // its exit or its pane's close was first
+		}
+		h.slotOldClosed(ctx, v.ID)
 		h.ev.emit("form_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "by": "user", "panel": true})
 		go func() {
 			time.Sleep(300 * time.Millisecond) // the renderer answers, then exits
@@ -1210,7 +1239,12 @@ func (h *Hub) uiChildExited(ctx context.Context, blockID string) bool {
 		// A form ends with its renderer; its pane closes itself (exit on_completion). No crash
 		// count: a form is not a tab. A cancelled form gives the slot back to its panel.
 		fc, _ := h.formOf(ctx, v.ID)
-		h.closeViewRow(ctx, v.ID, "exited")
+		if won, err := h.closeViewOnce(ctx, v.ID, "exited", false); !won {
+			if err != nil {
+				log.Printf("ui: close form %s: %v", v.ID, err)
+			}
+			return true // another close of this form reported it
+		}
 		h.slotOldClosed(ctx, v.ID)
 		h.ev.emit("form_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "by": "exit"})
 		go h.formEnded(context.Background(), v.ID, fc, false, "")
