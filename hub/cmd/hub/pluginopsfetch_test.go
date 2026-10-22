@@ -412,3 +412,100 @@ func TestPluginOpFetchHubKill(t *testing.T) {
 	}
 	psEvidence(t, "after the hub kill", w, g, git)
 }
+
+// fetchOpKillEnv makes TestPluginOpFetchKillChild a hub with an admitted add (the child of
+// TestPluginOpFetchHubKillManager). Its value is "<info file>\t<pids file>\t<url>".
+const fetchOpKillEnv = "LAZYREX_FETCH_OPKILL"
+
+// TestPluginOpFetchKillChild runs only as the child of TestPluginOpFetchHubKillManager: it admits
+// an add as a user, runs the manager (opsLoop: runOp, opResolve, opFetch, opCmd), writes where
+// its store and state are, and waits for its SIGKILL.
+func TestPluginOpFetchKillChild(t *testing.T) {
+	v := os.Getenv(fetchOpKillEnv)
+	if v == "" {
+		t.Skip("the child of TestPluginOpFetchHubKillManager")
+	}
+	p := strings.Split(v, "\t")
+	h, _, _ := opsTestHub(t, "")
+	h.pops.cmd = pluginCmdOpts{remote: func(owner, repo string) string { return p[2] }}
+	fetchChildRecord = func(w, g int) {
+		f, _ := os.OpenFile(p[1], os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		fmt.Fprintf(f, "%d %d\n", w, g)
+		f.Close()
+	}
+	v2, err := userAdmit(h, "kill", opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@v1.0.0"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	var name, db string
+	if err := h.db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &db); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := json.Marshal(map[string]string{"db": db, "state": h.cfg.State, "op_id": v2["op_id"].(string)})
+	if err := os.WriteFile(p[0], info, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.pops.kick = make(chan struct{}, 1)
+	h.kickOps()
+	h.opsLoop(context.Background()) // never ends: the parent sends SIGKILL
+}
+
+// A SIGKILL of the hub while an admitted add stalls in its fetch, on the manager path: the op was
+// admitted, opsLoop ran resolving and stored the target, and opFetch's fetch child runs the
+// stalled git. After the SIGKILL, no process of that fetch remains, and the store has the op in
+// fetching with its target and no pin.
+func TestPluginOpFetchHubKillManager(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	pidFile := stallGit(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	infoFile, pids := filepath.Join(dir, "info"), filepath.Join(dir, "pids")
+	hub := exec.Command(self, "-test.run=^TestPluginOpFetchKillChild$", "-test.count=1")
+	hub.Env = append(os.Environ(), fetchOpKillEnv+"="+infoFile+"\t"+pids+"\t"+r.url())
+	hub.Stderr = os.Stderr
+	if err := hub.Start(); err != nil {
+		t.Fatal(err)
+	}
+	git := waitPid(t, pidFile)
+	b, err := os.ReadFile(pids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	var w, g int
+	fmt.Sscanf(lines[len(lines)-1], "%d %d", &w, &g) // the last fetch child: the stalled fetch
+	var info map[string]string
+	ib, err := os.ReadFile(infoFile)
+	if err != nil || json.Unmarshal(ib, &info) != nil {
+		t.Fatalf("the child's info: %q %v", ib, err)
+	}
+	t.Cleanup(func() { removeTree(info["state"]); os.RemoveAll(filepath.Dir(info["db"])) })
+	psEvidence(t, "before the hub kill", hub.Process.Pid, w, g, git)
+	hub.Process.Signal(syscall.SIGKILL)
+	hub.Wait()
+	assertGone(t, "hub kill", w, g, git)
+	end := time.Now().Add(2 * time.Second)
+	for err := syscall.Kill(-g, 0); !errors.Is(err, syscall.ESRCH); err = syscall.Kill(-g, 0) {
+		if time.Now().After(end) {
+			t.Fatalf("the gate group %d still has a process: %v", g, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	db, err := openDB(info["db"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var phase, target, pin string
+	if err := db.QueryRow(`SELECT phase, target, pin FROM plugin_ops WHERE op_id = ?`, info["op_id"]).Scan(&phase, &target, &pin); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "fetching" || pin != "" || !strings.Contains(target, `"source":"github:acme/notes@v1.0.0"`) {
+		t.Fatalf("the stored op: phase %s, target %s, pin %q", phase, target, pin)
+	}
+	psEvidence(t, "after the hub kill", w, g, git)
+}
