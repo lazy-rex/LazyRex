@@ -926,3 +926,11 @@ app.action('p.seen', {}, function() return {generation = seen.generation, rows =
   local plain = plugin([[app.action('p.x', {}, function() return {} end)]])
   expect(find(plain.keymap, function(k) return k.name == 'hub.prompt' end), 'no listener, no keymap entry').to_be(nil)
 end)
+
+test('app.notice in a render fails clearly and opens no transaction (a render only reads)', function()
+  local s = plugin([[app.panel('Note', function() app.notice('alice', true); return {} end, {id = 'note'})]])
+  local before = s.sql.count('hub.sql.begin')
+  local r = s:call('view.render', {route = '/panels/note', user = 'user'})
+  expect(r.error and r.error.message, show(r)).to_be('A render cannot write: app.notice runs in an action or a select handler')
+  expect(s.sql.count('hub.sql.begin') - before, 'no hub.sql.begin').to_be(0)
+end)

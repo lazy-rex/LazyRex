@@ -499,6 +499,7 @@ function M.plugin(name)
   function app.notice(agent, pending)
     local f = frame()
     if not f then fail('invalid_input', 'app.notice runs in a handler') end
+    no_write('app.notice')
     f.notices[#f.notices + 1] = {agent = agent, pending = pending == true}
   end
 

@@ -68,7 +68,7 @@ selects an item in the panel to toggle it.
 - **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs
   again after each write to a table that it read.
 - **A render only reads.** A panel, view or form render reads the committed state, with no
-  transaction. A write (`db.exec`, `db.batch`, `db.transaction`) in a render fails with `refused`.
+  transaction. A write (`db.exec`, `db.batch`, `db.transaction`, `app.notice`) in a render fails with `refused`.
   Write in an action or an `on_select` handler.
 - **Clicks.** An item's `on_select` runs when the user selects it. The SDK runs the panel function
   again first, so the handler sees the current row. An item that is gone gives a visible error.
