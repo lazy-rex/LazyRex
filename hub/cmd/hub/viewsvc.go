@@ -430,6 +430,9 @@ func (h *Hub) pluginClient(plugin string) string {
 }
 
 func (h *Hub) callPlugin(ctx context.Context, plugin, action string, args any, out any) error {
+	if plugin == restartFormOwner {
+		return h.restartFormCall(ctx, action, args, out) // the hub's own form (restartform.go)
+	}
 	client := h.pluginClient(plugin)
 	if client == "" {
 		return &rex.RexError{Code: "client_unavailable", Message: "plugin " + plugin + " is not registered"}

@@ -22,6 +22,9 @@ import (
 func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	name, _ := args["plugin"].(string)
 	instance, _ := args["instance_id"].(string)
+	if name == restartFormOwner {
+		return nil, bad("%s is reserved for the hub's own form", name) // also no manifest name (pluginName)
+	}
 	h.mu.Lock()
 	_, err := h.registerTarget(name, instance, p.Requester.Principal.PID)
 	h.mu.Unlock()

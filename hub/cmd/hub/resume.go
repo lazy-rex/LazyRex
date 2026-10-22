@@ -118,6 +118,13 @@ func (h *Hub) adminResume(ctx context.Context, args map[string]any) (any, error)
 
 // adminAgentOp admits a resume or a restart (agentrestart.go) operation, or replays it.
 func (h *Hub) adminAgentOp(ctx context.Context, action string, args map[string]any) (any, error) {
+	return h.agentOp(ctx, action, args, nil)
+}
+
+// agentOp is adminAgentOp. form is a restart form's snapshot (restartform.go), or nil: the form
+// restarts exactly its listed targets, or refuses them all. The key rules are the same: an existing
+// operation of the key answers first, before any target is read again.
+func (h *Hub) agentOp(ctx context.Context, action string, args map[string]any, form *restartForm) (any, error) {
 	key, _ := args["key"].(string)
 	if key == "" || len(key) > 128 {
 		return nil, bad("key is required (at most 128 characters)")
@@ -142,6 +149,9 @@ func (h *Hub) adminAgentOp(ctx context.Context, action string, args map[string]a
 	if req["release"] != nil && len(req) > 2 || req["agent"] != nil && (req["kind"] != nil || req["session_id"] != nil) {
 		return nil, bad("give agent, or kind and session_id, or release")
 	}
+	if form != nil {
+		req["form_revision"] = form.Revision
+	}
 	fp, _ := json.Marshal(req) // map keys marshal sorted: the normalized request
 	var opID, prev string
 	err := h.db.QueryRowContext(ctx, `SELECT op_id, request FROM agent_ops WHERE caller = 'admin' AND key = ?`, key).Scan(&opID, &prev)
@@ -161,6 +171,9 @@ func (h *Hub) adminAgentOp(ctx context.Context, action string, args map[string]a
 	resolve := h.resumeTargets
 	if action == "restart" {
 		resolve = h.restartTargets
+	}
+	if form != nil {
+		resolve = func(ctx context.Context, _ map[string]any) ([]opTarget, error) { return h.snapshotTargets(ctx, form) }
 	}
 	targets, err := resolve(ctx, req)
 	if err != nil {
@@ -194,6 +207,7 @@ func (h *Hub) adminAgentOp(ctx context.Context, action string, args map[string]a
 		return nil, err
 	}
 	h.ev.emit("agent_op_admitted", map[string]any{"op_id": opID, "action": action, "targets": len(targets)})
+	h.kickRestartForms()
 	h.kickResume()
 	return h.opReply(ctx, opID)
 }
@@ -376,6 +390,7 @@ func (h *Hub) setPhase(ctx context.Context, t *opTarget, from, to, detail string
 		t.block = v
 	}
 	h.ev.emit("agent_op_phase", map[string]any{"op_id": t.op, "agent": t.identity, "phase": to, "detail": detail})
+	h.kickRestartForms()
 	return true
 }
 
@@ -608,6 +623,7 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 	}
 	t.phase, t.spawn = "launching", s.ID
 	h.ev.emit("agent_op_phase", map[string]any{"op_id": t.op, "agent": t.identity, "phase": "launching", "spawn_id": s.ID})
+	h.kickRestartForms()
 	if err := h.sendSpawn(ctx, s, workerPlacement{}, resumeArgv(s, prof, eff, conv)); err != nil {
 		return err
 	}

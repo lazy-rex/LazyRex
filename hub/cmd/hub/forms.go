@@ -75,10 +75,11 @@ type formContext struct {
 	// SourcePwd is the raw terminal.pwd value of SourceBlock, read once at the open; SourcePwdError
 	// is why that read gave no value. Neither is set without a source pane. A render reads them and
 	// never writes (decision "view render never writes; freeze open state in the form context").
-	SourcePwd      string      `json:"source_pwd,omitempty"`
-	SourcePwdError string      `json:"source_pwd_error,omitempty"`
-	Panel          bool        `json:"panel,omitempty"`  // a side panel, not a form (panels.go)
-	Return         *slotReturn `json:"return,omitempty"` // the panel this form replaced
+	SourcePwd      string       `json:"source_pwd,omitempty"`
+	SourcePwdError string       `json:"source_pwd_error,omitempty"`
+	Panel          bool         `json:"panel,omitempty"`   // a side panel, not a form (panels.go)
+	Return         *slotReturn  `json:"return,omitempty"`  // the panel this form replaced
+	Restart        *restartForm `json:"restart,omitempty"` // the hub's restart form: its snapshot (restartform.go)
 }
 
 func formsStart(ctx context.Context, db *DB) error {
@@ -894,9 +895,9 @@ func (h *Hub) formsSweep(ctx context.Context) {
 	}
 }
 
-// hubPaletteLua is the hub's own palette entries (docs/hub.md, "Agent resume"). Resume runs without a
-// confirmation: it stops nothing. A restart entry opens a form first (planned; the coordinator,
-// 2026-10-22).
+// hubPaletteLua is the hub's own palette entries (docs/hub.md, "Agent resume" and "Agent
+// restart"). Resume runs without a confirmation: it stops nothing. A restart entry opens the hub's
+// restart form (restartform.go), which lists the agents first.
 
 const hubPaletteLua = `
 rex.action {
@@ -906,6 +907,32 @@ rex.action {
   description = "Resume every detached agent that has a spawn record, each in a new pane",
   keywords = "agent resume detached",
   run = lazyrex_admin("hub.admin.resume", "resume", {}),
+}
+local function lazyrex_restart_form(kind)
+  return function(ctx, _)
+    local r, perr = rex.call("client.perform", { client_id = lazyrex_hub(), action = "hub.admin.restart.form",
+      args = { kind = kind, ctx = ctx }, timeout_ms = 10000 })
+    if perr ~= nil then error(perr, 0) end
+    local res = (r and r.result) or {}
+    if res.select then pcall(rex.client.queue, "session.select", res.select) end
+    return res
+  end
+end
+rex.action {
+  name = "lazyrexhub_restart_codex",
+  title = "LazyRex: Restart Codex agents…",
+  category = "LazyRex",
+  description = "List the current Codex agents, then stop and resume them in new panes",
+  keywords = "agent restart codex",
+  run = lazyrex_restart_form("codex"),
+}
+rex.action {
+  name = "lazyrexhub_restart_claude",
+  title = "LazyRex: Restart Claude agents…",
+  category = "LazyRex",
+  description = "List the current Claude agents, then stop and resume them in new panes",
+  keywords = "agent restart claude",
+  run = lazyrex_restart_form("claude"),
 }
 `
 
