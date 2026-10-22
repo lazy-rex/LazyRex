@@ -724,7 +724,8 @@ func (db *DB) dropNoticeReceipts(ctx context.Context, plugin string, seq int64) 
 }
 
 // moveNotices records that plugin sends its notices through hub.sql: from now on its
-// hub.store.batch notify ops are refused (notices_moved), so the two paths cannot reorder.
+// hub.store.batch notify ops are refused (notices_moved). The caller holds the store fence
+// exclusively (admitSQLNotices), so the two paths cannot reorder.
 func (db *DB) moveNotices(ctx context.Context, plugin string) error {
 	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO sql_notice_plugins VALUES (?)`, plugin)
 	return err
