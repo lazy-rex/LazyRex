@@ -13,8 +13,8 @@ import (
 
 // agentIdentityLines gives one line per running agent worker whose identity is "none". A failed
 // read, a reply without the workers list, an unknown identity value, or a running or exited agent
-// worker without the field (an older hub) is unknown, never silence. Text from the hub reaches a
-// terminal: paneSafe.
+// worker without the field (a malformed hub.workers answer) is unknown, never silence. Text from
+// the hub reaches a terminal: paneSafe.
 func agentIdentityLines(raw []byte, readErr error) []string {
 	unknown := func(format string, a ...any) []string {
 		return []string{paneSafe("agents: unknown: " + fmt.Sprintf(format, a...))}
@@ -46,7 +46,7 @@ func agentIdentityLines(raw []byte, readErr error) []string {
 			// The hub gives the field for every open agent spawn: running and exited workers. A
 			// starting or failed worker has no pane process to report.
 			if w.State == "running" || w.State == "exited" {
-				return unknown("the hub does not report identities")
+				return unknown("worker %s (%s): hub.workers gives no identity", w.Title, w.State)
 			}
 			continue
 		}

@@ -69,7 +69,7 @@ func TestWorkerIdentity(t *testing.T) {
 
 // Hub Status: one advisory line for each running agent worker with identity "none". Unknown, never
 // silence, for a failed read, a reply without the list, an unknown value, and a running or exited
-// agent worker without the field (an older hub).
+// agent worker without the field (a malformed hub.workers answer).
 func TestAgentIdentityLines(t *testing.T) {
 	line := "agent Coder (pane block:1): no current conversation identity yet."
 	for _, c := range []struct {
@@ -86,8 +86,8 @@ func TestAgentIdentityLines(t *testing.T) {
 		{"starting and failed agents without the field", `{"workers":[{"title":"A","agent_id":"a","state":"starting"},{"title":"B","agent_id":"b","state":"failed"}]}`, nil, nil, 0},
 		{"no workers", `{"workers":[]}`, nil, nil, 0},
 		{"two, one none", `{"workers":[{"title":"Coder","agent_id":"a","block_id":"block:1","state":"running","identity":"none"},{"title":"Other","agent_id":"b","block_id":"block:3","state":"running","identity":"current"}]}`, nil, []string{line}, 1},
-		{"older hub, running", `{"workers":[{"title":"Coder","agent_id":"a","block_id":"block:1","state":"running"}]}`, nil, []string{"agents: unknown: the hub does not report identities"}, 1},
-		{"older hub, exited", `{"workers":[{"title":"Coder","agent_id":"a","block_id":"block:1","state":"exited"}]}`, nil, []string{"agents: unknown: the hub does not report identities"}, 1},
+		{"no field, running", `{"workers":[{"title":"Coder","agent_id":"a","block_id":"block:1","state":"running"}]}`, nil, []string{"agents: unknown: worker Coder (running): hub.workers gives no identity"}, 1},
+		{"no field, exited", `{"workers":[{"title":"Coder","agent_id":"a","block_id":"block:1","state":"exited"}]}`, nil, []string{"agents: unknown: worker Coder (exited): hub.workers gives no identity"}, 1},
 		{"an unknown value", `{"workers":[{"title":"Coder","agent_id":"a","state":"running","identity":"maybe"}]}`, nil, []string{`agents: unknown: worker Coder: identity "maybe"`}, 1},
 		{"no list", `{}`, nil, []string{"agents: unknown: hub.workers has no workers list"}, 1},
 		{"bad JSON", `{`, nil, []string{"agents: unknown: hub.workers:"}, 1},

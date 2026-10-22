@@ -1,8 +1,8 @@
 package main
 
-// Agent identity, stage 1 (proposed decision "agent identity is the conversation"). The hub records
-// which conversation runs in which pane, and an append-only lifecycle log. Messaging still routes
-// by agent ID; stage 2 moves addressing to identities.
+// Agent identity: an agent is its conversation. The hub records which conversation runs in which
+// pane, and an append-only lifecycle log. Messages address identities; a spawn's legacy agent ID
+// reaches its identity through identity_aliases.
 //
 // An identity is "<kind>:<conversation id>". Reports come from agent hooks (SessionStart,
 // UserPromptSubmit) and from the MCP shim (Codex tools/call _meta.threadId). Ordering rules:
