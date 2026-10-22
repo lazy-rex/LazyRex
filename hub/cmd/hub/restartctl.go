@@ -14,9 +14,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,7 +47,8 @@ type ctlView struct {
 	holder   int         // the restart.lock holder; 0 when none
 	status   *restartStatus
 	trusted  bool // status belongs to holder
-	ownTwice bool // more than one connected hub reports this state
+	ownTwice bool  // more than one connected hub reports this state
+	localErr error // the state or its restart lock cannot be read: nothing about this state is known
 }
 
 type hubClient struct {
@@ -82,9 +85,11 @@ func ctlLook(cfg Config) *ctlView {
 	v.rex, v.rexErr = findRex(cfg.Rex)
 	if s, err := canonicalState(cfg.State); err == nil {
 		v.state = s
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		v.localErr = fmt.Errorf("the state %s cannot be resolved: %v", cfg.State, err)
 	}
 	if v.state != "" {
-		v.holder, v.status, v.trusted = readRestart(v.state)
+		v.holder, v.status, v.trusted, v.localErr = readRestart(v.state)
 	}
 	if v.rexErr == nil {
 		var hubs []hubClient
@@ -104,11 +109,17 @@ func ctlLook(cfg Config) *ctlView {
 }
 
 // readRestart reads the restart lock holder and the status file. It never creates the lock file
-// and never takes a lock: F_GETLK asks only.
-func readRestart(state string) (holder int, st *restartStatus, trusted bool) {
-	if f, err := os.Open(filepath.Join(state, "restart.lock")); err == nil {
-		holder = restartLockHolder(f)
+// and never takes a lock: F_GETLK asks only. A lock file that exists but cannot be asked is an error.
+func readRestart(state string) (holder int, st *restartStatus, trusted bool, err error) {
+	lock := filepath.Join(state, "restart.lock")
+	if f, oerr := os.Open(lock); oerr == nil {
+		holder, err = lockHolder(f)
 		f.Close() // this process holds no lock on the file, so the close releases nothing
+		if err != nil {
+			err = fmt.Errorf("%s: %v", lock, err)
+		}
+	} else if !errors.Is(oerr, fs.ErrNotExist) {
+		err = oerr
 	}
 	if b, err := os.ReadFile(filepath.Join(state, "restart.json")); err == nil {
 		var s restartStatus
@@ -117,7 +128,7 @@ func readRestart(state string) (holder int, st *restartStatus, trusted bool) {
 		}
 	}
 	trusted = holder > 0 && st != nil && st.PID == holder && st.Start != "" && startTime(holder) == st.Start
-	return holder, st, trusted
+	return holder, st, trusted, err
 }
 
 func (v *ctlView) rexCmd(timeout time.Duration, args ...string) ([]byte, error) {
@@ -183,7 +194,7 @@ func (v *ctlView) wrapperText() string {
 		}
 		return fmt.Sprintf("backoff: the restart wrapper (pid %d) restarts the hub %s (attempt %d; last exit %s)", s.PID, wait, s.Attempt, s.LastExit)
 	default: // running, or a stale phase: the wrapper holds the lock, and no hub of this state is connected
-		return fmt.Sprintf("starting: the restart wrapper (pid %d) reports %s, but no hub of this state is connected", s.PID, s.Phase)
+		return fmt.Sprintf("starting: the restart wrapper (pid %d) reports %s, but no hub of this state is seen", s.PID, s.Phase)
 	}
 }
 
@@ -207,8 +218,15 @@ func (v *ctlView) statusText() (int, string) {
 			lines = append(lines, s)
 		}
 	}
+	unasked := false // a connected hub did not answer hub.info: it can be the hub of this state
+	for _, h := range v.others {
+		unasked = unasked || h.State == ""
+	}
 	code := ctlNotRunning
 	switch {
+	case v.localErr != nil:
+		code = ctlUnknown
+		add(fmt.Sprintf("unknown: %v", v.localErr))
 	case v.ownTwice:
 		code = ctlUnknown
 		add(fmt.Sprintf("unknown: more than one connected hub reports the state %s", v.state))
@@ -225,11 +243,18 @@ func (v *ctlView) statusText() (int, string) {
 	case v.holder > 0:
 		code = ctlWrapper
 		add(v.wrapperText())
+	// No wrapper holds the state. Only a complete listing of answered hubs shows that no hub runs.
+	case v.rexErr != nil:
+		code = ctlUnknown
+		add("unknown: the Rex server cannot be asked, so a hub of this state cannot be ruled out")
+	case unasked:
+		code = ctlUnknown
+		add("unknown: a connected hub did not answer hub.info; it can be the hub of this state")
 	default:
 		add("not running")
-		if v.status != nil && v.status.Phase == "gave_up" {
-			add(fmt.Sprintf("the restart wrapper gave up at %s; last exit %s", v.status.Since, v.status.LastExit))
-		}
+	}
+	if code != ctlRunning && v.holder == 0 && v.status != nil && v.status.Phase == "gave_up" {
+		add(fmt.Sprintf("the restart wrapper gave up at %s; last exit %s", v.status.Since, v.status.LastExit))
 	}
 	if v.rexErr != nil {
 		add(fmt.Sprintf("the Rex server %s cannot be asked: %v", v.cfg.Server, v.rexErr))
@@ -267,7 +292,7 @@ func (v *ctlView) stop(stdout io.Writer) int {
 			}
 		}
 		if gone && wrapped {
-			if holder, _, _ := readRestart(v.state); holder > 0 {
+			if holder, _, _, _ := readRestart(v.state); holder > 0 {
 				gone = false
 			}
 		}

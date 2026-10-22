@@ -510,9 +510,9 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 | First word | Meaning | Exit |
 | --- | --- | --- |
 | `running` | the hub of this config is connected (with the wrapper pid when a wrapper owns the state) | 0 |
-| `not running` | no hub of this state and no wrapper; a `gave_up` status file adds when and the last exit | 1 |
+| `not running` | no wrapper, and Rex lists every connected hub with its `hub.info` state: none is this state. A `gave_up` status file adds when and the last exit | 1 |
 | `backoff`, `starting` | a wrapper owns the state, and no hub of it is connected | 3 |
-| `unknown` | a wrapper holds the lock, but the status file does not match it; or two connected hubs report this state | 4 |
+| `unknown` | a wrapper holds the lock, but the status file does not match it; two connected hubs report this state; the state or `restart.lock` cannot be read; or, with no wrapper, the Rex server cannot be asked or a connected hub does not answer `hub.info`. A failed look is never `not running` | 4 |
 | (usage or config error) | | 2 |
 
 `stop` sends no signal:
@@ -521,7 +521,7 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 - `backoff`, `starting`: prints the phase and `stop it in its pane: Ctrl-C, or close that pane`, exit 3. The wrapper keeps running.
 - `not running`: exit 0. `unknown`: no action, exit 4.
 
-Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestStopStatusLab` (its own lab server: not running; a running wrapper; a hub of another state seen and stopped through its own config; backoff with the server stopped, where stop sends no signal; a new server, then stop of hub and wrapper). `TestStatusTrustsOnlyTheLockHolder`: a status file of another pid or another start time is `unknown`; a `gave_up` file without a holder; a reader makes no `restart.lock`.
+Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestStopStatusLab` (its own lab server: not running; a running wrapper; a hub of another state seen and stopped through its own config; backoff with the server stopped, where stop sends no signal; a new server, then stop of hub and wrapper). `TestStatusTrustsOnlyTheLockHolder`: a status file of another pid or another start time is `unknown`; a `gave_up` file without a holder; a reader makes no `restart.lock`. `TestStatusUnknownWhenNotSeen`: no Rex server, a hub without `hub.info`, a state that cannot be resolved, and an unreadable `restart.lock` are each `unknown`.
 
 ## Process log
 

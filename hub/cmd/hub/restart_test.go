@@ -512,8 +512,9 @@ func TestStatusTrustsOnlyTheLockHolder(t *testing.T) {
 
 	write(restartStatus{Version: 1, PID: os.Getpid(), Start: startTime(os.Getpid()), Phase: "gave_up", LastExit: "status 1", Since: "2026-10-21T15:00:00Z"})
 	code, text := ctlLook(cfg).statusText()
-	if code != ctlNotRunning || !strings.HasPrefix(text, "not running\nthe restart wrapper gave up at 2026-10-21T15:00:00Z; last exit status 1") ||
-		!strings.Contains(text, "cannot be asked") {
+	// No Rex server: the hub cannot be ruled out, so the phase is unknown; the gave_up note stays.
+	if code != ctlUnknown || !strings.HasPrefix(text, "unknown: the Rex server cannot be asked") ||
+		!strings.Contains(text, "\nthe restart wrapper gave up at 2026-10-21T15:00:00Z; last exit status 1\n") {
 		t.Errorf("gave up: %d\n%s", code, text)
 	}
 

@@ -159,11 +159,20 @@ func takeRestartLock(state string) (*os.File, error) {
 
 // restartLockHolder returns the pid that holds a write lock on f, or 0 (no lock, or a failed read).
 func restartLockHolder(f *os.File) int {
+	pid, _ := lockHolder(f)
+	return pid
+}
+
+// lockHolder asks for the holder of the write lock on f (F_GETLK); 0 when no process holds it.
+func lockHolder(f *os.File) (int, error) {
 	lk := syscall.Flock_t{Type: syscall.F_WRLCK, Whence: io.SeekStart}
-	if err := syscall.FcntlFlock(f.Fd(), syscall.F_GETLK, &lk); err != nil || lk.Type == syscall.F_UNLCK {
-		return 0
+	if err := syscall.FcntlFlock(f.Fd(), syscall.F_GETLK, &lk); err != nil {
+		return 0, err
 	}
-	return int(lk.Pid)
+	if lk.Type == syscall.F_UNLCK {
+		return 0, nil
+	}
+	return int(lk.Pid), nil
 }
 
 func (w *wrapper) writeStatus(phase string, next time.Time) {
