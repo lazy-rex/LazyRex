@@ -1183,11 +1183,35 @@ func TestReleaseLabSpec(t *testing.T) {
 	out := t.TempDir()
 	sock := filepath.Join(lab, "rex.sock")
 	server := "unix://" + sock
-	stand := exec.Command("/bin/sh", "-c", "sleep 60; true", "sh", "--listen", server, "--state-dir", filepath.Join(lab, "state"))
+	// The stand-in lab server: a shell whose builtin read blocks on a pipe that the test holds. It has
+	// no child process, and it exits by itself when the test closes the pipe.
+	stand := exec.Command("/bin/sh", "-c", "read x", "sh", "--listen", server, "--state-dir", filepath.Join(lab, "state"))
+	in, err := stand.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := stand.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { stand.Process.Kill(); stand.Wait() }()
+	pid, start := stand.Process.Pid, startTime(stand.Process.Pid)
+	defer func() {
+		if kids := childPIDs(t, pid); len(kids) > 0 {
+			t.Errorf("the stand-in lab server has child processes %v", kids)
+		}
+		in.Close()
+		done := make(chan error, 1)
+		go func() { done <- stand.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the stand-in lab server did not exit 10 s after its stdin closed")
+			stand.Process.Kill()
+			<-done
+		}
+		if startTime(pid) == start {
+			t.Errorf("the stand-in lab server pid %d still runs", pid)
+		}
+	}()
 	proof, _ := json.Marshal(map[string]any{"socket": server, "server_pid": stand.Process.Pid, "nonce": "n"})
 	os.WriteFile(filepath.Join(lab, "lab.json"), proof, 0o600)
 
@@ -1269,4 +1293,21 @@ func TestReleaseLabSpec(t *testing.T) {
 	if err := try(base()); err == nil || !strings.Contains(err.Error(), "no lab proof") {
 		t.Errorf("no proof: %v", err)
 	}
+}
+
+// childPIDs lists the live child processes of pid.
+func childPIDs(t *testing.T, pid int) []int {
+	t.Helper()
+	out, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kids []int
+	for _, line := range strings.Split(string(out), "\n") {
+		var p, pp int
+		if n, _ := fmt.Sscan(line, &p, &pp); n == 2 && pp == pid {
+			kids = append(kids, p)
+		}
+	}
+	return kids
 }
