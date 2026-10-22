@@ -52,7 +52,9 @@ type relWorld struct {
 	binRev, devRev                        string
 	pullStop                              string // "lock": the next pull stops after the lock write
 	devPane                               bool
-	startFail                             bool // the next dev pane starts no hub
+	startFail                             bool   // the next dev pane starts no hub
+	createLost                            string // the next session.new_block fails: "none" creates nothing, "late" creates the pane and hub
+	creates                               int
 	hubPID                                int
 	hubStartT                             string
 	client                                string
@@ -344,6 +346,15 @@ func (w *relWorld) rex(a []string) ([]byte, []byte, error) {
 			w.stopHub()
 			return []byte(`{}`), nil, nil
 		case "session.new_block":
+			w.creates++
+			if lost := w.createLost; lost != "" {
+				w.createLost = ""
+				if lost == "late" {
+					w.devPane = true
+					w.startHub()
+				}
+				return nil, []byte("connection lost"), exitErr(1)
+			}
 			w.devPane = true
 			if w.startFail {
 				w.startFail = false
@@ -876,5 +887,143 @@ func TestReleaseHubInterruptedSteps(t *testing.T) {
 				t.Errorf("%s %s:%s: head %s home %s hubs %d", c.step, c.op, phase, w.head[:6], w.runs["lazyrex"].commit[:6], w.hubN)
 			}
 		}
+	}
+}
+
+// R3 (review of c2): another writer changes the managed file after the backup. Each step that
+// depends on the hold refuses before its mutation: checkout keeps OLD, pull keeps the pins, replace
+// makes no call, and rollback keeps the pins at H. The first case is the reviewer's regression.
+func TestReleaseHubHoldBeforeMutation(t *testing.T) {
+	touch := func(w *relWorld) {
+		p := filepath.Join(w.state, "plugins.json")
+		if err := os.WriteFile(p, append(mustRead(p), ' '), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout")
+	touch(w)
+	if err := w.step("pull"); err == nil || w.lockPin(homeSrc) != pinOld {
+		t.Errorf("pull: %v, home pin %s", err, w.lockPin(homeSrc).Commit[:6])
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup")
+	touch(w)
+	if err := w.step("checkout"); err == nil || w.head != commitOld {
+		t.Errorf("checkout: %v, head %s", err, w.head[:6])
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start")
+	w.runs["lazyrex"].commit, w.runs["lazyrex"].digest = commitOld, digestOld
+	touch(w)
+	if err := w.step("replace"); err == nil || w.replaceCalls != 0 {
+		t.Errorf("replace: %v, %d calls", err, w.replaceCalls)
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	touch(w)
+	calls := w.replaceCalls + w.startCalls
+	if err := w.step("rollback"); err == nil || w.replaceCalls+w.startCalls != calls || w.head != commitH {
+		t.Errorf("rollback: %v, %d hub calls, head %s", err, w.replaceCalls+w.startCalls-calls, w.head[:6])
+	}
+	w.wantPins(pinH, pinH)
+}
+
+// R4 (review of c2): a close stopped at its begin record keeps the saved pane and hub. When
+// another hub generation runs in the pane, the rerun stops and closes nothing. The stop case is
+// the reviewer's regression; the rollback close follows the same rule.
+func TestReleaseHubCloseKeepsSavedHub(t *testing.T) {
+	w := newRelWorld(t)
+	w.freeze()
+	w.must("precheck")
+	if err := w.stepStop("stop", "dev-close:begin"); !errors.Is(err, errTestStop) {
+		t.Fatal(err)
+	}
+	w.startHub()
+	pid := w.hubPID
+	if err := w.step("stop"); err == nil || !strings.Contains(err.Error(), "began to close") || !w.devPane || w.hubPID != pid {
+		t.Errorf("stop: %v, pane %v, pid %d want %d", err, w.devPane, w.hubPID, pid)
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	if err := w.stepStop("rollback", "dev-close-rollback:begin"); !errors.Is(err, errTestStop) {
+		t.Fatal(err)
+	}
+	w.startHub()
+	pid = w.hubPID
+	if err := w.step("rollback"); err == nil || !strings.Contains(err.Error(), "began to close") || !w.devPane || w.hubPID != pid {
+		t.Errorf("rollback: %v, pane %v, pid %d want %d", err, w.devPane, w.hubPID, pid)
+	}
+}
+
+// R5 (review of c2): a session.new_block whose result is unknown. With no pane, the rerun stops
+// with no second create (the reviewer's regression, through the step); when the create finishes
+// late, the rerun adopts its hub with one create. Rollback and resume follow the same rule.
+func TestReleaseHubUnknownCreate(t *testing.T) {
+	forward := func() *relWorld {
+		w := newRelWorld(t)
+		w.freeze()
+		w.must("precheck", "stop", "backup", "checkout", "pull")
+		w.creates = 0
+		return w
+	}
+	w := forward()
+	w.createLost = "none"
+	if err := w.step("start"); err == nil {
+		t.Fatal("a lost create passed")
+	}
+	if err := w.step("start"); err == nil || !strings.Contains(err.Error(), "result is unknown") || w.creates != 1 {
+		t.Errorf("rerun: %v, %d creates", err, w.creates)
+	}
+	// The create finishes now: the next rerun adopts it.
+	w.devPane = true
+	w.startHub()
+	w.must("start", "replace", "verify")
+	if w.creates != 1 || w.devRev != commitH {
+		t.Errorf("late adopt: %d creates, dev %s", w.creates, w.devRev[:6])
+	}
+
+	w = forward()
+	w.createLost = "late"
+	if err := w.step("start"); err == nil {
+		t.Fatal("a lost create reply passed")
+	}
+	w.must("start", "replace", "verify")
+	if w.creates != 1 || w.hubN != 2 {
+		t.Errorf("late create: %d creates, %d hubs", w.creates, w.hubN)
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	w.creates = 0
+	w.createLost = "none"
+	if err := w.step("rollback"); err == nil {
+		t.Fatal("a lost rollback create passed")
+	}
+	if err := w.step("rollback"); err == nil || !strings.Contains(err.Error(), "result is unknown") || w.creates != 1 {
+		t.Errorf("rollback rerun: %v, %d creates", err, w.creates)
+	}
+
+	w = newRelWorld(t)
+	w.freeze()
+	w.must("precheck", "stop")
+	w.creates = 0
+	w.createLost = "late"
+	if err := w.step("resume"); err == nil {
+		t.Fatal("a lost resume create passed")
+	}
+	w.must("resume")
+	if w.creates != 1 || w.devRev != commitOld {
+		t.Errorf("resume: %d creates, dev %s", w.creates, w.devRev[:6])
 	}
 }

@@ -169,39 +169,89 @@ func (r *releaser) currentHub() (*relHub, error) {
 	return &relHub{PID: last.PID, Start: st, Client: last.Client, Seq: last.Seq}, nil
 }
 
-// devStop closes the one dev pane and waits until its hub process ends (15 s). It writes the
-// pane's session to <run>/session for devStart. With needHub false, a pane whose hub does not run
-// (a failed build or start, or an ended hub) is closed with no wait.
-func (r *releaser) devStop(needHub bool) error {
+// relPane is the dev pane that a close step saw: its session and block, and its hub (PID 0 when
+// no hub runs in it). The begin record of the close saves it.
+type relPane struct {
+	Session string `json:"session"`
+	Block   string `json:"block"`
+	relHub
+}
+
+// closeDev closes the one dev pane under the journal op, and waits until its hub ends. The begin
+// record saves the pane and its hub. A rerun with an open begin closes only that pane and that
+// hub generation; another pane or another hub stops the step with no close. With needHub true, a
+// pane must have a running hub (step stop); with needHub false, a pane whose hub does not run (a
+// failed build or start, or an ended hub) is closed with no wait (rollback).
+func (r *releaser) closeDev(op string, needHub bool) error {
 	panes, err := r.devPanes()
 	if err != nil {
 		return err
 	}
+	data, open, err := r.lastBegin(op)
+	if err != nil {
+		return err
+	}
+	var saved relPane
+	if open {
+		if err := json.Unmarshal(data, &saved); err != nil {
+			return relFail("the saved dev pane of %s: %v", op, err)
+		}
+	}
+	if len(panes) == 0 {
+		if !open {
+			if needHub {
+				return relFail("no %s pane runs, and this run did not stop one", devPaneLabel)
+			}
+			return nil
+		}
+		// A rerun after the pane closed: the saved hub must be gone.
+		if saved.PID != 0 && r.procAlive(saved.PID, saved.Start) {
+			return relFail("the dev pane is gone, but its hub pid %d still runs", saved.PID)
+		}
+		r.say("the dev pane %s and its hub are already stopped", saved.Block)
+		return r.appendJournal(op, "end", saved)
+	}
 	if len(panes) != 1 {
 		return relFail("expected one %s pane, found %d", devPaneLabel, len(panes))
 	}
-	h, err := r.currentHub()
-	if err != nil && needHub {
+	cur := relPane{Session: panes[0][0], Block: panes[0][1]}
+	h, herr := r.currentHub()
+	switch {
+	case herr == nil:
+		cur.relHub = *h
+	case needHub:
+		return herr
+	}
+	if open && (cur.Session != saved.Session || cur.Block != saved.Block || cur.PID != saved.PID || cur.Start != saved.Start || cur.Client != saved.Client) {
+		return relFail("the dev pane %s (hub pid %d, %s) is not the pane %s (hub pid %d, %s) that this step began to close; stop and report",
+			cur.Block, cur.PID, cur.Client, saved.Block, saved.PID, saved.Client)
+	}
+	return r.mutate(op, cur, func() (any, error) { return cur, r.devStop(cur) })
+}
+
+// devStop closes the pane p and waits until its hub process ends (15 s). It writes the pane's
+// session to <run>/session for devStart.
+func (r *releaser) devStop(p relPane) error {
+	if err := os.WriteFile(filepath.Join(r.run, "session"), []byte(p.Session+"\n"), 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(r.run, "session"), []byte(panes[0][0]+"\n"), 0o600); err != nil {
-		return err
+	arg, _ := json.Marshal(map[string]string{"session_id": p.Session, "block_id": p.Block})
+	if p.PID == 0 {
+		r.say("closing the dev pane %s in %s (no hub runs in it)", p.Block, p.Session)
+	} else {
+		r.say("closing the dev pane %s in %s (hub pid %d)", p.Block, p.Session, p.PID)
 	}
-	arg, _ := json.Marshal(map[string]string{"session_id": panes[0][0], "block_id": panes[0][1]})
-	if h == nil {
-		r.say("closing the dev pane %s in %s (no hub runs: %v)", panes[0][1], panes[0][0], err)
-		_, err := r.rex("api", "call", "block.close", string(arg))
-		return err
-	}
-	r.say("closing the dev pane %s in %s (hub pid %d)", panes[0][1], panes[0][0], h.PID)
 	if _, err := r.rex("api", "call", "block.close", string(arg)); err != nil {
 		return err
 	}
-	for i := 0; i < 15 && r.procAlive(h.PID, h.Start); i++ {
+	if p.PID == 0 {
+		return nil
+	}
+	for i := 0; i < 15 && r.procAlive(p.PID, p.Start); i++ {
 		r.pause(time.Second)
 	}
-	if r.procAlive(h.PID, h.Start) {
-		return relFail("the hub pid %d still runs 15 s after the dev pane closed", h.PID)
+	if r.procAlive(p.PID, p.Start) {
+		return relFail("the hub pid %d still runs 15 s after the dev pane closed", p.PID)
 	}
 	return nil
 }
@@ -230,8 +280,10 @@ func (r *releaser) pathDir(name string) string {
 }
 
 // devStart starts a dev pane that runs devsh in the session of <run>/session, and waits up to 180 s
-// for a new hub_started event whose process runs. dev.sh builds the hub first.
-func (r *releaser) devStart(devsh string) (*relHub, error) {
+// for a new hub_started event whose process runs. dev.sh builds the hub first. Right before it
+// sends session.new_block, it writes a "sent" record under op: after that record, a pane can
+// appear even when the call fails, so a rerun must not send a second create.
+func (r *releaser) devStart(op, devsh string) (*relHub, error) {
 	sb, err := os.ReadFile(filepath.Join(r.run, "session"))
 	if err != nil || strings.TrimSpace(string(sb)) == "" {
 		return nil, relFail("no session of the dev pane in %s (the stop step writes it)", filepath.Join(r.run, "session"))
@@ -251,12 +303,22 @@ func (r *releaser) devStart(devsh string) (*relHub, error) {
 	cmd := fmt.Sprintf("export PATH=%s:$PATH; %sexec %s %s 2>&1 | tee -a %s", shQuote(gobin), real, shQuote(devsh), shQuote(r.cfg.path), shQuote(r.spec.DevLog))
 	arg, _ := json.Marshal(map[string]any{"session_id": strings.TrimSpace(string(sb)), "flavor": "com.superlogical.terminal.shell", "label": devPaneLabel,
 		"options": map[string]any{"command": []string{"/bin/zsh", "-lc", cmd}, "login": false, "exit": map[string]bool{"on_completion": false}}})
+	if err := r.appendJournal(op, "sent", map[string]string{"label": devPaneLabel}); err != nil {
+		return nil, err
+	}
 	if _, err := r.rex("api", "call", "session.new_block", string(arg)); err != nil {
 		return nil, err
 	}
 	r.say("the dev pane runs %s; waiting for its hub", devsh)
+	return r.waitNewHub(before)
+}
+
+// waitNewHub waits up to 180 s for a hub_started event after before whose process runs.
+func (r *releaser) waitNewHub(before hubStartEvent) (*relHub, error) {
 	for i := 0; i < 90; i++ {
-		r.pause(2 * time.Second)
+		if i > 0 {
+			r.pause(2 * time.Second)
+		}
 		last, _, err := hubEvents(r.cfg.state)
 		if err != nil || last.Seq <= before.Seq {
 			continue

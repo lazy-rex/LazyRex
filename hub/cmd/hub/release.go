@@ -253,7 +253,7 @@ type relRecord struct {
 	At    string          `json:"at"`
 	Step  string          `json:"step"`
 	Op    string          `json:"op"`
-	Phase string          `json:"phase"` // begin or end
+	Phase string          `json:"phase"` // begin, sent, failed or end
 	Data  json.RawMessage `json:"data,omitempty"`
 }
 
@@ -327,6 +327,27 @@ func (r *releaser) lastBegin(op string) (data json.RawMessage, ok bool, err erro
 		}
 	}
 	return nil, false, nil
+}
+
+// sentAfterBegin reports whether op has a "sent" record after its last begin record: the request of
+// the open mutation went out, and its result is unknown.
+func (r *releaser) sentAfterBegin(op string) (bool, error) {
+	recs, err := r.journal()
+	if err != nil {
+		return false, err
+	}
+	for i := len(recs) - 1; i >= 0; i-- {
+		if recs[i].Op != op {
+			continue
+		}
+		switch recs[i].Phase {
+		case "sent":
+			return true, nil
+		case "begin", "end":
+			return false, nil
+		}
+	}
+	return false, nil
 }
 
 // mutate runs one mutation between its begin and end records. RELEASE_TEST_STOP=<op>:begin stops

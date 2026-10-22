@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -309,6 +310,24 @@ func (r *releaser) holdOK(c *relCandidate) error {
 	return nil
 }
 
+// holdBackup checks the writer hold after the backup, before a mutation that depends on it: the
+// home pin state is one of states, and every other pin and base, the config and the managed file
+// equal the backup.
+func (r *releaser) holdBackup(c *relCandidate, states ...string) error {
+	b, err := r.currentBackup()
+	if err != nil {
+		return err
+	}
+	st, err := r.pinState(c)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(states, st) {
+		return relFail("the home pin state is %q, not one of %q; stop and report", st, states)
+	}
+	return r.othersEqual(c, b)
+}
+
 // holdAfterPull checks the writer hold after the pull: the home pin and base are at to, and
 // everything else equals the backup.
 func (r *releaser) holdAfterPull(c *relCandidate) error {
@@ -456,19 +475,6 @@ func hubPrecheck(r *releaser) error {
 	return nil
 }
 
-// recordedStop is the hub that step stop recorded in its begin record.
-func (r *releaser) recordedStop() (*relHub, bool, error) {
-	data, open, err := r.lastBegin("dev-close")
-	if err != nil || !open {
-		return nil, open, err
-	}
-	var h relHub
-	if err := json.Unmarshal(data, &h); err != nil {
-		return nil, true, err
-	}
-	return &h, true, nil
-}
-
 func hubStop(r *releaser) error {
 	c, err := r.readCandidate()
 	if err != nil {
@@ -480,30 +486,7 @@ func hubStop(r *releaser) error {
 	if err := r.holdOK(c); err != nil {
 		return err
 	}
-	panes, err := r.devPanes()
-	if err != nil {
-		return err
-	}
-	if len(panes) == 0 {
-		// A rerun after the pane closed: the recorded hub must be gone.
-		h, open, err := r.recordedStop()
-		if err != nil {
-			return err
-		}
-		if !open {
-			return relFail("no %s pane runs, and this run did not stop one", devPaneLabel)
-		}
-		if r.procAlive(h.PID, h.Start) {
-			return relFail("the dev pane is gone, but its hub pid %d still runs", h.PID)
-		}
-		r.say("the dev pane and its hub are already stopped")
-		return r.appendJournal("dev-close", "end", h)
-	}
-	h, err := r.currentHub()
-	if err != nil {
-		return err
-	}
-	return r.mutate("dev-close", h, func() (any, error) { return h, r.devStop(true) })
+	return r.closeDev("dev-close", true)
 }
 
 func hubBackup(r *releaser) error {
@@ -584,6 +567,9 @@ func hubCheckout(r *releaser) error {
 	} else if cur != c.From.Commit {
 		return relFail("the release clone is at %s, neither OLD nor H", cur)
 	}
+	if err := r.holdBackup(c, "from from"); err != nil {
+		return err
+	}
 	if _, err := r.git("fetch", "-q", "origin"); err != nil {
 		return err
 	}
@@ -636,12 +622,12 @@ func hubPull(r *releaser) error {
 	if err := r.needHead(c.To.Commit, "H"); err != nil {
 		return err
 	}
+	if err := r.holdBackup(c, "from from", "to to", "to from"); err != nil {
+		return err
+	}
 	st, err := r.pinState(c)
 	if err != nil {
 		return err
-	}
-	if st != "from from" && st != "to to" && st != "to from" {
-		return relFail("the home pin state is %q: not a state of a forward pull; stop and report", st)
 	}
 	// The build comes first: a failed module download or build stops in state "from from".
 	hubDir := filepath.Join(r.relClone(), "hub")
@@ -654,6 +640,10 @@ func hubPull(r *releaser) error {
 		}
 	}
 	if err := r.checkProvenance(r.hubBin(), c.To.Commit, "hub-H"); err != nil {
+		return err
+	}
+	// The build can take minutes: check the hold again right before the pull.
+	if err := r.holdBackup(c, st); err != nil {
 		return err
 	}
 	switch st {
@@ -689,41 +679,56 @@ func (r *releaser) runtime(h *relHub, commit, label string) error {
 	return r.checkProvenance(devHub, commit, label)
 }
 
-// startHub starts the dev pane of the checked-out commit, or adopts the hub that an interrupted
-// start of this step started, and checks its runtime.
+// startHub starts the dev pane of the checked-out commit, and checks the runtime of its hub. A
+// rerun after an interrupted start of this label follows the "sent" record of devStart:
+//   - no "sent" record: the create never went out, so the step creates the pane;
+//   - "sent", and one dev pane: the step adopts the new hub of that pane (it waits for it);
+//   - "sent", and no dev pane: the create can still finish, so the step stops with no second create.
 func (r *releaser) startHub(commit, label string) (*relHub, error) {
+	op := "dev-start-" + label
 	panes, err := r.devPanes()
 	if err != nil {
 		return nil, err
 	}
-	data, open, err := r.lastBegin("dev-start-" + label)
+	data, open, err := r.lastBegin(op)
 	if err != nil {
 		return nil, err
 	}
+	sent := false
+	if open {
+		if sent, err = r.sentAfterBegin(op); err != nil {
+			return nil, err
+		}
+	}
 	if len(panes) > 0 {
+		if !sent || len(panes) != 1 {
+			return nil, relFail("a %s pane runs without a new hub of this step; stop it, or roll back", devPaneLabel)
+		}
 		var before hubStartEvent
-		if open {
-			json.Unmarshal(data, &before)
+		if err := json.Unmarshal(data, &before); err != nil {
+			return nil, relFail("the saved hub_started event of %s: %v", op, err)
 		}
-		if open && len(panes) == 1 {
-			if h, err := r.currentHub(); err == nil && h.Seq > before.Seq {
-				if err := r.runtime(h, commit, label); err != nil {
-					return nil, err
-				}
-				r.say("adopted the hub pid %d that this step started", h.PID)
-				return h, r.appendJournal("dev-start-"+label, "end", h)
-			}
+		h, err := r.waitNewHub(before)
+		if err != nil {
+			return nil, relFail("the dev pane of this step runs no new hub: %v", err)
 		}
-		return nil, relFail("a %s pane runs without a new hub of this step; stop it, or roll back", devPaneLabel)
+		if err := r.runtime(h, commit, label); err != nil {
+			return nil, err
+		}
+		r.say("adopted the hub pid %d that this step started", h.PID)
+		return h, r.appendJournal(op, "end", h)
+	}
+	if sent {
+		return nil, relFail("this step sent session.new_block, and its result is unknown; no %s pane is visible. The create can still finish: wait, then run this step again. Do not send a second create, and do not start a dev pane by hand; if no pane appears, stop and report", devPaneLabel)
 	}
 	last, _, err := hubEvents(r.cfg.state)
 	if err != nil {
 		return nil, err
 	}
 	var h *relHub
-	if err := r.mutate("dev-start-"+label, last, func() (any, error) {
+	if err := r.mutate(op, last, func() (any, error) {
 		var err error
-		h, err = r.devStart(filepath.Join(r.relClone(), "dev.sh"))
+		h, err = r.devStart(op, filepath.Join(r.relClone(), "dev.sh"))
 		return h, err
 	}); err != nil {
 		return nil, err
@@ -868,6 +873,9 @@ func hubReplace(r *releaser) error {
 	if err != nil {
 		return err
 	}
+	if err := r.holdAfterPull(c); err != nil {
+		return err
+	}
 	h, err := r.currentHub()
 	if err != nil {
 		return err
@@ -905,6 +913,9 @@ func hubRollback(r *releaser) error {
 		return err
 	}
 	if err := r.sdkBoundary(c); err != nil {
+		return err
+	}
+	if err := r.othersEqual(c, b); err != nil {
 		return err
 	}
 	// 1. The pins, through plugin pull of the back document (the base advances with it). A pull
@@ -977,14 +988,11 @@ func hubRollback(r *releaser) error {
 		r.say("the H hub of step start does not run; no replace under H")
 	}
 	// 3. Stop, OLD, start.
-	panes, err := r.devPanes()
-	if err != nil {
+	if err := r.closeDev("dev-close-rollback", false); err != nil {
 		return err
 	}
-	if len(panes) > 0 {
-		if err := r.mutate("dev-close-rollback", nil, func() (any, error) { return nil, r.devStop(false) }); err != nil {
-			return err
-		}
+	if err := r.holdBackup(c, "from from"); err != nil {
+		return err
 	}
 	os.Remove(filepath.Join(r.run, relHubFile))
 	if cur, err := r.head(); err != nil {
