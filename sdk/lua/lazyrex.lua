@@ -15,9 +15,6 @@ local M = {}
 local S = {app = nil, frame = nil}
 
 local MAX_REQUEST = 64 * 1024 -- Rex refuses a larger client.perform request (observed, docs/sql.md section 6).
--- Rex delivers no control message over 64 KiB, and the hub then keeps the old tree (Worktrees README,
--- "Panel pages"). The SDK refuses a rendered view over 48 KiB, with room for the frame around it.
-local MAX_VIEW = 48 * 1024
 local TWO53 = 9007199254740992
 
 -- fail raises a structured error. The SDK replies with its code and message.
@@ -290,6 +287,85 @@ local function hub(action, args)
   return response.result
 end
 
+-- Reply parts --------------------------------------------------------------------------------------
+
+-- A reply to the hub over inline_max goes as parts (chunking v1.1, hub lead, with amendments 1-3):
+-- hub.reply.part {id, index, count, data} for each slice of the encoded reply, in order, then the
+-- stub {lazyrex_parts = {id, count, bytes}} as the reply. The limits come from the hub.register reply.
+-- Only the hub resolves a stub, so a reply to any other caller stays whole.
+-- PART_REQUEST: the largest encoded hub.reply.part request. The real encoding decides, not a count of
+-- escapes (amendment 3): Rex refuses a request over 64 KiB (MAX_REQUEST).
+local PART_REQUEST = 60 * 1024
+
+-- reserved answers whether a result has the shape of a stub: an object with the one key
+-- lazyrex_parts. A plugin result of that shape is refused, so plugin data never looks like a stub.
+local function reserved(result)
+  if type(result) ~= 'table' then return false end
+  local k = next(result)
+  return k == 'lazyrex_parts' and next(result, k) == nil
+end
+local function check_reserved(result)
+  if reserved(result) then fail('reserved_result', 'A reply cannot be an object with the one key lazyrex_parts') end
+end
+
+-- boundary answers the largest j' <= j at which s can be cut: s:byte(j' + 1) is not a UTF-8
+-- continuation byte.
+local function boundary(s, j)
+  while j > 0 do
+    local b = s:byte(j + 1)
+    if not b or b < 0x80 or b > 0xBF then return j end
+    j = j - 1
+  end
+  return j
+end
+
+-- slices cuts encoded into strings whose hub.reply.part request is at most PART_REQUEST bytes and
+-- whose escaped data is at most part_bytes. A slice that is too large shrinks in proportion and is
+-- encoded again (an encode per try, no escape count: Hub Render measured a gsub count as too slow).
+local function slices(encoded, id, limits)
+  local out, i = {}, 1
+  local function request(index, data)
+    return rex.json.encode({client_id = S.app.hub_id, action = 'hub.reply.part', args = {id = id, index = index, count = 64, data = data}, timeout_ms = 10000})
+  end
+  while i <= #encoded do
+    local n = limits.part_bytes
+    while true do
+      local j = boundary(encoded, math.min(#encoded, i + n - 1))
+      if j < i then fail('internal', 'The reply cannot be cut into parts') end
+      local data = encoded:sub(i, j)
+      local size = #request(#out, data)
+      local escaped = size - #request(#out, '')
+      if size <= PART_REQUEST and escaped <= limits.part_bytes then
+        out[#out + 1] = data
+        i = j + 1
+        break
+      end
+      n = math.floor((j - i + 1) * math.min(PART_REQUEST / size, limits.part_bytes / escaped) * 0.98)
+    end
+  end
+  if #out > 64 then fail('too_large', 'The reply needs ' .. #out .. ' parts; the limit is 64') end
+  return out
+end
+
+-- push sends the parts of encoded to the hub and answers the stub. A refused part raises its error.
+local function push(encoded, limits)
+  S.parts_sent = (S.parts_sent or 0) + 1
+  local id = tostring(S.app.instance_id):gsub('[^%w._:-]', '_'):sub(1, 100) .. '-' .. S.parts_sent
+  local parts = slices(encoded, id, limits)
+  for index, data in ipairs(parts) do hub('hub.reply.part', {id = id, index = index - 1, count = #parts, data = data}) end
+  return {lazyrex_parts = {id = id, count = #parts, bytes = #encoded}}
+end
+
+-- parted answers the stub for result when its encoding is over inline_max, after it pushed the parts,
+-- or nil when result goes whole. Over max_total it fails with too_large before any part.
+local function parted(result, encoded)
+  local limits = S.app.registration.limits
+  encoded = encoded or rex.json.encode(result)
+  if encoded == nil or #encoded <= limits.inline_max then return nil end
+  if #encoded > limits.max_total then fail('too_large', 'The reply is ' .. #encoded .. ' bytes; the limit is ' .. limits.max_total) end
+  return push(encoded, limits)
+end
+
 -- Frames and transactions --------------------------------------------------------------------------
 
 -- A frame is one running handler. tx: true for one transaction (begun at the first SQL call),
@@ -329,10 +405,18 @@ local function run(spec, fn, ...)
     local cok, cerr = pcall(function()
       if not f.token then f.token = hub('hub.sql.begin', {}).tx end
       local args = {tx = f.token}
-      if save then args.key, args.fingerprint, args.reply = spec.key, spec.fingerprint, result or {} end
+      if save then
+        -- A large reply to the hub is saved from its parts: the commit names the set, and the reply
+        -- is the stub of the same set (one upload, amendment 1).
+        check_reserved(result)
+        args.key, args.fingerprint = spec.key, spec.fingerprint
+        f.stub = S.from_hub and parted(result or {}) or nil
+        if f.stub then args.reply_parts = f.stub.lazyrex_parts else args.reply = result or {} end
+      end
       if #f.notices > 0 then args.notices = f.notices end
       local done = hub('hub.sql.commit', args)
-      if done.replayed then out.result = done.reply end
+      if done.replayed then out.result = done.reply
+      elseif f.stub then S.stub = {result = result, stub = f.stub} end
     end)
     S.frame = outer
     if not cok then
@@ -943,10 +1027,13 @@ function M.plugin(name)
       session_id = context.session_id, view_id = a.view_id, context = context, query = query_of(a.route),
       source = {pwd = context.source_pwd, pwd_error = context.source_pwd_error}}
   end
-  -- sized answers the render reply, or fails with too_large over MAX_VIEW (the status included).
+  -- sized answers the render reply, or fails with too_large over max_total (the status included). It
+  -- keeps the encoding for the reply exit, which sends a large reply in parts.
   local function sized(reply)
     local encoded = rex.json.encode(reply)
-    if #encoded > MAX_VIEW then fail('too_large', 'The view has ' .. #encoded .. ' bytes; the limit is ' .. MAX_VIEW .. '. Show fewer items.') end
+    local max = app.registration.limits.max_total
+    if #encoded > max then fail('too_large', 'The view has ' .. #encoded .. ' bytes; the limit is ' .. max .. '. Show fewer items.') end
+    S.encoded = {value = reply, text = encoded}
     return reply
   end
   -- render_ctx answers the context of a render. ctx.refresh_all() replies refresh = "all" for this
@@ -1035,8 +1122,24 @@ function M.plugin(name)
     fail('not_supported', 'Unknown action ' .. tostring(ev.action))
   end
 
+  -- deliver answers the reply for result, after the handler ran (no plugin code runs here): the stub of
+  -- a saved reply that went in parts, a stub after new parts, or result itself.
+  local function deliver(from_hub, result)
+    result = result or {}
+    local saved, cached = S.stub, S.encoded
+    S.stub, S.encoded = nil, nil
+    if saved and saved.result == result then return saved.stub end
+    check_reserved(result)
+    if not from_hub then return result end
+    return parted(result, cached and cached.value == result and cached.text or nil) or result
+  end
   rex.on('client_perform_requested', function(_, ev)
+    -- Fields, not locals (see the note on S at the top). Rex delivers one request at a time.
+    S.from_hub = ev.requester ~= nil and ev.requester.client_id == app.hub_id
+    S.stub, S.encoded = nil, nil
     local ok, result = pcall(dispatch, ev)
+    if ok then ok, result = pcall(deliver, S.from_hub, result) end
+    S.from_hub = false
     if ok then raw.call('client.reply', {call_id = ev.call_id, result = result or {}})
     else raw.call('client.reply', {call_id = ev.call_id, error = normalize(result)}) end
   end)
@@ -1096,6 +1199,11 @@ function M.plugin(name)
     if #commands > 0 then reg.commands = commands end
     -- app.registration: the hub.register reply (for example its generation), before the start functions.
     app.registration = hub('hub.register', reg)
+    -- The reply limits (inline_max, part_bytes, max_total) have one source: the hub.
+    local limits = type(app.registration.limits) == 'table' and app.registration.limits or {}
+    for _, k in ipairs({'inline_max', 'part_bytes', 'max_total'}) do
+      if type(limits[k]) ~= 'number' then fail('internal', 'The hub.register reply has no limits.' .. k) end
+    end
     raw.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
     migrate()
     for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end

@@ -675,19 +675,146 @@ test('minLength and maxLength count characters, not UTF-8 bytes', function()
   expect(s:agent('p.title', {title = '\240\159\152\128\240\159\152\128'}).result, 'two 4-byte characters').to_equal({ok = true})
 end)
 
-test('a rendered view over 48 KiB fails with too_large: a panel, an app.view and an app.form', function()
-  local s = plugin([[
-local big = string.rep('x', 50000)
-app.panel('Big', function() return {app.ui.text('t', big)} end, {id = 'big'})
-app.view('/views/big', {render = function() return {title = 'Big', nodes = {{id = 't', type = 'widget', text = big}}} end}, {tx = false})
-app.form('/forms/big', {title = 'Big', intro = big, fields = {}, on_submit = function() end})
-app.form('/forms/near', {title = 'Near', intro = string.rep('x', 48000), fields = {}, on_submit = function() end})]])
-  for _, route in ipairs({'/panels/big', '/views/big', '/forms/big'}) do
-    local r = s:call('view.render', {route = route, user = 'user'})
-    expect(r.error and r.error.code, route).to_be('too_large')
+-- Reply parts (chunking v1.1 with amendments 1-3). The sandbox hub answers hub.register with the
+-- limits inline_max 45056, part_bytes 57344, max_total 786432.
+local function joined(s, stub)
+  local p = stub.lazyrex_parts
+  return table.concat(s.part_sets[p.id] or {})
+end
+local function check_parts(s, stub, what)
+  local p = stub.lazyrex_parts
+  local mine = {}
+  for _, c in ipairs(s.parts) do if c.id == p.id then mine[#mine + 1] = c end end
+  expect(#mine, what .. ': the part calls').to_be(p.count)
+  for i, c in ipairs(mine) do
+    expect(c.index, what .. ': index').to_be(i - 1)
+    expect(c.count, what .. ': count').to_be(p.count)
+    expect(#c.data > 0, what .. ': no empty part').to_be(true)
+    local request = rex.json.encode({client_id = 'hub', action = 'hub.reply.part', args = c, timeout_ms = 10000})
+    expect(#request <= 60 * 1024, what .. ': part ' .. c.index .. ' request has ' .. #request .. ' bytes').to_be(true)
+    expect(#rex.json.encode(c.data) - 2 <= 57344, what .. ': escaped data of part ' .. c.index).to_be(true)
   end
-  local r = s:call('view.render', {route = '/forms/near', user = 'user'})
-  expect(r.error, 'a view under the limit renders').to_be(nil)
+  expect(#joined(s, stub), what .. ': bytes').to_be(p.bytes)
+end
+
+test('a render reply over inline_max goes as parts, then a stub; the parts join to the reply', function()
+  local s = plugin([[
+local big = string.rep('x', 150 * 1024)
+app.panel('Big', function() return {app.ui.text('t', big)} end, {id = 'big'})
+app.panel('Small', function() return {app.ui.text('t', 'small')} end, {id = 'small'})]])
+  local r = s:render('/panels/big', 'render-1')
+  expect(r.error).to_be(nil)
+  local stub = r.result
+  expect(type(stub.lazyrex_parts), show(r)).to_be('table')
+  expect(stub.lazyrex_parts.id).to_match('^todo%-1%-%d+$')
+  check_parts(s, stub, 'big')
+  local whole = rex.json.decode(joined(s, stub))
+  expect(whole.tree.nodes[1].text == string.rep('x', 150 * 1024), 'the joined tree').to_be(true)
+  local n = #s.parts
+  local small = s:render('/panels/small', 'render-2')
+  expect(small.result.lazyrex_parts, 'a small reply is whole').to_be(nil)
+  expect(#s.parts, 'no part for a small reply').to_be(n)
+end)
+
+test('inline_max is the boundary: at it the reply is whole; a 50000-byte reply is one part', function()
+  local s = plugin([[
+app.action('p.size', {n = {type = 'integer'}}, function(ctx, args) return {t = string.rep('x', args.n)} end, {tx = false, store = false})]])
+  local over = 45056 - #rex.json.encode({t = ''})
+  expect(s:agent('p.size', {n = over}).result.t ~= nil, 'at inline_max: whole').to_be(true)
+  local r = s:agent('p.size', {n = over + 1})
+  expect(r.result.lazyrex_parts ~= nil, 'one byte over: parts').to_be(true)
+  local one = s:agent('p.size', {n = 50000 - #rex.json.encode({t = ''})})
+  expect(one.result.lazyrex_parts.count, 'a 50000-byte reply').to_be(1)
+  check_parts(s, one.result, '50000')
+end)
+
+test('a reply over max_total fails with too_large before any part; a view too', function()
+  local s = plugin([[
+app.action('p.huge', {}, function() return {t = string.rep('x', 786432)} end, {tx = false, store = false})
+app.panel('Huge', function() return {app.ui.text('t', string.rep('x', 786432))} end, {id = 'huge'})]])
+  local r = s:agent('p.huge', {})
+  expect(r.error and r.error.code, show(r)).to_be('too_large')
+  expect(r.error.message).to_match('the limit is 786432')
+  local v = s:render('/panels/huge', 'render-1')
+  expect(v.error and v.error.code, show(v)).to_be('too_large')
+  expect(#s.parts, 'no part sent').to_be(0)
+end)
+
+test('worst-case slices: quotes, backslashes, < > &, U+2028, multibyte text; each request fits and the join is exact', function()
+  local cases = {['"'] = '"', ['\\'] = '\\', ['<>&'] = '<>&', ['U+2028'] = '\226\128\168', ['é'] = '\195\169', ['mixed'] = 'a"\\<\226\128\169é\1'}
+  for name, unit in pairs(cases) do
+    -- Decimal escapes: in Rex Lua, string.format('%q') writes U+2028 as \u2028, which its parser reads
+    -- as u2028 (docs/rex-protocol.md, "Rex Lua runtime").
+    local lit = '"' .. unit:gsub('.', function(c) return '\\' .. c:byte() end) .. '"'
+    local s = plugin("app.action('p.w', {}, function() return {t = string.rep(" .. lit .. ", math.floor(50000 / #" .. lit .. "))} end, {tx = false, store = false})")
+    local r = s:agent('p.w', {})
+    expect(r.error, name).to_be(nil)
+    expect(r.result.lazyrex_parts ~= nil, name .. ': parts').to_be(true)
+    check_parts(s, r.result, name)
+    local whole = rex.json.decode(joined(s, r.result))
+    expect(whole.t == string.rep(unit, math.floor(50000 / #unit)), name .. ': the join is exact').to_be(true)
+  end
+end)
+
+test('a refused part makes the reply that error', function()
+  local s = plugin([[
+app.action('p.big', {}, function() return {t = string.rep('x', 100000)} end, {tx = false, store = false})]],
+    {hub = {['hub.reply.part'] = function() return nil, {code = 'parts_invalid', message = 'the set is refused'} end}})
+  local r = s:agent('p.big', {})
+  expect(r.error and r.error.code, show(r)).to_be('parts_invalid')
+end)
+
+test('a reply to a caller that is not the hub stays whole', function()
+  local s = todo()
+  local r = s:call('todo.add', {text = string.rep('x', 50), key = 'k1'}, 7)
+  expect(r.error).to_be(nil)
+  local s2 = plugin([[
+app.action('p.big', {}, function() return {t = string.rep('x', 100000)} end, {tx = false, store = false})]])
+  local direct = s2:call('p.big', {}, 7)
+  expect(direct.result.t ~= nil, 'a direct agent call').to_be(true)
+  expect(#s2.parts, 'no part').to_be(0)
+end)
+
+test('a saved large reply: the commit names the set, the reply is its stub, one upload; a replay answers it whole', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'}
+app.action('p.save', {}, function()
+  app.db.exec('INSERT INTO t (v) VALUES (?)', 'one')
+  return {t = string.rep('x', 100000)}
+end)]])
+  local r = s:agent('p.save', {key = 'k1'})
+  expect(r.error).to_be(nil)
+  local stub = r.result.lazyrex_parts
+  expect(stub ~= nil, show(r)).to_be(true)
+  local commit = find(s.sql.calls, function(c) return c.action == 'hub.sql.commit' and c.args.key ~= nil end)
+  expect(commit.args.reply, 'no inline reply').to_be(nil)
+  expect(commit.args.reply_parts).to_equal(stub)
+  local sets = 0
+  for _ in pairs(s.part_sets) do sets = sets + 1 end
+  expect(sets, 'one upload').to_be(1)
+  -- A retry with the same key: the saved reply is a new reply, sent in parts again; one row.
+  local again = s:agent('p.save', {key = 'k1'})
+  expect(again.result.lazyrex_parts ~= nil, 'the replay is in parts').to_be(true)
+  expect(again.result.lazyrex_parts.id ~= stub.id, 'a new set').to_be(true)
+  expect(rex.json.decode(joined(s, again.result)).t == string.rep('x', 100000), 'the saved reply whole').to_be(true)
+  expect(#s.sql.state.tables.t.rows, 'one mutation').to_be(1)
+end)
+
+test('a plugin result with the one key lazyrex_parts fails with reserved_result before any send', function()
+  local s = plugin([[
+app.action('p.fake', {}, function() return {lazyrex_parts = {id = 'x', count = 1, bytes = 1}} end, {tx = false, store = false})
+app.action('p.two', {}, function() return {lazyrex_parts = 1, other = 2} end, {tx = false, store = false})]])
+  local r = s:agent('p.fake', {})
+  expect(r.error and r.error.code, show(r)).to_be('reserved_result')
+  expect(s:agent('p.two', {}).error, 'another key besides it is plugin data').to_be(nil)
+  expect(#s.parts).to_be(0)
+end)
+
+test('a hub.register reply without limits fails the start', function()
+  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = false})
+  s:start()
+  expect(s.exited).to_be(1)
+  expect(find(s.printed, function(l) return l:find('no limits', 1, true) ~= nil end) ~= nil, show(s.printed)).to_be(true)
 end)
 
 local FORM_PARTS = [[
