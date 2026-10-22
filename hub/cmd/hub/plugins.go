@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -219,13 +220,32 @@ func newInstanceID(plugin string, gen int64) string {
 // loadPluginRow returns the persisted desired state, instance and run, creating a "running" row if
 // absent.
 func (h *Hub) loadPluginRow(ctx context.Context, pl *Plugin) error {
-	_, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugins (name, desired) VALUES (?, 'running')`, pl.Name)
-	if err != nil {
+	if err := h.ensurePluginRow(ctx, pl.Name); err != nil {
 		return err
 	}
+	return h.readPluginRow(ctx, pl)
+}
+
+// defaultDesired is the desired state of a plugin that has no row: the row that ensurePluginRow
+// inserts, and the value that readPluginRow gives for an absent row.
+const defaultDesired = "running"
+
+// ensurePluginRow inserts the default row of name when it has none. The other columns take their
+// schema defaults, which are the zero values that readPluginRow gives for an absent row.
+func (h *Hub) ensurePluginRow(ctx context.Context, name string) error {
+	_, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugins (name, desired) VALUES (?, ?)`, name, defaultDesired)
+	return err
+}
+
+// readPluginRow is loadPluginRow without the insert: an absent row reads as the default row. An
+// admin call reads with it before its first effect (adminattempt.go).
+func (h *Hub) readPluginRow(ctx context.Context, pl *Plugin) error {
 	var run string
-	err = h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run FROM plugins WHERE name = ?`, pl.Name).
+	err := h.db.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run FROM plugins WHERE name = ?`, pl.Name).
 		Scan(&pl.Desired, &pl.InstanceID, &pl.SessionID, &pl.BlockID, &pl.ChildPID, &pl.ChildStart, &run)
+	if errors.Is(err, sql.ErrNoRows) {
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, err = defaultDesired, "", "", "", 0, "", "", nil
+	}
 	pl.run = pluginRun{}
 	if err == nil && run != "" {
 		err = json.Unmarshal([]byte(run), &pl.run)
@@ -946,7 +966,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 		return &spawnError{stage: "session", known: true, err: fmt.Errorf("spawn %s: the LazyRex session is gone; the next UI pass creates it", pl.Name)}
 	}
 	instance := newInstanceID(pl.Name, h.generation)
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO spawn_intents (instance_id, plugin, status, session_id) VALUES (?, ?, 'prepared', ?)`, instance, pl.Name, sess); err != nil {
+	if err := h.insertIntent(ctx, pl, instance, sess); err != nil {
 		return &spawnError{stage: "intent", known: true, err: err}
 	}
 	h.mu.Lock()
@@ -1264,7 +1284,11 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		if guarded && want == "" {
 			return nil, refuse("invalid_input", "expect_entry must be a non-empty string")
 		}
-		if guarded {
+		attempt, err := parseAttempt(args)
+		if err != nil {
+			return nil, err
+		}
+		if guarded || attempt != "" {
 			// A reload changes the entry of a bound record (a removal, an in-place change of a managed
 			// entry) under reloadMu, and a hub start binds them under it too. With reloadMu and then the
 			// lifecycle lock (the order of replace.go), the entry check and the action are one step.
@@ -1281,22 +1305,39 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		defer pl.lifecycle.Unlock()
 		defer h.kickWaiting() // the wake rule: a start or a stop of any plugin
 		// Read the persisted instance under the lifecycle lock before any decision: an action may come
-		// before recovery reaches this record.
+		// before recovery reaches this record. The read inserts no row: up to sent_at (attemptSent)
+		// the call has no effect (adminattempt.go).
 		h.mu.Lock()
-		err = h.loadPluginRow(ctx, pl)
+		err = h.readPluginRow(ctx, pl)
 		kept := pl.entry == nil
 		now := "none"
 		if !kept {
 			now = entryIdentity(pl.entry)
 		}
+		instance, block := pl.InstanceID, pl.BlockID
 		h.mu.Unlock()
 		if err != nil {
 			return nil, err
+		}
+		if attempt != "" {
+			if err := h.bindAttempt(ctx, attempt, strings.TrimPrefix(action, "hub.admin."), instance, block); err != nil {
+				return nil, err
+			}
+			pl.opAttempt = attempt // the spawn of this call writes its intent_id (spawn)
+			defer func() { pl.opAttempt = "" }()
 		}
 		if guarded && now != want {
 			return nil, refuse("entry_changed", "plugin %s is bound to entry %s, not %s; nothing was started or stopped", pl.Name, now, want)
 		}
 		if action == "hub.admin.stop" {
+			// The first effect: the insert of an absent row (markStopped updates the row), the intent
+			// resolution of a kept record, or the retire.
+			if err := h.attemptSent(ctx, attempt); err != nil {
+				return nil, err
+			}
+			if err := h.ensurePluginRow(ctx, pl.Name); err != nil {
+				return nil, err
+			}
 			// A kept record resolves its intents first: a found block is adopted, then retired. An
 			// unresolved intent keeps the record.
 			if kept {
@@ -1324,13 +1365,24 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		running := pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart) && !retained
 		// With expect_run, the start itself sets the desired state, and only when the candidate is the
 		// expected run (startPluginExpect). A running plugin must run the expected run.
-		if !running && x == nil {
-			pl.Desired = "running"
-			h.savePlugin(ctx, pl)
-		}
 		if running && x != nil && !x.matches(&pl.run) {
 			h.mu.Unlock()
 			return nil, refuse("candidate_changed", "plugin %s runs %s, not %s; nothing was started", pl.Name, runText(&pl.run), x)
+		}
+		if !running {
+			// The first effect: the row insert and the desired state (no expect_run), or the start path.
+			if err := h.attemptSent(ctx, attempt); err != nil {
+				h.mu.Unlock()
+				return nil, err
+			}
+			if err := h.ensurePluginRow(ctx, pl.Name); err != nil {
+				h.mu.Unlock()
+				return nil, err
+			}
+			if x == nil {
+				pl.Desired = "running"
+				h.savePlugin(ctx, pl)
+			}
 		}
 		h.mu.Unlock()
 		if !running {
