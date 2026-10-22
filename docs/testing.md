@@ -422,7 +422,7 @@ each call with `{}`, or with the error code `fail`. The hub finds it like a real
 | --- | --- |
 | `a:calls()` | Every call that the app got: `{action, args}`. |
 | `a:show(session)` | Shows one more session. |
-| `a:fail(code)` | Answers later calls with this error code (`''`: `{}` again). |
+| `a:fail(code, message)` | Answers later calls with this error code and message (`''`: `{}` again; the message defaults to `fake app error`). |
 | `a:close()` | Closes the app. Apps last for the file; a hub restart closes them. |
 
 `hub.app.select_session` reads the target session, so the hub must be attached to it: use a
