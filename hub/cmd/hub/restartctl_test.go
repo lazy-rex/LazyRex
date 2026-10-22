@@ -92,7 +92,9 @@ func TestStopWaitsForTheLockHolder(t *testing.T) {
 	v := &ctlView{rex: ctlFakeRex(t, "exit 0", `echo '{"clients":[]}'`), state: state,
 		own: &hubClient{ID: "h1", PID: 1}, holder: holder.Process.Pid}
 	var buf bytes.Buffer
-	if code := v.stop(&buf); code != 1 || strings.Contains(buf.String(), "stopped") {
+	// The hub client is gone and only the lock stays: stop names the wrapper, not a connected hub.
+	if code := v.stop(&buf); code != 1 || strings.Contains(buf.String(), "stopped") ||
+		!strings.Contains(buf.String(), "the restart wrapper still holds") || strings.Contains(buf.String(), "still connected") {
 		t.Errorf("a holder that stays: exit %d\n%s", code, buf.String())
 	}
 	time.AfterFunc(300*time.Millisecond, func() { holder.Process.Kill() })

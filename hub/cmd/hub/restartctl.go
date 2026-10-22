@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -155,9 +156,48 @@ func (v *ctlView) rexCmdCtx(ctx context.Context, args ...string) ([]byte, error)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return out.Bytes(), fmt.Errorf("%v: %s", err, strings.Join(strings.Fields(errb.String()), " "))
+		return out.Bytes(), &cliError{err: err, stderr: errb.String()}
 	}
 	return out.Bytes(), nil
+}
+
+// cliError is a failed rex command: its error and the stderr it printed.
+type cliError struct {
+	err    error
+	stderr string
+}
+
+func (e *cliError) Error() string {
+	return fmt.Sprintf("%v: %s", e.err, strings.Join(strings.Fields(e.stderr), " "))
+}
+
+func (e *cliError) Unwrap() error { return e.err }
+
+// cliErrorLine is the last stderr line of a rex call that the target answered with an error
+// (Rex 0.0.1792158932, observed): Error: stream response "<id>" failed: <message> (status=<n> code=<code>).
+var cliErrorLine = regexp.MustCompile(`^Error: stream response "[^"]*" failed: (.*) \(status=(\d+) code=([a-z0-9_]+)\)$`)
+
+// cliOutcome classifies the failure of one rex call. definite: the target answered with a code in
+// refusals, so the request did not apply. Every other failure is unknown: a transport code, a code
+// not in refusals, output that is not the CLI error line, a killed rex. The request can then still
+// be delivered and apply (rex-protocol.md: a timeout does not cancel the action). code is the
+// answer's code, or "".
+func cliOutcome(err error, refusals []string) (code string, definite bool) {
+	var ce *cliError
+	if err == nil || !errors.As(err, &ce) {
+		return "", false
+	}
+	last := ""
+	for _, l := range strings.Split(ce.stderr, "\n") {
+		if strings.TrimSpace(l) != "" {
+			last = strings.TrimSpace(l)
+		}
+	}
+	m := cliErrorLine.FindStringSubmatch(last)
+	if m == nil {
+		return "", false
+	}
+	return m[3], slices.Contains(refusals, m[3])
 }
 
 // hubIDs lists the client IDs of the connected lazyrex-hub clients.
@@ -308,7 +348,9 @@ func (v *ctlView) statusText() (int, string) {
 }
 
 // stop stops the hub of this config with hub.admin.shutdown and waits until it is gone (and its
-// wrapper, if one held the lock). It sends no signal.
+// wrapper, if one held the lock). It sends no signal, and it sends the request once: Rex can still
+// deliver a request whose call failed, so only the hub's refusal ends stop early (cliOutcome).
+// Every other outcome waits for the hub to go, until the one deadline.
 func (v *ctlView) stop(stdout io.Writer) int {
 	code, text := v.statusText()
 	if code != ctlRunning {
@@ -322,35 +364,69 @@ func (v *ctlView) stop(stdout io.Writer) int {
 		return code
 	}
 	deadline := time.Now().Add(ctlStopWait) // one bound for all of stop
-	if out, err := v.rexCmd(deadline, "-C", v.own.ID, "do", "hub.admin.shutdown"); err != nil {
-		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", err, strings.TrimSpace(string(out)))
+	out, sendErr := v.rexCmd(deadline, "-C", v.own.ID, "do", "hub.admin.shutdown")
+	if _, refused := cliOutcome(sendErr, []string{"refused"}); refused {
+		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", sendErr, strings.TrimSpace(string(out)))
 		return 1
 	}
 	wrapped := v.holder > 0 // a holder whose status file does not match still owns the state
-	// Only a successful listing without the client shows that the hub is gone.
-	var seenErr error // the last look, when it failed
+	// The last successful listing decides what stop says at the deadline: listed (the hub client
+	// was in it, at listedAt) or gone; lockHeld: gone, but the restart lock holder stays.
+	listed, listedAt, lockHeld := true, time.Now(), false // statusText saw the hub just now
+	// seenErr is the last look, when it failed.
+	var seenErr error
 	for ; ; time.Sleep(200 * time.Millisecond) {
+		// A look started this close to the deadline is cut by it, and its error says nothing about
+		// the hub: report from the last look instead.
+		if left := time.Until(deadline); left < ctlLookMin {
+			time.Sleep(left)
+			v.stopTimedOut(stdout, listed, seenErr == nil, lockHeld, listedAt, sendErr, out, seenErr)
+			return 1
+		}
 		ids, err := v.hubIDs(deadline)
-		gone := err == nil && !slices.Contains(ids, v.own.ID)
 		seenErr = err
-		if gone && wrapped {
-			if holder, _, _, err := readRestart(v.state); holder > 0 || err != nil {
-				gone = false
-				if err != nil {
+		if err == nil {
+			listed = slices.Contains(ids, v.own.ID)
+			lockHeld = false
+			if listed {
+				listedAt = time.Now()
+			} else if wrapped {
+				if holder, _, _, err := readRestart(v.state); holder > 0 || err != nil {
+					lockHeld = true
 					seenErr = err
 				}
 			}
-		}
-		if gone {
-			fmt.Fprintln(stdout, "stopped")
-			return 0
+			if !listed && !lockHeld {
+				fmt.Fprintln(stdout, "stopped")
+				return 0
+			}
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintf(stdout, "the hub was not seen to stop within %s\n", ctlStopWait)
-			if seenErr != nil {
-				fmt.Fprintf(stdout, "the last failed look: %v\n", seenErr)
-			}
+			v.stopTimedOut(stdout, listed, err == nil, lockHeld, listedAt, sendErr, out, seenErr)
 			return 1
 		}
+	}
+}
+
+// ctlLookMin is the least time left before the deadline in which stop starts a client listing.
+const ctlLookMin = 100 * time.Millisecond
+
+// stopTimedOut is what stop says at its deadline, from the last successful listing: listed (at
+// listedAt), and lastOK when that listing was also the last look.
+func (v *ctlView) stopTimedOut(stdout io.Writer, listed, lastOK, lockHeld bool, listedAt time.Time, sendErr error, out []byte, seenErr error) {
+	fmt.Fprintf(stdout, "the hub did not stop within %g s; the shutdown request may still apply: run lazyrex-hub status\n", ctlStopWait.Seconds())
+	switch {
+	case listed && lastOK:
+		fmt.Fprintln(stdout, "the hub client is still connected")
+	case listed:
+		fmt.Fprintf(stdout, "the last successful check (%s ago) still listed the hub\n", time.Since(listedAt).Round(100*time.Millisecond))
+	case lockHeld:
+		fmt.Fprintf(stdout, "the restart wrapper still holds %s\n", v.state)
+	}
+	if listed && sendErr != nil {
+		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", sendErr, strings.TrimSpace(string(out)))
+	}
+	if seenErr != nil {
+		fmt.Fprintf(stdout, "the last failed look: %v\n", seenErr)
 	}
 }
