@@ -104,7 +104,7 @@ func removeIfEnded(t *testing.T, dir string) {
 		t.Errorf("lab %s kept: %v", dir, err)
 		return
 	}
-	if st, why := labProbe(dir, procs); st != labAbsent {
+	if st, why := labProbe(filepath.Dir(dir), dir, procs); st != labAbsent {
 		t.Errorf("lab %s kept (%s): %s", dir, st, why)
 		return
 	}

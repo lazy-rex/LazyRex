@@ -263,7 +263,7 @@ func TestSweepRemovesStaleSocket(t *testing.T) {
 	ln.Close()
 	labJSON(t, dir, deadPid(t))
 	old(t, dir)
-	if st, why := labProbe(dir, mustProcs(t)); st != labAbsent {
+	if st, why := labProbe(filepath.Dir(dir), dir, mustProcs(t)); st != labAbsent {
 		t.Fatalf("probe of a stale socket: %v %s", st, why)
 	}
 	sweepLabs(root, time.Now(), func(string) {})
@@ -292,14 +292,14 @@ func TestProbeProcessNamesLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { c.Process.Kill(); c.Wait() }() // the process this test started
-	if st, why := labProbe(dir, mustProcs(t)); st != labLive || !strings.Contains(why, strconv.Itoa(c.Process.Pid)) {
+	if st, why := labProbe(filepath.Dir(dir), dir, mustProcs(t)); st != labLive || !strings.Contains(why, strconv.Itoa(c.Process.Pid)) {
 		t.Errorf("probe with a process that names the lab: %v %s", st, why)
 	}
-	if st, why := labProbe(sibling, mustProcs(t)); st != labAbsent {
+	if st, why := labProbe(filepath.Dir(sibling), sibling, mustProcs(t)); st != labAbsent {
 		t.Errorf("a process of %s made %s %v: %s", dir, sibling, st, why)
 	}
 	self := []labProc{{pid: os.Getpid(), ppid: os.Getppid(), cmd: "lazyrex-hub test -clean " + sibling}}
-	if st, why := labProbe(sibling, self); st != labAbsent {
+	if st, why := labProbe(filepath.Dir(sibling), sibling, self); st != labAbsent {
 		t.Errorf("this process's own arguments made the lab %v: %s", st, why)
 	}
 }
@@ -309,13 +309,13 @@ func TestProbeProcessNamesLab(t *testing.T) {
 func TestProbeUncertain(t *testing.T) {
 	root := labTestRoot(t)
 	dir := fakeLab(t, root, "lrt-930", 30*time.Hour)
-	if st, _ := labProbe(dir, nil); st != labAbsent {
+	if st, _ := labProbe(filepath.Dir(dir), dir, nil); st != labAbsent {
 		t.Fatalf("the base case is not absent: %v", st)
 	}
 	oldDial := labDial
 	t.Cleanup(func() { labDial = oldDial })
 	labDial = func(string) error { return syscall.ETIMEDOUT }
-	if st, why := labProbe(dir, nil); st != labUncertain {
+	if st, why := labProbe(filepath.Dir(dir), dir, nil); st != labUncertain {
 		t.Errorf("a dial timeout: %v %s", st, why)
 	}
 	labDial = oldDial
@@ -371,4 +371,67 @@ func TestEndLab(t *testing.T) {
 func marker(t *testing.T, dir string) string {
 	b, _ := os.ReadFile(filepath.Join(dir, labKeepFile))
 	return string(b)
+}
+
+// namedProcess starts a process that this test owns, whose command line names path; the test kills
+// and waits for it at its end.
+func namedProcess(t *testing.T, path string) *exec.Cmd {
+	t.Helper()
+	c := exec.Command("/bin/sh", "-c", "sleep 30; :", path)
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Process.Kill(); c.Wait() })
+	return c
+}
+
+// A lab has a name under each name of its root (/tmp and /private/tmp on macOS). codex-21's
+// regression TestReviewerCleanAliasKeepsLiveServer: a live process names /tmp/..., and -clean of the
+// /private/tmp name removed the lab. Both directions, with a process that is not the server pid.
+func TestCleanAliasKeepsLiveLab(t *testing.T) {
+	root := labTestRoot(t)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if realRoot == root {
+		t.Skip("this check needs a root with two names (macOS /tmp)")
+	}
+	for i, c := range []struct{ procPath, cleanRoot, cleanPath string }{
+		{root, root, realRoot},     // the process names /tmp, -clean gets /private/tmp
+		{realRoot, root, root},     // the process names /private/tmp, -clean gets /tmp
+		{root, realRoot, realRoot}, // the sweep root /private/tmp, the process names /tmp
+	} {
+		name := "lrt-96" + strconv.Itoa(i)
+		dir := fakeLab(t, root, name, 30*time.Hour)
+		p := namedProcess(t, filepath.Join(c.procPath, name, "server"))
+		if st, why := labProbe(c.cleanRoot, filepath.Join(c.cleanPath, name), mustProcs(t)); st != labLive || !strings.Contains(why, strconv.Itoa(p.Process.Pid)) {
+			t.Errorf("case %d: probe %v %s", i, st, why)
+		}
+		if err := cleanLab(c.cleanRoot, filepath.Join(c.cleanPath, name)); err == nil || !exists(dir) {
+			t.Errorf("case %d: -clean removed a live lab through another name: %v", i, err)
+		}
+		old(t, dir)
+	}
+	sweepLabs(realRoot, time.Now(), func(string) {})
+	for i := 0; i < 3; i++ {
+		if !exists(filepath.Join(root, "lrt-96"+strconv.Itoa(i))) {
+			t.Errorf("the sweep of %s removed lrt-96%d, a live lab", realRoot, i)
+		}
+	}
+}
+
+// No rex.sock is absent only when lab.json names no server pid or one that has ended: a recorded
+// server pid that runs is uncertain, also when no process names the lab.
+func TestProbeNoSocketRunningServerPid(t *testing.T) {
+	root := labTestRoot(t)
+	dir := fakeLab(t, root, "lrt-970", 30*time.Hour)
+	labJSON(t, dir, os.Getpid())
+	if st, why := labProbe(root, dir, mustProcs(t)); st != labUncertain {
+		t.Errorf("no socket, a running server pid: %v %s", st, why)
+	}
+	labJSON(t, dir, deadPid(t))
+	if st, why := labProbe(root, dir, mustProcs(t)); st != labAbsent {
+		t.Errorf("no socket, an ended server pid: %v %s", st, why)
+	}
 }

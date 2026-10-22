@@ -130,15 +130,19 @@ var labDial = func(sock string) error {
 
 // labProbe tells whether the lab dir is live, absent or uncertain, with the reason. procs is one
 // process listing (labProcs); nil means that the listing failed or was not made, and only a test
-// passes nil for a base case. Rules, in order:
-//   - a process whose command line names the lab (dir + "/", or dir as a whole word) is live. This
-//     process and its ancestors do not count: a -clean names the lab in its own arguments.
-//   - a connection to <dir>/rex.sock: accepted is live; "no such file" is absent.
+// passes nil for a base case. The sweep, -clean and endLab use this one function. Rules, in order:
+//   - a process whose command line names the lab is live. A lab has more than one name (on macOS
+//     /tmp is a link to /private/tmp): each path in a command line that ends in the lab's base
+//     name is resolved and compared with the resolved lab directory (labNamed). This process and
+//     its ancestors do not count: a -clean names the lab in its own arguments.
+//   - a connection to <dir>/rex.sock that is accepted is live.
+//   - "no such file" (no socket) is absent only when lab.json is missing or names no server pid,
+//     or names a server pid that no longer runs.
 //   - "connection refused" is absent only when lab.json names a server pid that no longer runs. A
-//     live server with a full connection queue refuses too (macOS), so a refused dial without
-//     lab.json, or with a server pid that runs (even a reused pid), is uncertain.
-//   - any other dial error is uncertain.
-func labProbe(dir string, procs []labProc) (labState, string) {
+//     live server with a full connection queue refuses too (macOS).
+//   - a recorded server pid that runs (even a reused pid) is uncertain; any other dial error is
+//     uncertain.
+func labProbe(root, dir string, procs []labProc) (labState, string) {
 	if procs != nil {
 		mine := map[int]bool{}
 		parent := map[int]int{}
@@ -148,50 +152,97 @@ func labProbe(dir string, procs []labProc) (labState, string) {
 		for pid := os.Getpid(); pid > 1 && !mine[pid]; pid = parent[pid] {
 			mine[pid] = true
 		}
+		names := labNames(root, dir)
 		for _, p := range procs {
-			if mine[p.pid] {
-				continue
-			}
-			if strings.Contains(p.cmd, dir+"/") || containsWord(p.cmd, dir) {
+			if !mine[p.pid] && namesLab(p.cmd, names) {
 				return labLive, fmt.Sprintf("process %d names the lab: %s", p.pid, p.cmd)
 			}
 		}
 	}
 	err := labDial(filepath.Join(dir, "rex.sock"))
+	var noSocket bool
 	switch {
 	case err == nil:
 		return labLive, "a server accepts connections on rex.sock"
 	case errors.Is(err, syscall.ENOENT):
-		return labAbsent, "no rex.sock and no process"
+		noSocket = true
 	case !errors.Is(err, syscall.ECONNREFUSED):
 		return labUncertain, "rex.sock: " + err.Error()
+	}
+	what := "rex.sock refuses connections"
+	if noSocket {
+		what = "no rex.sock"
 	}
 	var lj struct {
 		ServerPID int `json:"server_pid"`
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "lab.json"))
-	if err != nil {
-		return labUncertain, "rex.sock refuses connections and lab.json cannot be read: " + err.Error()
-	}
-	if err := json.Unmarshal(b, &lj); err != nil || lj.ServerPID <= 0 {
-		return labUncertain, "rex.sock refuses connections and lab.json names no server pid"
-	}
-	if procs == nil {
-		return labUncertain, "rex.sock refuses connections and there is no process listing"
+	switch {
+	case err != nil && noSocket && errors.Is(err, fs.ErrNotExist):
+		return labAbsent, "no rex.sock, no lab.json and no process"
+	case err != nil:
+		return labUncertain, what + " and lab.json cannot be read: " + err.Error()
+	case json.Unmarshal(b, &lj) != nil:
+		return labUncertain, what + " and lab.json cannot be parsed"
+	case lj.ServerPID <= 0 && noSocket:
+		return labAbsent, "no rex.sock, no server pid in lab.json and no process"
+	case lj.ServerPID <= 0:
+		return labUncertain, what + " and lab.json names no server pid"
+	case procs == nil:
+		return labUncertain, what + " and there is no process listing"
 	}
 	for _, p := range procs {
 		if p.pid == lj.ServerPID {
-			return labUncertain, fmt.Sprintf("rex.sock refuses connections and the server pid %d runs (%s)", p.pid, p.cmd)
+			return labUncertain, fmt.Sprintf("%s and the server pid %d runs (%s)", what, p.pid, p.cmd)
 		}
 	}
-	return labAbsent, fmt.Sprintf("rex.sock refuses connections and the server pid %d has ended", lj.ServerPID)
+	return labAbsent, fmt.Sprintf("%s and the server pid %d has ended", what, lj.ServerPID)
 }
 
-// containsWord reports whether word is a whole space-separated word of s.
-func containsWord(s, word string) bool {
-	for _, f := range strings.Fields(s) {
-		if f == word {
+// labNames is every name of the lab dir: its base name under each name of the lab root, and dir as
+// given. A lab is <root>/lrt-<digits> by contract, so these are all the paths that a process can
+// use for it. The names of the root: as given, resolved, and each name under a top-level link
+// (labRootLinks; on macOS /tmp is a link to /private/tmp), so that a root given in either form has
+// both names.
+func labNames(root, dir string) []string {
+	dir = filepath.Clean(dir)
+	base := filepath.Base(dir)
+	roots := []string{filepath.Clean(root)}
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		roots = append(roots, real)
+		for _, link := range labRootLinks {
+			lr, err := filepath.EvalSymlinks(link)
+			if err != nil || lr == link {
+				continue
+			}
+			if real == lr || strings.HasPrefix(real, lr+"/") {
+				roots = append(roots, link+strings.TrimPrefix(real, lr))
+			}
+		}
+	}
+	names := []string{dir}
+	for _, r := range roots {
+		names = append(names, filepath.Join(r, base))
+	}
+	return names
+}
+
+// labRootLinks are the top-level directories that can be links (macOS: /tmp, /var and /etc are
+// links into /private). Only a link that resolves elsewhere adds a name.
+var labRootLinks = []string{"/tmp", "/var", "/etc"}
+
+// namesLab reports whether a command line names one of the lab's names: name + "/" anywhere (also
+// inside a word, for example unix:///tmp/lrt-1/rex.sock), or the name as a whole word. Paths in
+// the command line are not resolved: they can be embedded in a word and need not exist.
+func namesLab(cmd string, names []string) bool {
+	for _, n := range names {
+		if strings.Contains(cmd, n+"/") {
 			return true
+		}
+		for _, f := range strings.Fields(cmd) {
+			if f == n {
+				return true
+			}
 		}
 	}
 	return false
@@ -258,7 +309,7 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 		if age < labStaleAfter {
 			continue
 		}
-		if st, why := labProbe(dir, procs); st != labAbsent {
+		if st, why := labProbe(root, dir, procs); st != labAbsent {
 			if st == labUncertain {
 				logf(fmt.Sprintf("lab sweep: kept %s (uncertain: %s)", dir, why))
 			}
@@ -282,7 +333,7 @@ func endLab(dir string, keep bool, why string, unproved []string) (bool, []strin
 		procs, err := labProcs()
 		if err != nil {
 			reason = err.Error()
-		} else if st, w := labProbe(dir, procs); st != labAbsent {
+		} else if st, w := labProbe(filepath.Dir(dir), dir, procs); st != labAbsent {
 			reason = st.String() + ": " + w
 		}
 	}
@@ -332,7 +383,7 @@ func cleanLab(root, dir string) error {
 	if err != nil {
 		return fmt.Errorf("%s is kept: %w", dir, err)
 	}
-	switch st, why := labProbe(abs, procs); st {
+	switch st, why := labProbe(root, abs, procs); st {
 	case labLive:
 		return fmt.Errorf("%s is live (%s); stop it first", dir, why)
 	case labUncertain:

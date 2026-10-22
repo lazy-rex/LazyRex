@@ -54,11 +54,14 @@ first.
   that server first, by the `server_pid` in its `lab.json` (check that its command names the lab's
   `rex.sock`), never by a name pattern.
 - The probe (`labProbe`) says whether a lab is live, absent or uncertain. Live: a process whose
-  command line names the lab directory (this process and its ancestors do not count), or a server
-  that accepts a connection on `rex.sock`. Absent: no `rex.sock` and no such process; or
-  `rex.sock` refuses the connection and `lab.json` names a server pid that no longer runs.
-  Uncertain: every other case, for example a refusal without `lab.json` or with a server pid that
-  runs (a live server with a full connection queue also refuses on macOS), another connection
+  command line names the lab (this process and its ancestors do not count), or a server that
+  accepts a connection on `rex.sock`. A lab has a name under each name of its root: on macOS
+  `/tmp/lrt-1` and `/private/tmp/lrt-1`; a command line matches a name followed by `/`, or the name
+  as a whole word. Absent: no `rex.sock`, no such process, and `lab.json` names no server pid or
+  one that no longer runs; or `rex.sock` refuses the connection and `lab.json` names a server pid
+  that no longer runs.
+  Uncertain: every other case, for example a recorded server pid that runs, a refusal without
+  `lab.json` (a live server with a full connection queue also refuses on macOS), another connection
   error, or a failed process listing (`ps -eww -o pid=,ppid=,command=`). Only an absent lab is
   removed.
 - The sweep: at the start of each run, at most once per hour per user (the stamp file
