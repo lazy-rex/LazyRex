@@ -1250,14 +1250,16 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 // evidence appears later: for example, the instance of a start's created intent registers after
 // the op ended unknown (a lost answer, or a hub restart before the registration). Each attempt has
 // an outcome, so its call cannot act any more. It never calls again and never changes the op's
-// phase: only the attempt's proof (docs/hub.md, "attempt"). The hold reads that proof.
+// phase: only the attempt's proof (docs/hub.md, "attempt"). The hold reads that proof. An attempt with
+// an operator resolution (resolved_by) never changes: the SELECT and the UPDATE both require
+// resolved_by to be empty.
 //
 // It returns the number of attempts that stay unresolved: the manager passes again after
 // opObservePoll while there are any.
 func (h *Hub) observeLater(ctx context.Context) (left int) {
 	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
 		JOIN plugin_ops o ON o.op_id = a.op_id
-		WHERE a.proof = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop') AND o.phase = 'unknown'`)
+		WHERE a.proof = '' AND a.resolved_by = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop') AND o.phase = 'unknown'`)
 	if err != nil {
 		log.Printf("plugin ops: the later observation: %v", err)
 		return 0
@@ -1284,7 +1286,7 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 			left++
 			continue
 		}
-		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = ''`, proof+" (later)", a.attempt)
+		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = '' AND resolved_by = ''`, proof+" (later)", a.attempt)
 		if err != nil {
 			left++
 			continue
