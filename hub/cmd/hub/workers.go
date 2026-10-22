@@ -55,6 +55,9 @@ type Profile struct {
 	Cwd     string            `json:"cwd,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 	Args    []ProfileArg      `json:"args,omitempty"`
+	// Resume is the command that continues a conversation (agent profiles only): ${conversation_id}
+	// is the identity's conversation, other tokens are the spawn's args (resume.go).
+	Resume []string `json:"resume,omitempty"`
 }
 
 // ProfileArg is a named value that a spawn can pass. "${name}" in the command is replaced by the
@@ -177,6 +180,9 @@ func validProfile(p Profile) error {
 		if !used[name] {
 			return fmt.Errorf("arg %q is not used in the command", name)
 		}
+	}
+	if err := validResume(p, declared); err != nil {
+		return err
 	}
 	for k := range p.Env {
 		if !envName.MatchString(k) || strings.HasPrefix(k, "LAZYREX_") {
