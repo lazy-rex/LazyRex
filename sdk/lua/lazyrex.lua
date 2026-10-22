@@ -933,7 +933,10 @@ function M.plugin(name)
     if #migrations == 0 then return end
     run({tx = true}, function()
       local have = tonumber((db.first('PRAGMA user_version') or {}).user_version) or 0
-      if have > #migrations then fail('refused', 'The database has schema version ' .. have .. '; this plugin knows ' .. #migrations) end
+      -- Expand/contract (docs/sql.md section 2): a newer schema is a rollback to this release. Run on.
+      if have > #migrations then
+        print('lazyrex: the database has schema ' .. have .. '; this plugin knows ' .. #migrations .. '; running on (expand-only rule, docs/sql.md)')
+      end
       for i = have + 1, #migrations do
         local step = migrations[i]
         if type(step) == 'function' then step(db) else db.exec(step) end

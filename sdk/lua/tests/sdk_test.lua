@@ -46,14 +46,20 @@ test('a second start runs no migration again', function()
   expect(again.registered ~= nil, 'registered').to_be(true)
 end)
 
-test('a database with a newer schema stops the start', function()
+test('a database with a newer schema: the start runs on, keeps user_version and logs one line', function()
+  -- Expand/contract (docs/sql.md section 2): a rollback runs the previous release on the newer schema.
   local s = sandbox(sdk_dir, base, {main = TODO})
   s.sql.state.user_version = 2
+  s.sql.state.tables.todos = {columns = {'id', 'text', 'done', 'note'}, rows = {}, seq = 0} -- schema 2 added note
   local ok, err = pcall(function() s:start() end)
   expect(ok, tostring(err)).to_be(true)
-  expect(s.exited).to_be(1)
-  expect(s.registered ~= nil, 'registered first: the hub refuses SQL before it').to_be(true)
-  expect(s.printed[1]).to_match('schema version 2')
+  expect(s.exited, 'the plugin runs on').to_be(nil)
+  expect(s.registered ~= nil, 'registered').to_be(true)
+  expect(action_names(s), 'no migration and no user_version write').to_be('hub.sql.begin hub.sql.query hub.sql.commit')
+  expect(s.sql.state.user_version, 'not lowered').to_be(2)
+  expect(#s.printed).to_be(1)
+  expect(s.printed[1]).to_be('lazyrex: the database has schema 2; this plugin knows 1; running on (expand-only rule, docs/sql.md)')
+  expect(s:agent('todo.add', {text = 'buy milk'}).result).to_equal({id = 1})
 end)
 
 -- Agent actions ----------------------------------------------------------------------------------

@@ -59,6 +59,9 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
 - **Migrations.** Call `app.db.migrate` once, at the top level of the main file. Entry N is schema
   version N. The SDK runs the new entries at the start, in one transaction, and then sets
   `PRAGMA user_version`. A failing entry undoes all of them; the plugin prints the error and stops.
+  A rollback runs the previous release on the newer schema: the SDK logs one line and runs on. So
+  each entry must only expand the schema (a new table, a nullable column or a column with a
+  DEFAULT, an index). Make a destructive change in a later release (docs/sql.md section 2).
   A later version adds an entry at the end:
 
   ```lua
