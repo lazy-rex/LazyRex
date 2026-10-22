@@ -71,7 +71,11 @@ only up to 2^53 (observed on Rex 0.0.1792158932-g88fd41: Lua 5.1, doubles). So:
 - A call without the token while a transaction is open: an exec or batch waits for it (at most 5 s,
   then `busy`); a query reads the committed state. It never runs inside the transaction.
 - A statement in a transaction runs under a savepoint: a failed statement leaves no effect, and the
-  transaction continues. The SDK rolls back when the handler fails.
+  transaction continues. The SDK rolls back when the handler fails. Exception: an error after which
+  SQLite itself ended the transaction (a conflict with `OR ROLLBACK`, `RAISE(ROLLBACK)` in a trigger,
+  some engine errors). Then the whole transaction is undone, the error text ends with "SQLite
+  rolled back the transaction", and the token gives `tx_expired`. The hub checks this after each
+  failed statement (a `BEGIN` succeeds only outside a transaction).
 - The transaction ends at commit or rollback, after **5 s without any hub call of the instance**
   (a non-SQL call such as `hub.agents` counts as activity), after **10 s in total**, when the
   instance retires, and at hub shutdown. After that, the token gives `tx_expired` (or
