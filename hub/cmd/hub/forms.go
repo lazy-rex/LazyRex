@@ -1079,7 +1079,7 @@ func (h *Hub) freezeSourcePwd(ctx context.Context, fc *formContext) {
 		return
 	}
 	if out.Pwd == "" {
-		fc.SourcePwdError = "the source pane reports no directory (its shell sends no OSC 7)"
+		fc.SourcePwdError = "This pane did not report its folder. Enter a directory, or leave it empty for each profile's own directory."
 		return
 	}
 	fc.SourcePwd = out.Pwd
