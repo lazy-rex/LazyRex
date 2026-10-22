@@ -41,6 +41,7 @@ func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 	h, _ := workerTestHub(t)
 	h.rex = r
 	h.selfClosed = map[string]bool{}
+	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}} // closeViewRow forgets the view's render state
 	view := filepath.Join(t.TempDir(), "view.sh")
 	os.WriteFile(view, []byte("#!/bin/sh\nexec sleep 600\n"), 0o755)
 	h.cfg.View = view
