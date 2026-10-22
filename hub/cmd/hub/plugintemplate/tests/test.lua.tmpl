@@ -1,7 +1,18 @@
 -- Run: lazyrex-hub test (in the plugin directory). The guide: docs/testing.md in LazyRex.
+
+-- A pane to open the panel in: the palette opens a panel in the pane that it runs from.
+local function pane(name)
+  local s = session(name)
+  local w = rex.call('session.new_window', {session_id = s, window_label = 'work',
+    layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '600'}, login = false}}}})
+  return {session = s, block = w.block_ids[1]}
+end
+
 test('an added item shows in the panel', function()
   local alice = agent('alice')
   alice:call('{{.Name}}.add', {text = 'first item'})
-  local tree = user:open('items'):render()
-  expect(H.node(tree, 'items').items[1].label).to_equal('first item')
+  local p = pane('{{.Name}}-panel')
+  user:command('items', p)
+  local tree = user:view('/panels/items', '{{.Name}}', p.session):render()
+  expect(node(tree, 'items').items[1].label).to_be('first item')
 end)
