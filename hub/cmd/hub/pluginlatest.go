@@ -69,8 +69,8 @@ type latestRelease struct {
 // first, is fetched into a bare repository in dir and peeled fully with ^{}: a commit is selected,
 // and a tree or a blob is skipped. Every git failure and every other type fails the resolution: a
 // failure never selects an older release.
-func resolveLatest(ctx context.Context, dir, url string) (latestRelease, error) {
-	out, err := runGit(ctx, dir, "ls-remote", "--tags", "--", url, "refs/tags/v*")
+func resolveLatest(ctx context.Context, git gitRunner, dir, url string) (latestRelease, error) {
+	out, err := git(ctx, dir, nil, "ls-remote", "--tags", "--", url, "refs/tags/v*")
 	if err != nil {
 		return latestRelease{}, err
 	}
@@ -93,23 +93,23 @@ func resolveLatest(ctx context.Context, dir, url string) (latestRelease, error) 
 
 	gitDir := filepath.Join(dir, "git")
 	if len(cands) > 0 {
-		if _, err := runGit(ctx, dir, "init", "-q", "--bare", gitDir); err != nil {
+		if _, err := git(ctx, dir, nil, "init", "-q", "--bare", gitDir); err != nil {
 			return latestRelease{}, err
 		}
 	}
 	var ignored []string
 	for _, c := range cands {
 		ref := "refs/tags/" + c.tag
-		if _, err := runGit(ctx, gitDir, "fetch", "-q", "--no-tags", "--depth", "1", "--", url, "+"+ref+":"+ref); err != nil {
+		if _, err := git(ctx, gitDir, nil, "fetch", "-q", "--no-tags", "--depth", "1", "--", url, "+"+ref+":"+ref); err != nil {
 			return latestRelease{}, fmt.Errorf("fetch %s: %w", ref, err)
 		}
-		t, err := runGit(ctx, gitDir, "cat-file", "-t", ref+"^{}")
+		t, err := git(ctx, gitDir, nil, "cat-file", "-t", ref+"^{}")
 		if err != nil {
 			return latestRelease{}, fmt.Errorf("%s: %w", ref, err)
 		}
 		switch typ := strings.TrimSpace(string(t)); typ {
 		case "commit":
-			id, err := runGit(ctx, gitDir, "rev-parse", "--verify", ref+"^{}")
+			id, err := git(ctx, gitDir, nil, "rev-parse", "--verify", ref+"^{}")
 			if err != nil {
 				return latestRelease{}, fmt.Errorf("%s: %w", ref, err)
 			}
@@ -146,7 +146,7 @@ func legacyLatestError(cfgPath, source string, e *lockEntry) error {
 // selectLatest resolves the highest release of the latest entry e. Each skipped tag goes to note.
 func selectLatest(ctx context.Context, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, note func(string)) (latestRelease, error) {
 	rel, err := withTmp(tmpRoot, func(tmp string) (latestRelease, error) {
-		return resolveLatest(ctx, tmp, o.url(r))
+		return resolveLatest(ctx, o.runner(), tmp, o.url(r))
 	})
 	if err != nil {
 		return rel, err
