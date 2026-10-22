@@ -260,12 +260,13 @@ func (w *wire) resolve(ctx context.Context) (string, error) {
 
 // hubCount is a complete discovery that found no connected hub or more than one. resolve returns it
 // only after target.resolve and every client.inspect succeeded; any other failure is an ordinary
-// error. Its text is the pane's status, so the first sentence fits a narrow pane's notice row.
+// error. Its text is the pane's status. The notice is one row cut at the pane's width, so the text starts
+// with the action: "No hub: run LazyRex: Start Hub." is 31 columns, whole in a 38-column pane.
 type hubCount struct{ n int }
 
 func (e *hubCount) Error() string {
 	if e.n == 0 {
-		return "No LazyRex hub is connected. To start one, use LazyRex: Start Hub in the palette; if the entry is missing, run lazyrex-hub setup again. This pane retries the connection automatically."
+		return "No hub: run LazyRex: Start Hub. If the palette has no such entry, run lazyrex-hub setup and the Rex config reload that it prints. This pane retries the connection automatically."
 	}
 	return fmt.Sprintf("%d LazyRex hubs are connected. This pane needs exactly one.", e.n)
 }

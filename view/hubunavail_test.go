@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	noHubText    = "No LazyRex hub is connected. To start one, use LazyRex: Start Hub in the palette; if the entry is missing, run lazyrex-hub setup again. This pane retries the connection automatically."
+	noHubAction  = "No hub: run LazyRex: Start Hub."
+	noHubText    = noHubAction + " If the palette has no such entry, run lazyrex-hub setup and the Rex config reload that it prints. This pane retries the connection automatically."
 	twoHubsText  = "2 LazyRex hubs are connected. This pane needs exactly one."
 	unavailable  = "Hub unavailable: "
 	resolveEmpty = "Unexpected target.resolve reply"
@@ -116,19 +117,21 @@ func TestPaneSafe(t *testing.T) {
 	}
 }
 
-// The footer notice is one row. In a 38-column pane its first sentence still shows whole.
+// The footer notice is one row, cut at the pane's width. In a 38-column pane the row still shows
+// what to do (codex-24's review of d5b4f4f: "…To " was all that showed). The text is the
+// renderer's own (hubCount), not a copy.
 func TestNoHubNoticeInANarrowPane(t *testing.T) {
 	m := testModel()
 	m.ready = false
-	m.Update(connectionMsg{Text: noHubText})
+	m.Update(connectionMsg{Text: (&hubCount{0}).Error()})
 	m.Update(tea.WindowSizeMsg{Width: 38, Height: 12})
 	var notice string
 	for _, line := range strings.Split(m.View().Content, "\n") {
-		if plain := ansi.Strip(line); strings.HasPrefix(strings.TrimSpace(plain), "No LazyRex") {
+		if plain := ansi.Strip(line); strings.HasPrefix(strings.TrimSpace(plain), "No hub") {
 			notice = plain
 		}
 	}
-	if !strings.Contains(notice, "No LazyRex hub is connected.") || ansi.StringWidth(notice) > 38 {
+	if !strings.Contains(notice, noHubAction) || ansi.StringWidth(notice) > 38 {
 		t.Fatalf("notice row %q (%d columns)", notice, ansi.StringWidth(notice))
 	}
 }

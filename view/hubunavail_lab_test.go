@@ -168,7 +168,7 @@ func TestNoHubTextLab(t *testing.T) {
 	}
 	t.Logf("size: %s", must("block", "call", "-s", s.ID, "-b", pane, "size"))
 	screen := func() string { out, _ := cli("block", "capture", "-s", s.ID, "-b", pane); return out }
-	const first = "No LazyRex hub is connected."
+	const first = "No hub: run LazyRex: Start Hub." // the action, whole in the one notice row
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the pane at the failure:\n%s", screen())
@@ -193,7 +193,7 @@ func TestNoHubTextLab(t *testing.T) {
 	startHub()
 	waitFor("the attach after the start", 30*time.Second, func() bool {
 		sc := screen()
-		return !strings.Contains(sc, "No LazyRex hub") && strings.Contains(sc, "No agent can be restarted.")
+		return !strings.Contains(sc, "No hub") && strings.Contains(sc, "No agent can be restarted.")
 	})
 	t.Logf("after the start:\n%s", screen())
 	must("api", "call", "session.destroy", `{"session_id":"`+s.ID+`"}`)
