@@ -132,6 +132,7 @@ func (s *sqlService) drainLater(p *pluginSQL) {
 			err := s.drain(context.Background(), p)
 			p.release()
 			if err == nil {
+				s.notified() // the commit's own wake came before this apply
 				break
 			}
 			log.Printf("hub.sql notices of %s: %v; retry in %s", p.name, err, wait)
