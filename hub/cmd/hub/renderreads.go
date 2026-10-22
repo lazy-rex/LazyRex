@@ -144,7 +144,7 @@ func parseRefresh(raw json.RawMessage) (tracked bool, err error) {
 	if len(v) > 64 {
 		v = v[:64] + "..."
 	}
-	return false, fmt.Errorf(`refresh %s: only "all" or no field is valid`, v)
+	return false, fmt.Errorf(`refresh must be absent or "all"; got %s`, v)
 }
 
 // markSQL marks the views of the plugin that a SQL commit of marks can change: a view in flight,

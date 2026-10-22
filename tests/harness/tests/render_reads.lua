@@ -116,5 +116,5 @@ test('any other refresh value is a declaration error: no table set, one view_dep
     if ev.route == '/lazy/reads-k' then errors[#errors + 1] = ev.error end
   end
   expect(#errors, 'one event for one error text').to_be(1)
-  expect(errors[1]).to_be('refresh "reads": only "all" or no field is valid')
+  expect(errors[1]).to_be('refresh must be absent or "all"; got "reads"')
 end)

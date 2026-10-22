@@ -367,10 +367,10 @@ func TestRenderRefreshRefused(t *testing.T) {
 		want   string
 		events int
 	}{
-		{renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, `refresh "reads": only "all" or no field is valid`, 1},
-		{renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, `refresh "reads": only "all" or no field is valid`, 1},        // the same text: no second event
-		{renderStep{refresh: 5}, `refresh 5: only "all" or no field is valid`, 2},                                                  // no table read
-		{renderStep{reads: []map[string]bool{ta, nil}, refresh: "writes"}, `refresh "writes": only "all" or no field is valid`, 3}, // untracked
+		{renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, `refresh must be absent or "all"; got "reads"`, 1},
+		{renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, `refresh must be absent or "all"; got "reads"`, 1},        // the same text: no second event
+		{renderStep{refresh: 5}, `refresh must be absent or "all"; got 5`, 2},                                                  // no table read
+		{renderStep{reads: []map[string]bool{ta, nil}, refresh: "writes"}, `refresh must be absent or "all"; got "writes"`, 3}, // untracked
 	} {
 		markAll(h)
 		renderWith(t, h, map[string]renderStep{"v1": c.step})

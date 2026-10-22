@@ -167,7 +167,7 @@ Read tracking is the default. A `view.render` reply can add `"refresh"` beside `
 - Any other value (a string other than `"all"`, a number, an object) is a declaration error, as
   for malformed `deps`: the tree is shown, the view gets no table set (every SQL commit renders it
   again), and the event `view_deps_invalid {plugin, view_id, route, error}` comes when the error
-  text changes: `refresh <value>: only "all" or no field is valid`. The hub checks the value for
+  text changes: `refresh must be absent or "all"; got <value>` (the JSON value, cut at 64 bytes). The hub checks the value for
   every good render, also an untracked one or one that read no table. The next render with a valid
   value clears the error.
 - A render that read no table, an untracked render (another hub call than a tokened
