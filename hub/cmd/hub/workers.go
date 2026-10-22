@@ -1467,6 +1467,12 @@ func candidateChange(cand, run *pluginRun) map[string]any {
 	if cand.Dir != run.Dir {
 		c["dir"] = cand.Dir
 	}
+	if cand.Tag != run.Tag {
+		c["tag"] = cand.Tag
+		if cand.Tag == "" {
+			c["tag"] = nil // the run has a release tag, and the candidate has none
+		}
+	}
 	if len(c) == 0 {
 		return nil
 	}
@@ -1476,12 +1482,15 @@ func candidateChange(cand, run *pluginRun) map[string]any {
 // pluginsList reports (docs/plugin-sources.md, section 7):
 //   - plugins: each registered plugin and its declared tabs, for navigation;
 //   - refused: each config entry in state refused, with its error;
-//   - entries: each config entry with its state (running, stopped, refused or retained), the dir
-//     and the commit of its run, its error when refused or retained, and "candidate": {"error"}
-//     when its last resolution refused it, or the candidate fields that differ from the run
-//     (candidateChange; for example hub.plugins.reload changed the source, or an update the commit).
+//   - entries: each config entry with its state (running, stopped, refused or retained), the dir,
+//     the commit and, for a latest run, the release tag of its run (no "tag" key for any other
+//     run), its error when refused or retained, and "candidate": {"error"} when its last
+//     resolution refused it, or the candidate fields that differ from the run (candidateChange; for
+//     example hub.plugins.reload changed the source, or an update the commit). A candidate field
+//     that the candidate lacks is null: "commit" for a local candidate, "tag" for a candidate
+//     without a release tag when the run has one.
 //   - kept: each record without an entry (plugins.go loadKept), with its name, source, state, error
-//     and the dir and the commit of its run.
+//     and the dir, the commit and the tag of its run.
 //
 // An entry that no manifest named has name null.
 func (h *Hub) pluginsList(ctx context.Context) (any, error) {
@@ -1511,6 +1520,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 				item["dir"] = pl.run.Dir
 				if pl.run.Commit != "" {
 					item["commit"] = pl.run.Commit
+				}
+				if pl.run.Tag != "" {
+					item["tag"] = pl.run.Tag
 				}
 				if c := candidateChange(e.cand, &pl.run); c != nil {
 					item["candidate"] = c
@@ -1548,6 +1560,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			k := map[string]any{"name": pl.Name, "source": pl.source, "state": pl.reportedState(), "error": pl.refusal, "dir": pl.run.Dir}
 			if pl.run.Commit != "" {
 				k["commit"] = pl.run.Commit
+			}
+			if pl.run.Tag != "" {
+				k["tag"] = pl.run.Tag
 			}
 			kept = append(kept, k)
 		}

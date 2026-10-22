@@ -27,6 +27,7 @@ type pluginRun struct {
 	Dir     string            `json:"dir"`              // the plugin directory
 	Commit  string            `json:"commit,omitempty"` // a GitHub source: the locked commit; "" for a local source
 	Digest  string            `json:"digest,omitempty"` // a GitHub source: the locked digest of the cache entry; "" for a local source
+	Tag     string            `json:"tag,omitempty"`    // a latest source: the locked release tag; "" for every other source
 	Path    string            `json:"path"`
 	SDK     string            `json:"sdk,omitempty"` // the manifest sdk: start through the SDK launcher
 	Events  string            `json:"events,omitempty"`
@@ -338,7 +339,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			s.Err = e.static
 			continue
 		}
-		dir, commit, digest := e.dir, "", ""
+		dir, commit, digest, tag := e.dir, "", "", ""
 		if e.github {
 			if snap.err != nil {
 				s.Err = fmt.Errorf("plugin %s: %w", e.Source, snap.err)
@@ -350,6 +351,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 				continue
 			}
 			digest = snap.lock.Plugins[e.Source].Digest // lockedDir checked the cache entry against it
+			tag = snap.lock.Plugins[e.Source].Tag       // set only on a latest entry (pluginlock.go)
 		}
 		m, main, err := readPluginManifest(dir)
 		if err == nil {
@@ -372,7 +374,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			// A name in use is a duplicate name: checkGraph refuses every entry with it. The owner
 			// keeps the binding (uses below), and its running instance continues.
 			s.Name, s.Depends = m.Name, m.Depends
-			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Digest: digest, Path: main, SDK: m.SDK, Events: m.Events, Notice: m.Notice,
+			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Digest: digest, Tag: tag, Path: main, SDK: m.SDK, Events: m.Events, Notice: m.Notice,
 				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots, Prompts: e.Prompts, UserMessaging: e.UserMessaging}
 		}
 	}

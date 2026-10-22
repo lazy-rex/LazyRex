@@ -597,7 +597,13 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 		if state != "ok" {
 			ok = false
 		}
-		fmt.Fprintf(&buf, "%s\tref %s\tcommit %s\tcache %s\t%s\n", e.Source, r.Ref, commit, state, e.identity())
+		// A latest entry names its release tag in the ref field: "ref latest v1.2.0". The field
+		// count stays the same.
+		ref := r.Ref
+		if le != nil && le.RefKind == "latest" && le.Tag != "" {
+			ref += " " + le.Tag
+		}
+		fmt.Fprintf(&buf, "%s\tref %s\tcommit %s\tcache %s\t%s\n", e.Source, ref, commit, state, e.identity())
 	}
 	var orphans []string
 	for src := range lock.Plugins {

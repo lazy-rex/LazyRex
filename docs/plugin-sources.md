@@ -324,7 +324,9 @@ The commands are CLI only. A hub action must answer fast, because the hub has on
 - `lazyrex-hub plugin update -config <cfg> [name|source ...]`: resolve the refs again (all, or the
   named entries), fetch, and rewrite the lock.
 - `lazyrex-hub plugin status -config <cfg>`: the source, ref, locked commit and cache state (ok,
-  missing, changed) of each entry, and the changed entries that no lock references.
+  missing, changed) of each entry, and the changed entries that no lock references. A latest
+  entry names its locked release tag in the ref field: `ref latest v1.2.0`; the field count stays
+  the same.
 - `lazyrex-hub plugin export -config <cfg>`: write the pin document of the lock to stdout (section
   6a).
 - `lazyrex-hub plugin pull -config <cfg> -file <path> [-take <source>]... [-keep <source>]...`:
@@ -525,18 +527,25 @@ are a malformed config, so a source names one entry. A hub restart works too.
 **Run and candidate.** Each plugin has two records:
 
 - `run`: the metadata of the current instance. The hub saves it in the plugins row when it spawns:
-  source, dir, commit, digest, events, notice, depends. Exports come from that instance's
+  source, dir, commit, digest, tag (a latest source only), events, notice, depends. Exports come from that instance's
   register. Notices use `run.notice`. Readiness is the registration of `run`.
-- `candidate`: the last resolution attempt, `{commit, dir}` or `{error}`. A resolution never
+- `candidate`: the last resolution attempt, `{commit, dir, tag}` or `{error}`. A resolution never
   writes into `run`. Only a spawn copies the candidate to `run`.
-- `hub.plugins` reports state, `dir` and `commit` from `run` (`commit` only for a GitHub source),
-  and `source`. A kept record also reports `dir` and `commit` of its run. The `"candidate"` object:
+- `hub.plugins` reports state, `dir`, `commit` and `tag` from `run` (`commit` only for a GitHub
+  source; `tag`, the release tag of the lock, only for a latest source, and no `tag` key for any
+  other run), and `source`. A kept record also reports `dir`, `commit` and `tag` of its run. A run
+  saved before the tag existed has no tag; a newer lock does not give it one. The `"candidate"`
+  object:
   - A refused candidate: `{"error"}` only.
   - A passing candidate of an entry with a run: `"commit"` when the candidate commit differs from
     the run commit, and `"dir"` when the candidate dir differs from the run dir. Each field is
     independent. When run and candidate are both local, only `"dir"` can differ. A change between
     a GitHub and a local source reports `"commit"`, with `null` for a local candidate.
-  - No `"candidate"` key when neither field differs, or when the entry has no run.
+  - `"tag"` when the candidate tag differs from the run tag: the candidate tag, or `null` when
+    the run has a tag and the candidate has none (for example a latest run whose source is now a
+    branch). A tag change alone is a change. No `"tag"` key when the two are equal (both absent or
+    the same tag).
+  - No `"candidate"` key when no field differs, or when the entry has no run.
 - `hub.plugins` reports the last resolution. It reads no lock file. After `plugin update`, a
   resolution (for example `hub.plugins.reload` or a start attempt) gives the new candidate.
 
@@ -758,6 +767,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A directory fsync failure after the rename: the lock of sync and update; the lock and the base of pull, then the next pull | the new bytes in place; the "is replaced" text, no unchanged claim; the next pull unchanged | U |
 | pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
+| A latest run in `hub.plugins` | `tag` in the entry and in a kept record; no `tag` key for another run; candidate `"tag"`: the new tag, or `null` for a candidate without one; no key when equal; a saved run keeps its tag across a load | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
 | sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
 | sync fails on the second of two plugins | the lock is unchanged; no referenced dir changed | U |
