@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -98,5 +100,23 @@ func TestCheckServer(t *testing.T) {
 	}
 	if err := checkServer("unix:///run/user/1000/rex/server.sock", true, false); err != nil {
 		t.Fatalf("-real-server on the Linux real server: %v", err)
+	}
+}
+
+// Test mode asks no Rex server, so its own check must know the real paths of both systems: the
+// Linux default socket is refused by checkServer and by checkLabProof before any proof file is read.
+func TestTestModeRefusesTheLinuxRealServer(t *testing.T) {
+	fakeStatusRex(t, "fail", "")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+	for _, s := range []string{
+		"unix:///run/user/4242/rex/server.sock",
+		"unix:///run/user/" + strconv.Itoa(os.Getuid()) + "/rex/server.sock",
+	} {
+		if err := checkServer(s, false, true); err == nil || !strings.Contains(err.Error(), "refuses the real") {
+			t.Errorf("checkServer(%s, test): %v", s, err)
+		}
+		if err := checkLabProof(s); err == nil || !strings.Contains(err.Error(), "refuses the real") {
+			t.Errorf("checkLabProof(%s): %v", s, err)
+		}
 	}
 }

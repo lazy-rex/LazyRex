@@ -30,6 +30,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/lazy-rex/LazyRex/hub/internal/rexreal"
 )
 
 // testReplyLimit bounds the encoded result of a hub.test.* reply. The envelope (call_id, the
@@ -127,7 +129,7 @@ func newTestState() *testState {
 // lab/server.sh) owns: <dir>/rex.sock, <dir>/lab.json written by that owner, and a live server
 // process whose argv names that socket and <dir>/state.
 func checkLabProof(server string) error {
-	if macRealServer(server) {
+	if rexreal.KnownDefault(server) {
 		return errors.New("-test refuses the real Rex server")
 	}
 	socket, err := rexSocket(server)

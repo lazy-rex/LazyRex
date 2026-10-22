@@ -17,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/lazy-rex/LazyRex/hub/internal/rexreal"
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
@@ -231,8 +232,29 @@ func (s *shim) call(ctx context.Context, name string, args json.RawMessage, meta
 	}
 }
 
+// resolveServer picks the shim's server: -server, else REX_SERVER, else Rex's default endpoint (a
+// Linux pane has no REX_SERVER). The real server needs -real-server (rexreal.IsReal: a known
+// default path, or Rex's identity of its default; each uncertain answer is "real").
+func resolveServer(flagServer, env string, realServer bool) (string, error) {
+	server := flagServer
+	if server == "" {
+		server = env
+	}
+	if server == "" {
+		def, err := rexreal.DefaultEndpoint()
+		if err != nil {
+			return "", fmt.Errorf("no -server, no REX_SERVER, and Rex's default server is not known: %w", err)
+		}
+		server = def
+	}
+	if rexreal.IsReal(server) != realServer {
+		return "", fmt.Errorf("server %s and -real-server=%v disagree; the real Rex server needs -real-server", server, realServer)
+	}
+	return server, nil
+}
+
 func main() {
-	server := flag.String("server", os.Getenv("REX_SERVER"), "Rex server (default: $REX_SERVER)")
+	serverFlag := flag.String("server", "", "Rex server (default: $REX_SERVER, else Rex's default server)")
 	agent := flag.String("agent", "", "logical agent ID from the hub roster (required)")
 	realServer := flag.Bool("real-server", false, "connect to the user's real Rex server (approved runs only)")
 	flag.Parse()
@@ -241,17 +263,16 @@ func main() {
 	if id := os.Getenv("LAZYREX_AGENT"); id != "" {
 		*agent = id
 	}
-	if *server == "" || *agent == "" {
+	if *agent == "" {
 		log.Fatal("usage: mcp -agent <id> [-server unix:///...] [-real-server]")
 	}
-	isReal := strings.Contains(*server, "Application%20Support/rex/server.sock") || strings.Contains(*server, "Application Support/rex/server.sock")
-	if isReal != *realServer {
-		log.Fatalf("server %s and -real-server=%v disagree; the real Rex server needs -real-server", *server, *realServer)
+	server, err := resolveServer(*serverFlag, os.Getenv("REX_SERVER"), *realServer)
+	if err != nil {
+		log.Fatal(err)
 	}
-	s := &shim{server: *server, agent: *agent, block: os.Getenv("REX_BLOCK")}
+	s := &shim{server: server, agent: *agent, block: os.Getenv("REX_BLOCK")}
 	ctx := context.Background()
 	// Join before discovery so notices can arrive before the first tool call.
-	var err error
 	for i := 0; i < 30; i++ {
 		if err = s.connect(ctx); err == nil {
 			break
