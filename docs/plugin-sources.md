@@ -13,6 +13,7 @@ Code:
 | Refs, fetch, `@latest` | `pluginfetch.go`, `pluginlatest.go` |
 | `lazyrex-hub plugin` commands | `plugincmd.go`, `pinsync.go`, `pluginnew.go` |
 | Start, states, kept records | `plugins.go`, `respawn.go`, `reload.go` |
+| Selected run, local snapshots | `selectedrun.go`, `localsnapshot.go` |
 | `expect_run`, replace | `expectrun.go`, `replace.go` |
 
 ## Terms
@@ -185,7 +186,23 @@ lazyrex-hub plugin sync`.
   entry after the rename. A failure before the rename removes the stage. Names that start with
   `.` are stages, not entries.
 - There is no prune. A running plugin can `dofile` a sibling file later (Tunnels does), so the hub
-  must not delete an entry that is in use.
+  must not delete an entry that is in use. A future prune keeps every entry that a lock names, or
+  that a plugins row names in `run` or in `selected_run` (section 7, "Selected run"). A local
+  snapshot (`local/<hex>.<token>`, below) has no lock, so for it the rule is `run` or
+  `selected_run`.
+- **Local snapshots** (`localsnapshot.go`). An explicit start of a local source copies the source
+  into a stage, `local/.stage-<token>/`, and publishes it as `local/<hex>.<token>`, where `<hex>` is
+  the digest of the published bytes (the digest rule below). `.git` is skipped. A symlink or
+  another non-regular file refuses the start (`plugin <name>: <path> is not a regular file; a local
+  source is copied, and the copy has no symlinks`). The bound is 10,000 files and 64 MiB; over it,
+  the start refuses with the numbers. The modes are the modes of a cache entry. An existing
+  `local/<hex>.*` entry is used only if its digest verifies; a bad entry is never used or changed,
+  and the start publishes a new token. The hub reads the manifest again from the snapshot: a
+  change of name, main, sdk, events, notice or depends refuses (`the source changed during the
+  start; start it again`). The run's `dir` is the snapshot, and its `digest` is the snapshot's. A
+  start that fails after the publication stores no selected run and leaves the new entry for the
+  prune; the hub never removes an entry. A plugin must not write into its own directory: the
+  snapshot is read-only.
 - A future prune command also removes `.stage-*` and `.tmp/*` entries older than one hour (a CLI
   fetch ended by SIGKILL, or a manager fetch whose output did not finish). Until it exists, they
   stay as unused disk state; no lock names them.
@@ -194,8 +211,10 @@ lazyrex-hub plugin sync`.
   before the resolution that reads the lock file (`checkStart`; `validateCandidate` in
   `hub.admin.replace`). Spawn releases it after hub.db has saved the run.
   Each start that ends without a spawn releases it. A waiting plugin holds nothing. Prune takes an
-  exclusive flock without waiting. So each entry that a start can use is in a lock file or in a
-  stored run while prune reads them. A run that hub.db cannot save stops the spawn before the
+  exclusive flock without waiting. An explicit start of a local source holds it through the copy,
+  the publication and the save of the run (or of the selected run for a wait). An automatic start
+  holds it from before its run check to the save of the run. So each entry that a start can use is
+  in a lock file, a stored run or a stored selected run while prune reads them. A run that hub.db cannot save stops the spawn before the
   create request (`spawn_failed`, stage "save"): prune could not see it. The flock is advisory: a
   hub without this rule is not protected.
 - **Digest**: sha256 over the lines `<path>\0<x|->\0<size>\0<sha256 hex of content>\n`, sorted by
@@ -538,10 +557,10 @@ a kept record holds from another source, is refused ("stop X first") and binds n
 still counts in the duplicate check. After the stop of X, `hub.admin.start {source}` starts the
 entry.
 
-**The graph.** Each start attempt rebuilds the whole graph. A start attempt is a hub start,
-`hub.admin.start`, a crash respawn, or a restart after a session loss. The attempt re-reads every
-local manifest and the lock, and verifies the cache entries. Then it applies the refusal rules to
-the plugin to start:
+**The graph.** Each explicit start rebuilds the whole graph. An explicit start is a hub start,
+`hub.admin.start`, a reload or a replace. The start re-reads every local manifest and the lock,
+and verifies the cache entries. Then it applies the refusal rules to the plugin to start (an
+automatic start uses the selected graph instead: "Selected run" below):
 
 - a missing dependency: `plugin worktrees: dependency profiles is not configured`;
 - a refused dependency, transitively: `plugin worktrees: dependency profiles is refused: <its
@@ -582,9 +601,10 @@ each step takes the first entry in config order whose dependencies are listed. A
 refused, so the order always exists. A dependency spawns first; its dependent waits and spawns
 after the dependency registers.
 
-**Lifecycle.** One start path, `startPlugin` (`plugins.go`), serves hub start recovery,
-`hub.admin.start`, a crash respawn and a restart after a session loss. There is no adoption
-exception. The order is:
+**Lifecycle.** The explicit start path, `startPlugin` (`plugins.go`), serves hub start recovery
+and `hub.admin.start`; a reload and a replace use the same checks. An automatic start takes
+`startAutomatic` ("Selected run" below). There is no adoption exception. The order of the
+explicit start path is:
 
 1. Resolve spawn intents. An unresolved intent blocks a spawn, and it gives no registered current
    instance, so dependents wait. `hub.admin.start` does not abandon open intents: an unresolved
@@ -598,6 +618,29 @@ A running dependent is never stopped by a later change of the graph. Example: A 
 gets a cycle; A runs on, and its next start is refused. A dependency that stops or crashes later
 does not stop its dependents. `hub.admin.start` of a plugin whose dependency is not registered
 gives `waiting`.
+
+**Selected run** (`selectedrun.go`). An automatic start (a crash respawn, a restart after a
+session loss, a wake) runs the selected run: the run that the last explicit start selected. It
+reads no pin, so a lock change or a local edit takes effect at the next explicit start.
+
+- The plugins row stores it (column `selected_run`) with the identity of the entry that selected
+  it. A spawn sets it in the save of the run; an explicit start that waits sets it before its
+  lease ends.
+- A crash, a failed spawn, a retirement and a session loss keep it. A stop (also a user block
+  close), the entry's removal and hub start clear it. Hub start clears every row before recovery,
+  so a value that a rollback hub kept never reaches an automatic start.
+- The admission: the selected run must come from the record's current entry, else `plugin <name>:
+  no run is recorded; start it again`.
+- The run check: the published entry exists and has the run's digest (the whole entry), the
+  plugin directory exists, and the hub can start its sdk. It reads no lock. Else `plugin <name>:
+  run <commit or digest> is no longer available; start it again`.
+- The selected graph uses only the depends of the selected runs. A cycle through the plugin
+  refuses (`plugin <name>: dependency cycle among the selected runs (a -> b -> a); start it
+  explicitly`). A dependency that no entry gives refuses (`plugin <name>: dependency <d> of run
+  <commit> is not available`). A dependency that is not registered makes the plugin wait; for a
+  refused, retained or stopped dependency the error is `waiting for <d> (<state>)`. A registered
+  dependency is enough, whatever its pin is.
+- A refusal gives state `refused`, so no crash backoff retries it.
 
 **Repair entry point.** `hub.admin.start {"source": "<exact source string>"}` (beside
 `{"plugin": name}`) resolves that entry again and starts it if the checks pass. Duplicate sources
@@ -627,8 +670,12 @@ are a malformed config, so a source names one entry. A hub restart works too.
     branch). A tag change alone is a change. No `"tag"` key when the two are equal (both absent or
     the same tag).
   - No `"candidate"` key when no field differs, or when the entry has no run.
-- `hub.plugins` reports the last resolution. It reads no lock file. After `plugin update`, a
-  resolution (for example `hub.plugins.reload` or a start attempt) gives the new candidate.
+- `hub.plugins` reports the last resolution for `candidate`. After `plugin update`, a resolution
+  (for example `hub.plugins.reload` or an explicit start) gives the new candidate. `pinned_commit`
+  reads the current lock: the commit that it names for a GitHub entry, or `""` (a local entry, or
+  no pin). After a CLI update and a crash, `commit` is the running commit and `pinned_commit` the
+  new pin, until the next explicit start.
+- A local run's `dir` is its snapshot, so a local candidate's source dir is not a `"dir"` change.
 
 Example: P runs C1. An update locks C2, and C2 fails its graph check. The hub keeps `run` = C1.
 `hub.admin.start` on a running plugin changes nothing. To apply an update, use
@@ -639,7 +686,7 @@ cleared `run` (no instance).
 **`hub.plugins` fields.** `plugins` lists the running plugins with `source` and `dir`. `refused`
 lists the refusals. `entries` has one item for each config and managed entry: `entry` (the
 config index) or `managed` (the managed id), `source`, `name`, `state`, `dir`, `commit` and `tag`
-(of the run), `error` (state refused or retained), `waiting` (state waiting), and `"candidate"`
+(of the run), `pinned_commit` (of the current lock), `error` (state refused or retained), `waiting` (state waiting), and `"candidate"`
 (above). An entry with a record adds `instance_id`,
 `instance_pending`, `desired` and `registered` (section 14). `kept` lists each kept record:
 `name`, `source`, `state`, `error`, and `dir`, `commit` and `tag` of its run.
