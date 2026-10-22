@@ -299,6 +299,7 @@ operations, effects and retries.
 | `v:rename_tab(label)` | Renames the view's Rex tab, as the user does. The hub sends `view.rename`. |
 | `v:tab_label()` | The label of the view's Rex tab. (`v.label` is the renderer's client label.) |
 | `v:seen(reason)` | Reports that the user looks at the view (`hub.view.seen`, default reason `focus`), as the renderer does. The plugin gets `view.seen` later. In the lab no app is connected, so a navigation alone does not count as seen. |
+| `v:crash()` | Ends the renderer process (`testview.crash`, exit status 2) with no word to the hub, as a renderer crash does. The hub sees the pane's child exit. |
 
 An operation is final when its status is not `pending` and its effects are not `pending`. The
 helpers read the durable record from the hub, so a `close_form` effect that closes the renderer
