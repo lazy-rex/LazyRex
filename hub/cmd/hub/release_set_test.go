@@ -123,6 +123,15 @@ func TestReleaseSetHashStep(t *testing.T) {
 	if code := releaseMain([]string{"set-hash"}, &out, &errb); code != relUsage {
 		t.Fatalf("no -set: code %d", code)
 	}
+	// An empty set: parseSet refuses it, so set-hash does too (codex-26, review of c2aa0bb).
+	for _, empty := range []string{`{"plugins":[]}`, `{}`} {
+		os.WriteFile(f, []byte(empty), 0o600)
+		out.Reset()
+		errb.Reset()
+		if code := releaseMain([]string{"set-hash", "-set", f}, &out, &errb); code != relFailed || !strings.Contains(errb.String(), "no plugins") || out.Len() != 0 {
+			t.Fatalf("%s: code %d stdout %q stderr %q", empty, code, out.String(), errb.String())
+		}
+	}
 }
 
 func TestReleaseSetRefused(t *testing.T) {

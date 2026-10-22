@@ -352,6 +352,10 @@ func releaseSetHash(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "release set-hash: the set file: %v\n", err)
 		return relFailed
 	}
+	if len(raw.Plugins) == 0 {
+		fmt.Fprintln(stderr, "release set-hash: the set file has no plugins")
+		return relFailed
+	}
 	code := relOK
 	for i, r := range raw.Plugins {
 		var e relSetEntry
