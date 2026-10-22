@@ -1006,59 +1006,135 @@ test('a panel with a title of several words gets a command id that the hub accep
   expect(tostring(bad.load_error):find('A command id uses only a-z, 0-9 and _ (not notes.add)', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
 end)
 
-test('refresh = "reads" on a panel or a view goes into its render reply; the default sends no field', function()
-  -- Render opt-in (hub lead lead-optin-final, coordinator coord-render-g4-final): each render states
-  -- it again; the hub filters refreshes by the tables that the render read only for "reads".
+test('a render is tracked by default; refresh = "all" and ctx.refresh_all() opt out; another value fails at load', function()
+  -- Read tracking is the default (user decision, 2026-10-22): a tracked render sends no refresh field.
   local s = plugin([[
-app.panel('Reads', function() return {} end, {refresh = 'reads'})
 app.panel('Plain', function() return {} end)
-app.panel('Writes', function() return {} end, {refresh = 'writes'})
-local function render() return {title = 'V', nodes = {}} end
-app.view('/v/reads', {render = render}, {refresh = 'reads'})
-app.view('/v/plain', {render = render})
-app.view('/v/writes', {render = render}, {refresh = 'writes'})
+app.panel('All', function() return {} end, {refresh = 'all'})
+app.view('/v/*', {render = function(ctx)
+  if ctx.route == '/v/all' then ctx.refresh_all() end
+  return {title = 'V', nodes = {}}
+end})
+app.view('/w', {render = function() return {title = 'W', nodes = {}} end}, {refresh = 'all'})
 ]])
-  for route, want in pairs({['/panels/reads'] = 'reads', ['/panels/plain'] = false, ['/panels/writes'] = false,
-      ['/v/reads'] = 'reads', ['/v/plain'] = false, ['/v/writes'] = false}) do
-    local r = s:render(route, 'render-1')
-    expect(r.error, route).to_be(nil)
-    expect(r.result.refresh, route).to_be(want or nil)
-    expect(r.result.tree.refresh, route .. ': not in the tree').to_be(nil)
+  for _, c in ipairs({{'/panels/plain', nil}, {'/panels/all', 'all'}, {'/v/one', nil}, {'/v/all', 'all'}, {'/v/one', nil}, {'/w', 'all'}}) do
+    local r = s:render(c[1], 'render-1')
+    expect(r.error, c[1]).to_be(nil)
+    expect(r.result.refresh, c[1]).to_be(c[2])
+    expect(r.result.tree.refresh, c[1] .. ': not in the tree').to_be(nil)
   end
-  for _, decl in ipairs({"app.panel('P', function() return {} end, {refresh = 'read'})",
+  for _, decl in ipairs({"app.panel('P', function() return {} end, {refresh = 'reads'})",
+      "app.panel('P', function() return {} end, {refresh = 'writes'})",
       "app.view('/v', {render = function() return {} end}, {refresh = true})"}) do
     local bad = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. decl})
     expect(bad.loaded, decl .. ': fails at the declaration').to_be(false)
-    expect(tostring(bad.load_error):find('refresh is "reads" or "writes"', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
+    expect(tostring(bad.load_error):find('refresh is "all" or absent', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
   end
 end)
 
-test('a failed hub call in a render omits refresh = "reads", also when the plugin catches the error', function()
-  -- "reads" states that every hub call of the render reached the hub and returned without error (hub
-  -- lead, lead-render-incomplete). Only the SDK sees a read that never reached the hub.
+test('a failed hub call in a render replies refresh = "all", also when the plugin catches the error', function()
+  -- The hub tracks a render only when every hub call of the render reached the hub and returned
+  -- without error (hub lead, lead-render-incomplete). Only the SDK sees a call that never reached it.
   local s = plugin([[
 app.db.migrate {'CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'}
-app.view('/v/r', {render = function()
-  local ok = pcall(app.db.first, 'SELECT id FROM t')
+app.view('/v/*', {render = function(ctx)
+  local ok
+  if ctx.route == '/v/raw' then ok = pcall(app.hub, 'hub.sql.query', {sql = 'SELECT id FROM t', params = {}})
+  else ok = pcall(app.db.first, 'SELECT id FROM t') end
   return {title = ok and 'read' or 'caught', nodes = {}}
-end}, {refresh = 'reads'})
+end})
 app.panel('Enc', function()
-  pcall(app.hub, 'hub.thing', {f = function() end})
+  pcall(app.hub, 'hub.sql.query', {sql = 'SELECT 1', params = {function() end}})
   return {}
-end, {refresh = 'reads'})
+end)
 ]])
-  expect(s:render('/v/r', 'render-1').result.refresh, 'a clean render').to_be('reads')
-  for _, e in ipairs({{code = 'sql_error', message = 'a hub error'}, {code = 'timeout', message = 'lost'}}) do
-    s.sql.fail_next['hub.sql.query'] = e
-    local r = s:render('/v/r', 'render-2')
-    expect(r.error, e.code).to_be(nil)
-    expect(r.result.tree.title, e.code .. ': the plugin caught it').to_be('caught')
-    expect(r.result.refresh, e.code .. ': no refresh').to_be(nil)
-    expect(s:render('/v/r', 'render-3').result.refresh, e.code .. ': the next clean render').to_be('reads')
+  for _, route in ipairs({'/v/db', '/v/raw'}) do
+    expect(s:render(route, 'render-1').result.refresh, route .. ': a clean render').to_be(nil)
+    for _, e in ipairs({{code = 'sql_error', message = 'a hub error'}, {code = 'timeout', message = 'lost'}}) do
+      s.sql.fail_next['hub.sql.query'] = e
+      local r = s:render(route, 'render-2')
+      expect(r.error, route .. ' ' .. e.code).to_be(nil)
+      expect(r.result.tree.title, route .. ' ' .. e.code .. ': the plugin caught it').to_be('caught')
+      expect(r.result.refresh, route .. ' ' .. e.code).to_be('all')
+      expect(s:render(route, 'render-3').result.refresh, route .. ' ' .. e.code .. ': the next clean render').to_be(nil)
+    end
   end
   local r = s:render('/panels/enc', 'render-4')
   expect(r.error, 'an encode failure: nothing sent').to_be(nil)
-  expect(r.result.refresh, 'an encode failure: no refresh').to_be(nil)
+  expect(r.result.refresh, 'an encode failure').to_be('all')
+end)
+
+test('a read outside SQL in a render replies refresh = "all"; an SQL render stays tracked', function()
+  -- The SDK wraps each function that reads outside state when it loads (lazyrex.lua, "External reads
+  -- in a render"). srv and alias are made after the SDK loaded, before the render.
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE t (id INTEGER PRIMARY KEY)'}
+local srv = rex.server('lab')
+local alias = io.open
+local inputs = {
+  open = function() local f = io.open('/dev/null'); if f then f:close() end end,
+  lines = function() for _ in io.lines('/dev/null') do end end,
+  popen = function() pcall(io.popen, 'true') end,
+  execute = function() pcall(os.execute, 'true') end,
+  call = function() rex.call('x.read', {}) end,
+  invoke = function() rex.invoke('x.action') end,
+  wait = function() rex.wait('x.event') end,
+  servers = function() rex.servers() end,
+  host = function() rex.host({}) end,
+  exec = function() rex.exec({'/bin/true'}) end,
+  exec_start = function() rex.exec.start({'/bin/true'}) end,
+  block = function() rex.block.call('creator', 'title', {}) end,
+  session = function() rex.session.view({}) end,
+  server = function() rex.server('lab') end,
+  server_call = function() srv.call('x.read', {}) end,
+  server_session = function() srv.session.view({}) end,
+  alias = function() local f = alias('/dev/null'); if f then f:close() end end,
+  app_rex = function() app.rex('x.read') end,
+  hub = function() app.hub('hub.thing', {}) end,
+  sql = function() app.db.first('SELECT id FROM t'); app.hub('hub.sql.query', {sql = 'SELECT id FROM t', params = {}}) end,
+}
+app.view('/x/*', {render = function(ctx)
+  inputs[ctx.route:sub(4)]()
+  return {title = 'X', nodes = {}}
+end})
+]], {hub = {['hub.thing'] = function() return {} end}})
+  local names = {}
+  expect(s:render('/x/sql', 'render-0').result.refresh, 'SQL only').to_be(nil)
+  expect(#s.rex_calls, 'the SDK transport calls no wrapped function').to_be(1) -- rex.server at load
+  for _, n in ipairs({'open', 'lines', 'popen', 'execute', 'call', 'invoke', 'wait', 'servers', 'host', 'exec', 'exec_start',
+      'block', 'session', 'server', 'server_call', 'server_session', 'alias', 'app_rex', 'hub'}) do
+    local r = s:render('/x/' .. n, 'render-' .. n)
+    expect(r.error, n).to_be(nil)
+    expect(r.result.refresh, n).to_be('all')
+    expect(s:render('/x/sql', 'render-sql').result.refresh, n .. ': the next SQL render').to_be(nil)
+  end
+  -- rex.call goes to the sandbox's client methods, which record nothing.
+  expect(s.rex_calls, 'each wrapper called the original').to_equal({'server', 'invoke', 'wait', 'servers', 'host', 'exec',
+    'exec.start', 'block.call', 'session.view', 'server', 'lab:call', 'lab:session.view'})
+end)
+
+test('a wrapper passes values, nil values and errors unchanged; outside a render it marks nothing', function()
+  local s = plugin([[
+app.action('p.io', {}, function()
+  local f, err, code = io.open('/nonexistent/x')
+  local ok, raised = pcall(rex.call, 'p.boom', {})
+  local e = rex.exec({'/bin/true'})
+  local h = rex.exec.start({'/bin/true'})
+  return {f = f == nil, err = err, code = code, n = select('#', io.open('/nonexistent/x')), ok = ok, raised = tostring(raised), exec = e.name, start = h.name}
+end)
+]], {rex = {['p.boom'] = function() error('boom-x', 0) end}})
+  local want_n = select('#', io.open('/nonexistent/x'))
+  local r = s:agent('p.io', {})
+  expect(r.error).to_be(nil)
+  local _, err, code = io.open('/nonexistent/x')
+  expect(r.result).to_equal({f = true, err = err, code = code, n = want_n, ok = false, raised = 'boom-x', exec = 'exec', start = 'exec.start'})
+  expect(r.result.refresh, 'an action reply has no refresh').to_be(nil)
+end)
+
+test('if a replacement does not hold, every render replies refresh = "all" (fail closed)', function()
+  local s = todo({source = 'local app = require("lazyrex").plugin("p")\napp.panel("P", function() return {} end)', frozen = true})
+  expect(s:render('/panels/p', 'render-1').result.refresh).to_be('all')
+  expect(find(s.printed, function(l) return l:find('cannot detect reads outside SQL', 1, true) ~= nil end) ~= nil, show(s.printed)).to_be(true)
 end)
 
 test('a lost reply is unavailable: client_unavailable, and a table error with timeout, disconnected or client_unavailable', function()

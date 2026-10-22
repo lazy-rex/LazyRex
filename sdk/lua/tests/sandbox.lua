@@ -48,7 +48,23 @@ return function(sdk_dir, base, opts)
       return {}
     end,
   }
-  local env = setmetatable({rex = stub, os = setmetatable({exit = function(code) s.exited = code end}, {__index = os}), print = function(...) s.printed[#s.printed + 1] = table.concat({...}, ' ') end}, {__index = base})
+  -- The other Rex calls that read outside state (lazyrex.lua, "External reads in a render"). Each one
+  -- records its name in s.rex_calls and answers {name = <name>}.
+  s.rex_calls = {}
+  local function rec(name) return function() s.rex_calls[#s.rex_calls + 1] = name; return {name = name} end end
+  local function api(prefix)
+    return {call = rec(prefix .. 'call'), block = {call = rec(prefix .. 'block.call')}, session = {view = rec(prefix .. 'session.view')}}
+  end
+  local own = api('')
+  stub.block, stub.session = own.block, own.session
+  stub.invoke, stub.wait, stub.servers, stub.host = rec('invoke'), rec('wait'), rec('servers'), rec('host')
+  stub.exec = setmetatable({start = rec('exec.start')}, {__call = function(_, ...) return rec('exec')(...) end})
+  stub.server = function(label) s.rex_calls[#s.rex_calls + 1] = 'server'; return api(label .. ':') end
+  -- opts.frozen: a rex table that keeps its fields (the SDK cannot replace them).
+  local rex_env = stub
+  if opts.frozen then rex_env = setmetatable({}, {__index = stub, __newindex = function() end}) end
+  -- Own io and os tables: the SDK replaces io.open and the others in them, not in the test runner.
+  local env = setmetatable({rex = rex_env, io = setmetatable({}, {__index = io}), os = setmetatable({exit = function(code) s.exited = code end}, {__index = os}), print = function(...) s.printed[#s.printed + 1] = table.concat({...}, ' ') end}, {__index = base})
   local sdk_chunk = assert(loadfile(sdk_dir .. '/lazyrex.lua'))
   setfenv(sdk_chunk, env)
   local sdk = sdk_chunk()

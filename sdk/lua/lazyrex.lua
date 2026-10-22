@@ -59,6 +59,78 @@ local function concat(list, sep, i, j)
 end
 M.concat = concat
 
+-- External reads in a render ----------------------------------------------------------------------
+
+-- Read tracking is the default (user decision, 2026-10-22): the hub renders a view again only after a
+-- write to a table that its render read. A render that reads state outside SQL replies refresh = "all",
+-- and the hub then renders it after each commit. The SDK replaces each function that reads outside
+-- state once, when it loads; boot.lua loads the SDK before the plugin, so plugin code sees only the
+-- wrappers. A wrapper marks the open render frame (a table field), then calls the original as a tail
+-- call: values and errors pass unchanged, with no protected call in plugin code. The SDK transport
+-- uses the originals in raw, so its own calls mark nothing. Not detected: a file or exec handle made
+-- before the render, os.time, os.getenv, and native modules (docs/plugin-sdk.md).
+local function external()
+  local f = S.frame
+  if f and f.in_render and f.state then f.state.external = true end
+end
+local function marked(fn) return function(...) external(); return fn(...) end end
+-- api(t) wraps the calls of a Rex API table in place: rex itself, or a table of rex.server(label).
+local function api(t)
+  for _, k in ipairs({'call', 'invoke', 'wait', 'servers', 'host'}) do
+    if type(t[k]) == 'function' then t[k] = marked(t[k]) end
+  end
+  if type(t.block) == 'table' and type(t.block.call) == 'function' then t.block.call = marked(t.block.call) end
+  if type(t.session) == 'table' then
+    local session = t.session
+    t.session = setmetatable({}, {__index = function(_, k)
+      local v = session[k]
+      if type(v) == 'function' then return marked(v) end
+      return v
+    end})
+  end
+end
+-- install answers true when every replacement holds (it reads each one back).
+local function install()
+  local function current()
+    return {call = rex.call, invoke = rex.invoke, wait = rex.wait, servers = rex.servers, host = rex.host,
+      block = type(rex.block) == 'table' and rex.block.call or nil, session = rex.session, exec = rex.exec, server = rex.server,
+      open = io.open, lines = io.lines, popen = io.popen, execute = os.execute}
+  end
+  local before = current()
+  raw.call = rex.call
+  api(rex)
+  if rex.exec ~= nil then
+    local exec, copy = rex.exec, {}
+    for k, v in pairs(exec) do copy[k] = type(v) == 'function' and marked(v) or v end
+    rex.exec = setmetatable(copy, {__call = function(_, ...) external(); return exec(...) end})
+  end
+  if type(rex.server) == 'function' then
+    local server = rex.server
+    -- A server table gets wrapped calls, so a call through it marks a render also when the table was
+    -- made earlier.
+    rex.server = function(label)
+      external()
+      local t = server(label)
+      if type(t) == 'table' then api(t) end
+      return t
+    end
+  end
+  for _, k in ipairs({'open', 'lines', 'popen'}) do if type(io[k]) == 'function' then io[k] = marked(io[k]) end end
+  if type(os.execute) == 'function' then os.execute = marked(os.execute) end
+  local now = current()
+  for k, v in pairs(before) do if now[k] == v then return false end end
+  return true
+end
+do
+  local ok, held = pcall(install)
+  raw.call = raw.call or rex.call
+  -- Fail closed: if a replacement did not hold, the SDK tracks no render.
+  if not (ok and held) then
+    S.untracked = true
+    print('lazyrex: the SDK cannot detect reads outside SQL; every view renders after each commit')
+  end
+end
+
 local NULL = {null = true}
 local b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 local function base64(s)
@@ -196,11 +268,13 @@ M.rex_error = rex_error
 
 local function hub(action, args)
   local app = S.app
-  -- A render frame with refresh = "reads" states that every hub call of the render reached the hub and
-  -- returned without error (hub lead, lead-render-incomplete). So each failure marks the frame first, in
-  -- a table field: the mark holds when the plugin catches the error.
+  -- The hub tracks a render only when every hub call of the render reached the hub and returned without
+  -- error (hub lead, lead-render-incomplete). So each failure marks the frame first, in a table field:
+  -- the mark holds when the plugin catches the error, and the render replies refresh = "all". A render
+  -- call other than hub.sql.query reads hub state: it marks the frame too.
   local f = S.frame
   local function failed() if f and f.state then f.state.failed = true end end
+  if action ~= 'hub.sql.query' then external() end
   local request = {client_id = app.hub_id, action = action, args = args or {}, timeout_ms = 10000}
   -- No protected call here: hub() runs inside handlers, and in Rex Lua a finished protected call or a
   -- caught error can split the handler's locals from its closures (docs/rex-protocol.md, "Rex Lua
@@ -209,7 +283,7 @@ local function hub(action, args)
   local encoded, encode_err = rex.json.encode(request)
   if encoded == nil then failed(); fail('invalid_input', action .. ': the request cannot be encoded as JSON: ' .. tostring(encode_err)) end
   if #encoded > MAX_REQUEST then failed(); fail('too_large', action .. ': the request has ' .. #encoded .. ' bytes; the limit is ' .. MAX_REQUEST .. '. Nothing was sent.') end
-  local response, err = rex.call('client.perform', request)
+  local response, err = raw.call('client.perform', request)
   if type(response) ~= 'table' then failed(); rex_error(err, action .. ' failed') end
   if type(response.result) ~= 'table' then failed(); fail('internal', action .. ': invalid hub result') end
   return response.result
@@ -540,7 +614,7 @@ function M.plugin(name)
   -- app.refresh ignores a failure. It raises and catches nothing: in Rex Lua a caught error splits the
   -- locals of the running handler from its closures (docs/rex-protocol.md, "Rex Lua runtime").
   function app.refresh()
-    rex.call('client.perform', {client_id = app.hub_id, action = 'hub.ui.invalidate', args = {}, timeout_ms = 10000})
+    raw.call('client.perform', {client_id = app.hub_id, action = 'hub.ui.invalidate', args = {}, timeout_ms = 10000})
   end
   -- app.notice(agent, pending, opts) wakes agent at the commit of the current handler. opts.once = true
   -- (notice v2, hub/nudge-once): a new nudge only if the agent is not pending or read since the last
@@ -579,18 +653,18 @@ function M.plugin(name)
     order[#order + 1] = action_name
   end
 
-  -- opts.refresh (app.panel and app.view): "writes" (the default: the view renders again after each
-  -- SQL commit of the plugin) or "reads" (after a write to a table that its render read). The SDK sends
-  -- "reads" in each render reply; the hub decides at each render (render opt-in, hub lead).
+  -- opts.refresh (app.panel and app.view): absent (the hub renders the view again after a write to a
+  -- table that its render read) or "all" (after each SQL commit of the plugin).
   local function refresh_of(opts)
     local v = opts.refresh
-    assert(v == nil or v == 'reads' or v == 'writes', 'refresh is "reads" or "writes"')
-    return v == 'reads' and v or nil
+    assert(v == nil or v == 'all', 'refresh is "all" or absent')
+    return v
   end
 
   -- app.panel(title, fn, opts): a palette command (surface panel) that the hub opens in its side slot
   -- (a split, or a floating layer); it makes no tab. fn(view) answers a list of nodes
-  -- (app.ui.*). opts: id (default from the title), description, keywords, landing (default true).
+  -- (app.ui.*). opts: id (default from the title), description, keywords, landing (default true),
+  -- refresh.
   function app.panel(title, fn, opts)
     opts = opts or {}
     local id = opts.id or slug(title)
@@ -874,19 +948,35 @@ function M.plugin(name)
     if #encoded > MAX_VIEW then fail('too_large', 'The view has ' .. #encoded .. ' bytes; the limit is ' .. MAX_VIEW .. '. Show fewer items.') end
     return reply
   end
+  -- render_ctx answers the context of a render. ctx.refresh_all() replies refresh = "all" for this
+  -- render only (a view that serves many routes). It writes a field of the render frame.
+  local function render_ctx(a)
+    local ctx = user_ctx(a)
+    ctx.refresh_all = function()
+      local f = S.frame
+      if f and f.state then f.state.all = true end
+    end
+    return ctx
+  end
+  -- refreshed answers the refresh field of a render reply: "all" when the view or the render asked for
+  -- it, a hub call failed, or the render read outside SQL; otherwise none (tracked).
+  local function refreshed(state, decl)
+    if decl or state.all or state.failed or state.external or S.untracked then return 'all' end
+    return nil
+  end
   local function view_call(action, a)
     local panel = panels[a.route]
     if action == 'view.render' then
       if panel then
         local state = {}
-        local t = run({tx = false, render = a.render, in_render = true, state = state}, function() return tree(panel, panel.fn(user_ctx(a))) end)
-        return sized({tree = t, refresh = not state.failed and panel.refresh or nil})
+        local t = run({tx = false, render = a.render, in_render = true, state = state}, function() return tree(panel, panel.fn(render_ctx(a))) end)
+        return sized({tree = t, refresh = refreshed(state, panel.refresh)})
       end
       local v = view_of(a.route)
       if v and v.handlers.render then
         local state = {}
-        local t = run({tx = false, render = a.render, in_render = true, state = state}, v.handlers.render, user_ctx(a), a)
-        return sized({tree = t, refresh = not state.failed and v.refresh or nil})
+        local t = run({tx = false, render = a.render, in_render = true, state = state}, v.handlers.render, render_ctx(a), a)
+        return sized({tree = t, refresh = refreshed(state, v.refresh)})
       end
       fail('not_found', 'Unknown route ' .. tostring(a.route))
     end
@@ -946,8 +1036,8 @@ function M.plugin(name)
 
   rex.on('client_perform_requested', function(_, ev)
     local ok, result = pcall(dispatch, ev)
-    if ok then rex.call('client.reply', {call_id = ev.call_id, result = result or {}})
-    else rex.call('client.reply', {call_id = ev.call_id, error = normalize(result)}) end
+    if ok then raw.call('client.reply', {call_id = ev.call_id, result = result or {}})
+    else raw.call('client.reply', {call_id = ev.call_id, error = normalize(result)}) end
   end)
 
   -- register runs after the main file.
@@ -999,13 +1089,13 @@ function M.plugin(name)
         args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}, requester_pid = {type = 'integer'}},
           required = {'action', 'args', 'requester_pid'}, additionalProperties = false}}
     end
-    rex.call('client.keymap', {actions = keymap})
+    raw.call('client.keymap', {actions = keymap})
     local reg = {plugin = name, instance_id = app.instance_id}
     if #exports > 0 then reg.exports = exports end
     if #commands > 0 then reg.commands = commands end
     -- app.registration: the hub.register reply (for example its generation), before the start functions.
     app.registration = hub('hub.register', reg)
-    rex.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
+    raw.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
     migrate()
     for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
     for _, s in ipairs(starts) do if s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
