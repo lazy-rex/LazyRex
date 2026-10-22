@@ -784,8 +784,11 @@ function M.plugin(name)
 
   local function user_ctx(a)
     local context = type(a.context) == 'table' and a.context or {}
+    -- source: the source pane directory that the hub froze at the open (hub/form-source-pwd d407808):
+    -- pwd is the raw terminal.pwd value (a file:// URI); pwd_error the reason when the read gave none.
     return {user = true, key = a.operation_key, route = a.route, input = type(a.input) == 'table' and a.input or {}, args = a,
-      session_id = context.session_id, view_id = a.view_id, context = context, query = query_of(a.route)}
+      session_id = context.session_id, view_id = a.view_id, context = context, query = query_of(a.route),
+      source = {pwd = context.source_pwd, pwd_error = context.source_pwd_error}}
   end
   -- sized answers the render reply, or fails with too_large over MAX_VIEW (the status included).
   local function sized(reply)

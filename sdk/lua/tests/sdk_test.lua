@@ -859,3 +859,19 @@ app.panel('Tx', function() app.db.transaction(function() end); return {} end, {i
   expect(t.error and t.error.message).to_be('A render cannot write: db.transaction runs in an action or a select handler')
   expect(s.sql.count('hub.sql.begin') - before, 'still no hub.sql.begin').to_be(0)
 end)
+
+test('ctx.source has the pane directory that the hub froze at the open (form context source_pwd, source_pwd_error)', function()
+  local s = plugin([[
+local function show_source(ctx) return rex.json.encode({pwd = ctx.source.pwd or false, err = ctx.source.pwd_error or false}) end
+app.form('/forms/src', {title = function(ctx) return show_source(ctx) end, fields = {},
+  on_submit = function(ctx) return {source = show_source(ctx)} end, store = false})]])
+  local function title(context)
+    return rex.json.decode(s:call('view.render', {route = '/forms/src', user = 'user', view_id = 'v', context = context}).result.tree.title)
+  end
+  expect(title({source_block_id = 'b', source_pwd = 'file:///tmp/lazyrex%20pwd'})).to_equal({pwd = 'file:///tmp/lazyrex%20pwd', err = false})
+  expect(title({source_block_id = 'b', source_pwd_error = 'the source pane reports no directory'})).to_equal({pwd = false, err = 'the source pane reports no directory'})
+  expect(title({}), 'no source pane: neither field').to_equal({pwd = false, err = false})
+  local r = s:call('view.action', {route = '/forms/src', node_id = 'form', action = 'submit', input = {values = {}}, user = 'user', operation_key = 'k',
+    view_id = 'v', context = {source_pwd = 'file:///a'}})
+  expect(rex.json.decode(r.result.source).pwd, 'an action gets it too').to_be('file:///a')
+end)
