@@ -206,17 +206,31 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 	for _, d := range m.deps {
 		names[d.m.Name] = true
 	}
-	for name, args := range m.Test.Args {
-		if !names[name] {
-			return fmt.Errorf("test.args: %q is not the plugin, lazyrex or a test.plugins entry", name)
+	checkArgs := func(what string, set map[string]map[string]string) error {
+		for name, args := range set {
+			if !names[name] {
+				return fmt.Errorf("%s: %q is not the plugin, lazyrex or a test.plugins entry", what, name)
+			}
+			for k, v := range args {
+				if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
+					return fmt.Errorf("%s %s: arg %q is not allowed", what, name, k)
+				}
+				if _, err := expandValue(v, dummy); err != nil {
+					return fmt.Errorf("%s %s.%s: %w", what, name, k, err)
+				}
+			}
 		}
-		for k, v := range args {
-			if !pluginArgKey.MatchString(k) || pluginArgReserved[k] {
-				return fmt.Errorf("test.args %s: arg %q is not allowed", name, k)
-			}
-			if _, err := expandValue(v, dummy); err != nil {
-				return fmt.Errorf("test.args %s.%s: %w", name, k, err)
-			}
+		return nil
+	}
+	if err := checkArgs("test.args", m.Test.Args); err != nil {
+		return err
+	}
+	for file, f := range m.Test.Files {
+		if file != filepath.Base(file) || !strings.HasSuffix(file, ".lua") {
+			return fmt.Errorf("test.files: %q is not the base name of a test file (for example gallery.lua)", file)
+		}
+		if err := checkArgs("test.files "+file+" args", f.Args); err != nil {
+			return err
 		}
 	}
 	for name, roots := range m.Test.WatchRoots {
@@ -260,7 +274,7 @@ type labValuesT struct {
 	watchRoots map[string][]string
 }
 
-func (m *manifest) labValues(manifestDir, lab string) (labValuesT, error) {
+func (m *manifest) labValues(manifestDir, lab string, fileArgs map[string]map[string]string) (labValuesT, error) {
 	vars := map[string]string{"LAB": lab, "PLUGIN": m.pluginDir(manifestDir)}
 	roots := m.roots(manifestDir, lab)
 	value := func(what, v string) (string, error) {
@@ -294,14 +308,18 @@ func (m *manifest) labValues(manifestDir, lab string) (labValuesT, error) {
 		}
 		out.env[k] = x
 	}
-	for name, args := range m.Test.Args {
-		out.args[name] = map[string]string{}
-		for k, v := range args {
-			x, err := value("test.args "+name+"."+k, v)
-			if err != nil {
-				return out, err
+	for _, set := range []map[string]map[string]string{m.Test.Args, fileArgs} {
+		for name, args := range set {
+			if out.args[name] == nil {
+				out.args[name] = map[string]string{}
 			}
-			out.args[name][k] = x
+			for k, v := range args {
+				x, err := value("test.args "+name+"."+k, v)
+				if err != nil {
+					return out, err
+				}
+				out.args[name][k] = x
+			}
 		}
 	}
 	return out, nil

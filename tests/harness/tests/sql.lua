@@ -17,3 +17,7 @@ test('the hub refuses its own tables and a write in sql()', function()
   expect(expect_error(function() sql('SELECT * FROM lazyrex_ops') end).code).to_be('refused')
   expect(expect_error(function() sql('DELETE FROM notes') end).code).to_be('refused')
 end)
+
+test('H.args.sdk is the SDK directory of the checkout', function()
+  expect(H.args.sdk).to_be(H.args.lib:gsub('/lab/test$', '') .. '/sdk/lua')
+end)
