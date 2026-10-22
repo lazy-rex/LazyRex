@@ -17,6 +17,17 @@ import (
 // the output in the kept pane, not the exit status: block process last_exit). Lab only:
 // HUBCTL_LAB=1. The hub.json names the lab server, so no command gets -real-server.
 func TestHubControlsLab(t *testing.T) {
+	hubControlsLab(t, false)
+}
+
+// The same, with a plugin read that fails: the hub.json "rex" is a script in the lab directory that
+// fails hub.plugins and runs the real rex for every other call. Both panes say "unknown", and the
+// hub runs on.
+func TestHubControlsLabUnknownPlugins(t *testing.T) {
+	hubControlsLab(t, true)
+}
+
+func hubControlsLab(t *testing.T, failPlugins bool) {
 	if os.Getenv("HUBCTL_LAB") != "1" {
 		t.Skip("set HUBCTL_LAB=1 to run the hub controls lab test (it starts its own lab server)")
 	}
@@ -37,7 +48,20 @@ func TestHubControlsLab(t *testing.T) {
 	// A plugin that is not installed (the lab state has no plugin cache): the hub refuses it and runs.
 	const labRefused = "github:lazy-rex/Messaging@v0.1.2"
 	cfg := filepath.Join(lab, "hub.json")
-	os.WriteFile(cfg, []byte(`{"server":"`+socket+`","state":"`+filepath.Join(lab, "state")+`","agents":[{"id":"user","name":"User"}],"plugins":[{"source":"`+labRefused+`"}]}`), 0o600)
+	rexField := ""
+	if failPlugins {
+		realRex, err := exec.LookPath("rex")
+		if err != nil {
+			t.Fatal(err)
+		}
+		shim := filepath.Join(lab, "rex-fail-plugins")
+		script := "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = hub.plugins ]; then echo injected-plugin-read-failure >&2; exit 1; fi\ndone\nexec " + shellWord(realRex) + " \"$@\"\n"
+		if err := os.WriteFile(shim, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		rexField = `"rex":"` + shim + `",`
+	}
+	os.WriteFile(cfg, []byte(`{`+rexField+`"server":"`+socket+`","state":"`+filepath.Join(lab, "state")+`","agents":[{"id":"user","name":"User"}],"plugins":[{"source":"`+labRefused+`"}]}`), 0o600)
 	rexcfg := filepath.Join(lab, "rexcfg")
 	os.MkdirAll(rexcfg, 0o755)
 	os.WriteFile(filepath.Join(rexcfg, "lazyrex_boot.lua"), []byte(setupBootLua(bin, lab, socket, hubControls{config: cfg, server: socket})), 0o644)
@@ -142,9 +166,12 @@ func TestHubControlsLab(t *testing.T) {
 	if out := must("-C", hubClient(), "do", "hub.info"); !strings.Contains(out, lab) {
 		t.Fatalf("hub.info: %s", out)
 	}
-	// The refused plugin: the Start pane shows it after the ready, Status shows it after the running
-	// line, and the hub runs on.
+	// The refused plugin (or, with failPlugins, the unknown line): the Start pane shows it after the
+	// ready, Status shows it after the running line, and the hub runs on.
 	refusal := "plugin " + labRefused + ": refused: plugin " + labRefused + " is not installed: run lazyrex-hub plugin sync"
+	if failPlugins {
+		refusal = "plugins: unknown: exit status 1: injected-plugin-read-failure"
+	}
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(200 * time.Millisecond) {
 		pane := must("block", "capture", "--unwrap", "-s", s.ID, "-b", start)
 		if strings.Contains(pane, "restart: "+refusal) {
