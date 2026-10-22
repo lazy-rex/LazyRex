@@ -67,12 +67,12 @@ Then:
 1. Always: run the `rex -S <server> config reload` line that setup prints. It loads the palette
    entries.
 
-The other steps are checks. Setup offers each one; do it yourself only in the case named:
+The other steps depend on your answers to setup and on what it printed. Setup offers the skill and
+plugin installs; trusting a Codex hook is always yours:
 
 2. Setup also offers `rex skill setup` for the agents that it found: Rex's own skill and hooks. If
    you answered no, run the command that setup prints.
-3. Codex: setup does not trust hooks for you. If setup says so, review and trust the new hook in
-   Codex with `/hooks`.
+3. Codex: if setup says so, review and trust the new hook in Codex with `/hooks`.
 4. If setup printed `Install the plugins: ...`, run that command.
 
 ## Start
