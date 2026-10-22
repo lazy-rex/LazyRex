@@ -1,8 +1,9 @@
 # Writing a LazyRex plugin
 
-Status: **v0** (2026-10-22). The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
+Status: **v0**. The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
 `sdk/lua/examples/todo`. It runs on the hub's SQL line (hub/sql-r2 c840c92, lab) and ships with
-release 4. A plugin author needs only this page. The details are in "Reference" (sql.md).
+release 4. Start with this page: it has all that a plain plugin needs. The reference (sql.md), the
+test guide (docs/testing.md) and the example give more detail.
 
 A plugin is a Lua file that the hub starts. The SDK module `lazyrex` does the registration, the
 calls to the hub, the storage, the transactions and the view refresh for you.
@@ -51,7 +52,21 @@ end)
 ```
 
 That is the whole plugin. An agent adds an item with `todo.add {text = "buy milk"}`; the user
-selects an item in the panel to toggle it. `detail` is the second line of an item.
+selects an item in the panel to toggle it. `detail` is the second line of an item. An item `id`
+can be a number or a string: the SDK sends it as a string (`tostring`), so a test selects
+`item_id = tostring(r.id)`.
+
+- **Migrations.** Call `app.db.migrate` once, at the top level of the main file. Entry N is schema
+  version N. The SDK runs the new entries at the start, in one transaction, and then sets
+  `PRAGMA user_version`. A failing entry undoes all of them; the plugin prints the error and stops.
+  A later version adds an entry at the end:
+
+  ```lua
+  app.db.migrate {
+    'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)',
+    'ALTER TABLE todos ADD COLUMN note TEXT', -- version 2
+  }
+  ```
 
 - **Agent parity.** Each thing that the user can do, an agent can do too. An item with `on_select`
   names the agent action that does the same in `tool` (here `todo.toggle`); both call one function.
@@ -90,7 +105,8 @@ selects an item in the panel to toggle it. `detail` is the second line of an ite
 - **Clicks.** An item's `on_select` runs when the user selects it. The SDK runs the panel function
   again first, so the handler sees the current row. An item that is gone gives a visible error.
 - **Empty lists.** An `app.ui.list` with no items renders as a widget with the text "Nothing here
-  yet." (`app.ui.list(id, items, {empty = 'No notes'})` sets the text). It has no `items` then.
+  yet." (`app.ui.list(id, items, {empty = 'No notes'})` sets the text). It has no `items` then:
+  in a test, `node(tree, id).text` is the text and `node(tree, id).items` is nil.
 - **View size.** A rendered panel, view or form over 48 KiB (encoded, with its status) fails with
   `too_large`: Rex delivers no message over 64 KiB. Show fewer items, or page them.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
@@ -98,6 +114,8 @@ selects an item in the panel to toggle it. `detail` is the second line of an ite
 - **Retries.** A UI action that the user's renderer sends again runs once. An agent gives a `key` in
   the arguments (`todo.add {text = "buy milk", key = "k1"}`; the SDK adds `key` to every schema).
   A call again with the same `key` and the same arguments gets the first answer and changes nothing.
+  The answer is the same table: after `r1 = a:call('todo.add', {text = 'x', key = 'k1'})`, the same
+  call gives `r2.id == r1.id`. The same `key` with other arguments fails with `operation_conflict`.
 
 ## Test it
 
@@ -134,8 +152,12 @@ own lab; it never touches your terminals.
 - **Parity sweep.** Before the files, the run opens every palette command and renders every view.
   Each command names `action` (an agent action) or `user_only`, and each item, widget and form
   action names `tool` (an exported agent action) or `user_only`. A violation fails the run.
-- **The plugin does not start** (`plugin todo is not registered`): run with `-keep`, then read
-  `hub.log` in the kept lab directory that the output names. Delete the directory after.
+- **The count.** Each file reports one more passed check than it has tests: the file checks
+  (injections consumed, faults fired, parity of the rendered trees).
+- **A failure.** The output shows the tail of `runner.log` and `hub.log`, and the harness deletes
+  the lab. To read more, run with `-keep`, and read the logs in the kept lab directory that the
+  output names. Delete the directory after. Use `-keep` also when the plugin does not start
+  (`plugin todo is not registered`).
 
 The test functions:
 
@@ -146,13 +168,20 @@ The test functions:
 | `user:command(id, {session, block})` | Runs a palette command from that pane, as the user does. |
 | `user:view(route, plugin, session)` | The open view of that route. |
 | `v:render()` | The current tree. `node(tree, id)` finds a node by id. |
-| `v:action(node_id, action, input, key)` | A user action. It returns `{status, result or error}` (`status`: `succeeded` or `failed`). |
+| `v:action(node_id, action, input, key)` | A user action. It returns `{status, result or error}` (`status`: `succeeded` or `failed`; `error` is `{code, message}`). |
+| `rex.call(method, args)` | A raw Rex call on the lab server (for example `session.new_window`). |
 | `expect(x).to_be(y)`, `.to_equal(y)`, `expect_error(fn, pattern)` | Assertions. |
 
 - Select an item: `v:action('todos', 'select', {item_id = '1'})` (the list id and the item id).
-- Submit a form: `f:action('form', 'submit', {values = {text = 'eggs'}})` (`form` is the form node
-  id, `submit` its action name), where `f = user:view('/forms/add', 'todo', s)` after the command
-  that opens the form.
+- Submit a form (`form` is the form node id, `submit` its action name). A form opens from its
+  palette command in a pane, as a panel does:
+
+  ```lua
+  user:command('add', {session = s, block = w.block_ids[1]})
+  local f = user:view('/forms/add', 'todo', s)
+  expect(f:action('form', 'submit', {values = {text = ''}}).error.code).to_be('invalid_input')
+  expect(f:action('form', 'submit', {values = {text = 'eggs'}}, 'f1').status).to_be('succeeded')
+  ```
 
 The whole lab test of this plugin is `sdk/lua/examples/todo/tests/todo.lua`. All test functions:
 docs/testing.md.
@@ -164,13 +193,15 @@ the action names. (Proposed, not built: `lazyrex-hub plugin new` and `plugin dev
 
 ## Forms
 
-A plain form has a title, fields and `on_submit`. Nothing else is required.
+A plain form has a title, fields and `on_submit`, and a `command` that opens it. Nothing else is
+required.
 
 ```lua
 app.form('/forms/add', {
   title = 'Add Item',
   fields = {{id = 'text', label = 'Text', kind = 'text', required = true, value = ''}},
   on_submit = function(ctx, values) app.db.exec('INSERT INTO todos (text) VALUES (?)', values.text) end,
+  command = {id = 'add', title = 'Add Item'}, -- the palette command that opens it
 })
 ```
 
@@ -178,7 +209,12 @@ app.form('/forms/add', {
   functions of `ctx`. `fields` runs at each render, and again at the submit, in its transaction.
 - The SDK checks the values before `on_submit`: a required field must be filled in (a required
   boolean must be true), a select value must be one of its options, and an unknown field is refused.
-  `app.fail('invalid_input', '...')` in `on_submit` shows another message.
+  An empty string is not filled in. A refused submit fails with
+  `{code = 'invalid_input', message = 'Fill in <label>'}`.
+- An optional field that the user left empty arrives as `''` or as `nil`. Treat both as empty.
+- `on_submit` raises errors as an action does: `app.fail('invalid_input', '...')` gives that code
+  and message; `error('text')` gives code `failed`. A helper that the action and `on_submit` share
+  can use `app.fail`.
 - `on_submit` returns nothing to close the form, or a result: `{form = route}`, `{navigate = ...}`,
   `{status = 'running'}` (never saved: the hub calls again until the end).
 - An `app.fail` in `title` or `fields` shows its message in place of the form.
@@ -191,7 +227,9 @@ Common options:
 
 - `submit = {label = 'Add', tool = 'todo.add'}`: the button label, and the agent action that does
   the same (agent parity). Without `tool`, `submit.user_only` gives the reason (default `navigation`).
-- `command = {id, title, description, keywords}`: a palette command that opens the form.
+- `command = {id, title, description, keywords}`: a palette command that opens the form. For agent
+  parity, the SDK gives it `action = submit.tool`; without a tool, `user_only = submit.user_only`
+  (default `navigation`). `action` or `user_only` in `command` sets it.
 - `intro`: a text above the form (a value or a function of `ctx`).
 - `cancel = 'Close'` relabels Cancel; `cancel = false` removes it.
 
