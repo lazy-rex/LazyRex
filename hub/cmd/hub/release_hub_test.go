@@ -178,7 +178,7 @@ func (w *relWorld) lockPin(src string) relPin {
 }
 
 // newCacheDir gives a lock entry a new cache dir with the manifest of its old one, as a fetch can
-// (case 1 of the kits: the same pin in a new dir).
+// (the same pin in a new dir).
 func (w *relWorld) newCacheDir(e *lockEntry) {
 	var m struct {
 		SDK string `json:"sdk"`
@@ -803,8 +803,8 @@ func TestReleaseHubPartialPull(t *testing.T) {
 	}
 }
 
-// Case 12: a dev pane that starts no hub fails step start; the rollback closes that pane and starts
-// OLD. Case 9: when H ended before the rollback, no hub call goes to H.
+// A dev pane that starts no hub fails step start; the rollback closes that pane and starts
+// OLD. When H ended before the rollback, no hub call goes to H.
 func TestReleaseHubFailedStartAndEndedH(t *testing.T) {
 	w := newRelWorld(t)
 	w.freeze()
@@ -836,7 +836,7 @@ func TestReleaseHubFailedStartAndEndedH(t *testing.T) {
 	}
 }
 
-// Case 13: after stop, a backup that fails before its stamp leaves no change: resume starts OLD
+// After stop, a backup that fails before its stamp leaves no change: resume starts OLD
 // again. After a stamp exists, resume refuses.
 func TestReleaseHubResume(t *testing.T) {
 	w := newRelWorld(t)

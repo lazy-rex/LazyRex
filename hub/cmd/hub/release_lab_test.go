@@ -198,7 +198,7 @@ func labFixture(t *testing.T, f, bin string) {
 	if err := writePeers(lk, &peerBase{Version: 1, Peers: map[string]map[string]basePin{pinHub: {src: {Commit: e.Commit, Digest: e.Digest}}}}); err != nil {
 		t.Fatal(err)
 	}
-	// The probe file (case 14 of the full tier): rows in a table of OLD, as a stand-in for a table that H adds.
+	// The probe file of the full tier: rows in a table of OLD, as a stand-in for a table that H adds.
 	probes := filepath.Join(f, "probes.sql")
 	os.WriteFile(probes, []byte(`INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k1', '{"v":1}', 1);
 INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k2', '{"v":2}', 1);
