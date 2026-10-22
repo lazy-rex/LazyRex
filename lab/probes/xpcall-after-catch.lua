@@ -1,5 +1,6 @@
 -- Probe (rex-protocol.md, "Rex Lua runtime"): which catches split a captured local, and what an
--- xpcall frame changes. Each case returns 2 in standard Lua.
+-- xpcall frame changes. Each case returns 2 in standard Lua 5.1, except xpcall_passes_args: Lua 5.1
+-- xpcall takes only f and a handler (extra arguments came in Lua 5.2), so it returns 1.
 -- Run: rex -S <lab> --autostart=false do <this file>
 local h = function(e) return e end
 -- w makes local n and closure f. f adds 1 and raises on its first call. pre runs first.
@@ -27,4 +28,4 @@ local cases = {
 }
 local out = {}
 for _, c in ipairs(cases) do out[#out + 1] = c[1] .. '=' .. tostring(c[2]()) end
-print('PROBE ' .. table.concat(out, ' ') .. ' (standard Lua: all 2)')
+print('PROBE ' .. table.concat(out, ' ') .. ' (standard Lua 5.1: all 2, xpcall_passes_args 1)')
