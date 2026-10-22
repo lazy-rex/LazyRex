@@ -39,12 +39,13 @@ const pluginOpsSchema = `
 -- base: the entry at admission (canonical JSON, or "absent"); output: the hash of the bytes that the
 -- write renames, stored before the rename.
 -- entry_identity: entryIdentity of the entry at admission; the start and stop calls send it as expect_entry.
+-- pin: add and update: the fetched lock entry (JSON), stored before the lock write.
 CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NULL, key TEXT NOT NULL,
   fingerprint TEXT NOT NULL, origin TEXT NOT NULL, kind TEXT NOT NULL, entry TEXT NOT NULL, name TEXT NOT NULL,
   expect TEXT NOT NULL, input TEXT NOT NULL, target TEXT NOT NULL, phase TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 1,
   confirmed TEXT NOT NULL DEFAULT '', base TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', entry_identity TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL,
-  UNIQUE (scope, key));
+  pin TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
 -- run; the manager observes its result and never calls again.
 -- bound_at: the handler bound the attempt (with target_instance, target_block, target_session) before its first
@@ -70,6 +71,11 @@ var pluginOpPhases = map[string][]string{
 	"settings": {"writing", "reloading"},
 	// checking: the graph check before the stop, so a refused remove stops nothing.
 	"remove": {"checking", "stopping", "writing", "reloading"},
+	// add and update (B5): each phase is stored before its effect, and a replay uses only stored
+	// values. An add owns the first start of its plugin (starting); an update and a restart replace.
+	"add":     {"resolving", "fetching", "locking", "writing", "reloading", "starting"},
+	"update":  {"resolving", "fetching", "locking", "writing", "reloading", "replacing"},
+	"restart": {"replacing"},
 }
 
 // opFinal are the phases that end an op.
@@ -126,7 +132,7 @@ type opRequest struct {
 	Op     string          `json:"op"`
 	Entry  string          `json:"entry"`  // "managed:<id>", or the exact source of a config entry
 	Expect json.RawMessage `json:"expect"` // start from the panel: the run that the panel showed
-	Input  json.RawMessage `json:"input"`  // settings: {args, watch_roots}
+	Input  json.RawMessage `json:"input"`  // settings: {args, watch_roots}; add: {source, id?, args?, watch_roots?}; update: {to}
 }
 
 type opSettings struct {
@@ -139,15 +145,28 @@ type pluginOp struct {
 	ID, Kind, Entry, Name, Phase string
 	Origin                       opOrigin
 	Input                        string
-	Target                       string // start: the expect_run JSON
+	Target                       string // start: the expect_run JSON; restart: the run and instance; add, update: the resolved target
+	Pin                          string // add, update: the fetched lock entry (JSON)
 	Base, Output                 string
 	EntryIdentity                string // entryIdentity of the entry at admission ("" in no admitted op)
 	Result, Error                string
 	Created, Updated             int64
 }
 
-func (h *Hub) pluginOpsStart(ctx context.Context) error {
+// pluginOpsSchemaUp creates the manager's tables, and adds the columns that a lab store from
+// before them lacks ("duplicate column" means the store has the column already).
+func (h *Hub) pluginOpsSchemaUp(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, pluginOpsSchema); err != nil {
+		return err
+	}
+	if _, err := h.db.ExecContext(ctx, `ALTER TABLE plugin_ops ADD COLUMN pin TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
+}
+
+func (h *Hub) pluginOpsStart(ctx context.Context) error {
+	if err := h.pluginOpsSchemaUp(ctx); err != nil {
 		return err
 	}
 	h.pops.kick = make(chan struct{}, 1)
@@ -381,13 +400,21 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	op := &pluginOp{Kind: req.Op, Entry: req.Entry, Origin: origin}
 	if _, ok := pluginOpPhases[req.Op]; !ok {
-		return nil, bad("invalid: op must be start, stop, settings or remove")
+		return nil, bad("invalid: op must be start, stop, settings, remove, add, update or restart")
 	}
 	if len(req.Expect) > 0 && req.Op != "start" {
 		return nil, bad("invalid: only start has expect")
 	}
-	if len(req.Input) > 0 && req.Op != "settings" {
-		return nil, bad("invalid: only settings has input")
+	if len(req.Input) > 0 && req.Op != "settings" && req.Op != "add" && req.Op != "update" {
+		return nil, bad("invalid: only settings, add and update have input")
+	}
+	// An agent add or update is a request that the user confirms (B9). Until that flow exists, the
+	// code is user_only (temporary; docs/hub.md).
+	if origin.Kind == "agent" && (req.Op == "add" || req.Op == "update") {
+		return nil, refuse("user_only", "%s is a user operation for now: an agent cannot add or update plugins until the request flow exists; ask the user to use LazyRex: Plugins…", req.Op)
+	}
+	if req.Op == "add" {
+		return h.addAdmission(op, req)
 	}
 	h.entriesMu.Lock()
 	var e *configEntry
@@ -415,11 +442,11 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	}
 	op.Name = name
 	op.EntryIdentity = identity
-	if (req.Op == "settings" || req.Op == "remove") && managed == "" {
+	if (req.Op == "settings" || req.Op == "remove" || req.Op == "update") && managed == "" {
 		return nil, bad("%s changes only managed entries; %s is in the config file", req.Op, req.Entry)
 	}
-	if (req.Op == "stop" || req.Op == "remove") && name != "" && name == h.homePlugin() {
-		return nil, refuse("refused", "%s is the home plugin entry; it cannot be stopped or removed here", req.Entry)
+	if (req.Op == "stop" || req.Op == "remove" || req.Op == "restart") && name != "" && name == h.homePlugin() {
+		return nil, refuse("refused", "%s is the home plugin entry; it cannot be stopped, restarted or removed here", req.Entry)
 	}
 	switch req.Op {
 	case "start":
@@ -442,8 +469,31 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		}
 		b, _ := json.Marshal(in)
 		op.Input = string(b)
+	case "update":
+		if !github {
+			return nil, bad("invalid: update needs a GitHub source; %s is %s", req.Entry, source)
+		}
+		var in opUpdateInput
+		if err := decodeManifest("input", req.Input, &in); err != nil {
+			return nil, bad("invalid: %v", err)
+		}
+		if !updateTarget(in.To) {
+			return nil, bad(`invalid: to must be "latest" or a tag name; a branch or a commit is not accepted`)
+		}
+		b, _ := json.Marshal(in)
+		op.Input = string(b)
+	case "restart":
+		x, err := h.restartTarget(name)
+		if err != nil {
+			return nil, err
+		}
+		if cand != nil && !x.run().matches(cand) {
+			return nil, refuse("candidate_changed", "%s runs %s, and its candidate is %s; a restart runs the current run only: use update", req.Entry, x.run(), runText(cand))
+		}
+		b, _ := json.Marshal(x)
+		op.Target = string(b)
 	}
-	if req.Op == "settings" || req.Op == "remove" {
+	if req.Op == "settings" || req.Op == "remove" || req.Op == "update" {
 		_, list, err := readManaged(h.cfg.managedPath)
 		if err != nil {
 			return nil, refuse("refused", "managed plugin file %s: %v", h.cfg.managedPath, err)
@@ -501,8 +551,8 @@ func (h *Hub) startTarget(origin opOrigin, req opRequest, name, source string, g
 func (h *Hub) loadOp(ctx context.Context, id string) (*pluginOp, error) {
 	op := &pluginOp{ID: id}
 	var origin string
-	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated FROM plugin_ops WHERE op_id = ?`, id).
-		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated)
+	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin FROM plugin_ops WHERE op_id = ?`, id).
+		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin)
 	if err != nil {
 		return nil, err
 	}
