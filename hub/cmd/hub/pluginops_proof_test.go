@@ -496,3 +496,38 @@ func TestReplaceStoppedAfterSentIsUnresolved(t *testing.T) {
 		t.Fatalf("the proof %q, %v; want unresolved", proof, err)
 	}
 }
+
+// An operator resolution that commits after observeLater read the attempt and before its proof
+// write: the conditional UPDATE changes no row, and proof and resolved_by stay as the operator
+// wrote them (codex-27, plugins-b8-c2c-source-received-1).
+func TestPluginOpLaterObservationResolutionRace(t *testing.T) {
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
+	registerWait = 0
+	ctx := context.Background()
+	h, pl, id := startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
+	createAndRegister(t, h, pl)
+	const by = `{"outcome":"not_applied","note":"the operator checked"}`
+	resolved := false
+	h.pops.fault = func(p string) bool {
+		if p == "observe-before-proof" && !resolved {
+			resolved = true
+			if _, err := h.db.Exec(`UPDATE plugin_op_attempts SET resolved_by = ? WHERE op_id = ?`, by, id); err != nil {
+				t.Error(err)
+			}
+		}
+		return false
+	}
+	h.opsRun(ctx)
+	h.pops.fault = nil
+	if !resolved {
+		t.Fatal("the observation did not reach its proof write")
+	}
+	var proof, got string
+	if err := h.db.QueryRow(`SELECT proof, resolved_by FROM plugin_op_attempts WHERE op_id = ?`, id).Scan(&proof, &got); err != nil {
+		t.Fatal(err)
+	}
+	if proof != "" || got != by {
+		t.Errorf("proof %q, resolved_by %q", proof, got)
+	}
+}
