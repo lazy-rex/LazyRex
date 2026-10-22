@@ -1,0 +1,470 @@
+package main
+
+// P1 (the P1 plan r6): an automatic start (respawnDue, pluginExited, restartAfterSessionLoss,
+// wakeWaiting) runs the selected run, the run that the last explicit start selected. It reads no
+// pin: a lock change takes effect at the next explicit start. GitHub sources here are hand-made
+// cache entries and locks; the tests do not prove GitHub behavior.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+var (
+	p1A = strings.Repeat("a", 40)
+	p1B = strings.Repeat("b", 40)
+)
+
+// p1Manifest is a plugin tree at the root of an entry: the manifest of name, with depends.
+func p1Manifest(name string, depends ...string) map[string]string {
+	m := map[string]any{"name": name, "main": "main.lua"}
+	if depends != nil {
+		m["depends"] = depends
+	}
+	b, _ := json.Marshal(m)
+	return map[string]string{"lazyrex.json": string(b), "main.lua": "return 1\n"}
+}
+
+// p1Source is the source of the GitHub plugin name in these tests.
+func p1Source(name string) string { return "github:lazy-rex/" + name + "@main" }
+
+// p1Publish publishes tree for github:lazy-rex/<repo> at commit, and gives its lock entry, with
+// the manifest name name and the subdir subdir.
+func p1Publish(t *testing.T, state, repo, subdir, name, commit string, tree map[string]string) *lockEntry {
+	t.Helper()
+	s, err := newStage(state, "lazy-rex", repo, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, c := range tree {
+		full := filepath.Join(s.Dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(c), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rel, err := s.publish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := dirDigest(filepath.Join(state, "plugins", filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &lockEntry{lockPin: lockPin{Name: name, Owner: "lazy-rex", Repo: repo, Subdir: subdir, Ref: "main", RefKind: "branch", Commit: commit, Digest: d}, Dir: rel}
+}
+
+// p1Hub is a hub without Rex, with a work session. Each github key is a GitHub plugin at commit
+// p1A (a root plugin: its tree); each local key is a local plugin directory with that manifest.
+// The plugins field lists the GitHub plugins first, in name order. A spawn sends nothing: the
+// test arms a refused create for each spawn (p1Arm), and the run that the spawn saved stays in
+// pl.run.
+func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]string) (*Hub, *fakeClock) {
+	t.Helper()
+	dir := cacheTemp(t)
+	lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{}}
+	var entries []string
+	names := make([]string, 0, len(github))
+	for n := range github {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		lock.Plugins[p1Source(n)] = p1Publish(t, dir, n, "", n, p1A, github[n])
+		entries = append(entries, `{"source":"`+p1Source(n)+`"}`)
+	}
+	for n, m := range local {
+		writePlugin(t, filepath.Join(dir, n), m)
+		entries = append(entries, `{"source":"`+filepath.Join(dir, n)+`"}`)
+	}
+	b, err := encodeLock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hub.lock.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := writeConfig(t, dir, "["+strings.Join(entries, ",")+"]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := appModeHub(t)
+	h.cfg, h.entries, h.plugins, h.selfClosed = c, c.entries, map[string]*Plugin{}, map[string]bool{}
+	h.faults = &faults{}
+	h.test = &testState{}
+	h.ui.sess["session:home"] = uiSessionKey
+	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
+	call := changedCall
+	t.Cleanup(func() { changedCall = call })
+	t.Cleanup(func() { waitIdle(t, h) }) // runs first: no delivery outlives the fake
+	changedCall = func(context.Context, *Hub, string, string) error { return nil }
+	h.entriesMu.Lock()
+	h.resolveLocked()
+	h.entriesMu.Unlock()
+	clock := &fakeClock{}
+	clock.install(h)
+	return h, clock
+}
+
+// p1Pin publishes tree for the GitHub plugin name at commit, and makes the lock name it (a CLI
+// update).
+func p1Pin(t *testing.T, h *Hub, name, commit string, tree map[string]string) {
+	t.Helper()
+	l := readTestLock(t, h)
+	l.Plugins[p1Source(name)] = p1Publish(t, h.cfg.State, name, "", name, commit, tree)
+	writeTestLock(t, h, l)
+}
+
+// p1Arm makes the next block create fail as a Rex refusal: a known spawn failure after the run
+// is saved.
+func p1Arm(h *Hub) {
+	h.test.mu.Lock()
+	h.test.faults = append(h.test.faults, &testFault{Point: "plugin-create", Mode: "refuse", Nth: 1})
+	h.test.mu.Unlock()
+}
+
+// p1Start is an explicit start of pl (hub.admin.start's start path) with one armed create.
+func p1Start(t *testing.T, h *Hub, pl *Plugin) error {
+	t.Helper()
+	p1Arm(h)
+	pl.lifecycle.Lock()
+	defer pl.lifecycle.Unlock()
+	return h.startPlugin(context.Background(), pl)
+}
+
+// p1Spawned checks that err is the refused create of a spawn, and that the spawn's run has commit.
+func p1Spawned(t *testing.T, h *Hub, pl *Plugin, err error, commit string) {
+	t.Helper()
+	var se *spawnError
+	if !errors.As(err, &se) || se.stage != "create" {
+		t.Fatalf("no spawn: %v", err)
+	}
+	h.mu.Lock()
+	got := pl.run.Commit
+	h.mu.Unlock()
+	if got != commit {
+		t.Fatalf("the spawn ran commit %s, want %s", got, commit)
+	}
+}
+
+// p1Register makes pl registered (a live client), as hub.register does.
+func p1Register(h *Hub, pl *Plugin) {
+	h.mu.Lock()
+	pl.ClientID, pl.ChildPID, pl.ChildStart = "client:"+pl.Name, os.Getpid(), startTime(os.Getpid())
+	h.mu.Unlock()
+}
+
+// p1Lose is a session loss of pl's instance, and the restart after it (an automatic start). It
+// returns the restart's start error, through the log of restartAfterSessionLoss.
+func p1Lose(t *testing.T, h *Hub, pl *Plugin) string {
+	t.Helper()
+	p1Arm(h)
+	h.dropInstance(context.Background(), pl, "session:lost", "session closed")
+	l := captureLog(t)
+	h.restartAfterSessionLoss(pl, "session:lost")
+	return l.String()
+}
+
+func p1State(h *Hub, pl *Plugin) (state, refusal string, waiting []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return pl.reportedState(), pl.refusal, slices.Clone(pl.waiting)
+}
+
+// U1: the selected run's cache entry is gone at a crash respawn: a coded refusal, state refused,
+// and no further respawn.
+func TestSelectedRunGone(t *testing.T) {
+	h, clock := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	running(h, pl, "p-1")
+	exited(h, pl, context.Background(), `{"exit_code":1}`)
+	removeTree(filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(readTestLock(t, h).Plugins[p1Source("p")].Dir)))
+	dropForTest(h, pl)
+	tm, n := clock.last(t)
+	tm.f()
+	state, refusal, _ := p1State(h, pl)
+	if want := "plugin p: run " + p1A + " is no longer available; start it again"; state != "refused" || refusal != want {
+		t.Fatalf("state %s, refusal %q; want refused, %q", state, refusal, want)
+	}
+	if clock.count() != n {
+		t.Fatalf("a respawn after the refusal: %d timers", clock.count())
+	}
+}
+
+// U2: a waiting explicit start at A; the lock moves to B; the dependency registers: the wake
+// spawns A.
+func TestSelectedRunWake(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p", "d")}, map[string]string{"d": `{"name":"d","main":"p.lua"}`})
+	pl := h.plugins["p"]
+	if err := p1Start(t, h, pl); err != nil {
+		t.Fatal(err)
+	}
+	if state, _, waiting := p1State(h, pl); state != "waiting" || !slices.Equal(waiting, []string{"d"}) {
+		t.Fatalf("state %s, waiting %v", state, waiting)
+	}
+	p1Pin(t, h, "p", p1B, p1Manifest("p", "d"))
+	p1Register(h, h.plugins["d"])
+	p1Arm(h)
+	h.wakeWaiting(context.Background())
+	h.mu.Lock()
+	got := pl.run.Commit
+	h.mu.Unlock()
+	if got != p1A {
+		t.Fatalf("the wake ran commit %q, want %s", got, p1A)
+	}
+}
+
+// U3: a session loss with pin B in the lock: the restart spawns A.
+func TestSelectedRunSessionLoss(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	running(h, pl, "p-1")
+	p1Pin(t, h, "p", p1B, p1Manifest("p"))
+	p1Lose(t, h, pl)
+	h.mu.Lock()
+	got := pl.run.Commit
+	h.mu.Unlock()
+	if got != p1A {
+		t.Fatalf("the restart ran commit %q, want %s", got, p1A)
+	}
+}
+
+// U4: a known spawn failure at a crash respawn, with pin B in the lock: the backoff retry spawns
+// A again.
+func TestSelectedRunRetry(t *testing.T) {
+	h, clock := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	running(h, pl, "p-1")
+	exited(h, pl, context.Background(), `{"exit_code":1}`)
+	p1Pin(t, h, "p", p1B, p1Manifest("p"))
+	dropForTest(h, pl)
+	for i := range 2 {
+		tm, _ := clock.last(t)
+		p1Arm(h)
+		tm.f()
+		h.mu.Lock()
+		got := pl.run.Commit
+		h.mu.Unlock()
+		if got != p1A {
+			t.Fatalf("respawn %d ran commit %q, want %s", i+1, got, p1A)
+		}
+	}
+}
+
+// U5: the cycle among the selected runs. a's selected run (A) depends on b. a's new pin drops
+// that edge, and b's new pin adds b -> a; an explicit start of b selects b's new run. At a
+// session loss both refuse with the cycle, and neither waits.
+func TestSelectedRunCycle(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"a": p1Manifest("a", "b"), "b": p1Manifest("b")}, nil)
+	a, b := h.plugins["a"], h.plugins["b"]
+	p1Spawned(t, h, b, p1Start(t, h, b), p1A)
+	p1Register(h, b)
+	p1Spawned(t, h, a, p1Start(t, h, a), p1A)
+	p1Register(h, a)
+	p1Pin(t, h, "a", p1B, p1Manifest("a"))
+	p1Pin(t, h, "b", p1B, p1Manifest("b", "a"))
+	h.mu.Lock()
+	b.ClientID = ""
+	h.mu.Unlock()
+	p1Spawned(t, h, b, p1Start(t, h, b), p1B)
+	h.mu.Lock()
+	a.ClientID = ""
+	h.mu.Unlock()
+	for _, c := range []struct {
+		pl    *Plugin
+		cycle string
+	}{{a, "a -> b -> a"}, {b, "b -> a -> b"}} {
+		p1Lose(t, h, c.pl)
+		state, refusal, _ := p1State(h, c.pl)
+		if want := "plugin " + c.pl.Name + ": dependency cycle among the selected runs (" + c.cycle + "); start it explicitly"; state != "refused" || refusal != want {
+			t.Errorf("%s: state %s, refusal %q; want refused, %q", c.pl.Name, state, refusal, want)
+		}
+	}
+}
+
+// U6: the dependency states of a selected run at an automatic start.
+func TestSelectedRunDependencies(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		dep            func(h *Hub, d *Plugin)
+		state, refusal string
+		waiting        []string
+		spawned        bool
+	}{
+		{"missing", func(h *Hub, d *Plugin) { delete(h.plugins, "d") }, "refused", "plugin p: dependency d of run " + p1A + " is not available", nil, false},
+		{"not registered", func(h *Hub, d *Plugin) { d.ClientID = "" }, "waiting", "", []string{"d"}, false},
+		{"refused", func(h *Hub, d *Plugin) { d.ClientID, d.state = "", "refused" }, "waiting", "waiting for d (refused)", []string{"d"}, false},
+		{"stopped", func(h *Hub, d *Plugin) { d.ClientID, d.Desired = "", "stopped" }, "waiting", "waiting for d (stopped)", []string{"d"}, false},
+		{"registered at another pin", func(h *Hub, d *Plugin) { d.run.Commit = p1B }, "running", "", nil, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p", "d")}, map[string]string{"d": `{"name":"d","main":"p.lua"}`})
+			pl, d := h.plugins["p"], h.plugins["d"]
+			p1Register(h, d)
+			p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+			h.mu.Lock()
+			c.dep(h, d)
+			h.mu.Unlock()
+			p1Lose(t, h, pl)
+			state, refusal, waiting := p1State(h, pl)
+			if state != c.state || refusal != c.refusal || !slices.Equal(waiting, c.waiting) {
+				t.Fatalf("state %s, refusal %q, waiting %v; want %s, %q, %v", state, refusal, waiting, c.state, c.refusal, c.waiting)
+			}
+			h.mu.Lock()
+			got := pl.run.Commit
+			h.mu.Unlock()
+			if c.spawned != (got == p1A) {
+				t.Fatalf("the spawn: commit %q", got)
+			}
+		})
+	}
+}
+
+// U7: the current pin's manifest does not read: the restart spawns the selected run.
+func TestSelectedRunBadPin(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	p1Pin(t, h, "p", p1B, map[string]string{"lazyrex.json": "{", "main.lua": ""})
+	p1Lose(t, h, pl)
+	h.mu.Lock()
+	got := pl.run.Commit
+	h.mu.Unlock()
+	if got != p1A {
+		t.Fatalf("the restart ran commit %q, want %s", got, p1A)
+	}
+}
+
+// U8: a subdir plugin: the run check covers the whole entry. An unchanged entry restarts from
+// <entry>/<subdir>; a changed sibling file refuses.
+func TestSelectedRunSubdir(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		h, _ := p1Hub(t, nil, nil)
+		src := "github:lazy-rex/home/p@main"
+		tree := p1Manifest("p")
+		tree = map[string]string{"p/lazyrex.json": tree["lazyrex.json"], "p/main.lua": tree["main.lua"], "lib/x.lua": "return 2\n"}
+		le := p1Publish(t, h.cfg.State, "home", "p", "p", p1A, tree)
+		writeTestLock(t, h, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{src: le}})
+		c, err := writeConfig(t, h.cfg.State, `[{"source":"`+src+`"}]`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.cfg, h.entries = c, c.entries
+		h.entriesMu.Lock()
+		h.resolveLocked()
+		h.entriesMu.Unlock()
+		pl := h.plugins["p"]
+		p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+		root := filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(le.Dir))
+		if changed {
+			os.Chmod(filepath.Join(root, "lib"), 0o755)
+			os.Chmod(filepath.Join(root, "lib", "x.lua"), 0o644)
+			if err := os.WriteFile(filepath.Join(root, "lib", "x.lua"), []byte("return 3\n"), 0o444); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p1Lose(t, h, pl)
+		state, refusal, _ := p1State(h, pl)
+		h.mu.Lock()
+		dir := pl.run.Dir
+		h.mu.Unlock()
+		if changed {
+			if want := "plugin p: run " + p1A + " is no longer available; start it again"; state != "refused" || refusal != want {
+				t.Fatalf("changed: state %s, refusal %q", state, refusal)
+			}
+		} else if dir != filepath.Join(root, "p") {
+			t.Fatalf("unchanged: the restart ran from %q", dir)
+		}
+	}
+}
+
+// U9: hub start clears every selected run before recovery. H selected A; OLD kept the column;
+// H starts, and recovery refuses the current pin B: a later automatic start refuses, and A never
+// runs.
+func TestSelectedRunStartupClear(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	var sel string
+	if err := h.db.QueryRow(`SELECT selected_run FROM plugins WHERE name = 'p'`).Scan(&sel); err != nil || sel == "" {
+		t.Fatalf("no selected run: %q %v", sel, err)
+	}
+	if err := h.loadKept(context.Background()); err != nil { // the hub start
+		t.Fatal(err)
+	}
+	p1Pin(t, h, "p", p1B, map[string]string{"lazyrex.json": "{", "main.lua": ""})
+	pl.lifecycle.Lock()
+	err := h.startPlugin(context.Background(), pl) // recovery
+	pl.lifecycle.Unlock()
+	if codeOf(err) != "refused" {
+		t.Fatalf("recovery: %v", err)
+	}
+	var before int
+	h.db.QueryRow(`SELECT count(*) FROM spawn_intents`).Scan(&before)
+	p1Lose(t, h, pl)
+	state, refusal, _ := p1State(h, pl)
+	var after int
+	h.db.QueryRow(`SELECT count(*) FROM spawn_intents`).Scan(&after)
+	if want := "plugin p: no run is recorded; start it again"; state != "refused" || refusal != want || after != before {
+		t.Fatalf("state %s, refusal %q, spawns %d -> %d", state, refusal, before, after)
+	}
+}
+
+// U11: a run is a copy: a change of the entry's Args after the start does not reach it.
+func TestSelectedRunCopy(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	h.entriesMu.Lock()
+	pl.entry.Args = map[string]string{"k": "1"}
+	h.resolveLocked()
+	h.entriesMu.Unlock()
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	h.entriesMu.Lock()
+	pl.entry.Args["k"] = "2"
+	h.entriesMu.Unlock()
+	h.mu.Lock()
+	got := pl.run.Args["k"]
+	h.mu.Unlock()
+	if got != "1" {
+		t.Fatalf("the run's argument k is %q, want 1", got)
+	}
+}
+
+// U12: a selected run without an entry directory (a run from before P1) refuses once; the next
+// explicit start stores the entry.
+func TestSelectedRunNoEntry(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	pl := h.plugins["p"]
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	h.mu.Lock()
+	var old map[string]any
+	b, _ := json.Marshal(pl.run)
+	json.Unmarshal(b, &old)
+	delete(old, "entry")
+	sel, _ := json.Marshal(map[string]any{"entry": entryIdentity(pl.entry), "run": old})
+	h.mu.Unlock()
+	if _, err := h.db.Exec(`UPDATE plugins SET selected_run = ? WHERE name = 'p'`, string(sel)); err != nil {
+		t.Fatal(err)
+	}
+	p1Lose(t, h, pl)
+	if state, refusal, _ := p1State(h, pl); state != "refused" || refusal != "plugin p: run "+p1A+" is no longer available; start it again" {
+		t.Fatalf("state %s, refusal %q", state, refusal)
+	}
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	var run string
+	h.db.QueryRow(`SELECT run FROM plugins WHERE name = 'p'`).Scan(&run)
+	if want := `"entry":"` + readTestLock(t, h).Plugins[p1Source("p")].Dir + `"`; !strings.Contains(run, want) {
+		t.Fatalf("the run %s has no %s", run, want)
+	}
+}
