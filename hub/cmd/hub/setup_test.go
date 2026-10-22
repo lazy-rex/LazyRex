@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +35,7 @@ func setupTestEnv(t *testing.T, answers string, tty bool) (setupEnv, *strings.Bu
 		getenv:   func(string) string { return "" },
 		exe:      filepath.Join(bin, "lazyrex-hub"),
 		lookPath: func(n string) (string, error) { return filepath.Join(tools, n), nil },
-		endpoint: func() (string, error) { return setupLabServer, nil },
+		endpoint: func(string) (string, error) { return setupLabServer, nil },
 		tags:     func(string) ([]string, error) { return []string{"v0.9.0", "v0.10.0", "v1.0.0-rc1", "nightly"}, nil },
 		in:       bufio.NewReader(strings.NewReader(answers)),
 		tty:      tty,
@@ -42,11 +44,16 @@ func setupTestEnv(t *testing.T, answers string, tty bool) (setupEnv, *strings.Bu
 	}, out
 }
 
-// tree lists every path under dir.
+// tree lists every path under dir with its mode, and a file's content.
 func tree(dir string) []string {
 	var ps []string
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		ps = append(ps, p)
+		fi, _ := os.Lstat(p)
+		line := fmt.Sprintf("%s %v", p, fi.Mode())
+		if fi.Mode().IsRegular() {
+			line += " " + strconv.Quote(readFile(p))
+		}
+		ps = append(ps, line)
 		return nil
 	})
 	sort.Strings(ps)
@@ -59,7 +66,22 @@ func TestSetupPrintAndNoTerminalWriteNothing(t *testing.T) {
 		code       int
 		says       string
 	}{{true, true, 0, "-print: setup wrote nothing."}, {false, false, 2, "Standard input is not a terminal: setup wrote nothing."}} {
-		e, out := setupTestEnv(t, "y\ny\ny\ny\ny\ny\n", c.tty)
+		e, out := setupTestEnv(t, strings.Repeat("y\n", 8), c.tty)
+		// Existing files that setup would change, each with its own mode.
+		for p, m := range map[string]os.FileMode{
+			filepath.Join(e.home, ".claude", "settings.json"):                 0o600,
+			filepath.Join(e.home, ".codex", "hooks.json"):                     0o640,
+			filepath.Join(e.home, ".config", "rex", "init.lua"):               0o644,
+			filepath.Join(e.home, ".agents", "skills", "lazyrex", "SKILL.md"): 0o444,
+		} {
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			body := "-- mine\n"
+			if strings.HasSuffix(p, ".json") {
+				body = `{"theirs": true}` + "\n"
+			}
+			os.WriteFile(p, []byte(body), m)
+			os.Chmod(p, m)
+		}
 		before := tree(e.home)
 		if got := runSetup(e, filepath.Join(e.home, ".lazyrex"), c.print); got != c.code {
 			t.Errorf("print %v tty %v: exit %d\n%s", c.print, c.tty, got, out)
@@ -87,7 +109,7 @@ func TestSetupPrerequisites(t *testing.T) {
 	}
 
 	e, out = setupTestEnv(t, "", true)
-	e.endpoint = func() (string, error) { return "", errors.New("no server") }
+	e.endpoint = func(string) (string, error) { return "", errors.New("no server") }
 	if runSetup(e, filepath.Join(e.home, ".lazyrex"), false) != 1 || !strings.Contains(out.String(), "Setup does not start a server") {
 		t.Errorf("no Rex:\n%s", out)
 	}
@@ -102,12 +124,12 @@ func TestSetupPrerequisites(t *testing.T) {
 // Every yes: the files are written, the generated configs pass the hub's own readers, and a second
 // run has nothing to write.
 func TestSetupAllYes(t *testing.T) {
-	e, out := setupTestEnv(t, strings.Repeat("y\n", 6), true)
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 8), true)
 	dir := filepath.Join(e.home, ".lazyrex")
 	if got := runSetup(e, dir, false); got != 0 {
 		t.Fatalf("exit %d\n%s", got, out)
 	}
-	if n := strings.Count(out.String(), "Written:"); n != 6 {
+	if n := strings.Count(out.String(), "Written:"); n != 8 {
 		t.Fatalf("%d written:\n%s", n, out)
 	}
 	cfg, err := loadConfig(filepath.Join(dir, "hub.json"), false)
@@ -161,7 +183,7 @@ func TestSetupPartialConsent(t *testing.T) {
 	}
 	s := out.String()
 	if !strings.Contains(s, "Written:  "+filepath.Join(dir, "hub.json")) || !strings.Contains(s, "Declined: "+filepath.Join(dir, "profiles.json")+"\n") ||
-		strings.Count(s, "(no answer)") != 4 {
+		strings.Count(s, "(no answer)") != 6 {
 		t.Fatalf("report:\n%s", s)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "profiles.json")); !os.IsNotExist(err) {
@@ -175,7 +197,7 @@ func TestSetupPartialConsent(t *testing.T) {
 // An existing hub.json is not changed; a plugin without a release tag is left out and reported; an
 // agent without a CLI or a configuration directory is skipped.
 func TestSetupExistingAndSkipped(t *testing.T) {
-	e, out := setupTestEnv(t, strings.Repeat("y\n", 6), true)
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 8), true)
 	dir := filepath.Join(e.home, ".lazyrex")
 	os.WriteFile(filepath.Join(dir, "hub.json"), []byte("mine\n"), 0o600)
 	e.tags = func(repo string) ([]string, error) {
@@ -262,8 +284,10 @@ func TestSetupSkillCopy(t *testing.T) {
 // A blocked file is a failure (exit 1), also when the other files are written; a decline is not
 // (codex-24's review of 0b51ce7).
 func TestSetupBlockedFails(t *testing.T) {
-	e, out := setupTestEnv(t, strings.Repeat("y\n", 6), true)
-	e.tags = func(string) ([]string, error) { return nil, errors.New("git ls-remote lazy-rex/LazyRex: exit status 128") }
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 8), true)
+	e.tags = func(string) ([]string, error) {
+		return nil, errors.New("git ls-remote lazy-rex/LazyRex: exit status 128")
+	}
 	dir := filepath.Join(e.home, ".lazyrex")
 	if got := runSetup(e, dir, false); got != 1 {
 		t.Errorf("a blocked hub.json: exit %d\n%s", got, out)
@@ -272,7 +296,7 @@ func TestSetupBlockedFails(t *testing.T) {
 		t.Errorf("report:\n%s", s)
 	}
 
-	e, out = setupTestEnv(t, strings.Repeat("y\n", 6), true)
+	e, out = setupTestEnv(t, strings.Repeat("y\n", 8), true)
 	os.MkdirAll(filepath.Join(e.home, ".codex"), 0o755)
 	os.WriteFile(filepath.Join(e.home, ".codex", "hooks.json"), []byte("{bad"), 0o644)
 	if got := runSetup(e, filepath.Join(e.home, ".lazyrex"), false); got != 1 || readFile(filepath.Join(e.home, ".codex", "hooks.json")) != "{bad" {
@@ -285,7 +309,7 @@ func TestSetupBlockedFails(t *testing.T) {
 		t.Errorf("-print with a blocked file: exit %d\n%s", got, out)
 	}
 
-	e, out = setupTestEnv(t, strings.Repeat("n\n", 6), true)
+	e, out = setupTestEnv(t, strings.Repeat("n\n", 8), true)
 	if got := runSetup(e, filepath.Join(e.home, ".lazyrex"), false); got != 0 {
 		t.Errorf("only declines: exit %d\n%s", got, out)
 	}

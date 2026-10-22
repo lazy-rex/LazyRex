@@ -44,7 +44,8 @@ type setupEnv struct {
 	getenv   func(string) string
 	exe      string                              // the running lazyrex-hub
 	lookPath func(string) (string, error)        // finds claude and codex
-	endpoint func() (string, error)              // the address of the default Rex server
+	server   string                              // -server: a Rex server address; "" is the default server
+	endpoint func(server string) (string, error) // the server's own address, from Rex
 	tags     func(repo string) ([]string, error) // a lazy-rex repository's tag names
 	in       *bufio.Reader                       // the answers
 	tty      bool                                // in is a terminal
@@ -56,6 +57,7 @@ func setupMain(args []string) int {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	dir := fs.String("dir", "", "the LazyRex directory (default ~/.lazyrex)")
 	print := fs.Bool("print", false, "print the proposed files and write nothing")
+	server := fs.String("server", "", "the Rex server for hub.json (default: the server that Rex reports as its default)")
 	if fs.Parse(args) != nil || fs.NArg() != 0 {
 		return 2
 	}
@@ -72,7 +74,7 @@ func setupMain(args []string) int {
 	_, terr := unix.IoctlGetTermios(int(os.Stdin.Fd()), ioctlGetTermios)
 	env := setupEnv{
 		home: home, getenv: os.Getenv, exe: exe, lookPath: exec.LookPath,
-		endpoint: rexEndpoint, tags: lazyRexTags,
+		server: *server, endpoint: rexEndpoint, tags: lazyRexTags,
 		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now,
 	}
 	if *dir == "" {
@@ -81,10 +83,15 @@ func setupMain(args []string) int {
 	return runSetup(env, *dir, *print)
 }
 
-// rexEndpoint asks Rex for the address of the default server. It removes REX_SERVER from that
-// call, so a pane's server does not count. It never starts a server.
-func rexEndpoint() (string, error) {
-	cmd := exec.Command("rex", "--autostart=false", "--timeout", "5s", "server", "status", "--json")
+// rexEndpoint asks Rex for a server's own address: the server -S names, or without one the
+// default server. It removes REX_SERVER from that call, so a pane's server does not count. It
+// never starts a server.
+func rexEndpoint(server string) (string, error) {
+	args := []string{"--autostart=false", "--timeout", "5s", "server", "status", "--json"}
+	if server != "" {
+		args = append([]string{"-S", server}, args...)
+	}
+	cmd := exec.Command("rex", args...)
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "REX_SERVER=") {
 			cmd.Env = append(cmd.Env, kv)
@@ -265,6 +272,35 @@ func setupHubConfig(e setupEnv, dir, server string) (b []byte, skipped []string,
 	return append(b, '\n'), skipped, err
 }
 
+// setupBootLua is lazyrex_boot.lua: the palette entries that work without a running hub. Setup
+// owns the file and replaces it. Set Up opens a new window in the caller's session that runs
+// the same setup command (the binary, -dir, and -server if it was given), and keeps the pane open
+// after setup ends, so the user can read the report.
+func setupBootLua(exe, dir, server string) string {
+	argv := luaString(exe) + `, "setup", "-dir", ` + luaString(dir)
+	if server != "" {
+		argv += `, "-server", ` + luaString(server)
+	}
+	return `-- Written by lazyrex-hub setup. Setup replaces this file: do not edit it.
+-- init.lua loads it with: pcall(require, "lazyrex_boot")
+local lazyrex_setup = { ` + argv + ` }
+rex.action {
+  name = "lazyrexboot_setup",
+  title = "LazyRex: Set Up",
+  category = "LazyRex",
+  description = "Run lazyrex-hub setup in a new tab. It asks before it writes each file.",
+  run = function(ctx, _)
+    if not ctx.session_id then error("run LazyRex: Set Up from a Rex window", 0) end
+    local r, err = rex.call("session.new_window", { session_id = ctx.session_id, focus = true,
+      layout = { block = { flavor = "com.superlogical.terminal.shell", label = "LazyRex setup",
+        options = { command = lazyrex_setup, login = false, exit = { on_completion = false } } } } })
+    if err ~= nil then error(err, 0) end
+    return r
+  end,
+}
+`
+}
+
 // createOnly proposes content for a file that setup creates but never changes.
 func createOnly(f *setupFile, content []byte) {
 	if f.block != "" {
@@ -296,7 +332,7 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		say("  From a source checkout (this needs Go): cd view && go build -o %s .", shellWord(view))
 		return 1
 	}
-	server, err := e.endpoint()
+	server, err := e.endpoint(e.server)
 	if err != nil {
 		say("setup: no Rex server answered (%v).", err)
 		say("  Start Rex, then run setup again. Setup does not start a server.")
@@ -328,6 +364,19 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		createOnly(prof, b)
 	}
 	files = append(files, prof)
+
+	// The Rex config: the boot palette file beside it, and the lines that load the boot file and the
+	// hub's generated palette file (lazyrex_palette.lua).
+	rexDir := filepath.Dir(e.rexConfigFile())
+	boot := snapshotFile(filepath.Join(rexDir, "lazyrex_boot.lua"), 0o644)
+	if boot.block == "" {
+		boot.next = []byte(setupBootLua(e.exe, dir, e.server))
+	}
+	init := snapshotFile(e.rexConfigFile(), 0o644)
+	if init.block == "" {
+		init.next = appendLines(init.old, `pcall(require, "lazyrex_boot")`, `pcall(require, "lazyrex_palette")`)
+	}
+	files = append(files, boot, init)
 
 	var skippedAgents []string
 	for _, a := range agents {
@@ -377,6 +426,7 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	}
 
 	var written, declined, blocked, failed []string
+	rexWritten := false // the boot file or the Rex config was written
 	eof := false
 	for _, f := range files {
 		if f.block != "" {
@@ -404,6 +454,7 @@ func runSetup(e setupEnv, dir string, print bool) int {
 			continue
 		}
 		backup, err := f.write(e.now())
+		rexWritten = rexWritten || err == nil && (f == boot || f == init)
 		switch {
 		case err != nil:
 			failed = append(failed, f.path+": "+err.Error())
@@ -426,6 +477,9 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		say("Nothing to write.")
 	}
 	say("\nNext: run `rex skill setup` to install Rex's own skill and hooks. Setup does not run it.")
+	if rexWritten {
+		say("Run `rex config reload` (or restart Rex) to load the LazyRex palette entries.")
+	}
 	// A blocked file or a failed write is an error; a declined file is the user's choice.
 	if len(failed) > 0 || len(blocked) > 0 {
 		return 1

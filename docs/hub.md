@@ -436,12 +436,12 @@ The config field `rex` is optional. Without it, the hub runs `rex` from `PATH`, 
 
 ## Setup
 
-`lazyrex-hub setup [-dir DIR] [-print]` makes the first configuration of a user's hub (`hub/cmd/hub/setup.go`, `setupfile.go`, `setupjson.go`). The default DIR is `~/.lazyrex`.
+`lazyrex-hub setup [-dir DIR] [-server ADDR] [-print]` makes the first configuration of a user's hub (`hub/cmd/hub/setup.go`, `setupfile.go`, `setupjson.go`). The default DIR is `~/.lazyrex`. `-server` names the Rex server for `hub.json`, for a user with more than one server. Without it, setup uses the server that Rex reports as its default.
 
 Prerequisites. Setup stops before it proposes a file if one of these is missing:
 
 - The renderer `lazyrex-view` beside the running `lazyrex-hub`. A release user installs the `lazyrex-view` of the same release. From a source checkout, `go build` makes it.
-- A running Rex server. Setup asks Rex for the default server's address (`rex --autostart=false server status --json`, field `endpoint`, without `REX_SERVER`). It never starts a server.
+- A running Rex server. Setup asks Rex for the server's own address (`rex [-S ADDR] --autostart=false server status --json`, field `endpoint`, without `REX_SERVER`). It never starts a server. On macOS, Rex's default server is the socket `$HOME/Library/Application Support/rex/server.sock` (observed with `rex -vv`, Rex 0.0.1792158932). A HOME of its own therefore has no default server.
 - An installed binary. A `go run` build is refused, because the hooks run the binary that setup names.
 
 The files:
@@ -450,6 +450,8 @@ The files:
 | --- | --- |
 | `DIR/hub.json` | Creates it (mode 0600). Never changes an existing one. |
 | `DIR/profiles.json` | Creates it with a Claude and a Codex agent profile, each one only if the CLI is on `PATH`. Never changes an existing one. |
+| `lazyrex_boot.lua` beside the Rex config file | Writes the boot palette entries (setup owns this file and replaces it). |
+| The Rex config file | Appends `pcall(require, "lazyrex_boot")` and `pcall(require, "lazyrex_palette")`, each one only if it is missing. |
 | Claude Code: `$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude`) | Adds the `SessionStart` and `UserPromptSubmit` hooks of `hooks/README.md`. |
 | Codex: `$CODEX_HOME/hooks.json` (default `~/.codex`) | Adds the `SessionStart` hook of `hooks/README.md`. |
 | `<Claude config dir>/skills/lazyrex/SKILL.md`, `~/.agents/skills/lazyrex/SKILL.md` | Installs the LazyRex skill. Codex reads user skills from `~/.agents/skills` (`$CODEX_HOME/skills` is its deprecated location). |
@@ -490,9 +492,20 @@ Exit status:
 
 A decline is the user's choice, not an error. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
 
+The boot file has the palette entries that work without a running hub. **LazyRex: Set Up** opens a new window in the caller's session, with a pane that runs the same setup command: the same binary, `-dir`, and `-server` if it was given. The pane stays open after setup ends, so the user can read the report. After setup writes the boot file or the Rex config, it prints `rex config reload` as the next step. The Rex config loads both files with `pcall`, so a missing file is not an error.
+
 The skill in the binary is a copy of `skills/lazyrex/SKILL.md` at `hub/cmd/hub/setupfiles/SKILL.md`, because `go:embed` cannot reach outside the hub module. `TestSetupSkillCopy` fails when the two differ.
 
-Tests: `go test ./cmd/hub -run 'TestSetup|TestHighestTag|TestHookFile|TestFileDiff|TestAppendLines|TestShellWord'`. They run in a temporary HOME with a fake Rex endpoint and fake tags. No test writes a real user file.
+Tests: `go test ./cmd/hub -run 'TestSetup|TestHighestTag|TestHookFile|TestFileDiff|TestAppendLines|TestShellWord'`. They run in a temporary HOME with a fake Rex endpoint and fake tags. No test writes a real user file. The `-print` and no-terminal test seeds existing config files and compares every path, mode and content before and after.
+
+Lab test: `SETUP_LAB=1 go test ./cmd/hub -run TestSetupLab`. The test proceeds as follows:
+
+1. It builds the binary. Then it sets HOME, PATH (a fake `claude`, and a fake `git` that prints tags) and `REX_CONFIG` to lab paths, before it starts its own lab server. So every lab pane, also the one that the boot entry opens, is isolated.
+2. It checks that setup without `-server` finds no default server in the lab HOME, and writes nothing.
+3. A lab pane runs `setup -server <lab socket>`. Standard input is the pane's terminal; the output also goes to a file through `tee`.
+4. Before the first answer, the test checks the endpoint and the config paths in the output. Then it answers each prompt with `rex block send` (five yes, one no).
+5. It checks the report and the files, reloads the lab server's config, and finds the `lazyrexboot_setup` action.
+6. It runs that action. The new pane runs the same binary (checked with the block's `process`) and stops at the prompt for the declined file.
 
 ## Stop and exit status
 

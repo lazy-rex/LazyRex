@@ -1,0 +1,195 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
+)
+
+// Setup on a real terminal: a lab Rex pane runs lazyrex-hub setup, the test answers each prompt
+// with rex block send, and the lab server then loads the written Rex config and runs the boot
+// entry LazyRex: Set Up. Lab only: SETUP_LAB=1.
+//
+// Isolation: the test builds the binary first, then sets HOME and PATH for the lab server, so
+// every lab pane (also the one that the boot entry opens) has the lab HOME, a fake claude, and a
+// fake git that prints the tags. With HOME isolated, Rex's default server is a socket under the
+// lab HOME (checked first: no server answers there). Setup names the lab server with -server.
+func TestSetupLab(t *testing.T) {
+	if os.Getenv("SETUP_LAB") != "1" {
+		t.Skip("set SETUP_LAB=1 to run the setup lab test (it starts its own lab server)")
+	}
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lab, err := os.MkdirTemp("/tmp", "rexlab-setup-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(lab) })
+	bin := filepath.Join(lab, "bin", "lazyrex-hub")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	rexBin, err := exec.LookPath("rex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := filepath.Join(lab, "tools")
+	home := filepath.Join(lab, "home")
+	rexcfg := filepath.Join(lab, "rexcfg")
+	for p, body := range map[string]string{
+		filepath.Join(lab, "bin", "lazyrex-view"): "#!/bin/sh\n",
+		filepath.Join(tools, "claude"):            "#!/bin/sh\n",
+		filepath.Join(tools, "git"):               "#!/bin/sh\nprintf '0123\\trefs/tags/v0.1.0\\n0124\\trefs/tags/v0.2.0\\n'\n",
+		filepath.Join(rexcfg, "init.lua"):         "-- the lab config\n",
+		filepath.Join(home, ".keep"):              "",
+	} {
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		os.WriteFile(p, []byte(body), 0o755)
+	}
+	initLua := filepath.Join(rexcfg, "init.lua")
+	path := tools + ":" + filepath.Dir(rexBin) + ":/usr/bin:/bin"
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", path)
+	t.Setenv("REX_CONFIG", initLua)
+	t.Setenv("LAB_CONFIG", initLua)
+	dir := filepath.Join(home, ".lazyrex")
+
+	// The default server in the isolated HOME: no server answers, and setup writes nothing.
+	out, err := exec.Command(bin, "setup", "-print").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "no Rex server answered") {
+		t.Fatalf("the default server in the lab HOME: %v\n%s", err, out)
+	}
+	if ents, _ := os.ReadDir(home); len(ents) != 1 {
+		t.Fatalf("setup wrote into the lab HOME: %v", ents)
+	}
+
+	startLabServer(t, root, lab)
+	socket := "unix://" + lab + "/rex.sock"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	r, err := rex.Dial(ctx, filepath.Join(lab, "rex.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range r.Events {
+		}
+	}()
+	var s struct {
+		ID string `json:"session_id"`
+	}
+	if err := r.Call(ctx, "session.create", map[string]any{"label": "setup-lab"}, &s); err != nil {
+		t.Fatal(err)
+	}
+	r.Call(ctx, "session.attach", map[string]any{"session_id": s.ID, "event_scope": "session"}, nil)
+	// Standard input is the pane's terminal. The output also goes to a file through tee, so the
+	// test reads all of it (a screen capture shows only the last rows).
+	log := filepath.Join(lab, "setup.out")
+	pane := map[string]any{"flavor": "com.superlogical.terminal.shell", "label": "setup",
+		"options": map[string]any{"login": false, "exit": map[string]any{"on_completion": false}, "command": []string{"/bin/sh", "-c",
+			`"$1" setup -dir "$2" -server "$3" 2>&1 | tee "$4"`, "sh", bin, dir, socket, log}}}
+	var w struct {
+		Blocks []string `json:"block_ids"`
+	}
+	if err := r.Call(ctx, "session.new_window", map[string]any{"session_id": s.ID, "focus": true, "layout": map[string]any{"block": pane}}, &w); err != nil {
+		t.Fatal(err)
+	}
+	cli := func(args ...string) string {
+		out, err := exec.Command(rexBin, append([]string{"-S", socket, "--autostart=false"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("rex %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	waitFor := func(what string, ok func(string) bool) string {
+		t.Helper()
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+			if s := readFile(log); ok(s) {
+				return s
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no %s:\n%s", what, readFile(log))
+			}
+		}
+	}
+	claudeSkill := filepath.Join(home, ".claude", "skills", "lazyrex", "SKILL.md")
+	answers := []struct{ file, answer string }{
+		{filepath.Join(dir, "hub.json"), "y"},
+		{filepath.Join(dir, "profiles.json"), "y"},
+		{filepath.Join(rexcfg, "lazyrex_boot.lua"), "y"},
+		{initLua, "y"},
+		{filepath.Join(home, ".claude", "settings.json"), "y"},
+		{claudeSkill, "n"},
+	}
+	for i, a := range answers {
+		prompt := "Write " + a.file + "? [y/N] "
+		got := waitFor(prompt, func(s string) bool { return strings.Count(s, "[y/N] ") == i+1 && strings.HasSuffix(s, prompt) })
+		if i == 0 {
+			// Before any answer: the resolved endpoint and the config paths.
+			for _, want := range []string{`"server": "` + socket + `"`, `"palette_lua": "` + filepath.Join(rexcfg, "lazyrex_palette.lua") + `"`,
+				"skipped    Codex: no codex on PATH", "github:lazy-rex/Messaging@v0.2.0"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("before the first answer, no %q:\n%s", want, got)
+				}
+			}
+		}
+		cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], a.answer+"\r")
+	}
+	got := waitFor("the report", func(s string) bool { return strings.Contains(s, "Run `rex config reload`") })
+	if strings.Count(got, "Written:") != 5 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
+		t.Fatalf("report:\n%s", got)
+	}
+	cfg, err := loadConfig(filepath.Join(dir, "hub.json"), false)
+	if err != nil || cfg.Server != socket {
+		t.Fatalf("hub.json: %v %+v", err, cfg)
+	}
+	if init := readFile(initLua); !strings.HasPrefix(init, "-- the lab config\n") || !strings.Contains(init, `pcall(require, "lazyrex_boot")`) {
+		t.Fatalf("init.lua:\n%s", init)
+	}
+	if _, err := os.Stat(claudeSkill); !os.IsNotExist(err) {
+		t.Fatal("the declined skill was written")
+	}
+
+	// The lab server loads the written config: the boot entry is an action.
+	cli("config", "reload")
+	if acts := cli("actions"); !strings.Contains(acts, "lazyrexboot_setup") {
+		t.Fatalf("no boot action after the reload:\n%s", acts)
+	}
+	// The boot entry opens a window that runs the same setup: the same binary, -dir and -server.
+	// Only the declined skill is left, so it stops at that prompt.
+	res := cli("-s", s.ID, "do", "lazyrexboot_setup")
+	var opened struct {
+		Blocks []string `json:"block_ids"`
+	}
+	if json.Unmarshal([]byte(res[strings.Index(res, "{"):]), &opened) != nil || len(opened.Blocks) != 1 {
+		t.Fatalf("the boot action: %s", res)
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		screen := cli("block", "capture", "-s", s.ID, "-b", opened.Blocks[0])
+		if strings.Contains(screen, "Write "+claudeSkill+"? [y/N]") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the boot pane:\n%s", screen)
+		}
+	}
+	var proc struct {
+		Child struct {
+			Path string `json:"path"`
+		} `json:"child"`
+	}
+	json.Unmarshal([]byte(cli("block", "call", "-s", s.ID, "-b", opened.Blocks[0], "process")), &proc)
+	if real, _ := filepath.EvalSymlinks(bin); proc.Child.Path != real {
+		t.Fatalf("the boot pane runs %q, not %q", proc.Child.Path, real)
+	}
+	r.Call(context.Background(), "session.destroy", map[string]any{"session_id": s.ID}, nil)
+}
