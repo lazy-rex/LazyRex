@@ -362,7 +362,15 @@ func (h *Hub) askRelease(ctx context.Context, r *slotRow) error {
 		goto refused
 	}
 	if errors.Is(err, errSlotMoved) {
-		return nil // advanceSlot answers from the new state
+		// setSlotState read the row's state into r.State. The renderer froze for r, but another path
+		// ended the row meanwhile: its view.resume can have reached the renderer before this
+		// release (Rex does not order calls from different connections), so resume once more. The
+		// renderer ignores a second resume. Any other state has another owner, and advanceSlot
+		// answers from it.
+		if r.State == "cancelled" || r.State == "superseded" {
+			h.resumeOld(r)
+		}
+		return nil
 	}
 	return err
 refused:
