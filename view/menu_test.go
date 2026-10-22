@@ -64,12 +64,15 @@ func TestConditionalFieldsPreserveSelections(t *testing.T) {
 	if visible() {
 		t.Fatal("remote option visible before toggle")
 	}
-	m.activate(control{Kind: "choice", Node: "new", Field: "others"})
+	choose := func(field string, value bool) {
+		m.activate(control{Kind: "boolean", Node: "new", Field: field, Input: map[string]any{"value": value}})
+	}
+	choose("others", true)
 	if !visible() {
 		t.Fatal("remote option stayed hidden")
 	}
-	m.activate(control{Kind: "choice", Node: "new", Field: "remote"})
-	m.activate(control{Kind: "choice", Node: "new", Field: "others"})
+	choose("remote", true)
+	choose("others", false)
 	if visible() || m.editors[editorID("new", "remote")].Choice != true {
 		t.Fatal("toggle lost selection")
 	}
@@ -152,15 +155,15 @@ func TestSideMenuFitsViewAndTracksPointerAfterRender(t *testing.T) {
 	}
 }
 
-func TestSpaceTogglesChoiceAndRemainsTextInEditor(t *testing.T) {
+func TestSpaceChoosesYesAndRemainsTextInEditor(t *testing.T) {
 	m := testModel()
 	s := testSnapshot("saved", "1")
 	s.Tree.Nodes = append(s.Tree.Nodes, Node{ID: "form", Type: "form", Fields: []Field{{ID: "other", Kind: "boolean", Value: false}, {ID: "remote", Kind: "boolean", Value: false, VisibleWhen: &FieldCondition{Field: "other", Value: true}}}})
 	m.apply(s)
-	m.setFocus("choice:" + editorID("form", "other"))
+	m.setFocus("yes:" + editorID("form", "other"))
 	m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
 	if m.editors[editorID("form", "other")].Choice != true {
-		t.Fatal("Space did not toggle checkbox")
+		t.Fatal("Space did not choose Yes")
 	}
 	visible := false
 	for _, c := range m.controls() {
@@ -169,7 +172,7 @@ func TestSpaceTogglesChoiceAndRemainsTextInEditor(t *testing.T) {
 		}
 	}
 	if !visible {
-		t.Fatal("Space toggle did not show remote field")
+		t.Fatal("Yes did not show remote field")
 	}
 	m.setFocus("edit:composer")
 	before := m.editors["composer"].text()

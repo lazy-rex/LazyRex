@@ -553,6 +553,12 @@ func (m *model) activate(c control) tea.Cmd {
 	if c.Kind == "edit" {
 		return m.setFocus(c.ID)
 	}
+	if c.Kind == "boolean" {
+		if e := m.editors[editorID(c.Node, c.Field)]; e != nil {
+			e.Choice = c.Input["value"]
+		}
+		return nil
+	}
 	if c.Kind == "choice" {
 		e := m.editors[editorID(c.Node, c.Field)]
 		n := m.node(c.Node)
@@ -561,10 +567,6 @@ func (m *model) activate(c control) tea.Cmd {
 		}
 		for _, f := range n.Fields {
 			if f.ID == c.Field {
-				if f.Kind == "boolean" {
-					b, _ := e.Choice.(bool)
-					e.Choice = !b
-				}
 				if f.Kind == "select" {
 					m.openSelect(c)
 				}
@@ -863,7 +865,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "space", " ":
 			for _, c := range m.controls() {
-				if c.ID == m.focus && c.Kind == "choice" {
+				if c.ID == m.focus && (c.Kind == "choice" || c.Kind == "boolean") {
 					return m, m.activate(c)
 				}
 			}

@@ -262,7 +262,6 @@ padding on each side, and the padding belongs to the button. Adjacent buttons ar
 apart. Buttons that do not fit side by side stack, with a blank row between them. Keyboard
 focus underlines the label without changing dimensions. List targets contain four rows: top padding, name, detail, and bottom padding. Long list labels
 and details use an ellipsis. Adjacent targets share a boundary without overlap.
-Choices also use three rows, without an additional gap.
 
 Send is a one-row, ten-column button on the first footer row of the composer. Its hint
 remains outside that region. Narrow panes show the newline hint on a second footer row.
@@ -292,27 +291,21 @@ unavailable-action states. The schema does not define disabled form fields or
 selected list items. The gallery does not invent those states.
 
 Lists and forms use at most 72 columns. List hover shades the text and equal
-padding rows above and below it. An accent bar marks keyboard focus. Checkboxes
-use a two-column outline inside a three-row target. The center is empty when
-unchecked and filled with the accent color when checked. The indicator has no
-checkmark. Button hover and press change the button fill. Primary buttons use the
+padding rows above and below it. An accent bar marks keyboard focus. A boolean
+field is a title and a row of two ordinary buttons, Yes and No. The chosen value has the
+primary style and the other the secondary style. Each button is one Tab stop; Enter, Space or a
+click chooses it. Button hover and press change the button fill. Primary buttons use the
 highlight role, and its hover and press roles keep readable label contrast.
-Checkbox hover and press shade all three rows, including the label and padding.
 Disabled buttons show diagonal stripes beside the label. Disabled buttons do not respond to hover or press.
 
 PNG fixtures use approximate font metrics. They do not prove glyph joins or
 physical touch dimensions in a Rex app. The live composer screenshot shows
-joined rounded borders. The live checkbox screenshot shows a continuous outline.
+joined rounded borders.
 
 Widget text wraps at word boundaries, with hard wrapping only for words longer
 than the available width. A model test verifies that Ctrl+N moves from the
 composer to the first form field and routes subsequent typing to that field.
 The lab must also check the terminal's key encoding.
-
-The small checkbox outline uses `▁`, `▔`,
-`▏`, and `▕`. These glyphs paint partial cells; they do not change row height.
-Their continuity depends on the terminal's glyph rendering. Preview PNGs draw
-block elements at exact cell fractions but still use approximate text metrics.
 
 ## Menus and form fields
 
@@ -384,8 +377,7 @@ one-cell `icon`, the label, and an optional `status` at the right edge. An enabl
 heading. A list with details keeps the four-row targets.
 
 Form layout:
-- Each field has one blank row after it. A run of checkboxes stays together, with one blank row
-  after the last checkbox.
+- Each field has a title row and one blank row after it.
 - A field of kind `text` is one row in the shape of huh's Input: a bar while the input has
   focus or the pointer, then the `> ` prompt (highlight role while focused) and the Bubbles
   textinput. The input scrolls long text sideways and has no length limit. Newlines and tabs in

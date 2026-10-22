@@ -131,7 +131,7 @@ func (m *model) bodyRows() []row {
 	}
 	button := func(text, anchor string, c control) {
 		c.HitWidth = min(width, buttonWidth(plain(text)))
-		add(m.buttonView(c.ID, text, c.HitWidth, c.Kind == "submit", true), anchor, &c)
+		add(m.buttonView(c.ID, text, c.HitWidth, m.primaryButton(c), true), anchor, &c)
 	}
 	// buttonRow puts buttons side by side, one cell apart (huh ThemeBase: MarginRight(1)). They
 	// stack when they do not fit, with a blank row between them.
@@ -158,7 +158,7 @@ func (m *model) bodyRows() []row {
 			if i > 0 {
 				line += strings.Repeat(" ", gap)
 			}
-			line += m.buttonView(cs[i].ID, texts[i], cs[i].HitWidth, cs[i].Kind == "submit", true)
+			line += m.buttonView(cs[i].ID, texts[i], cs[i].HitWidth, m.primaryButton(cs[i]), true)
 		}
 		add(line, anchor, &cs[0], cs[1:]...)
 	}
@@ -250,7 +250,7 @@ func (m *model) bodyRows() []row {
 					visible = append(visible, f)
 				}
 			}
-			for fi, f := range visible {
+			for _, f := range visible {
 				id := editorID(n.ID, f.ID)
 				e := m.editors[id]
 				if e == nil {
@@ -260,11 +260,15 @@ func (m *model) bodyRows() []row {
 				if f.Required {
 					fieldLabel += " *"
 				}
-				if f.Kind != "boolean" {
-					// The field title of huh ThemeCharm: the title role, bold.
-					add(lipgloss.NewStyle().Foreground(p.title).Bold(true).Render(plain(fieldLabel)), id+":label", nil)
-				}
-				if f.Kind == "boolean" || f.Kind == "select" {
+				// The field title of huh ThemeCharm: the title role, bold.
+				add(lipgloss.NewStyle().Foreground(p.title).Bold(true).Render(plain(fieldLabel)), id+":label", nil)
+				if f.Kind == "boolean" {
+					// Yes and No are ordinary buttons. The chosen one has the primary style.
+					buttonRow([]string{"Yes", "No"}, id, []control{
+						{ID: "yes:" + id, Node: n.ID, Field: f.ID, Kind: "boolean", Input: map[string]any{"value": true}},
+						{ID: "no:" + id, Node: n.ID, Field: f.ID, Kind: "boolean", Input: map[string]any{"value": false}},
+					})
+				} else if f.Kind == "select" {
 					value := fmt.Sprint(e.Choice)
 					for _, o := range f.Options {
 						if o.Value == e.Choice {
@@ -272,12 +276,7 @@ func (m *model) bodyRows() []row {
 						}
 					}
 					choiceControl := control{ID: "choice:" + id, Node: n.ID, Field: f.ID, Kind: "choice", HitWidth: m.controlWidth()}
-					if f.Kind == "boolean" {
-						checked, _ := e.Choice.(bool)
-						add(m.checkboxView(choiceControl.ID, f.Label, checked), id, &choiceControl)
-					} else {
-						button(value+" ▾", id, choiceControl)
-					}
+					button(value+" ▾", id, choiceControl)
 				} else if f.Kind == "text" {
 					// huh's Input shape: one row with a bar and a prompt. Browse… sits beside it, or
 					// under it in a narrow pane.
@@ -330,10 +329,8 @@ func (m *model) bodyRows() []row {
 						add(box, id, c)
 					}
 				}
-				// One blank line after each field. A run of checkboxes stays together.
-				if f.Kind != "boolean" || fi == len(visible)-1 || visible[fi+1].Kind != "boolean" {
-					add("", id+":space", nil)
-				}
+				// One blank line after each field.
+				add("", id+":space", nil)
 			}
 			if n.SubmitAction != nil && n.SubmitAction.Enabled {
 				// Plain button nodes after the form (for example Cancel) share the submit row.

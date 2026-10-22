@@ -209,24 +209,20 @@ func TestPaddedListAndChoices(t *testing.T) {
 	last := ""
 	seen := map[string]bool{}
 	for _, r := range m.bodyRows() {
-		if r.Control == nil {
-			continue
-		}
-		id := r.Control.ID
-		if id != last {
-			if seen[id] {
-				t.Fatal("Target rows are not contiguous")
+		for _, c := range r.rowControls() {
+			id := c.ID
+			if id != last {
+				if seen[id] {
+					t.Fatal("Target rows are not contiguous")
+				}
+				seen[id] = true
 			}
-			seen[id] = true
+			counts[id]++
+			last = id
 		}
-		counts[id]++
-		last = id
 	}
-	for _, id := range []string{"list:a", "list:b", "choice:form/member", "form:submit"} {
-		want := 3
-		if id == "form:submit" {
-			want = 1 // a one-row Charm button
-		}
+	for _, id := range []string{"list:a", "list:b", "yes:form/member", "no:form/member", "form:submit"} {
+		want := 1 // one-row Charm buttons
 		if strings.HasPrefix(id, "list:") {
 			want = 4
 		}

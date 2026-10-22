@@ -88,3 +88,16 @@ func (m *model) inputView(id string, e *editor, width int) string {
 	}
 	return line
 }
+
+// primaryButton reports a button with the primary style: Submit, and the chosen Yes or No.
+func (m *model) primaryButton(c control) bool {
+	if c.Kind == "boolean" {
+		e := m.editors[editorID(c.Node, c.Field)]
+		if e == nil {
+			return false
+		}
+		chosen, _ := e.Choice.(bool)
+		return chosen == c.Input["value"]
+	}
+	return c.Kind == "submit"
+}
