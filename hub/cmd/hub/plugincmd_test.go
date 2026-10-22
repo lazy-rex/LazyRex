@@ -386,7 +386,7 @@ func TestCommandsKeepInvalidLock(t *testing.T) {
 	env := newCmdEnv(t)
 	env.repo("lazy-rex", "Messaging", "messaging")
 	cfg := env.config(srcM)
-	for _, body := range []string{`{"version":1,"plugins":null}`, `{"version":2,"plugins":{}}`, `{`, `{"version":1,"plugins":{"` + srcM + `":null}}`} {
+	for _, body := range []string{`{"version":1,"plugins":null}`, `{"version":3,"plugins":{}}`, `{`, `{"version":1,"plugins":{"` + srcM + `":null}}`} {
 		os.WriteFile(filepath.Join(env.dir, "hub.lock.json"), []byte(body), 0o600)
 		for name, run := range map[string]func() error{"sync": func() error { return env.sync(cfg) }, "update": func() error { return env.update(cfg) }} {
 			err := run()

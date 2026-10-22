@@ -67,7 +67,7 @@ func TestPinDocRefused(t *testing.T) {
 	good := entry(func(*pinEntry) {})
 	for doc, want := range map[string]string{
 		`{"hub":"` + pinHub + `","entries":[]}`:                           "version is missing",
-		`{"version":2,"hub":"` + pinHub + `","entries":[]}`:               "pin document version 2 is not supported by this hub (it reads version 1)",
+		`{"version":3,"hub":"` + pinHub + `","entries":[]}`:               "pin document version 3 is not supported by this hub (it reads versions 1 and 2)",
 		`{"version":1,"hub":"ABC","entries":[]}`:                          "hub must be 32 lowercase hex",
 		`{"version":1,"hub":"` + pinHub + `"}`:                            "entries must be an array",
 		`{"version":1,"hub":"` + pinHub + `","entries":null}`:             "entries must be an array",
@@ -151,7 +151,7 @@ func TestPeerBase(t *testing.T) {
 	for body, why := range map[string]string{
 		`{`:                                "unexpected EOF",
 		`{"peers":{}}`:                     "version is missing",
-		`{"version":2,"peers":{}}`:         "version 2 is not supported",
+		`{"version":3,"peers":{}}`:         "version 3 is not supported",
 		`{"version":1}`:                    "peers must be an object",
 		`{"version":1,"peers":{},"x":1}`:   `json: unknown field "x"`,
 		`{"version":1,"peers":{"abc":{}}}`: `peer "abc": not a pull identity with an object`,
@@ -263,8 +263,8 @@ func TestExportRefused(t *testing.T) {
 	env.managed("dup=" + srcM)
 	check("static", "managed:dup: the source "+srcM+" is also in the config")
 	os.Remove(filepath.Join(env.state, "plugins.json"))
-	os.WriteFile(lockFile, []byte(`{"version":2,"plugins":{}}`), 0o600)
-	check("malformed lock", "the lock file "+lockFile+" is not valid: version 2 is not supported (this hub reads version 1); repair the file or restore it from a backup")
+	os.WriteFile(lockFile, []byte(`{"version":3,"plugins":{}}`), 0o600)
+	check("malformed lock", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads versions 1 and 2); repair the file or restore it from a backup")
 }
 
 // plugin export through pluginCmdMain: exit 0 and the document on stdout; an argument is a usage
@@ -330,7 +330,7 @@ func TestMergePins(t *testing.T) {
 		}
 		var base map[string]basePin
 		if tc.base != "" {
-			base = map[string]basePin{src: {commitOf(tc.base), digestOfCommit(tc.base)}}
+			base = map[string]basePin{src: {Commit: commitOf(tc.base), Digest: digestOfCommit(tc.base)}}
 		}
 		p := testPin()
 		p.Commit, p.Digest = commitOf(tc.peer), digestOfCommit(tc.peer)
@@ -375,7 +375,7 @@ func TestMergePinsScope(t *testing.T) {
 		a.Source:          {lockPin: a.lockPin},
 		"github:o/c@main": {lockPin: lockPin{Commit: commitOf("c"), Digest: digestOfCommit("c")}},
 	}}
-	old := map[string]basePin{"github:o/c@main": {commitOf("d"), digestOfCommit("d")}}
+	old := map[string]basePin{"github:o/c@main": {Commit: commitOf("d"), Digest: digestOfCommit("d")}}
 	plan, err := mergePins([]string{a.Source, "github:o/c@main"}, lock, old, &pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{b, a}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -637,7 +637,7 @@ func TestPullRefusedBeforeFetch(t *testing.T) {
 		take      []string
 		keep      []string
 	}{
-		{doc: `{"version":2}`, want: "pin document "},
+		{doc: `{"version":3}`, want: "pin document "},
 		{doc: own, want: "comes from this lock"},
 		{doc: other, want: lockFile + ".peers.json is not valid", prep: func() { os.WriteFile(lockFile+".peers.json", []byte("{"), 0o600) }},
 		{doc: other, want: srcM + " is in both -take and -keep", prep: func() { os.Remove(lockFile + ".peers.json") }, take: []string{srcM}, keep: []string{srcM}},

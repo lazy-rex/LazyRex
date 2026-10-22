@@ -135,8 +135,8 @@ func TestResolveLockFileErrors(t *testing.T) {
 	}
 	os.WriteFile(lockFile, []byte(`{"version":1,"plugins":{`), 0o600)
 	check("malformed JSON", "the lock file "+lockFile+" is not valid: unexpected EOF; repair the file or restore it from a backup")
-	os.WriteFile(lockFile, []byte(`{"version":2,"plugins":{}}`), 0o600)
-	check("another version", "the lock file "+lockFile+" is not valid: version 2 is not supported (this hub reads version 1); repair the file or restore it from a backup")
+	os.WriteFile(lockFile, []byte(`{"version":3,"plugins":{}}`), 0o600)
+	check("another version", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads versions 1 and 2); repair the file or restore it from a backup")
 	os.Remove(lockFile)
 	if err := os.Mkdir(lockFile, 0o700); err != nil {
 		t.Fatal(err)

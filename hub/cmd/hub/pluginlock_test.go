@@ -61,7 +61,7 @@ func TestReadLockInvalid(t *testing.T) {
 		`{"version":1,"plugins":{}} {}`:                            "data after the object",
 		`{"version":1,"plugins":{},"extra":1}`:                     `unknown field "extra"`,
 		`{"plugins":{}}`:                                           "version is missing",
-		`{"version":2,"plugins":{}}`:                               "version 2 is not supported",
+		`{"version":3,"plugins":{}}`:                               "version 3 is not supported",
 		`{"version":"1","plugins":{}}`:                             "cannot unmarshal string",
 		`{"version":1}`:                                            "plugins must be an object",
 		`{"version":1,"plugins":null}`:                             "plugins must be an object",

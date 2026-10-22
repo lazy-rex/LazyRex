@@ -25,9 +25,14 @@ import (
 	"strings"
 )
 
-// pinDocVersion is the only pin document version this hub reads and writes. Both ends are hubs
-// of the user, which the user updates; another version is an error, not a format to tolerate.
-const pinDocVersion = 1
+// pinDocVersion is the version of a pin document and of a base file without a release tag, and
+// pinDocVersionLatest the version with one (section 6a). Each file takes its version from its own
+// content. Both ends are hubs of the user, which the user updates; another version is an error,
+// not a format to tolerate.
+const (
+	pinDocVersion       = 1
+	pinDocVersionLatest = 2
+)
 
 // pullID is the form of a pull identity: 32 lowercase hex.
 var pullID = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -46,11 +51,18 @@ type pinEntry struct {
 }
 
 // encodePinDoc gives the bytes of a document: entries sorted by source, two-space indent, and a
-// final newline. The same pins and identity give the same bytes.
+// final newline. The same pins and identity give the same bytes. The version is
+// pinDocVersionLatest when an entry has a latest form, else pinDocVersion.
 func encodePinDoc(d *pinDoc) ([]byte, error) {
 	sorted := *d
 	sorted.Entries = append([]pinEntry{}, d.Entries...) // never null: an empty document has []
 	sort.Slice(sorted.Entries, func(i, j int) bool { return sorted.Entries[i].Source < sorted.Entries[j].Source })
+	sorted.Version = pinDocVersion
+	for _, e := range sorted.Entries {
+		if e.latestForm() {
+			sorted.Version = pinDocVersionLatest
+		}
+	}
 	b, err := json.MarshalIndent(&sorted, "", "  ")
 	if err != nil {
 		return nil, err
@@ -72,8 +84,8 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 	switch {
 	case top.Version == nil:
 		return nil, errors.New("version is missing")
-	case *top.Version != pinDocVersion:
-		return nil, fmt.Errorf("pin document version %d is not supported by this hub (it reads version %d)", *top.Version, pinDocVersion)
+	case *top.Version != pinDocVersion && *top.Version != pinDocVersionLatest:
+		return nil, fmt.Errorf("pin document version %d is not supported by this hub (it reads versions %d and %d)", *top.Version, pinDocVersion, pinDocVersionLatest)
 	case !pullID.MatchString(top.Hub):
 		return nil, errors.New("hub must be 32 lowercase hex")
 	}
@@ -81,7 +93,7 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 	if err := json.Unmarshal(top.Entries, &raws); err != nil || raws == nil {
 		return nil, errors.New("entries must be an array")
 	}
-	d := &pinDoc{Version: pinDocVersion, Hub: top.Hub, Entries: []pinEntry{}}
+	d := &pinDoc{Version: *top.Version, Hub: top.Hub, Entries: []pinEntry{}}
 	seen := map[string]bool{}
 	for i, raw := range raws {
 		var e pinEntry
@@ -95,6 +107,9 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 		if err := e.check(); err != nil {
 			return nil, fmt.Errorf("entry %d (%s): %w", i+1, e.Source, err)
 		}
+		if d.Version == pinDocVersion && e.latestForm() {
+			return nil, fmt.Errorf("entry %d (%s): a latest entry needs pin document version %d", i+1, e.Source, pinDocVersionLatest)
+		}
 		d.Entries = append(d.Entries, e)
 	}
 	return d, nil
@@ -102,7 +117,8 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 
 // check checks one document entry against its source string: a GitHub source whose owner, repo,
 // subdir and ref are the entry's; a ref_kind that the ref form allows; a commit of 40 lowercase hex
-// that equals a commit ref; and the name and digest forms.
+// that equals a commit ref; a release tag exactly on a latest entry; and the name and digest
+// forms.
 func (e *pinEntry) check() error {
 	c := &configEntry{Source: e.Source}
 	if err := c.checkSource(""); err != nil {
@@ -127,6 +143,12 @@ func (e *pinEntry) check() error {
 		return errors.New("commit is not 40 lowercase hex")
 	case commitID.MatchString(r.Ref) && e.Commit != r.Ref:
 		return errors.New("commit is not the commit of the ref")
+	case e.RefKind == "latest" && e.Tag == "":
+		return errors.New("tag is missing")
+	case e.RefKind == "latest" && !versionTag.MatchString(e.Tag):
+		return fmt.Errorf("tag %q is not a version tag vX.Y.Z", e.Tag)
+	case e.RefKind != "latest" && e.Tag != "":
+		return fmt.Errorf("tag is set, but ref_kind is %s", e.RefKind)
 	case !pluginName.MatchString(e.Name):
 		return errors.New("name is not a plugin name")
 	case !lockDigest.MatchString(e.Digest):
@@ -205,10 +227,11 @@ type peerBase struct {
 	Peers   map[string]map[string]basePin `json:"peers"`
 }
 
-// basePin is one base value: the commit and the digest of a pin.
+// basePin is one base value: the commit and the digest of a pin, and the tag of a latest pin.
 type basePin struct {
 	Commit string `json:"commit"`
 	Digest string `json:"digest"`
+	Tag    string `json:"tag,omitempty"`
 }
 
 const peerBaseFix = "repair it, or remove it (the next pull then reports each differing key as a conflict)"
@@ -234,7 +257,7 @@ func readPeers(lockFile string) (*peerBase, error) {
 	switch {
 	case top.Version == nil:
 		return nil, sidecarInvalid(p, peerBaseFix, errors.New("version is missing"))
-	case *top.Version != pinDocVersion:
+	case *top.Version != pinDocVersion && *top.Version != pinDocVersionLatest:
 		return nil, sidecarInvalid(p, peerBaseFix, fmt.Errorf("version %d is not supported", *top.Version))
 	case top.Peers == nil:
 		return nil, sidecarInvalid(p, peerBaseFix, errors.New("peers must be an object"))
@@ -247,6 +270,12 @@ func readPeers(lockFile string) (*peerBase, error) {
 			if !commitID.MatchString(pin.Commit) || !lockDigest.MatchString(pin.Digest) {
 				return nil, sidecarInvalid(p, peerBaseFix, fmt.Errorf("peer %s, %s: commit or digest of the wrong form", id, src))
 			}
+			switch {
+			case pin.Tag != "" && !versionTag.MatchString(pin.Tag):
+				return nil, sidecarInvalid(p, peerBaseFix, fmt.Errorf("peer %s, %s: tag %q is not a version tag vX.Y.Z", id, src, pin.Tag))
+			case pin.Tag != "" && *top.Version == pinDocVersion:
+				return nil, sidecarInvalid(p, peerBaseFix, fmt.Errorf("peer %s, %s: a tag needs version %d", id, src, pinDocVersionLatest))
+			}
 		}
 	}
 	empty.Peers = top.Peers
@@ -254,9 +283,18 @@ func readPeers(lockFile string) (*peerBase, error) {
 }
 
 // writePeers replaces the base file as writeLock replaces the lock: a temporary file, fsync,
-// rename, and fsync of the directory. The caller holds both plugin command flocks.
+// rename, and fsync of the directory. The caller holds both plugin command flocks. The version is
+// pinDocVersionLatest when a base pin has a tag, else pinDocVersion.
 func writePeers(lockFile string, base *peerBase) error {
-	b, err := json.MarshalIndent(base, "", "  ")
+	out := peerBase{Version: pinDocVersion, Peers: base.Peers}
+	for _, pins := range base.Peers {
+		for _, pin := range pins {
+			if pin.Tag != "" {
+				out.Version = pinDocVersionLatest
+			}
+		}
+	}
+	b, err := json.MarshalIndent(&out, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -415,7 +453,7 @@ func mergePins(keys []string, lock *pluginLock, base map[string]basePin, doc *pi
 	}
 	resolved := map[string]bool{}
 	for _, p := range doc.Entries {
-		r := pullResult{Source: p.Source, Peer: basePin{p.Commit, p.Digest}}
+		r := pullResult{Source: p.Source, Peer: basePin{Commit: p.Commit, Digest: p.Digest}}
 		if !local[p.Source] {
 			r.Outcome = pullIgnored
 			plan.results = append(plan.results, r)
@@ -424,7 +462,7 @@ func mergePins(keys []string, lock *pluginLock, base map[string]basePin, doc *pi
 		le := lock.Plugins[p.Source]
 		b, hasBase := base[p.Source]
 		if le != nil {
-			r.Local = basePin{le.Commit, le.Digest}
+			r.Local = basePin{Commit: le.Commit, Digest: le.Digest}
 		}
 		switch {
 		case le == nil:

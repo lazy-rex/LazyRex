@@ -24,9 +24,14 @@ import (
 	"strings"
 )
 
-// lockVersion is the only lock version this hub reads and writes. The lock file is written and
-// read by the same binary, so another version is an error, not a newer format to tolerate.
-const lockVersion = 1
+// lockVersion is the version of a lock without a latest entry, and lockVersionLatest the version
+// of a lock with one (section 6a). The version follows the content of the file, so a lock without
+// a latest entry stays byte-identical to the lock of a hub before @latest. The lock file is written
+// and read by the same binary, so another version is an error, not a newer format to tolerate.
+const (
+	lockVersion       = 1
+	lockVersionLatest = 2
+)
 
 // pluginLock is the decoded lock file. Plugins is keyed by the exact source string of the config.
 type pluginLock struct {
@@ -47,7 +52,8 @@ type lockPin struct {
 	Repo    string `json:"repo"`
 	Subdir  string `json:"subdir"` // the plugin directory in the repository; "" for the root
 	Ref     string `json:"ref"`
-	RefKind string `json:"ref_kind"` // branch, tag or commit
+	RefKind string `json:"ref_kind"`      // branch, tag, commit or latest
+	Tag     string `json:"tag,omitempty"` // the release tag of a latest entry; no other entry has it
 	Commit  string `json:"commit"`
 	Digest  string `json:"digest"`
 }
@@ -135,8 +141,8 @@ func decodeLock(b []byte) (*pluginLock, error) {
 	if top.Version == nil {
 		return nil, errors.New("version is missing")
 	}
-	if *top.Version != lockVersion {
-		return nil, fmt.Errorf("version %d is not supported (this hub reads version %d)", *top.Version, lockVersion)
+	if v := *top.Version; v != lockVersion && v != lockVersionLatest {
+		return nil, fmt.Errorf("version %d is not supported (this hub reads versions %d and %d)", v, lockVersion, lockVersionLatest)
 	}
 	if !isObject(top.Plugins) {
 		return nil, errors.New("plugins must be an object")
@@ -145,7 +151,7 @@ func decodeLock(b []byte) (*pluginLock, error) {
 	if err := json.Unmarshal(top.Plugins, &raws); err != nil {
 		return nil, fmt.Errorf("plugins: %w", err)
 	}
-	l := &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{}}
+	l := &pluginLock{Version: *top.Version, Plugins: map[string]*lockEntry{}}
 	for src, raw := range raws {
 		if !isObject(raw) {
 			return nil, fmt.Errorf("the entry for %s must be an object", src)
@@ -153,6 +159,9 @@ func decodeLock(b []byte) (*pluginLock, error) {
 		e := &lockEntry{}
 		if err := decodeStrict(raw, e); err != nil {
 			return nil, fmt.Errorf("the entry for %s: %w", src, err)
+		}
+		if l.Version == lockVersion && e.latestForm() {
+			return nil, fmt.Errorf("the entry for %s: a latest entry needs version %d", src, lockVersionLatest)
 		}
 		l.Plugins[src] = e
 	}
@@ -179,9 +188,15 @@ func isObject(raw json.RawMessage) bool {
 }
 
 // encodeLock gives the bytes of a lock file. Equal lock values give equal bytes: the fields have
-// a fixed order, map keys are sorted, and the file ends with a newline.
+// a fixed order, map keys are sorted, and the file ends with a newline. The version is
+// lockVersionLatest when an entry has a latest form, else lockVersion.
 func encodeLock(l *pluginLock) ([]byte, error) {
 	out := pluginLock{Version: lockVersion, Plugins: l.Plugins}
+	for _, e := range l.Plugins {
+		if e.latestForm() {
+			out.Version = lockVersionLatest
+		}
+	}
 	if out.Plugins == nil {
 		out.Plugins = map[string]*lockEntry{}
 	}
@@ -212,9 +227,13 @@ func (e *configEntry) githubRef() githubRef {
 }
 
 // refKinds gives the ref kinds that the form of ref allows (section 5, "Ref forms"): a commit
-// ID, a full branch or tag ref, or a bare name (a branch or a tag; ls-remote decides).
+// ID, a full branch or tag ref, or a bare name (a branch or a tag; ls-remote decides). The name
+// latest is reserved: it is the highest release tag. A branch or tag named latest needs its full
+// ref.
 func refKinds(ref string) []string {
 	switch {
+	case ref == "latest":
+		return []string{"latest"}
 	case commitID.MatchString(ref):
 		return []string{"commit"}
 	case strings.HasPrefix(ref, "refs/heads/"):
@@ -226,8 +245,9 @@ func refKinds(ref string) []string {
 }
 
 // trust reports why the locked commit cannot be trusted, or "" when it is trusted (section 3,
-// "Repair"): 40 lowercase hex and, for a commit ref, equal to the ref. Whether the commit exists
-// and is available needs git; plugin sync checks that.
+// "Repair"): 40 lowercase hex and, for a commit ref, equal to the ref. A latest entry also needs a
+// release tag: sync cannot rebuild the tag from the commit. Whether the commit exists and is
+// available needs git; plugin sync checks that.
 func (e *lockEntry) trust(r githubRef) string {
 	switch {
 	case e.Commit == "":
@@ -236,6 +256,10 @@ func (e *lockEntry) trust(r githubRef) string {
 		return "commit is not 40 lowercase hex"
 	case commitID.MatchString(r.Ref) && e.Commit != r.Ref:
 		return "commit is not the commit of the ref"
+	case e.RefKind == "latest" && e.Tag == "":
+		return "tag is missing"
+	case e.RefKind == "latest" && !versionTag.MatchString(e.Tag):
+		return "tag is not a version tag vX.Y.Z"
 	}
 	return ""
 }
@@ -258,6 +282,8 @@ func (e *lockEntry) agree(r githubRef) string {
 		return "ref_kind"
 	case e.trust(r) != "":
 		return "commit"
+	case e.RefKind != "latest" && e.Tag != "":
+		return "tag"
 	case !e.dirForm(r):
 		return "dir"
 	case !pluginName.MatchString(e.Name):
@@ -288,4 +314,10 @@ func lockMismatch(cfgPath, source string, e *lockEntry, r githubRef, field strin
 // untrustedCommit is the text of a locked commit that sync must not keep (section 3).
 func untrustedCommit(cfgPath, source, why string) error {
 	return fmt.Errorf("the locked commit for %s cannot be trusted: %s; run lazyrex-hub plugin update -config %s %s", source, why, cfgPath, source)
+}
+
+// latestForm reports whether the pin has the form of a latest entry: the ref kind latest, or a
+// tag. Such a pin needs version 2 of the lock and of the pin document.
+func (p *lockPin) latestForm() bool {
+	return p.RefKind == "latest" || p.Tag != ""
 }
