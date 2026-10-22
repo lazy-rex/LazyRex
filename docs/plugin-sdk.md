@@ -64,6 +64,8 @@ selects an item in the panel to toggle it.
   again after each write to a table that it read.
 - **Clicks.** An item's `on_select` runs when the user selects it. The SDK runs the panel function
   again first, so the handler sees the current row. An item that is gone gives a visible error.
+- **View size.** A rendered panel, view or form over 48 KiB (encoded, with its status) fails with
+  `too_large`: Rex delivers no message over 64 KiB. Show fewer items, or page them.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
   run: `app.action(name, schema, fn, {user_only = true})`.
 - **Retries.** A UI action that the user's renderer sends again runs once. An agent that sends a call

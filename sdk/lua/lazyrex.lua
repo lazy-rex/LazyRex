@@ -15,6 +15,9 @@ local M = {}
 local S = {app = nil, frame = nil}
 
 local MAX_REQUEST = 64 * 1024 -- Rex refuses a larger client.perform request (observed, docs/sql.md section 5).
+-- Rex delivers no control message over 64 KiB, and the hub then keeps the old tree (Worktrees README,
+-- "Panel pages"). The SDK refuses a rendered view over 48 KiB, with room for the frame around it.
+local MAX_VIEW = 48 * 1024
 local TWO53 = 9007199254740992
 
 -- fail raises a structured error. The SDK replies with its code and message.
@@ -680,14 +683,20 @@ function M.plugin(name)
     return {user = true, key = a.operation_key, route = a.route, input = type(a.input) == 'table' and a.input or {}, args = a,
       session_id = context.session_id, view_id = a.view_id, context = context, query = query_of(a.route)}
   end
+  -- sized answers the render reply, or fails with too_large over MAX_VIEW (the status included).
+  local function sized(reply)
+    local encoded = rex.json.encode(reply)
+    if #encoded > MAX_VIEW then fail('too_large', 'The view has ' .. #encoded .. ' bytes; the limit is ' .. MAX_VIEW .. '. Show fewer items.') end
+    return reply
+  end
   local function view_call(action, a)
     local panel = panels[a.route]
     if action == 'view.render' then
       if panel then
-        return {tree = run({tx = false, render = a.render}, function() return tree(panel, panel.fn(user_ctx(a))) end)}
+        return sized({tree = run({tx = false, render = a.render}, function() return tree(panel, panel.fn(user_ctx(a))) end)})
       end
       local v = view_of(a.route)
-      if v and v.handlers.render then return {tree = run({tx = false, render = a.render}, v.handlers.render, user_ctx(a), a)} end
+      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render}, v.handlers.render, user_ctx(a), a)}) end
       fail('not_found', 'Unknown route ' .. tostring(a.route))
     end
     local ctx = user_ctx(a)

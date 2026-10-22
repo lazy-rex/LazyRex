@@ -667,3 +667,18 @@ test('minLength and maxLength count characters, not UTF-8 bytes', function()
   expect(s:agent('p.title', {title = e}).error.message, 'one character, two bytes').to_be('Argument title is too short')
   expect(s:agent('p.title', {title = '\240\159\152\128\240\159\152\128'}).result, 'two 4-byte characters').to_equal({ok = true})
 end)
+
+test('a rendered view over 48 KiB fails with too_large: a panel, an app.view and an app.form', function()
+  local s = plugin([[
+local big = string.rep('x', 50000)
+app.panel('Big', function() return {app.ui.text('t', big)} end, {id = 'big'})
+app.view('/views/big', {render = function() return {title = 'Big', nodes = {{id = 't', type = 'widget', text = big}}} end}, {tx = false})
+app.form('/forms/big', {title = 'Big', intro = big, fields = {}, on_submit = function() end})
+app.form('/forms/near', {title = 'Near', intro = string.rep('x', 48000), fields = {}, on_submit = function() end})]])
+  for _, route in ipairs({'/panels/big', '/views/big', '/forms/big'}) do
+    local r = s:call('view.render', {route = route, user = 'user'})
+    expect(r.error and r.error.code, route).to_be('too_large')
+  end
+  local r = s:call('view.render', {route = '/forms/near', user = 'user'})
+  expect(r.error, 'a view under the limit renders').to_be(nil)
+end)
