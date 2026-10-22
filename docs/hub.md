@@ -195,6 +195,56 @@ Marks and races (the rules of "Render dependencies" apply):
 - `hub.test.renders` shows `sql_tracked` (true when the view has a table set) for each view. It
   shows no table names.
 
+### Reply parts
+
+A Lua plugin sends at most 64 KiB in one control message (rex-protocol.md), but the hub and the
+renderer take about 1 MiB. So a plugin reply to a hub request can come in parts (replyparts.go;
+contract v1.1 of 2026-10-22). The plugin code does not change: the SDK does it.
+
+- Limits: the `hub.register` reply has `"limits": {"inline_max": 45056, "part_bytes": 57344,
+  "max_total": 786432}`. These Go constants are the one source of the numbers: the SDK ships in
+  the hub release and uses them. There is no negotiation and no older-SDK case (user decision
+  2026-10-22, no compatibility layers).
+- A reply of at most `inline_max` bytes (the encoded JSON) goes in one message, as before.
+- A larger reply, up to `max_total`: the SDK sends `hub.reply.part {id, index, count, data}` for
+  each slice of the encoded reply text, in order (index 0 to count-1), after the handler returned.
+  data is a plain string, cut at a UTF-8 character boundary, of at most `part_bytes` bytes after
+  JSON escaping. Then the SDK replies with the stub `{"lazyrex_parts": {"id", "count", "bytes"}}`.
+- Over `max_total`: the SDK fails with `too_large` before it sends a part. The cap keeps the
+  renderer's `hub.view.get` reply under the reply guard (1 MiB).
+- The SDK sends parts only to the hub (the requester is the hub). A reply to any other caller
+  stays in one message, with the guard of today: only the hub can resolve a stub.
+- `"lazyrex_parts"` is a reserved result key: the SDK refuses a plugin result of that shape. The
+  hub treats a reply as a stub only when it is an object with that single key.
+
+The hub keeps one part set for each plugin client (Rex delivers one request at a time to a
+client). It refuses a part with `parts_invalid` when the index is not the next index (also a
+repeated index), when count changes or is not 1 to 64, or when data is empty; with `too_large`
+when the joined size passes `max_total`; with `invalid_input` when the id is not 1 to 128 bytes of
+`[A-Za-z0-9._:-]`. A refused part discards the set. Only the current registered client of a
+plugin can send parts.
+
+- A part with a new id discards the old set. A set ends at its stub, at a new registration of the
+  plugin, when its instance ends, and 30 s after its last part.
+- At the stub, the hub checks the id, that all count parts arrived, and that the joined text has
+  exactly `bytes` bytes and is one JSON value. Then the joined value is the reply, as if it had
+  come in one message. A stub resolves only the set with its own id: a late stub never touches
+  the next set.
+- A failed check gives the error `parts_invalid`, a definite plugin failure: a view shows the
+  Error tree (the hub log has the reason), and an agent gets the error. Nothing of the set is
+  used.
+- Every hub path that reads a plugin reply resolves stubs (`performPlugin`): `view.render`, the
+  view operations, `view.history`, `view.seen`, `view.rename`, `hub.forward`, `hub.changed` and
+  `hub.prompt`.
+- Read tracking: the render ID stays open until the hub resolved the stub, so the hub installs a
+  table set only from a whole reply. A `hub.reply.part` of the plugin instance that has an open
+  render does not untrack it: the parts come after the handler returned and read nothing.
+- Saved replies: `hub.sql.commit` takes `reply_parts: {id, count, bytes}` in place of `reply`.
+  The SDK sends the parts before the commit. The hub joins the set with the same checks, saves the
+  joined value, and keeps the set: the reply stub with the same id then gets the same value. A
+  commit that fails after the join leaves the set for the stub. `reply` and `reply_parts` together
+  are `invalid_input`.
+
 ### Version 1 view tree
 
 The root is an object with `title`, `back`, and ordered `nodes`.

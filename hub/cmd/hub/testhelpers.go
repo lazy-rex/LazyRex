@@ -21,7 +21,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -121,6 +123,38 @@ func (c *helperConn) perform(ctx context.Context, client, action string, args an
 	}
 	err := c.r.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": action, "args": args, "timeout_ms": 10000}, &res)
 	return res.Result, err
+}
+
+// shortReply returns a reply for a test that reads a reply over the test client limit (short =
+// true): each string over 64 bytes becomes {len, sha256}, and the rest stays (reply_parts.lua).
+func shortReply(raw json.RawMessage, short bool) any {
+	if !short || raw == nil {
+		return raw
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return raw
+	}
+	var shrink func(v any) any
+	shrink = func(v any) any {
+		switch t := v.(type) {
+		case string:
+			if len(t) > 64 {
+				sum := sha256.Sum256([]byte(t))
+				return map[string]any{"len": len(t), "sha256": hex.EncodeToString(sum[:])}
+			}
+		case []any:
+			for i := range t {
+				t[i] = shrink(t[i])
+			}
+		case map[string]any:
+			for k := range t {
+				t[k] = shrink(t[k])
+			}
+		}
+		return v
+	}
+	return map[string]any{"bytes": len(raw), "value": shrink(v)}
 }
 
 // reply answers one request. An error keeps the code of a Rex error, so the test can match it.
@@ -360,9 +394,11 @@ func testViewMain(argv []string) int {
 		for k, v := range args {
 			base[k] = v
 		}
+		short := base["short"] == true
+		delete(base, "short")
 		call := func(action string) {
 			raw, err := c.perform(ctx, hub, action, base)
-			c.reply(p.CallID, raw, err)
+			c.reply(p.CallID, shortReply(raw, short), err)
 		}
 		switch p.Action {
 		case "testview.status":
@@ -550,7 +586,7 @@ func testAgentMain(argv []string) int {
 				return
 			}
 			raw, err := c.perform(ctx, client, action, inner)
-			c.reply(p.CallID, raw, err)
+			c.reply(p.CallID, shortReply(raw, args["short"] == true), err)
 		case "agent.direct":
 			plugin, _ := args["plugin"].(string)
 			client, err := target("lazyrex-plugin:" + plugin)

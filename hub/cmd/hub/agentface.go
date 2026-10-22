@@ -222,17 +222,14 @@ func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
 	if len(args) == 0 || string(args) == "null" {
 		args = json.RawMessage("{}")
 	}
-	var res struct {
-		Result json.RawMessage `json:"result"`
-	}
 	h.beginForward(client, p.Requester.Principal.PID)
 	defer h.endForward(client, p.Requester.Principal.PID)
-	err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "hub.forward",
-		"args": map[string]any{"action": p.Action, "args": args, "requester_pid": p.Requester.Principal.PID}, "timeout_ms": 10000}, &res)
+	raw, err := h.performPlugin(ctx, client, "hub.forward",
+		map[string]any{"action": p.Action, "args": args, "requester_pid": p.Requester.Principal.PID}, 10000)
 	if err != nil {
 		return nil, err
 	}
-	return res.Result, nil
+	return raw, nil
 }
 
 // A plugin that handles a forwarded agent call can act for that agent with on_behalf = the

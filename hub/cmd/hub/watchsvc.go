@@ -621,8 +621,7 @@ func (r *watchRun) sendNudge(client string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := r.h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "hub.changed",
-			"args": map[string]any{"what": "watch", "key": key, "watch_id": id}, "timeout_ms": 3000}, nil)
+		_, err := r.h.performPlugin(ctx, client, "hub.changed", map[string]any{"what": "watch", "key": key, "watch_id": id}, 3000)
 		if err != nil && !strings.Contains(err.Error(), "unknown action") && !strings.Contains(err.Error(), "not_found") {
 			log.Printf("watch nudge %s/%s: %v", plugin, key, err)
 		}

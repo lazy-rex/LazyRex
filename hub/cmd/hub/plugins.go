@@ -58,6 +58,8 @@ func (h *Hub) register(ctx context.Context, p perform, args map[string]any) (any
 			return nil, bad("export %q is not an action the plugin declared to Rex", e)
 		}
 	}
+	h.parts.drop(pl.ClientID) // the parts of the previous instance end
+	h.parts.drop(p.Requester.ClientID)
 	pl.ClientID, pl.Exports = p.Requester.ClientID, exports
 	if pl.promptsGranted() {
 		h.startPromptSender(pl)
@@ -71,7 +73,7 @@ func (h *Hub) register(ctx context.Context, p perform, args map[string]any) (any
 	if h.watches != nil {
 		h.watches.pluginRegistered(name) // rows may wait for it
 	}
-	return map[string]any{"namespace": name, "generation": revString(h.generation)}, nil
+	return map[string]any{"namespace": name, "generation": revString(h.generation), "limits": partsLimits}, nil
 }
 
 // commandState is a plugin's admitted palette commands (hub.register). h.mu guards it.
@@ -420,6 +422,7 @@ func (h *Hub) findInstanceBlock(ctx context.Context, sess, instance string) (fou
 func (h *Hub) dropInstance(ctx context.Context, pl *Plugin, sess, reason string) {
 	h.mu.Lock()
 	old := pl.BlockID
+	h.parts.drop(pl.ClientID)
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
@@ -849,6 +852,7 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	h.mu.Lock()
 	h.selfClosed[pl.BlockID] = true
 	old := pl.BlockID
+	h.parts.drop(pl.ClientID)
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
@@ -1033,6 +1037,7 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 		current = false // a second child_exited for the same instance counts once
 	}
 	if current {
+		h.parts.drop(pl.ClientID)
 		pl.ClientID = ""
 		pl.respawn.exited = instance
 		h.kickAgentKeymap()
@@ -1072,6 +1077,7 @@ func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	pl.cancelRespawnLocked()
 	pl.respawn.delay = 0
 	block := pl.BlockID
+	h.parts.drop(pl.ClientID)
 	pl.clearInstance()
 	pl.Desired, pl.state, pl.refusal, pl.waiting = "stopped", "", "", nil
 	h.savePlugin(ctx, pl)
@@ -1120,6 +1126,7 @@ func (h *Hub) blockClosed(ctx context.Context, blockID string) {
 		// An error does not prove that the session is live: do not save a user stop. The saved
 		// identity stays, so a hub restart classifies the close again (retire). Retry here too.
 		h.mu.Lock()
+		h.parts.drop(pl.ClientID)
 		pl.ClientID = ""
 		h.kickAgentKeymap()
 		h.mu.Unlock()

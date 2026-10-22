@@ -159,6 +159,10 @@ func TestRenderReadRules(t *testing.T) {
 	if r.untracked || !r.tables["t"] || !r.tables["sqlite_master"] {
 		t.Errorf("a tokened read: %+v", r)
 	}
+	h.renderCall("p", "c1", "hub.reply.part", map[string]any{"id": "i"}) // the parts of its reply (replyparts.go)
+	if r.untracked {
+		t.Errorf("a reply part of the instance untracked the render")
+	}
 	h.closeRenderID(id)
 
 	for name, step := range map[string]func(id string){
@@ -171,7 +175,8 @@ func TestRenderReadRules(t *testing.T) {
 		"sqlite_sequence": func(id string) {
 			h.renderRead("p", "c1", id, map[string]bool{"t": true, "sqlite_sequence": true}, true)
 		},
-		"closed before reading": func(string) { h.renderRead("p", "c1", "r-closed", map[string]bool{"t": true}, true) },
+		"closed before reading":            func(string) { h.renderRead("p", "c1", "r-closed", map[string]bool{"t": true}, true) },
+		"a reply part of another instance": func(string) { h.renderCall("p", "c2", "hub.reply.part", map[string]any{"id": "i"}) },
 	} {
 		id, r := open()
 		step(id)

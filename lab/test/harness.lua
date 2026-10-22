@@ -531,6 +531,9 @@ function Agent:exit()
 end
 -- call runs an exported plugin action through the agent face: the MCP path.
 function Agent:call(action, args) return perform(self.client, 'agent.call', {action = action, args = args or {}}) end
+-- call_short is call for a result over the test client limit: {bytes, value}, where each string
+-- over 64 bytes of the value is {len, sha256}.
+function Agent:call_short(action, args) return perform(self.client, 'agent.call', {action = action, args = args or {}, short = true}) end
 -- call_raw is call with the arguments as JSON text. Rex Lua encodes an empty table as {}
 -- (observed on Rex 0.0.1792158932-g88fd41), so an empty array needs it: '{"ids":[]}'.
 function Agent:call_raw(action, json_text)
@@ -682,6 +685,8 @@ function View:try_render()
 end
 
 function View:get() return perform(self.client, 'testview.get', {}) end
+-- get_short is get for a snapshot over the test client limit (Agent:call_short).
+function View:get_short() return perform(self.client, 'testview.get', {short = true}) end
 
 -- rename_tab renames the view's Rex tab, as the user does. The hub then sends view.rename.
 function View:rename_tab(label)
