@@ -216,10 +216,15 @@ func (b *b8Life) runOld(fn func()) {
 	b.must("hub.plugins", nil)
 	fn()
 	b.l.snapshot()
-	// SIGTERM through the keeper; a problem includes an exit status other than 0.
+	// SIGTERM through the keeper. kept.stop proves the keeper and its group ended; keptExit proves
+	// OLD's own exit status 0, within the 10 s OLD stop bound.
+	deadline := time.Now().Add(10 * time.Second)
 	if p := b.l.hub.stop(); len(p) > 0 {
 		b.l.unproved = append(b.l.unproved, p...)
 		b.t.Fatalf("OLD did not stop cleanly: %v", p)
+	}
+	if err := keptExit(b.l.hub, deadline); err != nil {
+		b.t.Fatalf("OLD did not exit with status 0 within 10 s: %v", err)
 	}
 	b.bin = b.hBin
 	b.note("OLD started and stopped cleanly (exit status 0)")
@@ -529,5 +534,39 @@ func (b *b8Life) rowsInto(dst *string, query string, args ...any) {
 	list := b.rows(query, args...)
 	for _, v := range list[0] {
 		*dst = v
+	}
+}
+
+// keptExit is the exit of a kept command after its stop: its status from the keeper's "exit"
+// line, read after the done signal, by deadline. kept.stop checks the keeper and its group, not the
+// command's status, so OLD's exit status is checked here.
+func keptExit(k *kept, deadline time.Time) error {
+	select {
+	case <-k.done:
+	case <-time.After(time.Until(deadline)):
+		return fmt.Errorf("no exit status by the deadline")
+	}
+	if time.Now().After(deadline) {
+		return fmt.Errorf("the exit came after the deadline")
+	}
+	return k.status
+}
+
+// keptExit gives the command's own status: an exit other than 0 is an error, also when the keeper
+// stopped cleanly (codex-27, plugins-c2-source-findings-1).
+func TestKeptExit(t *testing.T) {
+	k := &kept{done: make(chan struct{})}
+	k.status = exitStatus("7")
+	close(k.done)
+	if err := keptExit(k, time.Now().Add(time.Second)); err == nil {
+		t.Fatal("exit 7 is accepted")
+	}
+	k = &kept{done: make(chan struct{})}
+	close(k.done)
+	if err := keptExit(k, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("exit 0: %v", err)
+	}
+	if err := keptExit(&kept{done: make(chan struct{})}, time.Now().Add(50*time.Millisecond)); err == nil {
+		t.Fatal("no status is accepted")
 	}
 }
