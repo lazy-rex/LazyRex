@@ -421,8 +421,10 @@ returns that value. It runs `fn` under `pcall`: an error in `fn` is kept and `wa
 After `timeout` seconds (default 10) it fails with `what` and the last error.
 
 Read the result from the return value. Return a table for several values. Do not assign an outer
-local inside `fn`: in Rex's Lua, a closure write to a captured local can be lost after a caught
-error (rex-protocol.md, "Rex Lua runtime"), so the test can read a stale value.
+local inside `fn`, and do not read an outer local in `fn` that the test changes later. In Rex's Lua,
+a caught error splits a function's locals from its closures, in both directions (rex-protocol.md,
+"Rex Lua runtime"), so the test or `fn` can read a stale value. The runner's `xpcall` around each test
+does not prevent it.
 
 ```lua
 -- Do not: the write to row can be lost after a caught error in fn.
