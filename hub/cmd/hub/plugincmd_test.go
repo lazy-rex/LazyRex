@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -589,6 +591,67 @@ func TestStatus(t *testing.T) {
 	}
 	if code != 1 {
 		t.Errorf("exit %d", code)
+	}
+}
+
+// shortWriter writes one byte less than asked and returns no error.
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return max(len(p)-1, 0), nil }
+
+// An output write failure after the lock write is an error that says that the lock is written:
+// a failed write and a short write, for sync (an install), update and a dropped-only sync. The
+// lock is written in each case.
+func TestCmdOutputFailure(t *testing.T) {
+	writers := map[string]io.Writer{"failed": failWriter{}, "short": shortWriter{}}
+	for wname, w := range writers {
+		for _, c := range []string{"install", "update", "dropped"} {
+			env := newCmdEnv(t)
+			r := env.repo("lazy-rex", "Messaging", "messaging")
+			env.repo("lazy-rex", "Profiles", "profiles")
+			cfg, cmd, args := env.config(srcM), "sync", []string(nil)
+			switch c {
+			case "update":
+				if err := env.sync(cfg); err != nil {
+					t.Fatal(err)
+				}
+				r.commit(map[string]string{"main.lua": "moved"})
+				cmd, args = "update", []string{srcM}
+			case "dropped":
+				if err := env.sync(env.config(srcM, "github:lazy-rex/Profiles@main")); err != nil {
+					t.Fatal(err)
+				}
+				cfg = env.config(srcM) // the same path: Profiles leaves the config
+			}
+			before := env.lockBytes()
+			err := runPluginCmd(context.Background(), cmd, cfg, args, env.opts, w)
+			want := "plugin " + cmd + ": the lock is written, but the result lines are not: "
+			if err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("%s %s: got %v", wname, c, err)
+			}
+			if wname == "short" && !errors.Is(err, io.ErrShortWrite) {
+				t.Errorf("%s %s: %v is not io.ErrShortWrite", wname, c, err)
+			}
+			if bytes.Equal(before, env.lockBytes()) {
+				t.Errorf("%s %s: the lock is not written", wname, c)
+			}
+		}
+	}
+}
+
+// A status output failure is an error, and it wins over the not-ok result.
+func TestStatusOutputFailure(t *testing.T) {
+	env := newCmdEnv(t)
+	cfg := env.config("github:lazy-rex/Tunnels@main") // not installed: not ok
+	for wname, w := range map[string]io.Writer{"failed": failWriter{}, "short": shortWriter{}} {
+		ok, err := runPluginStatus(cfg, w)
+		if ok || err == nil || !strings.HasPrefix(err.Error(), "plugin status: the result lines are not written: ") {
+			t.Errorf("%s: ok %v, err %v", wname, ok, err)
+		}
+		var errb bytes.Buffer
+		if code := pluginCmdMain([]string{"status", "-config", cfg}, w, &errb); code != 1 || !strings.Contains(errb.String(), "the result lines are not written") {
+			t.Errorf("%s: exit %d, stderr %q", wname, code, errb.String())
+		}
 	}
 }
 

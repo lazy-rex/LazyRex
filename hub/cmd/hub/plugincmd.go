@@ -297,10 +297,24 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 	for _, src := range dropped {
 		lines = append(lines, fmt.Sprintf("dropped %s\n", src))
 	}
-	for _, l := range lines {
-		io.WriteString(w, l)
+	if err := writeLines(w, lines); err != nil {
+		return fmt.Errorf("plugin %s: the lock is written, but the result lines are not: %w", cmd, err)
 	}
 	return nil
+}
+
+// writeLines writes the lines in one write. A short write without an error is io.ErrShortWrite.
+// A writer can take a prefix before it fails, so a failure does not mean that nothing was written.
+func writeLines(w io.Writer, lines []string) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	b := strings.Join(lines, "")
+	n, err := io.WriteString(w, b)
+	if err == nil && n < len(b) {
+		err = io.ErrShortWrite
+	}
+	return err
 }
 
 // syncEntry gives the lock entry of the GitHub entry e after sync, and a verb for the output
@@ -525,6 +539,9 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("plugin status: %w", err)
 	}
+	// The lines go out in one checked write at the end: an output failure is an error, and it wins
+	// over a not-ok result.
+	var buf strings.Builder
 	ok = true
 	referenced := map[string]bool{}
 	for _, le := range lock.Plugins {
@@ -533,7 +550,7 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 	for _, e := range cfg.entries {
 		if e.static != nil {
 			ok = false
-			fmt.Fprintf(w, "%s\trefused: %v\t%s\n", e.Source, e.static, e.identity())
+			fmt.Fprintf(&buf, "%s\trefused: %v\t%s\n", e.Source, e.static, e.identity())
 			continue
 		}
 		if !e.github {
@@ -559,7 +576,7 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 		if state != "ok" {
 			ok = false
 		}
-		fmt.Fprintf(w, "%s\tref %s\tcommit %s\tcache %s\t%s\n", e.Source, r.Ref, commit, state, e.identity())
+		fmt.Fprintf(&buf, "%s\tref %s\tcommit %s\tcache %s\t%s\n", e.Source, r.Ref, commit, state, e.identity())
 	}
 	var orphans []string
 	for src := range lock.Plugins {
@@ -570,12 +587,15 @@ func runPluginStatus(cfgPath string, w io.Writer) (ok bool, err error) {
 	sort.Strings(orphans)
 	for _, src := range orphans {
 		ok = false
-		fmt.Fprintf(w, "%s\torphaned (not in the config; plugin sync drops it)\tcommit %s\n", src, lock.Plugins[src].Commit)
+		fmt.Fprintf(&buf, "%s\torphaned (not in the config; plugin sync drops it)\tcommit %s\n", src, lock.Plugins[src].Commit)
 	}
 	for _, rel := range cacheEntries(cfg.state) {
 		if !referenced[rel] {
-			fmt.Fprintf(w, "%s\tunreferenced (no recorded digest; a running instance or another config can use it)\n", rel)
+			fmt.Fprintf(&buf, "%s\tunreferenced (no recorded digest; a running instance or another config can use it)\n", rel)
 		}
+	}
+	if err := writeLines(w, []string{buf.String()}); err != nil {
+		return false, fmt.Errorf("plugin status: the result lines are not written: %w", err)
 	}
 	return ok, nil
 }

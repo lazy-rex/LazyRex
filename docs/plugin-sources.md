@@ -332,6 +332,13 @@ see the new lock, but a crash can still undo it. The command then fails with `<l
 but the sync of its directory failed (a crash can undo the change): ...`, never claims an
 unchanged lock, and rolls nothing back. The same rule holds for the base file of pull (section 6a).
 
+**Result lines.** sync and update print one line for each change (`installed`, `updated`,
+`repaired`, `dropped`) only after the lock write. A failed command prints none. The lines go out
+in one write; a failed or short write is an error: `plugin <cmd>: the lock is written, but the
+result lines are not: ...`. A writer can take a part of the lines before it fails. status also
+writes its lines once; a failed write is `plugin status: the result lines are not written: ...`,
+with exit 1, before the not-ok result.
+
 **Graph check.** Before it writes the lock, the command checks the new dependency graph. Example
 refusal: `plugin update: worktrees at <c> depends on profiles, which is not configured; the lock is
 unchanged`.
@@ -736,6 +743,8 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | pull: a fetch, digest or graph failure | lock and base byte-unchanged | U |
 | pull: a base write failure, then the same peer, a moved peer, a local update | the text; unchanged; conflict; conflict | U |
 | pull: a base write failure with no lock change, and after only an orphan removal; a failed write of the result lines | the text for each case | U |
+| sync: a failure after an earlier entry's fetch | no result line; the lock byte-unchanged | U |
+| sync (an install, a drop) and update: a failed and a short write of the result lines; status: the same, with a not-ok entry | the "lock is written" text, the lock written; the status text, exit 1 | U |
 | A directory fsync failure after the rename: the lock of sync and update; the lock and the base of pull, then the next pull | the new bytes in place; the "is replaced" text, no unchanged claim; the next pull unchanged | U |
 | pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
