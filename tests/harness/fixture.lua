@@ -70,7 +70,7 @@ end
 
 local obj = {type = 'object'}
 local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub',
-  'fix.measure', 'fix.register', 'fix.big'}
+  'fix.measure', 'fix.register', 'fix.big', 'fix.saved'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -89,6 +89,8 @@ local actions = {
   {name = 'fix.echo', kind = 'client', title = 'Echo', args = obj},
   {name = 'fix.big', kind = 'client', title = 'A reply of kb KiB, sent in parts',
     args = {type = 'object', properties = {kb = {type = 'integer'}}, required = {'kb'}}},
+  {name = 'fix.saved', kind = 'client', title = 'A keyed write with a saved reply of kb KiB, and its replays',
+    args = {type = 'object', properties = {kb = {type = 'integer'}, key = {type = 'string'}, step = {type = 'string'}}, required = {'kb', 'key', 'step'}}},
   {name = 'fix.op', kind = 'client', title = 'Read a saved operation', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
   {name = 'fix.invalidate', kind = 'client', title = 'Call hub.ui.invalidate', args = obj},
   {name = 'fix.grant', kind = 'client', title = 'Make a grant for the caller (on_behalf = as_pid or the caller pid)',
@@ -164,6 +166,36 @@ local function domain(action, args, pid)
     return {spawn = hub('hub.spawn', {profile = 'shell', key = args.key, on_behalf = args.as_pid or pid}), pid = pid}
   elseif action == 'fix.big' then
     return send_parts({kb = args.kb, data = string.rep('b', args.kb * 1024)})
+  elseif action == 'fix.saved' then
+    -- A keyed write whose reply of kb KiB the hub saves (docs/sql.md "Saved replies"). Steps:
+    --   write   inserts a row and commits with reply_parts, then answers {withheld = true} in place
+    --           of the reply. No transport reply is lost: it is a probe, not a fault.
+    --   commit  repeats the write with the same key: the commit replays the saved reply.
+    --   replay  reads the saved reply with hub.sql.replay.
+    --   deliver reads it with hub.sql.replay and sends it to the caller in parts.
+    -- commit and replay answer only the size of what arrived and whether it is the saved value.
+    local value = {kb = args.kb, data = string.rep('s', args.kb * 1024)}
+    local function check(reply)
+      return {bytes = #rex.json.encode(reply), same = type(reply) == 'table' and reply.kb == value.kb and reply.data == value.data}
+    end
+    if args.step == 'write' or args.step == 'commit' then
+      local tx = hub('hub.sql.begin', {}).tx
+      hub('hub.sql.exec', {tx = tx, sql = 'INSERT INTO saved_rows VALUES (?)', params = {args.key}})
+      local commit = {tx = tx, key = args.key, fingerprint = 'f'}
+      if args.step == 'write' then commit.reply_parts = send_parts(value).lazyrex_parts end
+      local r = hub('hub.sql.commit', commit)
+      if args.step == 'write' then return {withheld = true, replayed = r.replayed == true} end
+      local out = check(r.reply)
+      out.replayed = r.replayed == true
+      return out
+    end
+    local r = hub('hub.sql.replay', {key = args.key, fingerprint = 'f'})
+    if args.step == 'replay' then
+      local out = check(r.reply)
+      out.found = r.found
+      return out
+    end
+    return send_parts(r.reply)
   elseif action == 'fix.register' then
     register()
     return {}
@@ -320,19 +352,20 @@ local function view(action, args)
         refresh = type(refresh) == 'string' and refresh or nil}
     end
     -- /lazy/parts-<x> (reply_parts.lua): the SQL row parts_spec(<x>) gives kb, the mode of the parts
-    -- ('ok', 'gap', 'bytes', 'inline') and the refresh value. Over 44 KiB the reply goes in parts.
+    -- ('ok', 'gap', 'bytes', 'inline'). The reply has no refresh field: the view is tracked. Over
+    -- 44 KiB the reply goes in parts.
     -- The node count shows the rows of the table parts_<x>; the node last ends the tree.
     local pname = args.route:match('^/lazy/parts%-(%w+)$')
     if pname then
       local function query(sql)
         return hub('hub.sql.query', {sql = sql, params = {pname}, render = args.render}).rows[1]
       end
-      local spec = query('SELECT kb, mode, refresh FROM parts_spec WHERE name = ?') or {}
+      local spec = query('SELECT kb, mode FROM parts_spec WHERE name = ?') or {}
       local n = query('SELECT count(*) FROM parts_' .. pname .. ' WHERE ? IS NOT NULL')
       local nodes = spec[2] == 'ascii' and {{id = 'big', type = 'widget', text = ''}} or filler(spec[1] or 1)
       nodes[#nodes + 1] = {id = 'count', type = 'widget', text = tostring(n and n[1])}
       nodes[#nodes + 1] = {id = 'last', type = 'widget', text = 'end'}
-      local reply = {tree = {title = 'Parts', nodes = nodes}, refresh = type(spec[3]) == 'string' and spec[3] or nil}
+      local reply = {tree = {title = 'Parts', nodes = nodes}}
       if spec[2] == 'ascii' then -- an ASCII reply of exactly 50000 bytes: one part
         nodes[1].text = string.rep('a', 50000 - #rex.json.encode(reply))
       end
