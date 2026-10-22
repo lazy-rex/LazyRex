@@ -77,9 +77,10 @@ Start Hub runs this command, which you can also run in a terminal:
 ## When something is wrong
 
 - A LazyRex pane shows "No hub: run LazyRex: Start Hub.": this pane found no connected hub on its Rex server.
-- **LazyRex: Hub Status** says whether the hub runs.
+- **LazyRex: Hub Status** says whether the hub runs, and lists the plugins that the hub refused.
+  The Start Hub pane lists them after "ready".
 - The hub's log is `~/.lazyrex/state/hub.log`. "is not installed: run lazyrex-hub plugin sync"
-  there means that the plugins are not installed: run
+  in Hub Status, in the Start Hub pane or in the log means that the plugins are not installed: run
   `~/.lazyrex/bin/lazyrex-hub plugin sync -config ~/.lazyrex/hub.json`, then **LazyRex: Stop Hub**
   and **LazyRex: Start Hub**. (Start Hub alone is refused while the first hub runs.)
 
