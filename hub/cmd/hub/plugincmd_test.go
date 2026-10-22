@@ -332,6 +332,37 @@ func TestSyncAllOrNothing(t *testing.T) {
 	}
 }
 
+// A failure after an earlier entry's fetch prints no result line: the lock does not have the
+// earlier change. The earlier fetch did run (its cache entry is published, unreferenced).
+func TestSyncFailurePrintsNoLines(t *testing.T) {
+	env := newCmdEnv(t)
+	env.repo("lazy-rex", "Messaging", "messaging")
+	cfg := env.config(srcM)
+	if err := env.sync(cfg); err != nil {
+		t.Fatal(err)
+	}
+	before, entries := env.lockBytes(), len(cacheEntries(env.state))
+	env.repo("lazy-rex", "Templates", "templates")
+	bad := env.repo("lazy-rex", "Profiles", "profiles")
+	os.Symlink("main.lua", filepath.Join(bad.dir, "link.lua"))
+	bad.commit(nil)
+	cfg = env.config(srcM, "github:lazy-rex/Templates@main", "github:lazy-rex/Profiles@main")
+	var out bytes.Buffer
+	err := runPluginCmd(context.Background(), "sync", cfg, nil, env.opts, &out)
+	if err == nil || !strings.HasPrefix(err.Error(), "plugin sync: github:lazy-rex/Profiles@main: ") {
+		t.Fatalf("got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("the failed sync printed %q", out.String())
+	}
+	if !bytes.Equal(before, env.lockBytes()) {
+		t.Fatal("the failed sync changed the lock")
+	}
+	if got := len(cacheEntries(env.state)); got != entries+1 {
+		t.Fatalf("cache entries: %d before, %d after; the Templates fetch did not run first", entries, got)
+	}
+}
+
 // sync drops a lock entry whose source is not in the config.
 func TestSyncDrops(t *testing.T) {
 	env := newCmdEnv(t)

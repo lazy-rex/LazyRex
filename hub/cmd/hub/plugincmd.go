@@ -231,6 +231,9 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 		}
 	}
 
+	// The result lines print only after the command succeeds: a later failure leaves the lock
+	// without the changes that the lines name.
+	var lines []string
 	next := &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{}}
 	for _, e := range cfg.entries {
 		if !e.github {
@@ -257,7 +260,7 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 			next.Plugins[e.Source] = got
 		}
 		if verb != "" {
-			fmt.Fprintf(w, "%s %s %s\n", verb, e.Source, got.Commit)
+			lines = append(lines, fmt.Sprintf("%s %s %s\n", verb, e.Source, got.Commit))
 		}
 	}
 	var dropped []string
@@ -278,6 +281,8 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 	cur, err := os.ReadFile(cfg.lock)
 	switch {
 	case err == nil && string(cur) == string(b):
+		// No result line: each line names a new cache dir (its name has a random token), so a line
+		// always changes the lock bytes.
 		return nil
 	case errors.Is(err, os.ErrNotExist) && len(next.Plugins) == 0:
 		return nil // no lock file, and nothing to pin
@@ -290,7 +295,10 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 		return fail(err)
 	}
 	for _, src := range dropped {
-		fmt.Fprintf(w, "dropped %s\n", src)
+		lines = append(lines, fmt.Sprintf("dropped %s\n", src))
+	}
+	for _, l := range lines {
+		io.WriteString(w, l)
 	}
 	return nil
 }
