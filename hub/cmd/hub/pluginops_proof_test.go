@@ -404,13 +404,19 @@ func TestPluginOpLateRegistration(t *testing.T) {
 	}
 
 	h, pl, id = startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
-	if _, err := h.db.Exec(`UPDATE plugin_op_attempts SET proof = 'not_applied: resolved by an operator' WHERE op_id = ?`, id); err != nil {
+	// An operator resolution is its own field (resolved_by), and the proof stays empty.
+	const by = `{"outcome":"not_applied","note":"the operator checked"}`
+	if _, err := h.db.Exec(`UPDATE plugin_op_attempts SET resolved_by = ? WHERE op_id = ?`, by, id); err != nil {
 		t.Fatal(err)
 	}
 	createAndRegister(t, h, pl)
 	h.opsRun(ctx)
-	if proof := opsProof(t, h, id, "start"); proof != "not_applied: resolved by an operator" {
-		t.Errorf("a resolved attempt changed: %q", proof)
+	var got string
+	if err := h.db.QueryRow(`SELECT resolved_by FROM plugin_op_attempts WHERE op_id = ?`, id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if proof := opsProof(t, h, id, "start"); proof != "" || got != by {
+		t.Errorf("a resolved attempt changed: proof %q, resolved_by %q", proof, got)
 	}
 }
 
