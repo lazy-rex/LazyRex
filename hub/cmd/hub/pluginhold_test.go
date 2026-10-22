@@ -210,3 +210,85 @@ func TestPluginHoldStates(t *testing.T) {
 		t.Fatalf("a queued op before its first attempt: %v", s)
 	}
 }
+
+func resolveCall(h *Hub, args map[string]any) (map[string]any, error) {
+	raw := map[string]json.RawMessage{}
+	for k, v := range args {
+		b, _ := json.Marshal(v)
+		raw[k] = b
+	}
+	res, err := h.attemptResolve(context.Background(), raw)
+	if err != nil {
+		return nil, err
+	}
+	return res.(map[string]any), nil
+}
+
+// hub.plugins.attempt.resolve: the arguments; an unknown op or attempt; an open attempt; a proved
+// attempt; the resolution of an unresolved attempt (resolved_by only: outcome and proof stay, and
+// the hold moves to held); the same resolution again returns the same record; another one is
+// conflict.
+func TestPluginAttemptResolve(t *testing.T) {
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
+	registerWait = 0
+	h, _, id := startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
+	var attempt, outcome string
+	if err := h.db.QueryRow(`SELECT attempt, outcome FROM plugin_op_attempts WHERE op_id = ?`, id).Scan(&attempt, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	ok := map[string]any{"op_id": id, "attempt": attempt, "outcome": "not_applied", "note": "no block in session:home"}
+	for _, bad := range []map[string]any{
+		{"op_id": id, "attempt": attempt, "outcome": "maybe", "note": "n"},
+		{"op_id": id, "attempt": attempt, "outcome": "applied", "note": ""},
+		{"op_id": id, "attempt": attempt, "outcome": "applied", "note": strings.Repeat("n", 1001)},
+		{"op_id": id, "outcome": "applied", "note": "n"},
+		{"op_id": id, "attempt": attempt, "outcome": "applied", "note": "n", "retry": true},
+	} {
+		if _, err := resolveCall(h, bad); !isRefusal(err, "invalid_input") {
+			t.Errorf("%v: %v", bad, err)
+		}
+	}
+	if _, err := resolveCall(h, map[string]any{"op_id": id, "attempt": "nope", "outcome": "applied", "note": "n"}); !isRefusal(err, "not_found") {
+		t.Errorf("an unknown attempt: %v", err)
+	}
+	if _, err := holdCall(t, h, "hub.plugins.hold.acquire", map[string]any{"release_id": "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := resolveCall(h, ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var by, proof, after string
+	h.db.QueryRow(`SELECT resolved_by, proof, outcome FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&by, &proof, &after)
+	if by == "" || proof != "" || after != outcome {
+		t.Fatalf("resolved_by %q, proof %q, outcome %q (was %q)", by, proof, after, outcome)
+	}
+	if s := holdState(t, h); s["state"] != "held" {
+		t.Fatalf("the hold after the resolution: %v", s)
+	}
+	again, err := resolveCall(h, ok)
+	if err != nil || fmt.Sprint(again["resolved_by"]) != fmt.Sprint(first["resolved_by"]) {
+		t.Fatalf("the same resolution again: %v, %v", again, err)
+	}
+	other := map[string]any{"op_id": id, "attempt": attempt, "outcome": "applied", "note": "no block in session:home"}
+	if _, err := resolveCall(h, other); !isRefusal(err, "conflict") {
+		t.Fatalf("another outcome: %v", err)
+	}
+	var now string
+	h.db.QueryRow(`SELECT resolved_by FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&now)
+	if now != by {
+		t.Fatalf("resolved_by changed: %q, was %q", now, by)
+	}
+
+	// A proved attempt and an open attempt cannot be resolved.
+	opsAttemptRow(t, h, "p1", "stop")
+	h.db.Exec(`UPDATE plugin_op_attempts SET op_id = ?, outcome = 'stop: done', proof = 'applied: the call returned' WHERE attempt = 'p1'`, id)
+	opsAttemptRow(t, h, "o1", "stop")
+	h.db.Exec(`UPDATE plugin_op_attempts SET op_id = ? WHERE attempt = 'o1'`, id)
+	for _, a := range []string{"p1", "o1"} {
+		if _, err := resolveCall(h, map[string]any{"op_id": id, "attempt": a, "outcome": "applied", "note": "n"}); !isRefusal(err, "conflict") {
+			t.Errorf("attempt %s: %v", a, err)
+		}
+	}
+}
