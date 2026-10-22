@@ -456,14 +456,15 @@ function M.plugin(name)
     local ok, err = pcall(run, {tx = (opts or {}).tx ~= false}, fn, ...)
     if not ok then print('lazyrex: ' .. label .. ' failed: ' .. normalize(err).message) end
   end
-  -- app.on(event, fn): a Rex event (fn(ev)) or the hub calls hub.changed and view.seen (fn(args)).
+  -- app.on(event, fn): a Rex event (fn(ev, ctx): ctx is the Rex event context, with block_id and
+  -- session_id) or the hub calls hub.changed and view.seen (fn(args)).
   function app.on(event, fn, opts)
     if event == 'hub.changed' or event == 'view.seen' then
       listeners[event] = listeners[event] or {}
       table.insert(listeners[event], {fn = fn, opts = opts or {}})
       return
     end
-    rex.on(event, function(_, ev) callback(event, fn, opts, ev) end)
+    rex.on(event, function(ctx, ev) callback(event, fn, opts, ev, ctx) end)
   end
   function app.after(seconds, fn, opts) rex.after(seconds, function() callback('timer', fn, opts) end) end
   function app.every(seconds, fn, opts)

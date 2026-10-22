@@ -550,3 +550,11 @@ test('a plugin with no agent actions declares no hub.forward', function()
   expect(find(s.keymap, function(a) return a.name == 'hub.forward' end), 'no hub.forward').to_be(nil)
   expect(s.registered.exports).to_be(nil)
 end)
+
+test('app.on gives the Rex event context as the second argument', function()
+  local s = plugin([[
+app.on('terminal.child_exited', function(ev, ctx) seen_block = ctx and ctx.block_id; seen_code = ev.exit_code end, {tx = false})
+app.action('p.seen', {}, function() return {block = seen_block, code = seen_code} end, {store = false})]])
+  s.events['terminal.child_exited']({block_id = 'b7', session_id = 's1'}, {exit_code = 3})
+  expect(s:agent('p.seen', {}).result).to_equal({block = 'b7', code = 3})
+end)
