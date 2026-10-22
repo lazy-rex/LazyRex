@@ -413,6 +413,7 @@ func main() {
 		}
 		os.Exit(restartMain(ctx, cfg, restartArgs(os.Args[1:])))
 	}
+	log.Print(sdkLogLine(cfg.SDK)) // here, after the -restart branch: the hub process logs it, not its wrapper
 	h, err := start(ctx, cfg, fs)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -1163,6 +1164,15 @@ func (h *Hub) fenceStoreWrites(pl *Plugin) {
 	pl.writes.Lock()
 	pl.writes.Unlock()
 }
+// sdkLogLine is the hub's start line for the SDK that plugins with sdk use: "sdk: <dir>", or "sdk:
+// none" (such plugins cannot start).
+func sdkLogLine(dir string) string {
+	if dir == "" {
+		return "sdk: none"
+	}
+	return "sdk: " + dir
+}
+
 // findSDK returns the SDK directory: the -sdk value, else sdk/lua in a directory above this
 // binary (a hub built in its checkout). A directory without boot.lua is no SDK: the hub logs it,
 // and plugins that declare sdk cannot start.

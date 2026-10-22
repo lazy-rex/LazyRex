@@ -65,6 +65,10 @@ func TestRestartWrapperLab(t *testing.T) {
 	hubLog := filepath.Join(state, "hub.log") // the hub's output; the wrapper's lines go to its pane (wlog) and here
 	waitHubStarted(t, hubLog)
 	waitLogLine(t, wlog, " ready\n")
+	// The SDK start line comes from the hub process only, once (not from the wrapper).
+	if n, w := strings.Count(readFile(hubLog), " sdk: "), strings.Count(readFile(wlog), " sdk: "); n != 1 || w != 0 {
+		t.Errorf("sdk lines: hub.log %d (want 1), wrapper pane %d (want 0)\n%s", n, w, readFile(hubLog))
+	}
 
 	// 1. A second wrapper: no hub, exit 1, the same Rex clients.
 	before, _ := rexIn("ls")

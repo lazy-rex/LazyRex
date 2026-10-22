@@ -59,6 +59,9 @@ func TestHubShutdownExitStatusLab(t *testing.T) {
 	// 1. An argument is refused; then hub.admin.shutdown replies before the hub exits 0.
 	hub, exit := startShutdownHub(t, bin, cfg, filepath.Join(tmp, "hub1.log"))
 	client := waitHubStarted(t, filepath.Join(tmp, "hub1.log"))
+	if n := strings.Count(readLog(tmp, "hub1.log"), " sdk: "); n != 1 {
+		t.Errorf("sdk lines in hub1.log: %d, want 1\n%s", n, readLog(tmp, "hub1.log"))
+	}
 	if out, err := rexIn("-C", client, "do", "hub.admin.shutdown", "--args", `{"now":true}`); err == nil || !strings.Contains(out, "takes no arguments") {
 		t.Fatalf("argument: %v\n%s", err, out)
 	}
