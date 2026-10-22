@@ -70,17 +70,13 @@ type restartStatus struct {
 }
 
 // restartMain runs the wrapper. args are the hub's arguments without -restart. ctx ends at the
-// first SIGTERM or SIGINT since main installed its handler: main's handler stays until sigs
-// receives too, so a signal in between is in ctx, and the wrapper stops before the first start.
+// first SIGTERM or SIGINT since main installed its handler. main's handler stays while sigs
+// receives too, so each signal is in ctx, in sigs, or in both: stopOnDone carries ctx into sigs
+// for the wrapper's whole run.
 func restartMain(ctx context.Context, cfg Config, args []string) int {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	if ctx.Err() != nil {
-		select { // run stops before the first start (the signal may also have been SIGINT)
-		case sigs <- syscall.SIGTERM:
-		default: // a later signal is in sigs already
-		}
-	}
+	defer stopOnDone(ctx, sigs)()
 	bin, err := os.Executable()
 	if err != nil {
 		log.Print(err)
@@ -90,6 +86,24 @@ func restartMain(ctx context.Context, cfg Config, args []string) int {
 		after: time.After, backoff: time.After, stopWait: childStopWait, sigs: sigs}
 	w.refusals = func(ctx context.Context, pid int) []string { return hubRefusals(cfg, w.state)(ctx, pid) }
 	return w.main(cfg.State)
+}
+
+// stopOnDone puts SIGTERM into sigs when ctx ends (the signal may also have been SIGINT). The
+// wrapper acts on its first signal only, so a signal in both ctx and sigs stops it once. The
+// returned func ends the bridge.
+func stopOnDone(ctx context.Context, sigs chan os.Signal) func() {
+	quit := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			select {
+			case sigs <- syscall.SIGTERM:
+			default: // a signal is in sigs already
+			}
+		case <-quit:
+		}
+	}()
+	return func() { close(quit) }
 }
 
 // restartArgs drops -restart from the hub's arguments for the child.
