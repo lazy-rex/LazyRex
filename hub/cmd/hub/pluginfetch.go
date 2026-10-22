@@ -150,6 +150,40 @@ func resolveRef(ctx context.Context, dir, url, ref string) (resolved, error) {
 	return resolved{}, fmt.Errorf("ref %s is not found", ref)
 }
 
+// taggedRef is a tag that resolveTag resolved. Branch tells that a branch has the same name, so a
+// source must spell the tag as refs/tags/<name> (resolveRef refuses the short name then).
+type taggedRef struct {
+	resolved
+	Branch bool
+}
+
+// resolveTag resolves the tag name at url with one ls-remote: refs/tags/<name>, its peeled line,
+// and refs/heads/<name>. Only the exact tag ref counts, so a name that only a branch has is not a
+// tag. An annotated tag resolves to its peeled commit.
+func resolveTag(ctx context.Context, dir, url, name string) (taggedRef, error) {
+	tag, head := "refs/tags/"+name, "refs/heads/"+name
+	out, err := runGit(ctx, dir, "ls-remote", "--", url, tag, tag+"^{}", head)
+	if err != nil {
+		return taggedRef{}, err
+	}
+	found := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		id, ref, ok := strings.Cut(line, "\t")
+		if ok && commitID.MatchString(id) && (ref == tag || ref == tag+"^{}" || ref == head) {
+			found[ref] = id
+		}
+	}
+	commit, ok := found[tag]
+	if !ok {
+		return taggedRef{}, fmt.Errorf("not a tag: %s", name)
+	}
+	if p, ok := found[tag+"^{}"]; ok {
+		commit = p
+	}
+	_, branch := found[head]
+	return taggedRef{resolved{Commit: commit, Kind: "tag", FetchRef: tag}, branch}, nil
+}
+
 // errUnavailable is a commit that the remote does not give.
 type errUnavailable struct {
 	commit string
