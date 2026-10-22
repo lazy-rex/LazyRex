@@ -85,6 +85,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.plugins` | Other plugins that the hub loads for the tests: `[{"source": "<dir>"}]`. Each source is a directory relative to the manifest directory, with its own `lazyrex.json`. The names come from those manifests. `lazyrex` is refused (the harness adds the home plugin), and so is a name used twice. |
 | `test.agents` | Roster agents in the test hub config. `user` is always there. |
 | `test.transcript` | The hub config `transcript` option. |
+| `test.ui_slot` | The hub config `ui_slot` option: `"split"` or `"layer"` (an experiment; docs/hub.md). Another value fails at the manifest load. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
 | `test.env` | Variables added to the lab environment. See "Isolation". |

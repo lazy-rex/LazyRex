@@ -70,3 +70,36 @@ func TestHasBlock(t *testing.T) {
 		t.Error("hasBlock")
 	}
 }
+
+// test.ui_slot goes into the lab hub config; another value fails at the manifest load.
+func TestTestUISlot(t *testing.T) {
+	if _, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"ui_slot":"float"}}`); err == nil || !strings.Contains(err.Error(), `test.ui_slot is "split" or "layer"`) {
+		t.Fatalf("a bad test.ui_slot: %v", err)
+	}
+	dir, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"ui_slot":"layer"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := loadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazyrex := t.TempDir()
+	os.MkdirAll(filepath.Join(lazyrex, "plugins", "lazyrex"), 0o700)
+	os.WriteFile(filepath.Join(lazyrex, "plugins", "lazyrex", "lazyrex.json"), []byte(`{"name":"lazyrex","main":"lazyrex.lua"}`), 0o600)
+	os.WriteFile(filepath.Join(lazyrex, "plugins", "lazyrex", "lazyrex.lua"), nil, 0o600)
+	home, err := homePlugin(lazyrex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &testOpts{dir: dir, lazyrex: lazyrex, home: home, self: "/bin/true", m: m}
+	l := &lab{dir: t.TempDir(), server: "unix:///tmp/none/rex.sock"}
+	path, err := o.hubConfig(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil || cfg.UISlot != "layer" {
+		t.Fatalf("lab hub config: %q %v", cfg.UISlot, err)
+	}
+}

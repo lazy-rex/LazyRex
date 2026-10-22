@@ -73,6 +73,7 @@ type manifest struct {
 		Plugins       []testPlugin    `json:"plugins"`
 		Agents        []manifestAgent `json:"agents"`
 		Transcript    bool            `json:"transcript"`
+		UISlot        string          `json:"ui_slot"`        // the hub config ui_slot: "split" or "layer"
 		ParityFixture string          `json:"parity_fixture"` // a Lua file that renders the contextual routes
 		ParityRoutes  []string        `json:"parity_routes"`  // contextual routes that the fixture must render
 		// Env adds variables to the lab environment (isolation.go). Args are plugin args (hub config
@@ -498,6 +499,9 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	cfg := map[string]any{"server": l.server, "state": filepath.Join(l.dir, "hub"), "rex": o.rexBin, "view": view,
 		"agents": agents, "plugins": plugins, "transcript": o.m.Test.Transcript,
 		"profiles": l.profiles, "test_roots": o.m.roots(o.dir, l.dir)}
+	if o.m.Test.UISlot != "" {
+		cfg["ui_slot"] = o.m.Test.UISlot
+	}
 	b, _ := json.MarshalIndent(cfg, "", " ")
 	path := filepath.Join(l.dir, "hub.json")
 	return path, os.WriteFile(path, b, 0o600)

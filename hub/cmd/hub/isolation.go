@@ -251,6 +251,9 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 			}
 		}
 	}
+	if s := m.Test.UISlot; s != "" && s != "split" && s != "layer" {
+		return fmt.Errorf("test.ui_slot is \"split\" or \"layer\", not %q", s)
+	}
 	for _, name := range m.Test.Prompts {
 		if !names[name] {
 			return fmt.Errorf("test.prompts: %q is not the plugin, lazyrex or a test.plugins entry", name)
