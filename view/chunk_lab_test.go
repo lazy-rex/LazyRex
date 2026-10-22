@@ -220,9 +220,9 @@ func (l *chunkLab) noRefusedParts() {
 	}
 }
 
-// The plugin testdata/holdparts renders about 150 KiB in parts and stops a render before its last
-// part: the pane keeps the whole old tree (its first and its last node) for the hold, and shows the
-// whole new tree after the release.
+// The plugin testdata/holdparts renders more than 150 KiB in parts and stops a render before its
+// last part. Before the hold the pane shows the whole old tree (its first and its last node); for the
+// hold it keeps the old tree; after the release it shows the whole new tree.
 func TestReplyPartsHoldLab(t *testing.T) {
 	l := newChunkLab(t, "holdp", "view/testdata/holdparts")
 	// The plugin creates its tables after its registration.
@@ -236,42 +236,57 @@ func TestReplyPartsHoldLab(t *testing.T) {
 	l.sql("INSERT INTO hold VALUES (1, 1)", true)
 	l.sql("INSERT INTO held VALUES (0)", true)
 	pane := l.open("lazyrex_holdp_parts")
-	// The tree is about 2000 rows. at scrolls the pane to its top (PgUp) or its bottom (PgDn) and
-	// returns the screen: the gen node is the first row of the tree, the last node the last row.
-	at := func(key string) string {
-		keys := []string{"block", "send-key", "-s", l.session, "-b", pane}
-		for range 150 {
-			keys = append(keys, key)
+	// The tree fits on one screen (testdata/holdparts puts its bytes in one-row list items), so
+	// every capture shows the first and the last node of the tree on the screen.
+	whole := func(sc, gen, other string) bool {
+		return strings.Contains(sc, "gen "+gen) && strings.Contains(sc, "end "+gen) &&
+			!strings.Contains(sc, "gen "+other) && !strings.Contains(sc, "end "+other)
+	}
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last screen:\n%s", last)
 		}
-		l.must(keys...)
-		return l.screen(pane)
-	}
-	// whole reports whether the pane shows the first and the last node of generation gen, and no
-	// node of another generation.
-	whole := func(gen string, other string) bool {
-		top, bottom := at("pageup"), at("pagedown")
-		return strings.Contains(top, "gen "+gen) && strings.Contains(bottom, "end "+gen) &&
-			!strings.Contains(top, "gen "+other) && !strings.Contains(bottom, "end "+other)
-	}
-	l.waitFor("the first tree (gen 1), first and last node", 30*time.Second, func() bool { return whole("1", "2") })
+	})
+	l.waitFor("the first tree (gen 1), first and last node", 30*time.Second, func() bool {
+		last = l.screen(pane)
+		return whole(last, "1", "2")
+	})
 
 	// The next render stops before its last part (at most 8 s: the hub's render timeout is 10 s).
+	parts := func() int {
+		b, _ := os.ReadFile(filepath.Join(l.lab, "hub.log"))
+		return strings.Count(string(b), "hub.reply.part from")
+	}
+	before := parts()
 	l.sql("UPDATE hold SET gen = 2, release = 0", true)
 	l.waitFor("the hold before the last part", 8*time.Second, func() bool {
 		rows := l.sql("SELECT n FROM held", false)
 		return len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] == float64(1)
 	})
-	// For the hold, the pane shows the whole old tree: its first and its last node.
-	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); {
-		if !whole("1", "2") {
-			t.Fatalf("during the hold the pane does not show the whole old tree:\ntop:\n%s\nbottom:\n%s", at("pageup"), at("pagedown"))
+	// For the hold (2 s), every capture shows the whole old tree and no node of the new tree. The
+	// plugin holds for at most 8 s, so release must still be 0 after the checks.
+	start := time.Now()
+	for ; time.Since(start) < 2*time.Second; time.Sleep(100 * time.Millisecond) {
+		if last = l.screen(pane); !whole(last, "1", "2") {
+			t.Fatalf("during the hold the pane does not show the whole old tree:\n%s", last)
 		}
 	}
-	t.Logf("during the hold, top:\n%s", at("pageup"))
+	if rows := l.sql("SELECT release FROM hold", false); len(rows) != 1 || rows[0][0] != float64(0) {
+		t.Fatalf("the hold ended before its checks: %v", rows)
+	}
+	// The held render sent its parts but the last, so the reply has 2 parts or more.
+	if n := parts() - before; n < 1 {
+		t.Fatalf("the held render sent %d parts before its last part, want 1 or more", n)
+	}
+	t.Logf("during the hold:\n%s", last)
 
 	l.sql("UPDATE hold SET release = 1", true)
-	l.waitFor("the whole new tree (gen 2), first and last node", 30*time.Second, func() bool { return whole("2", "1") })
-	t.Logf("after the release, top:\n%s\nbottom:\n%s", at("pageup"), at("pagedown"))
+	l.waitFor("the whole new tree (gen 2), first and last node", 30*time.Second, func() bool {
+		last = l.screen(pane)
+		return whole(last, "2", "1")
+	})
+	t.Logf("after the release:\n%s", last)
 	l.noRefusedParts()
 }
 

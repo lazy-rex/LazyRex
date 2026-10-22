@@ -1,5 +1,5 @@
 -- A plugin for TestReplyPartsHoldLab (chunk_lab_test.go). Its form /forms/parts renders about
--- 150 KiB in reply parts (docs/hub.md "Reply parts"). The SQL row hold(gen, release) drives it: the
+-- more than 150 KiB in reply parts (docs/hub.md "Reply parts"). The SQL row hold(gen, release) drives it: the
 -- first and the last node show gen; when release is 0, the render stops before its last part, sets
 -- held(n) to 1 and waits until a writer sets release to 1 (at most 8 s: the hub's render timeout is 10 s). The render reads hold with
 -- its token (a write renders the view again) and reads release and held without it.
@@ -51,10 +51,14 @@ end
 local function render(args)
   local row = query('SELECT gen, release FROM hold', args.render) or {}
   local gen, release = row[1] or 0, row[2]
-  local text = string.rep('aé"\\<&日', 60)
-  local nodes = {{id = 'gen', type = 'widget', text = 'gen ' .. gen}}
-  for k = 1, 240 do nodes[#nodes + 1] = {id = 'n' .. k, type = 'widget', text = text} end
-  nodes[#nodes + 1] = {id = 'last', type = 'widget', text = 'end ' .. gen}
+  -- The bytes are in 8 list labels of about 20 KB each. A list without item details shows one row
+  -- per item and cuts the label to the pane width, so the whole tree fits on one screen.
+  local text = string.rep('aé"\\<&日', 2000)
+  local items = {}
+  for k = 1, 8 do items[k] = {id = 'i' .. k, label = text} end
+  local nodes = {{id = 'gen', type = 'widget', text = 'gen ' .. gen},
+    {id = 'bulk', type = 'list', label = 'Bulk', items = items},
+    {id = 'last', type = 'widget', text = 'end ' .. gen}}
   return send_parts({tree = {title = 'Parts', nodes = nodes}}, function()
     if release ~= 0 then return end
     hub('hub.sql.exec', {sql = 'UPDATE held SET n = 1'})
