@@ -1,9 +1,9 @@
 # Writing a LazyRex plugin
 
-Status: **v0, in progress** (2026-10-22). The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
-`sdk/lua/examples/todo`. Its tests run against a fake hub.sql (`sdk/lua/tests`); the lab run on the real
-hub waits for the hub branch `hub/sql`. A plugin author needs only this page. The details are in
-"Reference" (sql.md).
+Status: **v0**. The module is `sdk/lua/lazyrex.lua`; the to-do plugin below is
+`sdk/lua/examples/todo`. It runs on the hub's SQL line (hub/sql-r2 c840c92, lab) and ships with
+release 4. Start with this page: it has all that a plain plugin needs. The reference (sql.md), the
+test guide (docs/testing.md) and the example give more detail.
 
 A plugin is a Lua file that the hub starts. The SDK module `lazyrex` does the registration, the
 calls to the hub, the storage, the transactions and the view refresh for you.
@@ -13,11 +13,12 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 `lazyrex.json`:
 
 ```json
-{"name": "todo", "main": "main.lua", "sdk": "0"}
+{"name": "todo", "main": "main.lua", "sdk": "0", "test": {"agents": [{"id": "alice", "name": "Alice"}]}}
 ```
 
-`"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
-`require('lazyrex')` works.
+- `"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
+  `require('lazyrex')` works.
+- `test.agents` lists the agents that the lab tests can open with `agent('alice')`.
 
 `main.lua`:
 
@@ -25,30 +26,61 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 local app = require('lazyrex').plugin('todo')
 
 -- The schema. Each string is one version. The SDK runs the new ones once, in order.
+-- To change the schema later, add a string at the end; never edit an old one.
 app.db.migrate {
   'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)',
 }
 
--- An action: agents and the user can call it. The arguments are checked against the schema.
+local function toggle(id) app.db.exec('UPDATE todos SET done = 1 - done WHERE id = ?', id) end
+
+-- Actions: agents and the user can call them. The arguments are checked against the schema.
 app.action('todo.add', {text = 'string'}, function(ctx, args)
   local r = app.db.exec('INSERT INTO todos (text) VALUES (?)', args.text)
   return {id = r.id}
 end)
+app.action('todo.toggle', {id = 'integer'}, function(ctx, args) toggle(args.id); return {} end)
 
--- A panel: a tab in the LazyRex window. It shows again by itself after a write to a table that
--- it read.
+-- A panel: the palette command "Todos" opens it. It shows again by itself after a write.
 app.panel('Todos', function(view)
   local items = {}
   for _, t in ipairs(app.db.query('SELECT id, text, done FROM todos ORDER BY id')) do
     items[#items + 1] = {id = t.id, label = t.text, detail = t.done == 1 and 'done' or '',
-      on_select = function(ctx) app.db.exec('UPDATE todos SET done = 1 - done WHERE id = ?', t.id) end}
+      tool = 'todo.toggle', on_select = function(ctx) toggle(t.id) end}
   end
   return {app.ui.list('todos', items)}
 end)
 ```
 
 That is the whole plugin. An agent adds an item with `todo.add {text = "buy milk"}`; the user
-selects an item in the panel to toggle it.
+selects an item in the panel to toggle it. `detail` is the second line of an item. An item `id`
+can be a number or a string: the SDK sends it as a string (`tostring`), so a test selects
+`item_id = tostring(r.id)`.
+
+- **Migrations.** Call `app.db.migrate` once, at the top level of the main file. Entry N is schema
+  version N. The SDK runs the new entries at the start, in one transaction, and then sets
+  `PRAGMA user_version`. A failing entry undoes all of them; the plugin prints the error and stops.
+  A rollback runs the previous release on the newer schema: the SDK logs one line and runs on. So
+  each entry must only expand the schema (a new table, a nullable column or a column with a
+  DEFAULT, an index). Make a destructive change in a later release (docs/sql.md section 2).
+  A later version adds an entry at the end:
+
+  ```lua
+  app.db.migrate {
+    'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)',
+    'ALTER TABLE todos ADD COLUMN note TEXT', -- version 2
+  }
+  ```
+
+- **Agent parity.** Each thing that the user can do, an agent can do too. An item with `on_select`
+  names the agent action that does the same in `tool` (here `todo.toggle`); both call one function.
+  An item that only navigates gives `user_only = 'navigation'` instead.
+- **Names.** `app.panel('Todos')` gets the route `/panels/todos` and the palette command `todos`:
+  the title in lowercase, with `_` between words (`'My Notes'`: `/panels/my_notes`, `my_notes`).
+  `{id = 'x'}` as the third argument sets it. A command id uses only a-z, 0-9 and `_`; an action
+  name can have dots (`todo.add`).
+- **Schema types.** The short form takes the JSON Schema type names: `'string'`, `'integer'`,
+  `'number'`, `'boolean'`, `'object'`, `'array'`. A `?` at the end makes the argument optional
+  (`'string?'`).
 
 ## The rules
 
@@ -66,59 +98,116 @@ selects an item in the panel to toggle it.
 - **Errors.** `error('text')` in a handler gives the caller an error with that text. The database
   changes of that handler are undone. A call to another service (for example a message that the
   handler sent) is not undone.
+- **Long lists.** Under the SDK, `table.concat` has no length limit (Rex Lua alone fails at about
+  2560 items). Do not `unpack` a list of more than about 2000 items, and do not pass that many
+  arguments: Rex Lua fails with "registry overflow".
 - **Big numbers.** Lua holds integers exactly only up to 2^53. A larger integer from the database
   comes back as a decimal string.
 - **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs
-  again after each write to a table that it read.
+  again after each write.
 - **A render only reads.** A panel, view or form render reads the committed state, with no
   transaction. A write (`db.exec`, `db.batch`, `db.transaction`, `app.notice`) in a render fails with `refused`.
   Write in an action or an `on_select` handler.
 - **Clicks.** An item's `on_select` runs when the user selects it. The SDK runs the panel function
   again first, so the handler sees the current row. An item that is gone gives a visible error.
+- **Empty lists.** An `app.ui.list` with no items renders as a widget with the text "Nothing here
+  yet." (`app.ui.list(id, items, {empty = 'No notes'})` sets the text). It has no `items` then:
+  in a test, `node(tree, id).text` is the text and `node(tree, id).items` is nil.
 - **View size.** A rendered panel, view or form over 48 KiB (encoded, with its status) fails with
   `too_large`: Rex delivers no message over 64 KiB. Show fewer items, or page them.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
   run: `app.action(name, schema, fn, {user_only = true})`.
-- **Retries.** A UI action that the user's renderer sends again runs once. An agent that sends a call
-  again with the same `key` gets the first answer.
+- **Retries.** A UI action that the user's renderer sends again runs once. An agent gives a `key` in
+  the arguments (`todo.add {text = "buy milk", key = "k1"}`; the SDK adds `key` to every schema).
+  A call again with the same `key` and the same arguments gets the first answer and changes nothing.
+  The answer is the same table: after `r1 = a:call('todo.add', {text = 'x', key = 'k1'})`, the same
+  call gives `r2.id == r1.id`. The same `key` with other arguments fails with `operation_conflict`.
 
 ## Test it
 
 `tests/todo.lua`:
 
 ```lua
-test('an added item shows in the panel', function()
-  local alice = agent('alice')
-  alice:call('todo.add', {text = 'buy milk'})
-  -- A panel opens from its palette command in a pane (it is not a tab).
+-- A panel opens from its palette command in a pane (it is not a tab).
+local function panel()
   local s = session('todo')
   local w = rex.call('session.new_window', {session_id = s, window_label = 'work',
     layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '600'}, login = false}}}})
   user:command('todos', {session = s, block = w.block_ids[1]})
-  local tree = user:view('/panels/todos', 'todo', s):render()
-  expect(node(tree, 'todos').items[1].label).to_be('buy milk')
+  return user:view('/panels/todos', 'todo', s)
+end
+
+test('an added item shows in the panel, and a select toggles it', function()
+  local alice = agent('alice')
+  local r = alice:call('todo.add', {text = 'buy milk', key = 'k1'})
+  local v = panel()
+  local item = node(v:render(), 'todos').items[1]
+  expect(item.label).to_be('buy milk')
+  local op = v:action('todos', 'select', {item_id = tostring(r.id)})
+  expect(op.status).to_be('succeeded')
+  expect(node(v:render(), 'todos').items[1].detail).to_be('done')
 end)
 ```
 
-The whole lab test of this plugin is `sdk/lua/examples/todo/tests/todo.lua`.
+Run `lazyrex-hub test` in the plugin directory (`-file todo.lua` runs one file, `-run <pattern>`
+some tests, `-lazyrex <dir>` names the LazyRex checkout when it is not `../LazyRex`). It starts its
+own lab; it never touches your terminals.
 
-Run `lazyrex-hub test .` in the plugin directory. It starts its own lab; it never touches your
-terminals.
+- **One lab per file.** Each `tests/*.lua` file gets a new lab and hub. The tests in one file share
+  it and run in order, so a later test sees the rows of an earlier one.
+- **Parity sweep.** Before the files, the run opens every palette command and renders every view.
+  Each command names `action` (an agent action) or `user_only`, and each item, widget and form
+  action names `tool` (an exported agent action) or `user_only`. A violation fails the run.
+- **The count.** Each file reports one more passed check than it has tests: the file checks
+  (injections consumed, faults fired, parity of the rendered trees).
+- **A failure.** The output shows the tail of `runner.log` and `hub.log`, and the harness deletes
+  the lab. To read more, run with `-keep`, and read the logs in the kept lab directory that the
+  output names. Delete the directory after. Use `-keep` also when the plugin does not start
+  (`plugin todo is not registered`).
+
+The test functions:
+
+| Call | What it does |
+|---|---|
+| `agent(id)` | An agent from `test.agents`. `a:call(action, args)` calls an action as that agent. |
+| `session(name)` | A new lab session; it returns its id. |
+| `user:command(id, {session, block})` | Runs a palette command from that pane, as the user does. |
+| `user:view(route, plugin, session)` | The open view of that route. |
+| `v:render()` | The current tree. `node(tree, id)` finds a node by id. |
+| `v:action(node_id, action, input, key)` | A user action. It returns `{status, result or error}` (`status`: `succeeded` or `failed`; `error` is `{code, message}`). |
+| `rex.call(method, args)` | A raw Rex call on the lab server (for example `session.new_window`). |
+| `expect(x).to_be(y)`, `.to_equal(y)`, `expect_error(fn, pattern)` | Assertions. |
+
+- Select an item: `v:action('todos', 'select', {item_id = '1'})` (the list id and the item id).
+- Submit a form (`form` is the form node id, `submit` its action name). A form opens from its
+  palette command in a pane, as a panel does:
+
+  ```lua
+  user:command('add', {session = s, block = w.block_ids[1]})
+  local f = user:view('/forms/add', 'todo', s)
+  expect(f:action('form', 'submit', {values = {text = ''}}).error.code).to_be('invalid_input')
+  expect(f:action('form', 'submit', {values = {text = 'eggs'}}, 'f1').status).to_be('succeeded')
+  ```
+
+The whole lab test of this plugin is `sdk/lua/examples/todo/tests/todo.lua`. All test functions:
+docs/testing.md.
 
 ## Start a new plugin
 
-`lazyrex-hub plugin new todo` writes `lazyrex.json`, `main.lua`, a passing test and a README.
-`lazyrex-hub plugin dev .` runs the plugin in a lab hub and loads it again on each save.
+Copy `sdk/lua/examples/todo` and change the name in `lazyrex.json`, in `lazyrex.plugin(...)` and in
+the action names. (Proposed, not built: `lazyrex-hub plugin new` and `plugin dev`.)
 
 ## Forms
 
-A plain form has a title, fields and `on_submit`. Nothing else is required.
+A plain form has a title, fields and `on_submit`, and a `command` that opens it. Nothing else is
+required.
 
 ```lua
 app.form('/forms/add', {
   title = 'Add Item',
   fields = {{id = 'text', label = 'Text', kind = 'text', required = true, value = ''}},
   on_submit = function(ctx, values) app.db.exec('INSERT INTO todos (text) VALUES (?)', values.text) end,
+  command = {id = 'add', title = 'Add Item'}, -- the palette command that opens it
 })
 ```
 
@@ -126,7 +215,12 @@ app.form('/forms/add', {
   functions of `ctx`. `fields` runs at each render, and again at the submit, in its transaction.
 - The SDK checks the values before `on_submit`: a required field must be filled in (a required
   boolean must be true), a select value must be one of its options, and an unknown field is refused.
-  `app.fail('invalid_input', '...')` in `on_submit` shows another message.
+  An empty string is not filled in. A refused submit fails with
+  `{code = 'invalid_input', message = 'Fill in <label>'}`.
+- An optional field that the user left empty arrives as `''` or as `nil`. Treat both as empty.
+- `on_submit` raises errors as an action does: `app.fail('invalid_input', '...')` gives that code
+  and message; `error('text')` gives code `failed`. A helper that the action and `on_submit` share
+  can use `app.fail`.
 - `on_submit` returns nothing to close the form, or a result: `{form = route}`, `{navigate = ...}`,
   `{status = 'running'}` (never saved: the hub calls again until the end).
 - An `app.fail` in `title` or `fields` shows its message in place of the form.
@@ -139,7 +233,9 @@ Common options:
 
 - `submit = {label = 'Add', tool = 'todo.add'}`: the button label, and the agent action that does
   the same (agent parity). Without `tool`, `submit.user_only` gives the reason (default `navigation`).
-- `command = {id, title, description, keywords}`: a palette command that opens the form.
+- `command = {id, title, description, keywords}`: a palette command that opens the form. For agent
+  parity, the SDK gives it `action = submit.tool`; without a tool, `user_only = submit.user_only`
+  (default `navigation`). `action` or `user_only` in `command` sets it.
 - `intro`: a text above the form (a value or a function of `ctx`).
 - `cancel = 'Close'` relabels Cancel; `cancel = false` removes it.
 
@@ -159,7 +255,10 @@ Use these only when a plain form cannot do the job. If one plugin needs more, us
   fails with `conflict`.
 - A value that the render fixed (form v1 has no hidden field): a select field with `check = false`
   takes any text. `on_submit` compares it with the current state.
-- `tx = false`, `store = false`: as for actions.
+- `tx = false`: as for actions.
+- Do not use `store = false` on a form. The SDK checks the values before the plugin can replay its
+  own saved reply, so a retry can fail where the first submit passed. A form that needs its own
+  operations table is a raw `app.view` (see below).
 - An `app.fail` in `intro`, `after` or `instead` also shows its message in place of the form.
 
 ## v0: the advanced surface
@@ -170,10 +269,10 @@ errors and the transaction rules above.
 | Call | What it does |
 |---|---|
 | `app.fail(code, message)` | An error with a code (`conflict`, `not_found`, `refused`, ...). `error('text')` gives code `failed`. |
-| `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. |
+| `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. In a render, a `hub.sql.*` call through `app.hub` carries the render ID, as `app.db` calls do. |
 | `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
-| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
+| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Each run is one transaction. Start code runs after `hub.register` and the migrations; `{after_register = true}` runs it after the other start code. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
 | `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |

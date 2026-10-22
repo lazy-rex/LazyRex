@@ -36,16 +36,28 @@ M.normalize = normalize
 
 -- Values ------------------------------------------------------------------------------------------
 
--- join is table.concat for a long list. Rex Lua fails table.concat of more than about 2559 items with
--- "registry overflow" (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-22), so join concatenates
--- blocks of 1000 items, then the blocks.
-local function join(list, sep)
-  sep = sep or ''
-  if #list <= 1000 then return table.concat(list, sep) end
+-- concat is table.concat with no length limit. Rex Lua fails table.concat of 2560 items or more
+-- with "registry overflow" (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-22;
+-- docs/rex-protocol.md, "Rex Lua runtime"). The limit is lower when more of the stack is in use
+-- (2000 items passed and 2559 failed in the SDK test runner). concat joins ranges of at most 500
+-- items, then the blocks. It gives the same result and the same errors (a bad item names its own
+-- index). boot.lua sets table.concat to it, so plugin code gets it too.
+-- raw.concat is called as a field, so that an error names "concat" as table.concat does.
+local raw = {concat = table.concat}
+local function concat(list, sep, i, j)
+  if type(list) ~= 'table' then return raw.concat(list, sep, i, j) end
+  -- Only nil takes the default: table.concat refuses false and other values.
+  if i == nil then i = 1 end
+  if j == nil then j = #list end
+  -- A short range, or an odd argument (raw.concat gives its error).
+  if type(i) ~= 'number' or type(j) ~= 'number' or i % 1 ~= 0 or j % 1 ~= 0 or j - i < 500 then
+    return raw.concat(list, sep, i, j)
+  end
   local blocks = {}
-  for i = 1, #list, 1000 do blocks[#blocks + 1] = table.concat(list, sep, i, math.min(i + 999, #list)) end
-  return join(blocks, sep)
+  for a = i, j, 500 do blocks[#blocks + 1] = raw.concat(list, sep, a, math.min(a + 499, j)) end
+  return concat(blocks, sep)
 end
+M.concat = concat
 
 local NULL = {null = true}
 local b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -58,7 +70,7 @@ local function base64(s)
     out[#out + 1] = b64:sub(q[1] + 1, q[1] + 1) .. b64:sub(q[2] + 1, q[2] + 1)
       .. (b and b64:sub(q[3] + 1, q[3] + 1) or '=') .. (c and b64:sub(q[4] + 1, q[4] + 1) or '=')
   end
-  return join(out)
+  return concat(out)
 end
 local unb64 = {}
 for i = 1, 64 do unb64[b64:byte(i)] = i - 1 end
@@ -73,7 +85,7 @@ local function unbase64(s)
     if left > 2 then out[#out + 1] = string.char(math.floor(n / 256) % 256) end
     if left > 3 then out[#out + 1] = string.char(n % 256) end
   end
-  return join(out)
+  return concat(out)
 end
 M.base64, M.unbase64 = base64, unbase64
 
@@ -153,7 +165,7 @@ local function digest(text)
   end
   return string.format('%08x%08x%08x-%d', h[1], h[2], h[3], #text)
 end
-function M.fingerprint(v) return 'v1/' .. digest(join(canonical(v, {}))) end
+function M.fingerprint(v) return 'v1/' .. digest(concat(canonical(v, {}))) end
 
 -- Hub calls --------------------------------------------------------------------------------------
 
@@ -503,7 +515,16 @@ function M.plugin(name)
   local listeners = {}
 
   -- app.hub(action, args) calls the hub. A hub error raises {code, message}: a refusal stays final.
-  function app.hub(action, a) return hub(action, a) end
+  -- A raw hub.sql call in a render carries the render ID too: the hub tracks no reads for a render
+  -- that also reads without it (hub lead, 2026-10-22). A copy keeps the caller's table as it was.
+  function app.hub(action, a)
+    local f = frame()
+    if f and f.render and type(action) == 'string' and action:sub(1, 8) == 'hub.sql.' and type(a) == 'table' and a.render == nil then
+      a = copy(a)
+      a.render = f.render
+    end
+    return hub(action, a)
+  end
   -- app.rex(method, args) calls Rex. A Rex error raises {code, message}.
   function app.rex(method, a)
     local r, err = rex.call(method, a or {})
@@ -683,7 +704,7 @@ function M.plugin(name)
   --     {navigate}, {close_form}, {status = 'running'}, ...).
   --   cancel: the Cancel label (default 'Cancel'); false: no Cancel.
   --   command: a palette command that opens the form ({id, title, description, keywords}).
-  --   tx, store: as for app.action.
+  --   tx: as for app.action. No store = false: the value checks run before a private replay.
   -- An app.fail in title, fields, intro, after or instead shows the message in place of the form.
   -- The SDK checks the values first: a required field must be filled in (a required boolean must be
   -- true), a select value must be an option, and an unknown field is refused. An on_select of a node
@@ -780,7 +801,12 @@ function M.plugin(name)
     if spec.command then
       local c = copy(spec.command)
       c.route = c.route or route
-      if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
+      -- Agent parity, as the submit: the tool, else the reason. A command that names action or user_only
+      -- keeps it (the hub refuses a command with both).
+      if c.action == nil and c.user_only == nil then
+        local submit = spec.submit or {}
+        if submit.tool then c.action = submit.tool else c.user_only = submit.user_only or 'navigation' end
+      end
       commands[#commands + 1] = check_command(c)
     end
   end
@@ -907,7 +933,10 @@ function M.plugin(name)
     if #migrations == 0 then return end
     run({tx = true}, function()
       local have = tonumber((db.first('PRAGMA user_version') or {}).user_version) or 0
-      if have > #migrations then fail('refused', 'The database has schema version ' .. have .. '; this plugin knows ' .. #migrations) end
+      -- Expand/contract (docs/sql.md section 2): a newer schema is a rollback to this release. Run on.
+      if have > #migrations then
+        print('lazyrex: the database has schema ' .. have .. '; this plugin knows ' .. #migrations .. '; running on (expand-only rule, docs/sql.md)')
+      end
       for i = have + 1, #migrations do
         local step = migrations[i]
         if type(step) == 'function' then step(db) else db.exec(step) end

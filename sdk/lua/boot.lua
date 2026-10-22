@@ -10,4 +10,6 @@ assert(type(main) == 'string' and main:sub(1, 1) == '/', 'main=<absolute path of
 local plugin_dir = assert(main:match('^(/.*)/[^/]*$'), 'The plugin path is unknown')
 package.path = plugin_dir .. '/?.lua;' .. plugin_dir .. '/?/init.lua;' .. sdk_dir .. '/?.lua;' .. package.path
 rex.args.lazyrex_sdk = rex.args.lazyrex_sdk or sdk_dir
+-- Rex Lua fails table.concat of 2560 items or more; the SDK concat has no limit (lazyrex.lua, "concat").
+table.concat = require('lazyrex').concat
 dofile(main)

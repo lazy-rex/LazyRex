@@ -22,6 +22,15 @@ hub.
   `lazyrex_notice_outbox`.
 - Only the plugin's registered instance can call `hub.sql.*`. A plugin registers first, then
   migrates (the SDK does).
+- Schema changes follow expand/contract. A rollback runs the previous plugin release on the newer
+  schema, so a migration must keep that release working. Expand only: a new table, a new column
+  that is nullable or has a DEFAULT, a new index. A destructive change (DROP, RENAME, a new NOT
+  NULL column without a DEFAULT, a changed meaning of a column) comes in a later release: only when no
+  rollback can go back to a release that needs the old schema. The hub does not check this rule:
+  each plugin author keeps it.
+- When the database has a newer schema than the plugin knows (`PRAGMA user_version` is greater
+  than the number of `app.db.migrate` entries), the SDK runs no migration, does not lower
+  `user_version`, logs one line and runs on.
 
 ## 2. Actions (built)
 

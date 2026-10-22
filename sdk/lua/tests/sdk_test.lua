@@ -46,14 +46,20 @@ test('a second start runs no migration again', function()
   expect(again.registered ~= nil, 'registered').to_be(true)
 end)
 
-test('a database with a newer schema stops the start', function()
+test('a database with a newer schema: the start runs on, keeps user_version and logs one line', function()
+  -- Expand/contract (docs/sql.md section 2): a rollback runs the previous release on the newer schema.
   local s = sandbox(sdk_dir, base, {main = TODO})
   s.sql.state.user_version = 2
+  s.sql.state.tables.todos = {columns = {'id', 'text', 'done', 'note'}, rows = {}, seq = 0} -- schema 2 added note
   local ok, err = pcall(function() s:start() end)
   expect(ok, tostring(err)).to_be(true)
-  expect(s.exited).to_be(1)
-  expect(s.registered ~= nil, 'registered first: the hub refuses SQL before it').to_be(true)
-  expect(s.printed[1]).to_match('schema version 2')
+  expect(s.exited, 'the plugin runs on').to_be(nil)
+  expect(s.registered ~= nil, 'registered').to_be(true)
+  expect(action_names(s), 'no migration and no user_version write').to_be('hub.sql.begin hub.sql.query hub.sql.commit')
+  expect(s.sql.state.user_version, 'not lowered').to_be(2)
+  expect(#s.printed).to_be(1)
+  expect(s.printed[1]).to_be('lazyrex: the database has schema 2; this plugin knows 1; running on (expand-only rule, docs/sql.md)')
+  expect(s:agent('todo.add', {text = 'buy milk'}).result).to_equal({id = 1})
 end)
 
 -- Agent actions ----------------------------------------------------------------------------------
@@ -581,7 +587,7 @@ app.form('/forms/add', {
 app.action('todo.add', {text = 'string'}, function() return {} end)
 app.form('/forms/broken', {title = 'Broken', fields = function() app.fail('not_found', 'This list is gone') end, on_submit = function() end})
 runs = 0
-app.form('/forms/long', {title = 'Long', fields = {}, submit = {user_only = 'navigation'}, tx = false, store = false,
+app.form('/forms/long', {title = 'Long', fields = {}, submit = {user_only = 'navigation'}, tx = false, store = false, command = {id = 'long', title = 'Long'},
   on_submit = function() runs = runs + 1; if runs < 2 then return {status = 'running'} end return {close_form = true, runs = runs} end})]]
 
 local function submit(s, route, values, key)
@@ -601,6 +607,8 @@ test('app.form renders the title, the intro, the fields, the submit with its too
   local cmd = find(s.registered.commands, function(c) return c.id == 'add' end)
   expect(cmd.route).to_be('/forms/add')
   expect(cmd.action, 'the command names the tool').to_be('todo.add')
+  local long = find(s.registered.commands, function(c) return c.id == 'long' end)
+  expect(long.user_only, 'a form without a tool: the command is user_only').to_be('navigation')
 end)
 
 test('a form submit checks the values, runs on_submit in one transaction and closes the form', function()
@@ -787,10 +795,10 @@ app.action('p.read', {}, function() local r = app.db.first('SELECT b FROM t'); r
 end)
 
 -- A fake hub.sql.query that holds 25 rows and answers at most 10 in one reply, as the hub cuts a
--- reply at its size limit (docs/sql.md section 4, paging). seen.calls logs {sql, params}.
+-- reply at its size limit (docs/sql.md section 4, paging). seen.calls logs {sql, params, render}.
 local function paged_hub(seen)
   return {['hub.sql.query'] = function(a)
-    seen.calls[#seen.calls + 1] = {sql = a.sql, params = a.params}
+    seen.calls[#seen.calls + 1] = {sql = a.sql, params = a.params, render = a.render}
     local from = 0
     local wrapped = a.sql:match('^SELECT %* FROM %((.*)\n%) LIMIT %-1 OFFSET %?(%d+)$')
     if wrapped then from = a.params[tonumber(a.sql:match('%?(%d+)$'))] end
@@ -1011,6 +1019,120 @@ test('a lost reply is unavailable: client_unavailable, and a table error with ti
   end
   expect(code({code = 'not_found', message = 'gone'}), 'another table code stays').to_be('not_found')
   expect(code('client.perform failed: timeout: statement timeout (status=500 code=internal)'), 'a hub.sql timeout stays timeout (rolled back)').to_be('timeout')
+end)
+
+test('a form command that names user_only keeps it; the SDK takes no action from the submit tool', function()
+  -- The hub parity check refuses a command with both action and user_only (hub/sql-r2 c840c92,
+  -- testmode.go parityProblem; codex-15 review of e258d8d).
+  local s = plugin([[
+app.action('p.add', {}, function() return {} end)
+app.form('/forms/add', {title = 'Add', fields = {}, on_submit = function() end,
+  submit = {tool = 'p.add'}, command = {id = 'add', title = 'Add', user_only = 'navigation'}})]])
+  local c = s.registered.commands[1]
+  expect(c.user_only).to_be('navigation')
+  expect(c.action, 'no action next to user_only').to_be(nil)
+end)
+
+test('concat gives what table.concat gives, also for 2560 items and more', function()
+  -- Rex Lua: table.concat of 2560 items or more fails with "registry overflow" (observed on Rex
+  -- 0.0.1792158932-g88fd41, lab, 2026-10-22), and fewer when more of the stack is in use (2559
+  -- failed here). Up to 2000 items, the Rex table.concat is the reference. Both are called as a
+  -- field, so that an error names the function as "concat".
+  local R, C = {concat = table.concat}, {concat = sandbox(sdk_dir, base, {source = 'return 1'}).sdk.concat}
+  local function raw(...) return R.concat(...) end
+  local function concat(...) return C.concat(...) end
+  local function err(fn, ...) local ok, e = pcall(fn, ...); expect(ok, 'an error').to_be(false); return (tostring(e):gsub('^[^\n]-:%d+: ', '', 1)) end
+  local function list(n) local t = {}; for k = 1, n do t[k] = tostring(k % 10) end; return t end
+  local cases = {{{}}, {{'a'}, ','}, {{'a', 'b', 'c'}, ', ', 2, 3}, {{'a', 'b'}, ',', 3, 2}, {{1, 2.5, 'x'}, '-'},
+    {list(1)}, {list(500), ','}, {list(501), ','}, {list(1001), ','}, {list(2000), ','}, {list(2000), ',', 7, 2000}}
+  for n, c in ipairs(cases) do expect(concat(unpack(c, 1, 4)), 'case ' .. n).to_be(raw(unpack(c, 1, 4))) end
+  local function slow(t, sep, i, j) local s = ''; for k = i, j do s = s .. t[k] .. (k < j and sep or '') end; return s end
+  for _, n in ipairs({2560, 10000}) do
+    local t = list(n)
+    expect(concat(t, ','), n .. ' items').to_be(slow(t, ',', 1, n))
+    expect(concat(t), n .. ' items, no separator').to_be(slow(t, '', 1, n))
+  end
+  local t = list(10000)
+  expect(concat(t, '; ', 500, 9000), 'a long range').to_be(slow(t, '; ', 500, 9000))
+  t[2500] = {}
+  expect(err(concat, t, ','), 'a bad item names its own index').to_be(err(raw, t, ',', 2001, 3000))
+  expect(err(concat, {'a', {}}), 'a short list').to_be(err(raw, {'a', {}}))
+  expect(err(concat, nil), 'not a table').to_be(err(raw, nil))
+  for _, a in ipairs({{false, 2}, {1, false}, {'x', 2}}) do
+    expect(err(concat, {'a', 'b'}, ',', a[1], a[2]), 'a bad range argument').to_be(err(raw, {'a', 'b'}, ',', a[1], a[2]))
+  end
+end)
+
+test('boot.lua sets table.concat to the SDK concat before it runs the main file', function()
+  local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
+  local env = {rex = {args = {main = '/plugin/main.lua'}}, package = {path = ''}, debug = debug, assert = assert, type = type,
+    table = {concat = table.concat}}
+  env.require = function(name) expect(name).to_be('lazyrex'); return sdk end
+  env.dofile = function(path) env.ran, env.concat_at_main = path, env.table.concat end
+  local chunk = assert(loadfile(sdk_dir .. '/boot.lua'))
+  setfenv(chunk, env)
+  chunk()
+  expect(env.ran).to_be('/plugin/main.lua')
+  expect(env.concat_at_main == sdk.concat, 'the main file sees the SDK concat').to_be(true)
+end)
+
+test('every read of a render carries its render ID: db.first, the db.each pages and each part of a form', function()
+  -- The hub attributes a hub.sql read to a view render by args.render, and re-renders a view only
+  -- when a commit changes a table that its last render read (hub lead and claude-22, 2026-10-22).
+  local seen = {calls = {}}
+  local s = plugin([[
+app.panel('Reads', function()
+  local items = {}
+  local first = app.db.first('SELECT n FROM t')
+  app.db.each('SELECT n FROM t', function(row) items[#items + 1] = {id = row.n, label = tostring(row.n)} end)
+  return {app.ui.list('reads', items, {empty = tostring(first.n)})}
+end, {id = 'reads'})
+local function n(part) return part .. ' ' .. app.db.first('SELECT n FROM t WHERE part = ?', part).n end
+app.form('/forms/reads', {
+  title = function() return n('title') end,
+  fields = function() return {{id = 'text', label = n('fields'), kind = 'text', value = ''}} end,
+  intro = function() return n('intro') end,
+  after = function() return {{id = 'after', text = n('after')}} end,
+  instead = function() n('instead'); return nil end,
+  on_submit = function() end})]], {hub = paged_hub(seen)})
+  local r = s:render('/panels/reads', 'render-7')
+  expect(r.error, show(r)).to_be(nil)
+  expect(#seen.calls, 'db.first, then the 3 pages of db.each').to_be(4)
+  for i, c in ipairs(seen.calls) do expect(c.render, 'panel read ' .. i).to_be('render-7') end
+  expect(seen.calls[3].sql:find('OFFSET', 1, true) ~= nil, 'a later page').to_be(true)
+  seen.calls = {}
+  r = s:render('/forms/reads', 'render-8')
+  expect(r.error, show(r)).to_be(nil)
+  local parts = {}
+  for _, c in ipairs(seen.calls) do
+    expect(c.render, 'form read ' .. tostring(c.params[1])).to_be('render-8')
+    parts[c.params[1]] = true
+  end
+  for _, p in ipairs({'title', 'fields', 'intro', 'after', 'instead'}) do expect(parts[p], p).to_be(true) end
+end)
+
+test('app.hub adds the render ID to a hub.sql call in a render, and only there', function()
+  -- A raw hub.sql read without the ID makes the hub track no reads for that render (hub lead,
+  -- 2026-10-22), so the SDK sends the ID on app.hub too. The caller's table does not change.
+  local seen = {calls = {}}
+  local s = plugin([[
+app.panel('Raw', function()
+  local a = {sql = 'SELECT n FROM t', params = {}}
+  app.hub('hub.sql.query', a)
+  app.hub('hub.other', {x = 1})
+  return {{id = 'w', text = 'caller render: ' .. tostring(a.render)}}
+end, {id = 'raw'})
+app.action('p.raw', {}, function() app.hub('hub.sql.query', {sql = 'SELECT n FROM t', params = {}}); return {} end)]],
+    {hub = {['hub.sql.query'] = function(a) seen.calls[#seen.calls + 1] = {action = 'query', render = a.render}; return {columns = {'n'}, rows = {}, complete = true} end,
+      ['hub.other'] = function(a) seen.calls[#seen.calls + 1] = {action = 'other', render = a.render}; return {} end}})
+  local r = s:render('/panels/raw', 'render-5')
+  expect(r.error, show(r)).to_be(nil)
+  expect(seen.calls[1]).to_equal({action = 'query', render = 'render-5'})
+  expect(seen.calls[2], 'not a hub.sql call').to_equal({action = 'other'})
+  expect(r.result.tree.nodes[1].text, 'the caller table keeps its fields').to_be('caller render: nil')
+  seen.calls = {}
+  expect(s:agent('p.raw', {}).error).to_be(nil)
+  expect(seen.calls[1], 'outside a render: no ID').to_equal({action = 'query'})
 end)
 
 test('a catch inside the SDK does not split the locals of a running plugin handler (Rex Lua pcall defect)', function()
