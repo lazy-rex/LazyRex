@@ -287,11 +287,7 @@ func TestProbeProcessNamesLab(t *testing.T) {
 	root := labTestRoot(t)
 	dir := fakeLab(t, root, "lrt-920", 30*time.Hour)
 	sibling := fakeLab(t, root, "lrt-9201", 30*time.Hour)
-	c := exec.Command("/bin/sh", "-c", "sleep 30; :", filepath.Join(dir, "x"))
-	if err := c.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { c.Process.Kill(); c.Wait() }() // the process this test started
+	c := namedProcess(t, filepath.Join(dir, "x"))
 	if st, why := labProbe(filepath.Dir(dir), dir, mustProcs(t)); st != labLive || !strings.Contains(why, strconv.Itoa(c.Process.Pid)) {
 		t.Errorf("probe with a process that names the lab: %v %s", st, why)
 	}
@@ -358,11 +354,7 @@ func TestEndLab(t *testing.T) {
 		}
 	}
 	named := fakeLab(t, root, "lrt-943", 0)
-	c := exec.Command("/bin/sh", "-c", "sleep 30; :", filepath.Join(named, "x"))
-	if err := c.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { c.Process.Kill(); c.Wait() }() // the process this test started
+	namedProcess(t, filepath.Join(named, "x"))
 	if kept, probs := endLab(named, false, "f.lua", nil); !kept || !exists(named) || len(probs) != 1 || !strings.Contains(probs[0], "live") {
 		t.Errorf("a process names the lab: kept %v, problems %v", kept, probs)
 	}
@@ -373,15 +365,22 @@ func marker(t *testing.T, dir string) string {
 	return string(b)
 }
 
-// namedProcess starts a process that this test owns, whose command line names path; the test kills
-// and waits for it at its end.
+// namedProcess starts a process that this test owns, whose command line names path. It is a shell
+// that waits in the builtin read on a pipe that the test owns, so the kill at the test's end leaves
+// no child (a "sleep" would outlive its killed shell).
 func namedProcess(t *testing.T, path string) *exec.Cmd {
 	t.Helper()
-	c := exec.Command("/bin/sh", "-c", "sleep 30; :", path)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command("/bin/sh", "-c", "read value", path)
+	c.Stdin = r
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Process.Kill(); c.Wait() })
+	r.Close()
+	t.Cleanup(func() { c.Process.Kill(); c.Wait(); w.Close() })
 	return c
 }
 

@@ -146,10 +146,10 @@ var labDial = func(sock string) error {
 // labProbe tells whether the lab dir is live, absent or uncertain, with the reason. procs is one
 // process listing (labProcs); nil means that the listing failed or was not made, and only a test
 // passes nil for a base case. The sweep, -clean and endLab use this one function. Rules, in order:
-//   - a process whose command line names the lab is live. A lab has more than one name (on macOS
-//     /tmp is a link to /private/tmp): each path in a command line that ends in the lab's base
-//     name is resolved and compared with the resolved lab directory (labNamed). This process and
-//     its ancestors do not count: a -clean names the lab in its own arguments.
+//   - a process whose command line names the lab is live. root is the lab root that the caller
+//     accepts: a lab has a name under each name of the root (labNames), and a command line matches
+//     a name without resolving its paths (namesLab). This process and its ancestors do not count:
+//     a -clean names the lab in its own arguments.
 //   - a connection to <dir>/rex.sock that is accepted is live.
 //   - "no such file" (no socket) is absent only when lab.json is missing or names no server pid,
 //     or names a server pid that no longer runs.
