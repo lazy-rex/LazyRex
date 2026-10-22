@@ -86,8 +86,13 @@ const (
 )
 
 // opRegisterWait bounds the wait of a start observation for the registration of its intent's
-// instance (a test shortens it).
-var opRegisterWait = 60 * time.Second
+// instance; after it, the op ends unknown (docs/hub.md, "attempt"). The SDK registers before a
+// plugin's start functions run, so 60 s is a wide margin, and observeLater still proves a later
+// registration (the hub lead, lead-b8-c2b).
+const opRegisterWait = 60 * time.Second
+
+// registerWait is opRegisterWait; a test shortens it.
+var registerWait = opRegisterWait
 
 type pluginOpsSvc struct {
 	kick chan struct{}
@@ -1167,10 +1172,10 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 			first = time.Now()
 			h.pops.observing[attempt] = first
 		}
-		if time.Since(first) < opRegisterWait {
+		if time.Since(first) < registerWait {
 			return &opWait{after: opRegisterPoll, why: "waiting for the registration of " + t.intent}
 		}
-		detail += fmt.Sprintf(" The hub waited %v for the registration; it keeps the observation.", opRegisterWait)
+		detail += fmt.Sprintf(" The hub waited %v for the registration; it keeps the observation.", registerWait)
 	}
 	delete(h.pops.observing, attempt)
 	if proof != "" {
