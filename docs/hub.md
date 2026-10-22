@@ -164,9 +164,12 @@ Read tracking is the default. A `view.render` reply can add `"refresh"` beside `
   when it shows state that a SQL commit does not change and that it does not invalidate. The SDK sends it for every render in which a hub call failed (also a
   caught error, or a call that never reached the hub): the hub cannot see such a call, so absence
   would track an incomplete read set.
-- Any other value counts as `"all"`. The hub logs the first such value of each view, also for a
-  render that is untracked or read no table (at most 64 lines in all): "view <id>: unknown refresh
-  <value>; using all".
+- Any other value (a string other than `"all"`, a number, an object) is a declaration error, as
+  for malformed `deps`: the tree is shown, the view gets no table set (every SQL commit renders it
+  again), and the event `view_deps_invalid {plugin, view_id, route, error}` comes when the error
+  text changes: `refresh <value>: only "all" or no field is valid`. The hub checks the value for
+  every good render, also an untracked one or one that read no table. The next render with a valid
+  value clears the error.
 - A render that read no table, an untracked render (another hub call than a tokened
   `hub.sql.query`, a failed query; docs/sql.md section 9), and a failed render get no table set:
   every SQL commit renders the view again.

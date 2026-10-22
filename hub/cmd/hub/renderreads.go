@@ -16,7 +16,7 @@ package main
 //
 // Selective refresh is the default. A render is tracked unless its
 // view.render reply has a refresh field: "all" is the opt-out (also the SDK's answer for a render
-// with a failed hub call), and any other value counts as "all". The view gets the render's tables
+// with a failed hub call), and any other value is a declaration error. The view gets the render's tables
 // only when the render succeeded, stayed tracked and read at least one table. In every other case
 // the view has no table set, and every SQL commit of the plugin marks it.
 
@@ -24,7 +24,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"log"
+	"fmt"
 	"strings"
 )
 
@@ -37,9 +37,6 @@ type openRender struct {
 	tables    map[string]bool // the tables that its queries read (lower case)
 	untracked bool
 }
-
-// refreshLogMax bounds the views that the hub remembers for its unknown refresh log.
-const refreshLogMax = 64
 
 // newRenderID returns a render ID: 128 random bits, so a closed ID is never made again.
 func newRenderID() string {
@@ -124,47 +121,30 @@ func (h *Hub) renderRead(plugin, client, id string, reads map[string]bool, ok bo
 }
 
 // renderTables returns the table set that a good render installs into its view: the render's
-// tables when the render is tracked (refreshTracked), stayed tracked, and read a table. Else nil:
-// every SQL commit of the plugin marks the view. The refresh value is read for each render with a
-// record, so an unknown value is logged also for a render that is untracked or read no table.
-func (h *Hub) renderTables(plugin string, r *openRender, refresh json.RawMessage) map[string]bool {
-	if r == nil {
-		return nil
-	}
-	if !h.refreshTracked(plugin, r, refresh) || r.untracked || len(r.tables) == 0 {
+// tables when its reply is tracked (parseRefresh), the render stayed tracked, and it read a table.
+// Else nil: every SQL commit of the plugin marks the view.
+func renderTables(r *openRender, tracked bool) map[string]bool {
+	if r == nil || !tracked || r.untracked || len(r.tables) == 0 {
 		return nil
 	}
 	return r.tables
 }
 
-// refreshTracked reads the refresh field of a view.render reply: no field (or null) is tracked.
-// "all" is broad. Any other value is broad too, and the hub logs the first such value of each
-// view: a plugin may send a value that this hub does not know.
-func (h *Hub) refreshTracked(plugin string, r *openRender, raw json.RawMessage) bool {
+// parseRefresh reads the refresh field of a view.render reply. No field (or null): tracked. "all":
+// the opt-out. Any other value is an error of the render's declaration, like malformed deps: the
+// view is not tracked, and the error goes to view_deps_invalid.
+func parseRefresh(raw json.RawMessage) (tracked bool, err error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return true
+		return true, nil
 	}
 	if s := ""; json.Unmarshal(raw, &s) == nil && s == "all" {
-		return false
+		return false, nil
 	}
-	key := plugin + "\x00" + r.viewID
-	h.vs.mu.Lock()
-	if h.vs.logged == nil {
-		h.vs.logged = map[string]bool{}
+	v := string(raw)
+	if len(v) > 64 {
+		v = v[:64] + "..."
 	}
-	logIt := !h.vs.logged[key] && len(h.vs.logged) < refreshLogMax
-	if logIt {
-		h.vs.logged[key] = true
-	}
-	h.vs.mu.Unlock()
-	if logIt {
-		v := string(raw)
-		if len(v) > 64 {
-			v = v[:64] + "..."
-		}
-		log.Printf("views %s: view %s: unknown refresh %s; using all", plugin, r.viewID, v)
-	}
-	return false
+	return false, fmt.Errorf(`refresh %s: only "all" or no field is valid`, v)
 }
 
 // markSQL marks the views of the plugin that a SQL commit of marks can change: a view in flight,

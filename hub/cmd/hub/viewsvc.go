@@ -51,7 +51,6 @@ type viewSvc struct {
 	seen    map[string]map[string]string     // plugin -> route -> reason the user looked at it, not yet sent
 	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
 	renders map[string]*openRender           // render ID -> a view.render call that has not returned (renderreads.go)
-	logged  map[string]bool                  // plugin + "\x00" + view: a view whose unknown refresh value is already logged (renderreads.go)
 	senders map[notifyKey]*viewNotifier      // the view.changed deliveries with a request outstanding (viewnotify.go)
 	ctx     context.Context                  // the hub run context: its end stops every delivery
 }
@@ -720,12 +719,17 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		if renderErr == "" {
 			h.parityLog(plugin, t.route, out.Tree)
 			h.testRecordTree(plugin, t.route, out.Tree)
+			// The refresh value is checked for every good render, before the untracked and
+			// empty-read cases, so an invalid value always gives the same error.
+			tracked, rerr := parseRefresh(out.Refresh)
 			deps, derr := parseDeps(out.Deps)
-			errText := ""
-			if derr != nil {
-				errText = derr.Error()
+			var errs []string
+			for _, err := range []error{derr, rerr} {
+				if err != nil {
+					errs = append(errs, err.Error())
+				}
 			}
-			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, errText, h.renderTables(plugin, rec, out.Refresh))
+			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, strings.Join(errs, "; "), renderTables(rec, tracked))
 			h.testRenderOutcome(t.id, "ok")
 		} else {
 			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil)

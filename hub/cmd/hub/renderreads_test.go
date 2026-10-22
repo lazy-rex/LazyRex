@@ -285,9 +285,9 @@ func markAll(h *Hub) {
 }
 
 // The default: a render installs its tables when its reply has no refresh field (or null), it
-// succeeded, its reads stayed tracked and it read at least one table. "all" is the opt-out; any
-// other value (here "reads" and "writes" too) counts as "all", and the hub logs the first such
-// value of each view. One view's setting does not change another view, and a later "all" render clears the set.
+// succeeded, its reads stayed tracked and it read at least one table. "all" is the opt-out
+// (TestRenderRefreshRefused: any other value is an error). One view's setting does not change
+// another view, and a later "all" render clears the set.
 func TestRenderDefault(t *testing.T) {
 	ta := map[string]bool{"a": true}
 	null := json.RawMessage("null")
@@ -295,18 +295,14 @@ func TestRenderDefault(t *testing.T) {
 		step renderStep
 		want bool
 	}{
-		"no refresh":    {renderStep{reads: []map[string]bool{ta}}, true},
-		"null":          {renderStep{reads: []map[string]bool{ta}, refresh: null}, true},
-		"all":           {renderStep{reads: []map[string]bool{ta}, refresh: "all"}, false},
-		"reads":         {renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, false},
-		"writes":        {renderStep{reads: []map[string]bool{ta}, refresh: "writes"}, false},
-		"unknown value": {renderStep{reads: []map[string]bool{ta}, refresh: "some-new-mode"}, false},
-		"unknown type":  {renderStep{reads: []map[string]bool{ta}, refresh: map[string]any{"x": 1}}, false},
-		"empty set":     {renderStep{}, false},
-		"untracked":     {renderStep{reads: []map[string]bool{ta, nil}}, false},
-		"failed read":   {renderStep{reads: []map[string]bool{ta}, failRead: true}, false},
-		"failed":        {renderStep{reads: []map[string]bool{ta}, err: &rex.RexError{Code: "boom", Message: "test"}}, false},
-		"transient":     {renderStep{reads: []map[string]bool{ta}, err: &rex.RexError{Code: "timeout", Message: "test"}}, false},
+		"no refresh":  {renderStep{reads: []map[string]bool{ta}}, true},
+		"null":        {renderStep{reads: []map[string]bool{ta}, refresh: null}, true},
+		"all":         {renderStep{reads: []map[string]bool{ta}, refresh: "all"}, false},
+		"empty set":   {renderStep{}, false},
+		"untracked":   {renderStep{reads: []map[string]bool{ta, nil}}, false},
+		"failed read": {renderStep{reads: []map[string]bool{ta}, failRead: true}, false},
+		"failed":      {renderStep{reads: []map[string]bool{ta}, err: &rex.RexError{Code: "boom", Message: "test"}}, false},
+		"transient":   {renderStep{reads: []map[string]bool{ta}, err: &rex.RexError{Code: "timeout", Message: "test"}}, false},
 	} {
 		h := renderHub(t)
 		if c.step.err != nil { // the Error tree is the snapshot: no view.changed
@@ -343,24 +339,58 @@ func TestRenderDefault(t *testing.T) {
 		t.Fatal("after an all render, a commit to b does not mark the view")
 	}
 
-	// An unknown value is logged once for each view: other values on the same view add no log
-	// key. A render that read no table, or became untracked, still gets its value logged.
-	h = renderHub(t)
-	for _, v := range []string{"reads", "writes", "some-new-mode"} {
-		markAll(h)
-		renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}, refresh: v}, "v2": {refresh: v}})
+}
+
+// A refresh value other than "all" (or no field) is a declaration error, like malformed deps:
+// the tree is shown, the view has no table set (so every SQL commit renders it again), and
+// view_deps_invalid comes once for each new error text. The value is checked before the
+// untracked and empty-read cases. The next valid render clears the error and tracks again.
+func TestRenderRefreshRefused(t *testing.T) {
+	ta := map[string]bool{"a": true}
+	h := renderHub(t)
+	events := func() int {
+		b, _ := os.ReadFile(h.ev.f.Name())
+		return strings.Count(string(b), `"view_deps_invalid"`)
 	}
-	h.vs.mu.Lock()
-	keys := h.vs.logged
-	h.vs.mu.Unlock()
-	if len(keys) != 2 || !keys["p\x00v1"] || !keys["p\x00v2"] {
-		t.Fatalf("log keys %v after three unknown values in two views (v2 read no table); want one for each view", keys)
+	depsErr := func() string {
+		h.vs.mu.Lock()
+		defer h.vs.mu.Unlock()
+		return h.vs.views["p"]["v1"].depsErr
 	}
-	h = renderHub(t)
 	markAll(h)
-	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta, nil}, refresh: "x"}})
-	if !h.vs.logged["p\x00v1"] {
-		t.Fatal("an untracked render with an unknown value is not logged")
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}}})
+	if !tracked(h, "v1") {
+		t.Fatal("a valid render is not tracked")
+	}
+	for i, c := range []struct {
+		step   renderStep
+		want   string
+		events int
+	}{
+		{renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, `refresh "reads": only "all" or no field is valid`, 1},
+		{renderStep{reads: []map[string]bool{ta}, refresh: "reads"}, `refresh "reads": only "all" or no field is valid`, 1},        // the same text: no second event
+		{renderStep{refresh: 5}, `refresh 5: only "all" or no field is valid`, 2},                                                  // no table read
+		{renderStep{reads: []map[string]bool{ta, nil}, refresh: "writes"}, `refresh "writes": only "all" or no field is valid`, 3}, // untracked
+	} {
+		markAll(h)
+		renderWith(t, h, map[string]renderStep{"v1": c.step})
+		if tracked(h, "v1") {
+			t.Errorf("case %d: a refused refresh value left a table set", i)
+		}
+		if got := depsErr(); got != c.want {
+			t.Errorf("case %d: error %q, want %q", i, got, c.want)
+		}
+		if n := events(); n != c.events {
+			t.Errorf("case %d: %d view_deps_invalid events, want %d", i, n, c.events)
+		}
+	}
+	h.markSQL("p", []string{"b"})
+	if h.vs.views["p"]["v1"].dirty&causeCommit == 0 {
+		t.Error("a view with a refused refresh value is not marked by an unrelated commit")
+	}
+	renderWith(t, h, map[string]renderStep{"v1": {reads: []map[string]bool{ta}}})
+	if !tracked(h, "v1") || depsErr() != "" {
+		t.Errorf("after a valid render: tracked %v, error %q", tracked(h, "v1"), depsErr())
 	}
 }
 

@@ -70,12 +70,9 @@ test('a view without refresh renders again only after a write to a table that it
   expect(count(b).attempts, 'B after DDL').to_be(b0 + 1)
 end)
 
-test('with all, an unknown value (also reads and writes), or untracked: every SQL commit renders the view', function()
+test('with all, or untracked: every SQL commit renders the view', function()
   local views = {
     all = open('c', 'all'),
-    reads = open('j', 'reads'),
-    writes = open('d', 'writes'),
-    unknown = open('e', 'some-new-mode'),
     untokened = open('f', nil, 'untokened'),
     store = open('g', nil, 'store'),
     refused = open('i', nil, 'refused'),
@@ -104,4 +101,20 @@ test('a render that sends all returns to broad refresh', function()
   sql('INSERT INTO other VALUES (3)')
   settle()
   expect(count(h).attempts, 'H after an unrelated write').to_be(h0 + 1)
+end)
+
+test('any other refresh value is a declaration error: no table set, one view_deps_invalid', function()
+  local k = open('k', 'reads')
+  settle()
+  expect(count(k).sql_tracked, 'K tracked').to_be(false)
+  local k0 = count(k).attempts
+  sql('INSERT INTO other VALUES (4)')
+  settle()
+  expect(count(k).attempts, 'K after an unrelated write').to_be(k0 + 1)
+  local errors = {}
+  for _, ev in ipairs(H.hub('hub.test.events', {event = 'view_deps_invalid'}).events or {}) do
+    if ev.route == '/lazy/reads-k' then errors[#errors + 1] = ev.error end
+  end
+  expect(#errors, 'one event for one error text').to_be(1)
+  expect(errors[1]).to_be('refresh "reads": only "all" or no field is valid')
 end)

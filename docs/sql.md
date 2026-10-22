@@ -185,6 +185,8 @@ authorized at CREATE.
   also shows state outside SQL. Such a view calls `hub.ui.invalidate` (`app.refresh()`) when that
   state changes, or replies `refresh = "all"`.
 - The opt-out is `refresh = "all"`. The SDK sends it for a render in which a hub call failed.
+- Any other `refresh` value is a declaration error (docs/hub.md, "SQL read tracking"): the view gets
+  no table set, and `view_deps_invalid` names the value.
 
 ## 11. Rollback: hub.admin.sql_return (built)
 
