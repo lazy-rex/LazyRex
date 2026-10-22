@@ -810,6 +810,26 @@ app.action('p.two', {}, function() return {lazyrex_parts = 1, other = 2} end, {t
   expect(#s.parts).to_be(0)
 end)
 
+test('a refused reply rolls back the handler transaction: over max_total, reserved; a normal unsaved reply commits', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)'}
+local function add(text) app.db.exec('INSERT INTO todos (text) VALUES (?)', text) end
+app.action('p.huge', {}, function() add('huge'); return {t = string.rep('x', 786432)} end)
+app.action('p.huge_unsaved', {}, function() add('unsaved'); return {t = string.rep('x', 786432)} end, {store = false})
+app.action('p.fake', {}, function() add('fake'); return {lazyrex_parts = {id = 'x', count = 1, bytes = 1}} end)
+app.action('p.ok', {}, function() add('ok'); return {done = true} end, {store = false})]])
+  for _, case in ipairs({{'p.huge', {}, 'too_large'}, {'p.huge_unsaved', {key = 'k1'}, 'too_large'}, {'p.fake', {}, 'reserved_result'}}) do
+    local r = s:agent(case[1], case[2])
+    expect(r.error and r.error.code, case[1] .. ' ' .. show(r)).to_be(case[3])
+    expect(#s.sql.rows('todos'), case[1] .. ': rolled back').to_be(0)
+    expect(s.sql.open, case[1] .. ': no open transaction').to_be(nil)
+  end
+  expect(#s.parts, 'no part went').to_be(0)
+  expect(next(s.sql.ops), 'no saved reply').to_be(nil)
+  expect(s:agent('p.ok', {}).result).to_equal({done = true})
+  expect(#s.sql.rows('todos'), 'a normal unsaved reply commits').to_be(1)
+end)
+
 test('a hub.register reply without limits fails the start', function()
   local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = false})
   s:start()
