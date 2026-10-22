@@ -250,7 +250,7 @@ func TestRestartFormOwnerIsReserved(t *testing.T) {
 		t.Fatal("a manifest could name the restart form's owner")
 	}
 	h, _ := workerTestHub(t)
-	if _, err := h.register(perform{}, map[string]any{"plugin": restartFormOwner, "instance_id": "i"}); err == nil || !strings.Contains(err.Error(), "reserved") {
+	if _, err := h.register(context.Background(), perform{}, map[string]any{"plugin": restartFormOwner, "instance_id": "i"}); err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Fatalf("register: %v", err)
 	}
 }

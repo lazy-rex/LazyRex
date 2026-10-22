@@ -151,23 +151,27 @@ func parseCommands(plugin string, v any) ([]paletteCommand, error) {
 	return cmds, nil
 }
 
-// saveCommands records a plugin's commands and rewrites the palette file when they changed.
-func (h *Hub) saveCommands(ctx context.Context, plugin string, cmds []paletteCommand) {
+// saveCommands records a plugin's commands and rewrites the palette file when they changed. No row
+// is an empty stored set; any other read or write error is returned.
+func (h *Hub) saveCommands(ctx context.Context, plugin string, cmds []paletteCommand) error {
 	b, _ := json.Marshal(cmds)
 	if cmds == nil {
 		b = []byte("[]")
 	}
 	var old string
-	h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, plugin).Scan(&old)
+	err := h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, plugin).Scan(&old)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if old == string(b) {
-		return
+		return nil
 	}
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO ui_commands (plugin, commands) VALUES (?, ?)
 		ON CONFLICT (plugin) DO UPDATE SET commands = excluded.commands`, plugin, string(b)); err != nil {
-		log.Printf("palette: save %s: %v", plugin, err)
-		return
+		return err
 	}
 	h.kickPalette()
+	return nil
 }
 
 func (h *Hub) kickPalette() {

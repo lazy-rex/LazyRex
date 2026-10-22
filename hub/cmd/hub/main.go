@@ -132,6 +132,7 @@ type Plugin struct {
 	lifecycle sync.Mutex   // serializes replace, start and stop
 	writes    sync.RWMutex // the store fence: a store write holds it to read (fencedBatch)
 	respawn   respawnState // the crash backoff (respawn.go); h.mu guards it
+	commands  commandState // the admitted palette commands (plugins.go); h.mu guards it
 }
 
 // reportedState is the state that hub.plugins reports. h.mu must be held.
@@ -156,6 +157,7 @@ type Hub struct {
 	rc             remoteControl // the last observed Remote Control result for each app (remotecontrol.go)
 	sql            *sqlService   // the plugin SQL databases (sqlsvc.go)
 	ensureMu       sync.Mutex    // hub.session.ensure: one create at a time (sessions.go)
+	cmdMu          sync.Mutex    // command saves, one at a time (persistCommands, plugins.go)
 	slots          slotState     // side slot locks (panels.go)
 	noticeKick     chan struct{} // wakes noticeLoop (kickNotices)
 	renudgeAfter   atomic.Int64  // nanoseconds to the one repeat of an unread nudge; 0: noticeRenudgeAfter (hub.test.notice_renudge)
@@ -850,7 +852,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 
 	switch p.Action {
 	case "hub.register":
-		return h.register(p, args)
+		return h.register(ctx, p, args)
 	case "hub.join":
 		return h.join(ctx, p, args)
 	case "hub.agents":

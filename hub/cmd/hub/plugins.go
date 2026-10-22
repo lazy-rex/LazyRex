@@ -20,7 +20,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-func (h *Hub) register(p perform, args map[string]any) (any, error) {
+func (h *Hub) register(ctx context.Context, p perform, args map[string]any) (any, error) {
 	name, _ := args["plugin"].(string)
 	instance, _ := args["instance_id"].(string)
 	if name == restartFormOwner {
@@ -62,12 +62,7 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	if pl.promptsGranted() {
 		h.startPromptSender(pl)
 	}
-	// go: register holds h.mu. The commands are saved before hub.changed (plugins): the home plugin
-	// reads them from hub.plugins (its Launch Profile… entry depends on them).
-	go func() {
-		h.saveCommands(context.Background(), name, cmds)
-		h.changed("plugins")
-	}()
+	go h.admitCommands(ctx, pl, cmds)() // register holds h.mu; the save runs without it
 	h.kickAgentKeymap()
 	h.kickWaiting() // a dependent can wait for this plugin
 	h.ev.emit("plugin_registered", map[string]any{"plugin": name, "instance_id": instance, "client_id": pl.ClientID})
@@ -77,6 +72,96 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 		h.watches.pluginRegistered(name) // rows may wait for it
 	}
 	return map[string]any{"namespace": name, "generation": revString(h.generation)}, nil
+}
+
+// commandState is a plugin's admitted palette commands (hub.register). h.mu guards it.
+type commandState struct {
+	list  []paletteCommand // the admitted set; never nil once admitted (an empty set is registered)
+	of    string           // the instance whose registration admitted list; "" before any
+	retry bool             // a retry of the save is pending (one per plugin)
+	delay time.Duration    // the delay of the next retry; 0 after a successful save
+}
+
+// commandsRetryBase is the first retry delay of a failed command save (tests shorten it).
+var commandsRetryBase = time.Second
+
+// admitCommands records cmds as the admitted set of pl's current instance and returns its save.
+// h.mu must be held: admission order is h.mu order. The save captures only the name, so it never
+// writes for a record that another instance took over. ctx is the hub's run context: a pending
+// retry ends at the hub stop.
+func (h *Hub) admitCommands(ctx context.Context, pl *Plugin, cmds []paletteCommand) func() {
+	if cmds == nil {
+		cmds = []paletteCommand{}
+	}
+	pl.commands.list, pl.commands.of = cmds, pl.InstanceID
+	name := pl.Name
+	return func() { h.persistCommands(ctx, name) }
+}
+
+// persistCommands saves the latest admitted set of the plugin's current instance. Saves run one at
+// a time (h.cmdMu), and each reads the set when it runs, so the last save to finish writes the
+// latest set admitted before it read. A stopped instance, or one that has not registered, saves
+// nothing. A failed save keeps one retry pending; hub.changed (plugins) follows only a save that
+// succeeded, so the home plugin reads the stored commands (its Launch Profile… entry).
+func (h *Hub) persistCommands(ctx context.Context, name string) {
+	h.cmdMu.Lock()
+	h.mu.Lock()
+	pl := h.plugins[name]
+	if ctx.Err() != nil || pl == nil || pl.ClientID == "" || pl.commands.of == "" || pl.commands.of != pl.InstanceID {
+		h.mu.Unlock()
+		h.cmdMu.Unlock()
+		return
+	}
+	cmds := pl.commands.list
+	h.mu.Unlock()
+	err := h.saveCommands(ctx, name, cmds)
+	h.cmdMu.Unlock()
+	if err != nil {
+		if ctx.Err() != nil {
+			return // the hub stops
+		}
+		log.Printf("palette: save %s: %v", name, err)
+		h.ev.emit("commands_save_failed", map[string]any{"plugin": name, "error": err.Error()})
+		h.retryCommands(ctx, name)
+		return
+	}
+	h.mu.Lock()
+	if pl := h.plugins[name]; pl != nil {
+		pl.commands.delay = 0
+	}
+	h.mu.Unlock()
+	commandsSaved(h)
+}
+
+// commandsAfter schedules a retry (tests collect it without a timer).
+var commandsAfter = func(d time.Duration, f func()) { time.AfterFunc(d, f) }
+
+// commandsSaved runs after a successful command save (tests replace it to count).
+var commandsSaved = func(h *Hub) { h.changed("plugins") }
+
+// retryCommands schedules one save of the plugin's commands after a failed one: 1 s, doubling to
+// 30 s. A plugin has at most one pending retry; the retry saves the latest set. The retry ends at
+// the hub stop, or when the registration is no longer current (persistCommands saves nothing).
+func (h *Hub) retryCommands(ctx context.Context, name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl := h.plugins[name]
+	if pl == nil || pl.commands.retry {
+		return
+	}
+	d := pl.commands.delay
+	if d == 0 {
+		d = commandsRetryBase
+	}
+	pl.commands.retry, pl.commands.delay = true, min(2*d, 30*time.Second)
+	commandsAfter(d, func() {
+		h.mu.Lock()
+		if pl := h.plugins[name]; pl != nil {
+			pl.commands.retry = false
+		}
+		h.mu.Unlock()
+		h.persistCommands(ctx, name)
+	})
 }
 
 // registerTarget checks a hub.register caller against the record of its plugin: the current
