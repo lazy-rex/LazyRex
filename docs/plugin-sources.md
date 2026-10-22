@@ -176,8 +176,16 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
 
 ```json
 {"version": 1, "plugins": {"<exact source string>": {
-  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "",
-  "ref_kind": "branch|tag|commit|latest", "tag": "vX.Y.Z", "commit": "<40 hex>", "digest": "sha256:<hex>",
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "branch|tag|commit",
+  "commit": "<40 hex>", "digest": "sha256:<hex>", "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
+```
+
+A lock with a latest entry is version 2. Its other entries keep the form above.
+
+```json
+{"version": 2, "plugins": {"github:<owner>/<repo>@latest": {
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "latest", "ref_kind": "latest",
+  "tag": "v1.2.0", "commit": "<40 hex>", "digest": "sha256:<hex>",
   "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
 ```
 
@@ -214,13 +222,15 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
 A mismatch refuses the entry: `the lock entry for <source> does not match: <field>; run
 lazyrex-hub plugin sync`.
 
-**Repair.** The key and the commit are the pin. Every other field is derived from them.
+**Repair.** The key and the commit are the pin; for a latest entry, the key, the commit and the
+`tag` are the pin. Every other field is derived from them.
 
 - A commit is **trusted** when it is 40 lowercase hex and, for a commit ref, equal to the ref. The
   commit of a latest entry also needs a `tag` of the release form: sync cannot rebuild the tag
   from the commit. A `tag` on another entry is a field that sync rebuilds: sync drops it.
-- `sync` keeps a trusted commit and rebuilds every other field. It fetches that exact commit,
-  publishes a new dir, computes the digest, and reads the name from the fetched manifest.
+- `sync` keeps a trusted commit and rebuilds every other field, except the `tag` of a latest
+  entry: sync keeps the locked tag and never derives it from the commit. It fetches that exact
+  commit, publishes a new dir, computes the digest, and reads the name from the fetched manifest.
 - An untrusted commit is malformed, not equal to a commit ref, not a commit, or not available.
   `sync` refuses that entry and the lock stays unchanged: `the locked commit for <source> cannot be
   trusted: <reason>; run lazyrex-hub plugin update -config <cfg> <source>`.
@@ -455,8 +465,15 @@ digest. A source name can name a private repository.
 
 ```json
 {"version": 1, "hub": "<32 lowercase hex>", "entries": [{"source": "<exact source>",
-  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "tag": "",
-  "commit": "", "digest": ""}]}
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "commit": "", "digest": ""}]}
+```
+
+A document with a latest entry is version 2. Its other entries keep the form above.
+
+```json
+{"version": 2, "hub": "<32 lowercase hex>", "entries": [{"source": "github:<owner>/<repo>@latest",
+  "name": "", "owner": "", "repo": "", "subdir": "", "ref": "latest", "ref_kind": "latest",
+  "tag": "v1.2.0", "commit": "", "digest": ""}]}
 ```
 
 - `version` follows the content, as for the lock (section 3): 2 when an entry is a latest entry,
