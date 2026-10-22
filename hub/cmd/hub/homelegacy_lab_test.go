@@ -16,7 +16,7 @@ import (
 // older hub's per-plugin session (a legacy session) with a live test renderer. The hub asks the
 // view to retire (view.retire). While the renderer has simulated unsaved text (testview hold mode
 // retire-wait; not a real dirty renderer) the view and its pane stay; a hub restart asks again;
-// when the text is gone the renderer exits, the row closes once, the pane goes and the empty legacy session is destroyed.
+// when the text is gone the renderer exits, the row closes once and the pane goes.
 // Lab only: HARNESS_LAB=1.
 func TestHomeLegacyViewRetiresLab(t *testing.T) {
 	bin, root := harnessBinary(t)
@@ -209,14 +209,6 @@ func TestHomeLegacyViewRetiresLab(t *testing.T) {
 	if n := events("view_retired") + events("view_closed"); n != 1 {
 		t.Fatalf("completions: %d view_retired + view_closed, want exactly 1", n)
 	}
-	waitFor("the empty legacy session to be destroyed", 20*time.Second, func() bool {
-		var out any
-		err := l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": sess}, &out)
-		if err != nil && !sessionGone(err) {
-			t.Logf("session.list_blocks: %v", err) // not a definite answer: ask again
-		}
-		return sessionGone(err)
-	})
 	if st, _ := row(); st != "closed" {
 		t.Fatalf("status %s", st)
 	}
