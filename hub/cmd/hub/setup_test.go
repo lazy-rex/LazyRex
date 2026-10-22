@@ -132,7 +132,7 @@ func TestSetupAllYes(t *testing.T) {
 	if n := strings.Count(out.String(), "Written:"); n != 8 {
 		t.Fatalf("%d written:\n%s", n, out)
 	}
-	cfg, err := loadConfig(filepath.Join(dir, "hub.json"), false)
+	cfg, err := loadConfig(filepath.Join(dir, "hub.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

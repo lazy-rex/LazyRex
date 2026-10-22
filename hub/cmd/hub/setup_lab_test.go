@@ -178,7 +178,7 @@ func TestSetupLab(t *testing.T) {
 	if strings.Count(got, "Written:") != 5 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
 		t.Fatalf("report:\n%s", got)
 	}
-	cfg, err := loadConfig(filepath.Join(dir, "hub.json"), false)
+	cfg, err := loadConfig(filepath.Join(dir, "hub.json"))
 	if err != nil || cfg.Server != socket {
 		t.Fatalf("hub.json: %v %+v", err, cfg)
 	}
