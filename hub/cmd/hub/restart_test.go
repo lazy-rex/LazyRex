@@ -591,3 +591,25 @@ func TestRestartLogLastLines(t *testing.T) {
 		t.Fatalf("a cut tail: %q", got)
 	}
 }
+
+// A pane line never carries a control character: the hub's output can hold text from other
+// sources, and an ESC would reach the user's terminal as an escape sequence (the hub lead's review
+// of 312950b). Each control character except tab becomes "?"; the visible text stays.
+func TestRestartLogLastLinesHaveNoControls(t *testing.T) {
+	l := newRestartLog(t.TempDir(), io.Discard)
+	l.readRun(strings.NewReader("\x1b]2;x\x07title ok\n\x1b[2Jclear\tdone\n8bit \x9b1m \u009b2m\x7f\n"))
+	got := l.lastLines(10)
+	if len(got) != 3 {
+		t.Fatalf("lines %q", got)
+	}
+	for _, s := range got {
+		for _, r := range s {
+			if r != '\t' && (r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || r == '�') {
+				t.Fatalf("a control character %U in %q", r, s)
+			}
+		}
+	}
+	if got[0] != "?]2;x?title ok" || got[1] != "?[2Jclear\tdone" || got[2] != "8bit ?1m ?2m?" {
+		t.Fatalf("lines %q", got)
+	}
+}

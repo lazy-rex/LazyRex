@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -167,8 +168,10 @@ func (l *restartLog) readRun(r io.Reader) {
 	}
 }
 
-// lastLines is at most n of the last complete lines of the last run's output. The first line of a
-// cut tail is incomplete and left out; an empty line is left out.
+// lastLines is at most n of the last complete lines of the last run's output, for the pane. The
+// first line of a cut tail is incomplete and left out; an empty line is left out. Each control
+// character except tab becomes "?" (C0, DEL, C1, and a byte that is not UTF-8, which a terminal can
+// read as C1): the output can hold text from other sources, and the pane is the user's terminal.
 func (l *restartLog) lastLines(n int) []string {
 	l.mu.Lock()
 	s := string(l.tail)
@@ -181,13 +184,23 @@ func (l *restartLog) lastLines(n int) []string {
 	var out []string
 	for _, line := range lines {
 		if line = strings.TrimRight(line, "\r"); line != "" {
-			out = append(out, line)
+			out = append(out, paneSafe(line))
 		}
 	}
 	if len(out) > n {
 		out = out[len(out)-n:]
 	}
 	return out
+}
+
+// paneSafe replaces each control character except tab with "?".
+func paneSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\t' && (r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || r == utf8.RuneError) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // start normalizes and opens the log, then runs the writer.
