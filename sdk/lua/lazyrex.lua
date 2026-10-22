@@ -197,8 +197,13 @@ M.rex_error = rex_error
 local function hub(action, args)
   local app = S.app
   local request = {client_id = app.hub_id, action = action, args = args or {}, timeout_ms = 10000}
-  local ok, encoded = pcall(rex.json.encode, request)
-  if ok and #encoded > MAX_REQUEST then fail('too_large', action .. ': the request has ' .. #encoded .. ' bytes; the limit is ' .. MAX_REQUEST .. '. Nothing was sent.') end
+  -- No protected call here: hub() runs inside handlers, and in Rex Lua a finished protected call or a
+  -- caught error can split the handler's locals from its closures (docs/rex-protocol.md, "Rex Lua
+  -- runtime"). rex.json.encode and rex.call return nil and an error; they do not raise (observed on
+  -- Rex 0.0.1792158932-g88fd41, lab, 2026-10-22).
+  local encoded, encode_err = rex.json.encode(request)
+  if encoded == nil then fail('invalid_input', action .. ': the request cannot be encoded as JSON: ' .. tostring(encode_err)) end
+  if #encoded > MAX_REQUEST then fail('too_large', action .. ': the request has ' .. #encoded .. ' bytes; the limit is ' .. MAX_REQUEST .. '. Nothing was sent.') end
   local response, err = rex.call('client.perform', request)
   if type(response) ~= 'table' then rex_error(err, action .. ' failed') end
   if type(response.result) ~= 'table' then fail('internal', action .. ': invalid hub result') end
@@ -527,7 +532,11 @@ function M.plugin(name)
     return r
   end
   -- app.refresh() renders every open view of the plugin again (state outside SQL).
-  function app.refresh() pcall(hub, 'hub.ui.invalidate', {}) end
+  -- app.refresh ignores a failure. It raises and catches nothing: in Rex Lua a caught error splits the
+  -- locals of the running handler from its closures (docs/rex-protocol.md, "Rex Lua runtime").
+  function app.refresh()
+    rex.call('client.perform', {client_id = app.hub_id, action = 'hub.ui.invalidate', args = {}, timeout_ms = 10000})
+  end
   -- app.notice(agent, pending, opts) wakes agent at the commit of the current handler. opts.once = true
   -- (notice v2, hub/nudge-once): a new nudge only if the agent is not pending or read since the last
   -- one; it needs pending = true. app.notice_read(agent) records that the agent read (pending stays).
