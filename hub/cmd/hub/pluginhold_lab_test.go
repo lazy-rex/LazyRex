@@ -406,6 +406,10 @@ func TestB8LifecycleStartLab(t *testing.T) {
 // SIGKILL), with an active hold; OLD then stops probe by itself. OLD must change a stamped value of
 // the row. At H2 the attempt stays unresolved while the row's stamp is invalid; if H2 saved the row
 // again, an applied proof must name the same target instance and entry.
+// This lab does not prove the stamp rule: OLD replaces the plugin process at its start
+// (plugins.go), so it never stops the attempt's own instance, and the instance check refuses the
+// proof first. TestPluginOpStopObservationAfterOldWriter covers the same-instance OLD write, where
+// only the stamp rule can refuse it.
 func TestB8LifecycleStopLab(t *testing.T) {
 	b := newB8Life(t, "stop")
 	b.start()
