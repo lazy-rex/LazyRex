@@ -445,8 +445,8 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	if (req.Op == "settings" || req.Op == "remove" || req.Op == "update") && managed == "" {
 		return nil, bad("%s changes only managed entries; %s is in the config file", req.Op, req.Entry)
 	}
-	if (req.Op == "stop" || req.Op == "remove" || req.Op == "restart") && name != "" && name == h.homePlugin() {
-		return nil, refuse("refused", "%s is the home plugin entry; it cannot be stopped, restarted or removed here", req.Entry)
+	if (req.Op == "stop" || req.Op == "remove") && name != "" && name == h.homePlugin() {
+		return nil, refuse("refused", "%s is the home plugin entry; it cannot be stopped or removed here", req.Entry)
 	}
 	switch req.Op {
 	case "start":
