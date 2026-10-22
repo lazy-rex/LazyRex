@@ -190,6 +190,58 @@ func (db *DB) storeScan(ctx context.Context, ns string, args map[string]any) (an
 	return out, nil
 }
 
+// storeOpsScan handles hub.store.ops_scan {after?, limit?}: the caller's saved operation records
+// {key, fingerprint, result} in key order, one snapshot per page, with the page rules of
+// storeScan. A plugin that moves to hub.sql uses it once, to import its saved replies.
+func (db *DB) storeOpsScan(ctx context.Context, ns string, args map[string]any) (any, error) {
+	for k := range args {
+		if k != "after" && k != "limit" {
+			return nil, bad("hub.store.ops_scan takes after and limit, not %s", k)
+		}
+	}
+	after, _ := args["after"].(string)
+	limit := 500
+	if v, ok := args["limit"].(float64); ok {
+		if v < 1 || v > 500 || v != float64(int(v)) {
+			return nil, bad("limit is an integer from 1 to 500")
+		}
+		limit = int(v)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT key, fingerprint, result FROM ops WHERE ns = ? AND key > ? ORDER BY key LIMIT ?`, ns, after, limit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ops := []any{}
+	size, more := 0, false
+	for rows.Next() {
+		var key, fp, result string
+		if err := rows.Scan(&key, &fp, &result); err != nil {
+			return nil, err
+		}
+		if len(ops) == limit {
+			more = true
+			break
+		}
+		op := map[string]any{"key": key, "fingerprint": fp, "result": json.RawMessage(result)}
+		b, _ := json.Marshal(op)
+		if len(ops) > 0 && size+len(b) > scanPageBytes {
+			more = true // this record starts the next page
+			break
+		}
+		size += len(b)
+		ops = append(ops, op)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := map[string]any{"ops": ops}
+	if more {
+		out["next"] = ops[len(ops)-1].(map[string]any)["key"]
+	}
+	return out, nil
+}
+
 // scanPageBytes bounds the encoded records of one hub.store.scan page, so that a page of large
 // records stays far below the reply limit (Rex's max_message_bytes, about 1 MiB). A page can
 // therefore hold fewer than limit records; callers follow next. A page always holds at least one
