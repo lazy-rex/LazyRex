@@ -520,3 +520,37 @@ func TestFetchChildCancelPausedOutput(t *testing.T) {
 		t.Fatalf("goroutines %d -> %d", g0, g)
 	}
 }
+
+// fetchCmd.Env reaches git (the fetch variables do not), and fetchCmd.Stderr gets git's standard
+// error through the pipe, capped by its writer; the copy ends before runFetchChild returns.
+func TestFetchChildEnvAndStderr(t *testing.T) {
+	var out strings.Builder
+	stderr := &limitedBuffer{max: gitErrLimit}
+	argv := []string{"/bin/sh", "-c", `printf '%s|%s' "$FETCH_TEST_VAR" "$` + fetchRoleEnv + `"; printf '%06000d' 0 >&2; exit 3`}
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: argv, Env: []string{"FETCH_TEST_VAR=yes"}, Stderr: stderr,
+		Output: func(r io.Reader) error { _, err := io.Copy(&out, r); return err }}, func(context.Context, int, int) error { return nil })
+	if err != nil || res.GitStatus != 3 || res.StderrOpen || out.String() != "yes|" {
+		t.Fatalf("%+v %v, stdout %q", res, err, out.String())
+	}
+	if s := stderr.String(); len(s) != gitErrLimit || strings.Trim(s, "0") != "" {
+		t.Fatalf("stderr: %d bytes", len(s))
+	}
+}
+
+// blockWriter blocks every Write until release is closed.
+type blockWriter struct{ release chan struct{} }
+
+func (w blockWriter) Write(p []byte) (int, error) { <-w.release; return len(p), nil }
+
+// A stderr copy that does not end (its writer blocks) gives StderrOpen within the bound, and the
+// fetch still returns.
+func TestFetchChildStderrHeld(t *testing.T) {
+	w := blockWriter{make(chan struct{})}
+	defer close(w.release)
+	start := time.Now()
+	res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/bin/sh", "-c", "echo held >&2"}, Stderr: w},
+		func(context.Context, int, int) error { return nil })
+	if took := time.Since(start); err != nil || !res.StderrOpen || res.GitStatus != 0 || took > fetchStderrWait+fetchStderrMargin+3*time.Second {
+		t.Fatalf("%+v %v after %v", res, err, took)
+	}
+}
