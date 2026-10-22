@@ -9,12 +9,12 @@ import (
 )
 
 func TestReservedEnvKey(t *testing.T) {
-	for _, k := range []string{"PATH", "HOME", "TMPDIR", "LAZYREX_AGENT", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "REX_SERVER", "REX_SESSION"} {
+	for _, k := range []string{"PATH", "HOME", "TMPDIR", "LAZYREX_AGENT", "GOCACHE", "GOMODCACHE", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "REX_SERVER", "REX_SESSION"} {
 		if !reservedEnvKey(k) {
 			t.Errorf("%s is not reserved", k)
 		}
 	}
-	for _, k := range []string{"LANG", "GIT_AUTHOR_NAME", "XDGX"} {
+	for _, k := range []string{"LANG", "GIT_AUTHOR_NAME", "XDGX", "GOPATH"} {
 		if reservedEnvKey(k) {
 			t.Errorf("%s is reserved", k)
 		}
@@ -233,6 +233,71 @@ func TestTestFilePrompts(t *testing.T) {
 		}
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", raw, err, want)
+		}
+	}
+}
+
+// fakeGo puts a go on a new PATH that prints the two lines of `go env GOCACHE GOMODCACHE`.
+func fakeGo(t *testing.T, cache, mod string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\nprintf '%s\\n%s\\n' '" + cache + "' '" + mod + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+func envKeys(env []string, prefix string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range env {
+		if k, v, _ := strings.Cut(kv, "="); strings.HasPrefix(k, prefix) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// The lab gets the harness's Go caches, and only them: a lab build reuses the user's caches.
+// Before, a lab's go used LAB/home/.cache/go-build and LAB/home/go/pkg/mod, cold each time.
+func TestLabEnvGoCaches(t *testing.T) {
+	fakeGo(t, "/lrt-nonexistent/go-build", "/lrt-nonexistent/mod")
+	t.Setenv("GOPATH", "/outer/gopath")
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("GOTOOLCHAIN", "local")
+	t.Setenv("GOENV", "/outer/goenv")
+	got := envKeys(labEnv("/lab", "unix:///lab/rex.sock", nil), "GO")
+	want := map[string]string{"GOCACHE": "/lrt-nonexistent/go-build", "GOMODCACHE": "/lrt-nonexistent/mod"}
+	if len(got) != len(want) || got["GOCACHE"] != want["GOCACHE"] || got["GOMODCACHE"] != want["GOMODCACHE"] {
+		t.Errorf("Go variables of the lab: %v, want %v", got, want)
+	}
+}
+
+// Without go on PATH the lab gets no Go variable, as before.
+func TestLabEnvNoGo(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if got := envKeys(labEnv("/lab", "unix:///lab/rex.sock", nil), "GO"); len(got) != 0 {
+		t.Errorf("Go variables without go: %v", got)
+	}
+}
+
+// A cache under /tmp or os.TempDir(), or a relative one, is not passed, with one line each.
+func TestLabEnvGoCacheRefusals(t *testing.T) {
+	var lines []string
+	old := goCacheLog
+	goCacheLog = func(s string) { lines = append(lines, s) }
+	t.Cleanup(func() { goCacheLog = old })
+	for _, c := range [][2]string{
+		{"/tmp/gocache", filepath.Join(os.TempDir(), "gomod")},
+		{"cache", "off"},
+	} {
+		lines = nil
+		fakeGo(t, c[0], c[1])
+		if got := envKeys(labEnv("/lab", "unix:///lab/rex.sock", nil), "GO"); len(got) != 0 {
+			t.Errorf("%v: passed %v", c, got)
+		}
+		if len(lines) != 2 || !strings.Contains(lines[0], "GOCACHE") || !strings.Contains(lines[1], "GOMODCACHE") {
+			t.Errorf("%v: lines %q", c, lines)
 		}
 	}
 }

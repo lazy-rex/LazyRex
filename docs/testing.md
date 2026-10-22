@@ -144,14 +144,24 @@ and workers are Rex blocks, so they inherit the server environment) a private en
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | `LAB/home/.config`, `LAB/home/.local/share`, `LAB/home/.local/state`, `LAB/home/.cache` |
 | `TMPDIR` | `LAB/tmp/` |
 | `REX_SERVER` | The lab server. |
+| `GOCACHE`, `GOMODCACHE` | The harness's `go env` values, when `go` is on `PATH` (the one exception below). |
 | `test.env` | As the manifest gives them. |
 
-No other variable is copied. `LANG`, `TERM` and similar variables are not set: Rex and the self-tests
+No other variable is copied, with one exception: `GOCACHE` and `GOMODCACHE`. The harness runs
+`go env GOCACHE GOMODCACHE` once per run and passes both values, so a Go build in a lab reuses the
+user's caches. Without them, each lab built from a cold cache under its own HOME, and Go's
+read-only module files stayed in the lab directory. Go locks and verifies both caches itself, and
+both are content-addressed, so a normal lab build cannot corrupt them. A relative value, or one
+under `/tmp` or the system temporary directory, is not passed; the run prints one line that says
+why. `GOPATH`, `GOFLAGS`, `GOTOOLCHAIN` and `GOENV` are never passed: the lab HOME stays isolated,
+and a lab's `go env -w` writes only the lab's own file. The harness runs `go env` once, in the caller's environment, and
+Go can write its telemetry dir there (`go/telemetry` in the caller's config dir). `LANG`, `TERM` and similar variables are not set: Rex and the self-tests
 do not need them (observed on the Rex build 88fd41c of 2026-10-16). If a tool needs one, set a fixed value in `test.env`.
 
 Rules for `test.env` and `test.args`:
 
-- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `LAZYREX_AGENT`, any `XDG_*` or any `REX_*`.
+- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `LAZYREX_AGENT`, `GOCACHE`, `GOMODCACHE`, any
+  `XDG_*` or any `REX_*`.
 - A value can name `${LAB}` (the lab dir) and `${PLUGIN}` (the dir of `main`). Any other
   placeholder is an error. `~` is not expanded and is refused.
 - A value with a `/`, or one that starts with `.` or `~`, is a path. After expansion a path must be

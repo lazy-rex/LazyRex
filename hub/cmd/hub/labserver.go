@@ -72,6 +72,8 @@ func (l *lab) startServer(ctx context.Context, rexBin string) error {
 	if err := l.srv.Start(); err != nil {
 		return err
 	}
+	// The next statement reports the server to the guard. A kill of this process between Start and
+	// track (microseconds) leaves the server unknown to the guard, and it runs on.
 	l.track(l.srv.Process.Pid)
 	l.srvW = watch(l.srv)
 	l.srvExit = l.srvW.done

@@ -178,10 +178,35 @@ func TestHarnessIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The harness's own `go env GOCACHE GOMODCACHE` (isolation.go goCaches) runs in the outer
+	// environment, and Go writes its telemetry counters to the outer config dir. GOTELEMETRY=off in
+	// the environment does not stop it (observed, Go 1.27.2). That writer is the harness, not a lab
+	// process, so the listing skips exactly the telemetry dirs and the directory entries of their
+	// parents; any other file, also one in a parent such as Application Support/go, still counts.
+	telemetry := []string{
+		filepath.Join(home, "Library", "Application Support", "go", "telemetry"), // macOS
+		filepath.Join(home, ".config", "go", "telemetry"),                        // Linux (XDG_CONFIG_HOME)
+	}
+	skip := func(p string, fi os.FileInfo) bool {
+		for _, d := range telemetry {
+			if p == d || strings.HasPrefix(p, d+string(filepath.Separator)) {
+				return true
+			}
+			if fi != nil && fi.IsDir() && p != home && strings.HasPrefix(d, p+string(filepath.Separator)) {
+				return true // the entry of a parent directory only: each file in it still counts
+			}
+		}
+		return false
+	}
 	listing := func() string {
 		var names []string
-		filepath.Walk(home, func(p string, _ os.FileInfo, _ error) error { names = append(names, p); return nil })
-		return strings.Join(names, "\n")
+		filepath.Walk(home, func(p string, fi os.FileInfo, _ error) error {
+			if !skip(p, fi) {
+				names = append(names, p)
+			}
+			return nil
+		})
+		return strings.Join(names, "\n") + "\n"
 	}
 	before := listing()
 	const secret = "lrt-outer-secret-7f3a"

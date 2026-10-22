@@ -6,19 +6,23 @@ package main
 // explicit absolute path stays readable by the same OS user.
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // reservedEnvKey reports a key that the harness sets itself. Manifest test.env and, in test mode,
 // a profile env cannot set it.
 func reservedEnvKey(k string) bool {
 	switch k {
-	case "PATH", "HOME", "TMPDIR", "LAZYREX_AGENT":
+	case "PATH", "HOME", "TMPDIR", "LAZYREX_AGENT", "GOCACHE", "GOMODCACHE":
 		return true
 	}
 	return strings.HasPrefix(k, "XDG_") || strings.HasPrefix(k, "REX_")
@@ -27,8 +31,87 @@ func reservedEnvKey(k string) bool {
 // labHomeDirs are the directories under the lab that the lab environment names.
 var labHomeDirs = []string{"home", "home/.config", "home/.local/share", "home/.local/state", "home/.cache", "tmp"}
 
+// labGoCaches holds the harness's Go caches for each PATH (goCaches). A run has one PATH, so
+// `go env` runs once per run.
+var labGoCaches = struct {
+	sync.Mutex
+	byPath map[string][]string
+}{byPath: map[string][]string{}}
+
+// goCacheLog prints the line that says why a Go cache is not passed.
+var goCacheLog = func(line string) { fmt.Fprintln(os.Stderr, line) }
+
+// goCaches returns GOCACHE=... and GOMODCACHE=... from `go env` of the harness process, when go is
+// on PATH. These are the one exception to "nothing else is copied": a lab build then reuses the
+// user's caches, and the module cache (read-only files) stays out of the lab directory. Go locks
+// and verifies both caches itself. A relative value, or one under /tmp or os.TempDir(), is not
+// passed (the coordinator's rule: no Go cache in /tmp). GOPATH, GOFLAGS, GOTOOLCHAIN and GOENV are
+// never passed: the lab HOME stays isolated.
+func goCaches() []string {
+	path := os.Getenv("PATH")
+	labGoCaches.Lock()
+	defer labGoCaches.Unlock()
+	if v, ok := labGoCaches.byPath[path]; ok {
+		return v
+	}
+	var out []string
+	defer func() { labGoCaches.byPath[path] = out }()
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	b, err := exec.CommandContext(ctx, goBin, "env", "GOCACHE", "GOMODCACHE").Output()
+	if err != nil {
+		goCacheLog(fmt.Sprintf("lab Go caches: go env: %v; the lab uses its own caches", err))
+		return nil
+	}
+	vals := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if len(vals) != 2 {
+		goCacheLog(fmt.Sprintf("lab Go caches: go env printed %d lines, want 2; the lab uses its own caches", len(vals)))
+		return nil
+	}
+	for i, k := range []string{"GOCACHE", "GOMODCACHE"} {
+		v := vals[i]
+		if why := goCacheRefusal(v); why != "" {
+			goCacheLog(fmt.Sprintf("lab Go caches: %s %q is not passed: %s; the lab uses its own", k, v, why))
+			continue
+		}
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+// goCacheRefusal says why a Go cache value is not passed to a lab, or "".
+func goCacheRefusal(v string) string {
+	if v == "" || v == "off" || !filepath.IsAbs(v) {
+		return "not an absolute path"
+	}
+	for _, root := range []string{"/tmp", os.TempDir()} {
+		// Both the path and the root, as given and resolved (/tmp is /private/tmp on macOS).
+		for _, r := range []string{filepath.Clean(root), realOrClean(root)} {
+			for _, p := range []string{filepath.Clean(v), realOrClean(v)} {
+				if p == r || strings.HasPrefix(p, r+string(filepath.Separator)) {
+					return "it is under " + root
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// realOrClean is p with its symbolic links resolved, or p when it does not exist yet.
+func realOrClean(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
 // labEnv returns the environment of every lab process: PATH from the harness, HOME, XDG_* and
-// TMPDIR under lab, REX_SERVER = the lab server, then extra (sorted). Nothing else is copied.
+// TMPDIR under lab, REX_SERVER = the lab server, the harness's Go caches (goCaches), then extra
+// (sorted). Nothing else is copied.
 func labEnv(lab, server string, extra map[string]string) []string {
 	home := filepath.Join(lab, "home")
 	env := []string{
@@ -41,6 +124,7 @@ func labEnv(lab, server string, extra map[string]string) []string {
 		"TMPDIR=" + filepath.Join(lab, "tmp") + "/",
 		"REX_SERVER=" + server,
 	}
+	env = append(env, goCaches()...)
 	keys := make([]string, 0, len(extra))
 	for k := range extra {
 		keys = append(keys, k)
@@ -196,7 +280,7 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 	dummy := map[string]string{"LAB": "/lab", "PLUGIN": "/plugin"}
 	for k, v := range m.Test.Env {
 		if !envName.MatchString(k) || reservedEnvKey(k) {
-			return fmt.Errorf("test.env %q is not allowed (reserved: PATH, HOME, TMPDIR, XDG_*, REX_*, LAZYREX_AGENT)", k)
+			return fmt.Errorf("test.env %q is not allowed (reserved: PATH, HOME, TMPDIR, XDG_*, REX_*, LAZYREX_AGENT, GOCACHE, GOMODCACHE)", k)
 		}
 		if _, err := expandValue(v, dummy); err != nil {
 			return fmt.Errorf("test.env %s: %w", k, err)
