@@ -173,6 +173,7 @@ Methods:
 | `a:hub(action, args)` | To the hub. |
 | `a:set_label(label)` | Renames the agent's tab in Rex. The hub names an identity by its tab label. |
 | `a:title(text)` | Sets the terminal title of the agent's pane (OSC 2), as an agent CLI does. |
+| `a:print(text)` | Writes `text` to the agent's pane as program output (no newline is added; use `\r\n`), so a test can find known text on the screen (`block.method` with method `format`). |
 | `a:program_status(state, opts)` | Reports the root program status record of the agent's pane (OSC 7501), for example `idle`, `working` or `blocked`, as an agent CLI does. `opts` may add `kind`, `app` and `msg` (plain text; the report carries it as base64), as Claude Code reports a prompt. The hub reads it for notice readiness (`tests/harness/tests/notice_ready.lua`) and for prompts (`tests/prompts`). |
 | `a:input(reset)` | The bytes written to the agent's pane since the capture started. The first call starts the capture: the pane's terminal goes to raw mode without echo, so a key without Enter arrives too. `reset = true` clears the captured bytes after the read. |
 | `a:exit()` | Ends the agent process, as the user quits an agent CLI. The agent cannot be used again. |

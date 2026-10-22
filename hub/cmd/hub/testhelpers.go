@@ -467,7 +467,7 @@ func testAgentMain(argv []string) int {
 	log.SetPrefix("testagent " + *id + " ")
 	ctx := context.Background()
 	var actions []map[string]any
-	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.program_status", "agent.input", "agent.exit"} {
+	for _, n := range []string{"agent.status", "agent.call", "agent.direct", "agent.hub", "agent.report", "agent.report_result", "agent.title", "agent.print", "agent.program_status", "agent.input", "agent.exit"} {
 		actions = append(actions, clientAction(n, n, anyArgs))
 	}
 	c, err := helperDial(ctx, "lazyrex-testagent:"+*id, actions)
@@ -543,6 +543,10 @@ func testAgentMain(argv []string) int {
 		case "agent.title": // the terminal title (OSC 2), as an agent CLI sets it: stdout is the pane
 			title, _ := args["title"].(string)
 			_, err := fmt.Fprintf(os.Stdout, "\x1b]2;%s\x07", title)
+			c.reply(p.CallID, map[string]any{}, err)
+		case "agent.print": // plain text on the agent's screen, as an agent CLI writes output: stdout is the pane
+			text, _ := args["text"].(string)
+			_, err := fmt.Fprint(os.Stdout, text)
 			c.reply(p.CallID, map[string]any{}, err)
 		case "agent.program_status": // the root program status record (OSC 7501), as an agent CLI reports it
 			// Optional kind, app and msg (base64 in the report), as Claude Code reports a prompt.

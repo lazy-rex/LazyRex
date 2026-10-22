@@ -471,6 +471,9 @@ end
 
 -- title sets the terminal title of the agent's pane (OSC 2), as an agent CLI does.
 function Agent:title(text) return perform(self.client, 'agent.title', {title = text}) end
+-- print writes text to the agent's pane as program output (no newline is added), so a test can
+-- read known text on the screen, for example in a terminal snapshot.
+function Agent:print(text) return perform(self.client, 'agent.print', {text = text}) end
 -- program_status reports the root program status record (OSC 7501, Rex Program Status Protocol)
 -- with this state, for example idle, working or blocked. opts: kind, app and msg (plain text), as
 -- an agent CLI reports a prompt.
