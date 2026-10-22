@@ -94,6 +94,24 @@ It does not replace the full lab test of a hub restart during a send.
 
 Physical mouse behavior, iOS touch, and two real apps with different sizes remain unverified here.
 
+### No hub
+
+The renderer finds the hub with `target.resolve` (label `lazyrex-hub`) and `client.inspect` for each candidate.
+It needs exactly one connected hub. The status text depends on the result:
+
+- No connected hub: "No LazyRex hub is connected. To start one, use LazyRex: Start Hub in the palette; if the entry is missing, run lazyrex-hub setup again. This pane retries the connection automatically."
+- More than one: "N LazyRex hubs are connected. This pane needs exactly one."
+- Any other failure: "Hub unavailable: " and the error. A failed `client.inspect` and an unexpected `target.resolve` reply are errors, not a count.
+
+The footer notice is one row, so the first sentence is short: in a 38-column pane it shows whole.
+The renderer maps control characters in the status text to "?" (`paneSafe`, a copy of the hub's).
+It retries with the same backoff and jitter in every case.
+
+Tests: `TestNoHubSaysHowToStartOne`, `TestTwoHubsSayThePaneNeedsOne`, `TestDiscoveryFailuresAreNotACount`, `TestConnectionStatusHasNoControls`, `TestPaneSafe` and `TestNoHubNoticeInANarrowPane` (the protocol fixture and the model).
+Lab: `HUBUNAVAIL_LAB=1 go test -run TestNoHubTextLab .` starts its own lab server and hub, and opens the hub's restart form (a real renderer pane) at 38×14.
+It stops the hub, waits for the no-hub text with no row wider than 38 columns, starts the hub again, and waits for the attached form without the text.
+Observed on Rex `0.0.1792158932-g88fd41`, macOS, 2026-10-22: pass. Rex answers `not_found` with no candidates when no client has the label.
+
 ### Renderer reload
 
 The renderer declares `view.reload`. It accepts requests only from the attached hub,

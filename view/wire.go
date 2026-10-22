@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
@@ -205,12 +206,21 @@ func (w *wire) resolve(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if len(result.Results) != 1 {
-		return "", fmt.Errorf("The hub is not available")
+		return "", fmt.Errorf("Unexpected target.resolve reply: %d results", len(result.Results))
 	}
 	r := result.Results[0]
-	candidates := r.Candidates
-	if r.Status == "resolved" {
+	var candidates []candidate
+	switch r.Status {
+	case "resolved":
+		if r.Target.ClientID == "" {
+			return "", fmt.Errorf("Unexpected target.resolve reply: a target without a client ID")
+		}
 		candidates = []candidate{r.Target}
+	case "ambiguous":
+		candidates = r.Candidates
+	case "not_found": // Rex sends no candidates (lab, 2026-10-22)
+	default:
+		return "", fmt.Errorf("Unexpected target.resolve reply: status %q", r.Status)
 	}
 	var live []string
 	for _, c := range candidates {
@@ -219,12 +229,39 @@ func (w *wire) resolve(ctx context.Context) (string, error) {
 				State string `json:"connection_state"`
 			} `json:"client"`
 		}
-		if w.call(ctx, "client.inspect", map[string]any{"client_id": c.ClientID}, &ins) == nil && ins.Client.State == "connected" {
+		if err := w.call(ctx, "client.inspect", map[string]any{"client_id": c.ClientID}, &ins); err != nil {
+			return "", fmt.Errorf("Cannot inspect the hub client %s: %w", c.ClientID, err)
+		}
+		if ins.Client.State == "connected" {
 			live = append(live, c.ClientID)
 		}
 	}
 	if len(live) != 1 {
-		return "", fmt.Errorf("Expected one connected hub; found %d", len(live))
+		return "", &hubCount{len(live)}
 	}
 	return live[0], nil
+}
+
+// hubCount is a complete discovery that found no connected hub or more than one. resolve returns it
+// only after target.resolve and every client.inspect succeeded; any other failure is an ordinary
+// error. Its text is the pane's status, so the first sentence fits a narrow pane's notice row.
+type hubCount struct{ n int }
+
+func (e *hubCount) Error() string {
+	if e.n == 0 {
+		return "No LazyRex hub is connected. To start one, use LazyRex: Start Hub in the palette; if the entry is missing, run lazyrex-hub setup again. This pane retries the connection automatically."
+	}
+	return fmt.Sprintf("%d LazyRex hubs are connected. This pane needs exactly one.", e.n)
+}
+
+// paneSafe is a copy of paneSafe in hub/cmd/hub/restartlog.go (another module): it maps every
+// control character except tab to "?" (C0, DEL, C1 and invalid UTF-8), so text from Rex or the hub
+// cannot move the cursor or change the terminal.
+func paneSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\t' && (r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f || r == utf8.RuneError) {
+			return '?'
+		}
+		return r
+	}, s)
 }

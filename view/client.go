@@ -416,7 +416,12 @@ func (v *viewClient) run(ctx context.Context) {
 	}()
 	retry := func(err error) {
 		ready = false
-		v.emit(connectionMsg{Text: "Hub unavailable: " + err.Error()})
+		text := "Hub unavailable: " + err.Error()
+		var count *hubCount
+		if errors.As(err, &count) {
+			text = count.Error()
+		}
+		v.emit(connectionMsg{Text: paneSafe(text)})
 		timer.Reset(delay + time.Duration(rand.Int64N(int64(delay))))
 		delay = min(delay*2, 2*time.Second)
 	}
@@ -438,7 +443,7 @@ func (v *viewClient) run(ctx context.Context) {
 			if err != nil {
 				var refused *attachRefused
 				if errors.As(err, &refused) {
-					v.emit(connectionMsg{Text: "Cannot attach this view: " + err.Error()})
+					v.emit(connectionMsg{Text: paneSafe("Cannot attach this view: " + err.Error())})
 					return
 				}
 				retry(err)

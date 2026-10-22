@@ -38,6 +38,11 @@ type protocolFixture struct {
 	resumeBeforeAttach string
 	readAnswers        []any
 	reads              int
+	// Hub discovery (hubunavail_test.go): a target.resolve answer in place of the default (a
+	// *wireError is an error answer), and client.inspect answers by client ID ("fail" is an error
+	// answer; otherwise the connection state).
+	resolveAnswer any
+	inspect       map[string]string
 }
 
 func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -73,12 +78,27 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		case "target.resolve":
 			result = map[string]any{"results": []any{map[string]any{"status": "ambiguous", "candidates": []any{map[string]string{"client_id": "old-hub"}, map[string]string{"client_id": "hub"}}}}}
+			f.mu.Lock()
+			if e, ok := f.resolveAnswer.(*wireError); ok {
+				problem = e
+			} else if f.resolveAnswer != nil {
+				result = f.resolveAnswer
+			}
+			f.mu.Unlock()
 		case "client.inspect":
 			var id string
 			json.Unmarshal(req.Payload["client_id"], &id)
 			state := "connected"
 			if id == "old-hub" {
 				state = "lost"
+			}
+			f.mu.Lock()
+			if s, ok := f.inspect[id]; ok {
+				state = s
+			}
+			f.mu.Unlock()
+			if state == "fail" {
+				problem = &wireError{Code: "not_found", Message: "No client " + id}
 			}
 			result = map[string]any{"client": map[string]string{"connection_state": state}}
 		case "client.perform":
