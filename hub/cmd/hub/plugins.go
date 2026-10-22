@@ -329,6 +329,7 @@ func (h *Hub) dropInstance(ctx context.Context, pl *Plugin, sess, reason string)
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
+	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_session_gone", map[string]any{"plugin": pl.Name, "block_id": old, "session_id": sess, "reason": reason})
 }
 
@@ -750,6 +751,7 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
+	h.fenceStoreWrites(pl)
 	if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": sess, "block_id": old}, nil); err != nil {
 		log.Printf("close old plugin block %s: %v", old, err)
 	}
@@ -924,6 +926,7 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 	if !current {
 		return
 	}
+	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_exited", map[string]any{"plugin": pl.Name, "instance_id": instance, "block_id": blockID})
 	log.Printf("plugin %s exited: %s", pl.Name, payload)
 	h.changed("plugins")
@@ -945,6 +948,7 @@ func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	h.savePlugin(ctx, pl)
 	h.dropKept(pl) // a stopped kept record owns nothing more
 	h.mu.Unlock()
+	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_stopped", map[string]any{"plugin": pl.Name, "block_id": block, "reason": reason})
 	h.changed("plugins")
 }
@@ -990,6 +994,7 @@ func (h *Hub) blockClosed(ctx context.Context, blockID string) {
 		pl.ClientID = ""
 		h.kickAgentKeymap()
 		h.mu.Unlock()
+		h.fenceStoreWrites(pl)
 		go h.classifyClose(pl, blockID, sess)
 		return
 	}
