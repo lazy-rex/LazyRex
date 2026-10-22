@@ -544,3 +544,9 @@ test('the SDK registers before its first SQL call (the hub refuses SQL from an u
   expect(s.exited, show(s.printed)).to_be(nil)
   expect(seen.begins, 'the migration ran').to_be(1)
 end)
+
+test('a plugin with no agent actions declares no hub.forward', function()
+  local s = plugin([[app.action('p.mine', {}, function() return {} end, {user_only = true})]])
+  expect(find(s.keymap, function(a) return a.name == 'hub.forward' end), 'no hub.forward').to_be(nil)
+  expect(s.registered.exports).to_be(nil)
+end)

@@ -674,9 +674,11 @@ function M.plugin(name)
       keymap[#keymap + 1] = {name = n, kind = 'client', title = a.opts.title or n, description = a.opts.description, args = wire}
       if not a.opts.user_only then exports[#exports + 1] = n end
     end
-    keymap[#keymap + 1] = {name = 'hub.forward', kind = 'client', title = 'Forward an agent action',
-      args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}, requester_pid = {type = 'integer'}},
-        required = {'action', 'args', 'requester_pid'}, additionalProperties = false}}
+    if #exports > 0 then -- only a plugin with agent actions takes hub.forward
+      keymap[#keymap + 1] = {name = 'hub.forward', kind = 'client', title = 'Forward an agent action',
+        args = {type = 'object', properties = {action = {type = 'string'}, args = {type = 'object'}, requester_pid = {type = 'integer'}},
+          required = {'action', 'args', 'requester_pid'}, additionalProperties = false}}
+    end
     rex.call('client.keymap', {actions = keymap})
     local reg = {plugin = name, instance_id = app.instance_id}
     if #exports > 0 then reg.exports = exports end
