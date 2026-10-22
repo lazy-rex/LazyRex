@@ -950,10 +950,12 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 // afterSentNone are the refusals of each call that come after sent_at and before the call's own
 // effect: the call retired, spawned and saved nothing. For replace, the resolution of earlier
 // intents can come before them; it belongs to those intents, not to this attempt.
+// A code that the call can also return after its own effect is not in the list: replace returns
+// "stopped" before its retire and after it (retire marked the record stopped).
 var afterSentNone = map[string][]string{
 	"start":   {"refused", "candidate_changed", "dependency_not_ready", "unresolved_intent"},
 	"stop":    {},
-	"replace": {"unresolved_intent", "stopped", "no_instance", "instance_changed", "refused", "candidate_changed", "dependency_not_ready"},
+	"replace": {"unresolved_intent", "no_instance", "instance_changed", "refused", "candidate_changed", "dependency_not_ready"},
 }
 
 // returnProof is the proof that the return of a bound call gives (docs/hub.md, "attempt"):
