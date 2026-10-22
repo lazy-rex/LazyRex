@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 
@@ -22,11 +23,12 @@ type performCall struct {
 }
 
 // performRex is a Rex server for unit tests. It answers each client.perform with answer: a result, or
-// an error code. Every other request gets an empty response.
+// an error code. Every other request gets an empty response; methodsSeen lists them all.
 type performRex struct {
-	Socket string
-	mu     sync.Mutex
-	calls  []performCall
+	Socket  string
+	mu      sync.Mutex
+	calls   []performCall
+	methods []string // every request method, in arrival order
 }
 
 func newPerformRex(t *testing.T, answer func(c performCall) (result any, code string)) *performRex {
@@ -72,6 +74,9 @@ func newPerformRex(t *testing.T, answer func(c performCall) (result any, code st
 				write(map[string]any{"type": "welcome"})
 				continue
 			}
+			fr.mu.Lock()
+			fr.methods = append(fr.methods, f.Method)
+			fr.mu.Unlock()
 			if f.Method != "client.perform" {
 				write(map[string]any{"type": "response", "id": f.ID, "payload": map[string]any{}})
 				continue
@@ -105,6 +110,13 @@ func (fr *performRex) dial(t *testing.T) *rex.Rex {
 	}
 	t.Cleanup(func() { r.Close() })
 	return r
+}
+
+// methodsSeen lists the method of every request so far, in arrival order.
+func (fr *performRex) methodsSeen() []string {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	return slices.Clone(fr.methods)
 }
 
 // actions lists the actions of the client.perform calls so far, in arrival order.

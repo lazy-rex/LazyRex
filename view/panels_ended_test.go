@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -128,5 +130,49 @@ func TestRepeatedReleaseOfTheActiveReplacement(t *testing.T) {
 	_, cmd := m.Update(replacementRequested{Action: "view.release", ID: "r", Title: "Worktrees", valid: func() bool { return true }, reply: func(status string) tea.Cmd { answer = status; return nil }})
 	if answer != "released" || cmd != nil || m.replacement != first {
 		t.Fatalf("a repeated release: %q, cmd %v, same freeze %v", answer, cmd != nil, m.replacement == first)
+	}
+}
+
+// h: the real client, both orders of view.resume R and view.release R on the wire. Resume first:
+// the release answers cancelled and nothing freezes. Release first: it freezes, and the resume
+// unfreezes. Each answer is on the wire after its model step.
+func TestResumeAndReleaseInBothOrdersOnTheClient(t *testing.T) {
+	for _, resumeFirst := range []bool{true, false} {
+		f := &protocolFixture{replies: make(chan map[string]json.RawMessage, 8)}
+		c, msgs := startFixture(t, f)
+		waitMessage(t, msgs, func(msg tea.Msg) bool { s, ok := msg.(connectionMsg); return ok && s.Ready })
+		m := newModel(c)
+		m.ready = true
+		call := func(action string) string {
+			t.Helper()
+			raw, _ := json.Marshal(map[string]any{"type": "client_perform_requested", "payload": map[string]any{"call_id": action, "action": action, "requester": map[string]string{"client_id": "hub"}, "args": map[string]string{"view_id": "v1", "attachment": "attachment", "replacement_id": "r1", "next_title": "Worktrees"}}})
+			c.event(raw)
+			var request replacementRequested
+			waitMessage(t, msgs, func(msg tea.Msg) bool { var ok bool; request, ok = msg.(replacementRequested); return ok })
+			if _, cmd := m.Update(request); cmd != nil {
+				cmd()
+			}
+			select {
+			case reply := <-f.replies:
+				var result map[string]string
+				json.Unmarshal(reply["result"], &result)
+				return result["status"]
+			case <-time.After(5 * time.Second):
+				t.Fatalf("no answer to %s", action)
+				return ""
+			}
+		}
+		if resumeFirst {
+			if a, b := call("view.resume"), call("view.release"); a != "resumed" || b != "cancelled" || m.replacement != nil {
+				t.Fatalf("resume, then release: %q, %q, frozen %v", a, b, m.replacement != nil)
+			}
+		} else {
+			if a := call("view.release"); a != "released" || m.replacement == nil {
+				t.Fatalf("release first: %q, frozen %v", a, m.replacement != nil)
+			}
+			if b := call("view.resume"); b != "resumed" || m.replacement != nil {
+				t.Fatalf("then resume: %q, frozen %v", b, m.replacement != nil)
+			}
+		}
 	}
 }

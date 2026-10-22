@@ -47,6 +47,10 @@ func TestReleaseAnswerForAnEndedRowResumesOnce(t *testing.T) {
 				if got := fr.actions(); !slices.Equal(got, want) {
 					t.Fatalf("calls %v, want %v", got, want)
 				}
+				// No new pane: the hub made no request other than these client.perform calls.
+				if m := fr.methodsSeen(); len(m) != len(want) || slices.ContainsFunc(m, func(s string) bool { return s != "client.perform" }) {
+					t.Fatalf("requests %v, want only %d client.perform", m, len(want))
+				}
 				var state string
 				h.db.QueryRow(`SELECT state FROM ui_replacements WHERE repl_id = 'R'`).Scan(&state)
 				if state != moved {
