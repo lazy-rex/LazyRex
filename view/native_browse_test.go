@@ -170,7 +170,8 @@ func TestNativeBrowseWireAndRefusal(t *testing.T) {
 		t.Run(map[bool]string{false: "opened", true: "refused"}[refusal], func(t *testing.T) {
 			f := &protocolFixture{}
 			if refusal {
-				f.appError = &wireError{Code: "no_app", Message: "No app is connected"}
+				// The hub's refusal message starts with its code (hub refuse, store.go).
+				f.appError = &wireError{Code: "no_app", Message: "no_app: no Rex app shows this session"}
 			}
 			c, msgs := startFixture(t, f)
 			waitMessage(t, msgs, func(msg tea.Msg) bool { s, ok := msg.(connectionMsg); return ok && s.Ready })
@@ -189,8 +190,8 @@ func TestNativeBrowseWireAndRefusal(t *testing.T) {
 			if calls != 1 || m.editors[id].text() != "/keep" {
 				t.Fatal("Wrong call count or lost value")
 			}
-			if refusal && (m.browse != nil || !strings.Contains(m.status, "No app is connected")) {
-				t.Fatal("Refusal was not shown")
+			if refusal && (m.browse != nil || m.status != "Could not open the folder browser: no_app: no Rex app shows this session") {
+				t.Fatalf("Refusal status %q", m.status)
 			}
 			if !refusal && m.browse == nil {
 				t.Fatal("Opened ended the wait before input arrived")
