@@ -144,7 +144,9 @@ func TestSetupLab(t *testing.T) {
 		}
 		cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], a.answer+"\r")
 	}
-	got := waitFor("the report", func(s string) bool { return strings.Contains(s, "Run `rex config reload`") })
+	got := waitFor("the report", func(s string) bool {
+		return strings.Contains(s, "Load the LazyRex palette entries: rex -S "+shellWord(socket)+" config reload")
+	})
 	if strings.Count(got, "Written:") != 5 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
 		t.Fatalf("report:\n%s", got)
 	}

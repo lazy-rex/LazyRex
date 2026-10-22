@@ -143,6 +143,11 @@ func TestSetupAllYes(t *testing.T) {
 	if src := cfg.entries[0].Source; src != "github:lazy-rex/LazyRex/plugins/lazyrex@v0.10.0" {
 		t.Fatalf("source %q", src)
 	}
+	// The reload names the server that setup configured, not the caller's (codex-24's review of
+	// 87ecc24).
+	if want := "rex -S " + shellWord(setupLabServer) + " config reload"; !strings.Contains(out.String(), want) {
+		t.Fatalf("no %q in:\n%s", want, out)
+	}
 	profs, order, err := (&Hub{}).loadFrom([]string{cfg.Profiles})
 	if err != nil || strings.Join(order, ",") != "shell,claude,codex" || profs["codex"].Command[1] != "--no-daemon" {
 		t.Fatalf("profiles %v %v %v", order, profs, err)

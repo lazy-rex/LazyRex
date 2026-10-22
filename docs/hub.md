@@ -492,7 +492,7 @@ Exit status:
 
 A decline is the user's choice, not an error. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
 
-The boot file has the palette entries that work without a running hub. **LazyRex: Set Up** opens a new window in the caller's session, with a pane that runs the same setup command: the same binary, `-dir`, and `-server` if it was given. The pane stays open after setup ends, so the user can read the report. After setup writes the boot file or the Rex config, it prints `rex config reload` as the next step. The Rex config loads both files with `pcall`, so a missing file is not an error.
+The boot file has the palette entries that work without a running hub. **LazyRex: Set Up** opens a new window in the caller's session, with a pane that runs the same setup command: the same binary, `-dir`, and `-server` if it was given. The pane stays open after setup ends, so the user can read the report. After setup writes the boot file or the Rex config, it prints `rex -S <server> config reload` as the next step, with the server that it configured (a bare `rex config reload` would reach the caller's server). The Rex config loads both files with `pcall`, so a missing file is not an error.
 
 The skill in the binary is a copy of `skills/lazyrex/SKILL.md` at `hub/cmd/hub/setupfiles/SKILL.md`, because `go:embed` cannot reach outside the hub module. `TestSetupSkillCopy` fails when the two differ.
 

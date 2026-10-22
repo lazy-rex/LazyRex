@@ -478,7 +478,8 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	}
 	say("\nNext: run `rex skill setup` to install Rex's own skill and hooks. Setup does not run it.")
 	if rexWritten {
-		say("Run `rex config reload` (or restart Rex) to load the LazyRex palette entries.")
+		// The server that setup configured: a bare `rex config reload` would reach the caller's.
+		say("Load the LazyRex palette entries: rex -S %s config reload", shellWord(server))
 	}
 	// A blocked file or a failed write is an error; a declined file is the user's choice.
 	if len(failed) > 0 || len(blocked) > 0 {
