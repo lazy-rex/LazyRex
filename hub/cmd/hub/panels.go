@@ -44,12 +44,14 @@ import (
 // an unknown outcome stays here), closing (the new pane exists; the old one closes), done,
 // cancelled, superseded (an unresolved row that a newer open in its window replaced; the old view
 // was resumed with the old ID first; the hub still closes the late pane), user_closed (the user
-// closed the old view while the row waited; the hub closes a late pane), late_closed.
+// closed the old view while the row waited; the hub closes a late pane), late_closed, skipped (a
+// closed form's return in layer mode whose focus check failed; terminal, no pane was asked for).
+// return_of is the closed form of such a return (” for every other row).
 const panelSchema = `
 CREATE TABLE IF NOT EXISTS ui_replacements (repl_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
   window_id TEXT NOT NULL, old_view TEXT NOT NULL DEFAULT '', new_view TEXT NOT NULL, plugin TEXT NOT NULL,
   route TEXT NOT NULL, context TEXT NOT NULL, focus INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL,
-  next_title TEXT NOT NULL DEFAULT '', created TEXT NOT NULL);
+  next_title TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, return_of TEXT NOT NULL DEFAULT '');
 `
 
 // slotReturn is the panel that a form replaced. The form's end opens it again.
@@ -92,17 +94,20 @@ type slotRequest struct {
 	ExpectOld   string // replace only this view (the form that ran the action); release is still asked
 	ExpectEmpty bool   // open only into an empty slot (a return after the form closed)
 	NextTitle   string // shown by the old renderer while it waits
+	// ReturnOf is the closed form of a return in layer mode: the pane opens, with focus, only if
+	// the focus is still on Ctx.UnderBlock just before the open (spawnSlot); else the row is skipped.
+	ReturnOf string
 }
 
 type slotRow struct {
-	ID, Session, Window, Old, New, Plugin, Route, Context, State, Title string
-	Focus                                                               bool
+	ID, Session, Window, Old, New, Plugin, Route, Context, State, Title, ReturnOf string
+	Focus                                                                         bool
 }
 
 func (h *Hub) slotRow(ctx context.Context, q querier, id string) (*slotRow, error) {
 	var r slotRow
-	err := q.QueryRowContext(ctx, `SELECT repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title
-		FROM ui_replacements WHERE repl_id = ?`, id).Scan(&r.ID, &r.Session, &r.Window, &r.Old, &r.New, &r.Plugin, &r.Route, &r.Context, &r.Focus, &r.State, &r.Title)
+	err := q.QueryRowContext(ctx, `SELECT repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title, return_of
+		FROM ui_replacements WHERE repl_id = ?`, id).Scan(&r.ID, &r.Session, &r.Window, &r.Old, &r.New, &r.Plugin, &r.Route, &r.Context, &r.Focus, &r.State, &r.Title, &r.ReturnOf)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -217,18 +222,30 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 			req.Ctx.Return = prev.Return
 		}
 	}
+	if h.cfg.UISlot == "layer" {
+		// The under block is captured once, before the slot's first layer has the focus. A
+		// replacement keeps the replaced view's value (also an empty one from an older row); a
+		// return keeps the value of the panel that it opens again.
+		if old != "" {
+			var prev formContext
+			json.Unmarshal([]byte(raw), &prev)
+			req.Ctx.UnderBlock = prev.UnderBlock
+		} else if req.ReturnOf == "" {
+			req.Ctx.UnderBlock = h.slotUnder(ctx, req.Ctx.SessionID, req.Ctx.WindowID)
+		}
+	}
 	b, _ := json.Marshal(req.Ctx)
 	state := "opening"
 	if old != "" {
 		state = "releasing"
 	}
 	r := &slotRow{ID: req.ReplID, Session: req.Ctx.SessionID, Window: req.Ctx.WindowID, Old: old, New: slotViewID(req.ReplID),
-		Plugin: req.Plugin, Route: req.Route, Context: string(b), Focus: req.Focus, State: state, Title: req.NextTitle}
+		Plugin: req.Plugin, Route: req.Route, Context: string(b), Focus: req.Focus, State: state, Title: req.NextTitle, ReturnOf: req.ReturnOf}
 	if r.Title == "" {
 		r.Title = h.commandTitle(ctx, r.Plugin, r.Route)
 	}
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title, created)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.ID, r.Session, r.Window, r.Old, r.New, r.Plugin, r.Route, r.Context, r.Focus, r.State, r.Title, now()); err != nil {
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title, created, return_of)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.ID, r.Session, r.Window, r.Old, r.New, r.Plugin, r.Route, r.Context, r.Focus, r.State, r.Title, now(), r.ReturnOf); err != nil {
 		return nil, err
 	}
 	h.ev.emit("slot_replacement", map[string]any{"replacement_id": r.ID, "window_id": r.Window, "old_view": r.Old, "new_view": r.New, "route": r.Route, "state": r.State})
@@ -403,6 +420,8 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 		return nil, refuse("conflict", "the side panel changed while this one opened")
 	case "late_closed":
 		return nil, refuse("conflict", "the side panel changed while this one opened")
+	case "skipped":
+		return nil, refuse("conflict", "the panel did not open again: the focus is not where the form opened")
 	case "done":
 		return answer("opened"), nil
 	case "opening":
@@ -446,6 +465,15 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 // spawnSlot asks Rex for the new pane, once per row. A definite refusal cancels the row and
 // resumes the old view; an unknown outcome leaves the view row 'sending' and the row 'opening'.
 func (h *Hub) spawnSlot(ctx context.Context, r *slotRow) error {
+	if r.ReturnOf != "" {
+		// The last check before new_layer, under the window lock. The read and the open are not
+		// one step: the focus can still move in between (docs/hub.md).
+		var fc formContext
+		json.Unmarshal([]byte(r.Context), &fc)
+		if why := h.returnFocusWhy(ctx, r.Session, r.Window, fc.UnderBlock); why != "" {
+			return h.skipReturn(ctx, r, why)
+		}
+	}
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never')`,
 		r.New, r.Plugin, formTab, r.Route, r.Context, r.Session); err != nil {
 		return err
@@ -522,6 +550,82 @@ func (h *Hub) slotPane(ctx context.Context, window string, args map[string]any, 
 	layer := map[string]any{"session_id": args["session_id"], "window_id": window, "bounds": slotLayerBounds,
 		"focus": args["focus"], "layout": args["layout"]}
 	return call(h, ctx, "session.new_layer", layer, out)
+}
+
+// slotFocus reads the focus of window: whether it is the session's active window, its focused
+// block, and whether that block is in its tiled layer. A window that is not in the session is an
+// error.
+func (h *Hub) slotFocus(ctx context.Context, sess, window string) (active bool, focused string, tiled bool, err error) {
+	var sv struct {
+		ActiveWindowID string `json:"active_window_id"`
+		Windows        []struct {
+			WindowID       string `json:"window_id"`
+			FocusedBlockID string `json:"focused_block_id"`
+			Layers         []struct {
+				Kind   string `json:"kind"`
+				Blocks []struct {
+					BlockID string `json:"block_id"`
+				} `json:"blocks"`
+			} `json:"layers"`
+		} `json:"windows"`
+	}
+	if err := h.rex.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv); err != nil {
+		return false, "", false, err
+	}
+	for _, w := range sv.Windows {
+		if w.WindowID != window {
+			continue
+		}
+		for _, l := range w.Layers {
+			for _, b := range l.Blocks {
+				if l.Kind == "tiled" && b.BlockID != "" && b.BlockID == w.FocusedBlockID {
+					tiled = true
+				}
+			}
+		}
+		return sv.ActiveWindowID == window, w.FocusedBlockID, tiled, nil
+	}
+	return false, "", false, fmt.Errorf("window %s is not in session %s", window, sess)
+}
+
+// slotUnder is the under block of a new slot layer: the window's focused block if it is in the
+// tiled layer, else "" (the focus is in a floating layer, or the read failed).
+func (h *Hub) slotUnder(ctx context.Context, sess, window string) string {
+	_, focused, tiled, err := h.slotFocus(ctx, sess, window)
+	if err != nil || !tiled {
+		return ""
+	}
+	return focused
+}
+
+// returnFocusWhy is why a closed form's return must not open (layer mode), or "": the window is
+// active and its focus is on the tiled block that was focused before the slot opened. A return
+// never takes the focus from another place (the user, 2026-10-22: "never steal focus").
+func (h *Hub) returnFocusWhy(ctx context.Context, sess, window, under string) string {
+	if under == "" {
+		return "under_unknown" // also a row from before under was recorded
+	}
+	active, focused, tiled, err := h.slotFocus(ctx, sess, window)
+	switch {
+	case err != nil:
+		return "read_failed"
+	case !active:
+		return "window_not_active"
+	case focused != under || !tiled:
+		return "focus_moved"
+	}
+	return ""
+}
+
+// skipReturn ends a return without a pane: skipped is terminal, so no later pass opens it.
+func (h *Hub) skipReturn(ctx context.Context, r *slotRow, why string) error {
+	if err := h.setSlotState(ctx, r, "skipped"); err != nil && !errors.Is(err, errSlotMoved) {
+		return err
+	}
+	if r.State == "skipped" {
+		h.ev.emit("form_return_skipped", map[string]any{"view_id": r.ReturnOf, "replacement_id": r.ID, "why": why})
+	}
+	return nil
 }
 
 // slotDirect is a slotPane call without a test hook.
@@ -731,8 +835,10 @@ func (h *Hub) slotOldClosed(ctx context.Context, viewID string) {
 // before the release succeeds. It reports whether a return was requested: true, the replacement
 // owns the form's pane (also when it was refused or the user kept editing; the form stays and err
 // says why); false, no return, and the caller closes the form. A closed form's return opens only
-// into an empty slot and never takes the focus: the hub does not know where the user was (Codex's
-// review).
+// into an empty slot. In split mode it never takes the focus: the hub does not know where the user
+// was (Codex's review). In layer mode an unfocused layer would cover the user's pane, so the return
+// opens with the focus, and only while the focus is still on the form's under block; otherwise it
+// is skipped (form_return_skipped).
 // opKey is the operation key of the action that ended an open form: a new submit after Keep
 // editing gets a new return row; a replay gets the same one (Codex's review).
 func (h *Hub) formEnded(ctx context.Context, viewID string, fc formContext, open bool, opKey string) (bool, error) {
@@ -751,10 +857,14 @@ func (h *Hub) formEnded(ctx context.Context, viewID string, fc formContext, open
 		if open && transient(err) {
 			return true, err // retry; the form stays
 		}
+		if !open && h.cfg.UISlot == "layer" {
+			h.ev.emit("form_return_skipped", map[string]any{"view_id": viewID, "why": "read_failed"})
+		}
 		return false, nil
 	}
 	rc := fc.Return.Context
 	rc.Panel = true
+	rc.UnderBlock = fc.UnderBlock // the form's value: a replacement chain keeps it
 	focused, alive := "", false
 	for _, w := range sv.Windows {
 		if w.WindowID == rc.WindowID {
@@ -777,6 +887,9 @@ func (h *Hub) formEnded(ctx context.Context, viewID string, fc formContext, open
 		req.Focus = sv.ActiveWindowID == rc.WindowID && focused != "" && focused == h.viewBlock(viewID)
 	} else {
 		req.ExpectEmpty = true
+		if h.cfg.UISlot == "layer" {
+			req.ReturnOf, req.Focus = viewID, true // spawnSlot checks the focus just before the open
+		}
 	}
 	if _, err := h.openSlot(ctx, req); err != nil {
 		log.Printf("slot: return to %s/%s: %v", fc.Return.Plugin, fc.Return.Route, err)

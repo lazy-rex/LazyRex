@@ -172,10 +172,11 @@ func (h *Hub) uiStart(ctx context.Context) error {
 		`ALTER TABLE ui_tabs ADD COLUMN closed_revision TEXT NOT NULL DEFAULT ''`,
 		// 1: the row was written by a hub that knows revisions; 0: older, its close has no revision.
 		`ALTER TABLE ui_tabs ADD COLUMN rev_known INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE ui_homes ADD COLUMN label_at TEXT NOT NULL DEFAULT ''`,      // rememberHomeLabel
-		`ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`,         // tabstatus.go
-		`ALTER TABLE ui_replacements ADD COLUMN kept INTEGER NOT NULL DEFAULT 0`, // panels.go: Keep editing
-		`ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,         // pair.go
+		`ALTER TABLE ui_homes ADD COLUMN label_at TEXT NOT NULL DEFAULT ''`,         // rememberHomeLabel
+		`ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`,            // tabstatus.go
+		`ALTER TABLE ui_replacements ADD COLUMN kept INTEGER NOT NULL DEFAULT 0`,    // panels.go: Keep editing
+		`ALTER TABLE ui_replacements ADD COLUMN return_of TEXT NOT NULL DEFAULT ''`, // panels.go: a closed form's return
+		`ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,            // pair.go
 		`ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {

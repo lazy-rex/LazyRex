@@ -80,6 +80,9 @@ type formContext struct {
 	Panel          bool         `json:"panel,omitempty"`   // a side panel, not a form (panels.go)
 	Return         *slotReturn  `json:"return,omitempty"`  // the panel this form replaced
 	Restart        *restartForm `json:"restart,omitempty"` // the hub's restart form: its snapshot (restartform.go)
+	// UnderBlock (ui_slot "layer") is the window's focused tiled block before the slot's first
+	// layer opened; a replacement keeps it. A closed form's return takes the focus only from it.
+	UnderBlock string `json:"under_block_id,omitempty"`
 }
 
 func formsStart(ctx context.Context, db *DB) error {

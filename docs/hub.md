@@ -1080,6 +1080,29 @@ its layer goes with it. A transcript pair inside a layer is checked in that laye
 The key goes away when the user decides. Tests: `TestUISlotConfig`, `TestSlotPaneLayer`,
 `TestSlotLayerLab` (`PANELS_LAB_SOCKET`).
 
+The return of a closed form in layer mode (contract v2.1, 2026-10-22). When a form closes without
+an action (Esc, its exit, the user's close of its pane, a hub close), the hub opens the panel that
+the form replaced again. In layer mode an unfocused layer would cover the user's pane, and a
+focused one must not take the focus from another place. So:
+
+- When a slot's first layer opens, the hub records the window's focused block, if that block is in
+  the window's tiled layer (`under_block_id` in the form context; `""` otherwise). A replacement
+  (panel to form, form to form, form to panel) keeps the replaced view's value and never reads it
+  again. The value is stored before `session.new_layer`.
+- The return opens, with the focus, only when the session's active window is the return window and
+  that window's focused block is exactly the recorded tiled block. The hub reads this under the
+  window lock, just before `session.new_layer`.
+- Otherwise no layer opens. The return's replacement row ends in the terminal state `skipped`, and
+  the hub emits `form_return_skipped {view_id, replacement_id?, why}`. `why` is
+  `window_not_active`, `focus_moved` (another block or layer has the focus), `under_unknown` (no
+  recorded block, also for a form from an older hub) or `read_failed`. The user opens the panel
+  again from the palette.
+- Limit: the read and `session.new_layer` are two calls. The focus can move between them, and a
+  move away and back before the read cannot be seen. Rex has no conditional focus operation.
+
+Split mode and the return after an action (the return replaces the form) do not change. Tests:
+`TestSlotLayerReturn*Lab` (`panels_return_lab_test.go`).
+
 The hub stores `{session_id, window_id, source_view_id, source_route,
 source_block_id, source_pwd, source_pwd_error}` as form context. Every form
 render and action receives this object in `args.context`. The plugin does not
