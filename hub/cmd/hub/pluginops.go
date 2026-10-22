@@ -47,9 +47,18 @@ CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NU
   UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
 -- run; the manager observes its result and never calls again.
+-- bound_at: the handler bound the attempt (with target_instance and target_block) before its first
+-- effect. sent_at: the handler committed it before its first effect; empty sent_at means that no
+-- effect began. intent_id: the spawn intent of a start or a replace. proof: how the outcome is
+-- known (separate from the outcome text). resolved_by: the operator that resolved the attempt.
 CREATE TABLE IF NOT EXISTS plugin_op_attempts (attempt TEXT PRIMARY KEY, op_id TEXT NOT NULL, call TEXT NOT NULL,
   expect_instance TEXT NOT NULL DEFAULT '', expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
-  outcome TEXT NOT NULL DEFAULT '');
+  outcome TEXT NOT NULL DEFAULT '', bound_at TEXT NOT NULL DEFAULT '', target_instance TEXT NOT NULL DEFAULT '',
+  target_block TEXT NOT NULL DEFAULT '', intent_id TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
+  proof TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '');
+-- The release hold: at most one row. A release tool holds it while no manager write may run.
+CREATE TABLE IF NOT EXISTS plugin_hold (one INTEGER PRIMARY KEY CHECK (one = 1), release_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL);
 `
 
 // pluginOpPhases are the working phases of each kind, in order.
