@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,21 +49,93 @@ type wire struct {
 	event   func(json.RawMessage)
 }
 
-// realSocket accepts only the user's real Rex server socket. The hub passes -real-server to
-// renderers only when it runs with -real-server itself (an approved run).
+// realSocket accepts only a default Rex server socket (knownDefault). The hub passes -real-server
+// to renderers only when it runs with -real-server itself (an approved run). A Linux pane has no
+// REX_SERVER: then the renderer takes this user's default socket that exists.
 func realSocket(server string) (string, error) {
-	p, err := url.PathUnescape(strings.TrimPrefix(server, "unix://"))
-	if err != nil || !strings.HasPrefix(server, "unix://") {
+	home, _ := os.UserHomeDir()
+	return realSocketFor(server, home, os.Getenv("XDG_RUNTIME_DIR"), os.Getuid())
+}
+
+func realSocketFor(server, home, xdg string, uid int) (string, error) {
+	if server == "" {
+		for _, c := range defaultSockets(home, xdg, uid) {
+			if _, err := os.Stat(c); err == nil {
+				return c, nil
+			}
+		}
+		return "", fmt.Errorf("-real-server is set, REX_SERVER is empty, and no default Rex socket exists")
+	}
+	if !strings.HasPrefix(server, "unix://") {
 		return "", fmt.Errorf("A Unix socket is required")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	if filepath.Clean(p) != filepath.Join(home, "Library/Application Support/rex/server.sock") {
+	if !knownDefault(server, home, xdg, uid) {
 		return "", fmt.Errorf("-real-server is set, but REX_SERVER is not the real Rex server")
 	}
+	p, _ := url.PathUnescape(strings.TrimPrefix(server, "unix://"))
 	return filepath.Clean(p), nil
+}
+
+// knownDefault and its helpers are a copy of hub/internal/rexreal (another Go module): keep the
+// code and TestKnownDefault equal in both. The default sockets of macOS and Linux, of any home or
+// uid, count on either host.
+func knownDefault(endpoint, home, xdg string, uid int) bool {
+	p, ok := socketPath(endpoint)
+	if !ok {
+		return false
+	}
+	for _, c := range defaultSockets(home, xdg, uid) {
+		if resolveSocket(c) == p {
+			return true
+		}
+	}
+	if strings.HasSuffix(p, "/Library/Application Support/rex/server.sock") {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(p, "/run/user/"); ok {
+		u, tail, _ := strings.Cut(rest, "/")
+		if _, err := strconv.Atoi(u); err == nil && tail == "rex/server.sock" {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultSockets: macOS ~/Library/Application Support/rex/server.sock; Linux
+// $XDG_RUNTIME_DIR/rex/server.sock, then /run/user/<uid>/rex/server.sock (Rex's path without
+// XDG_RUNTIME_DIR). A relative home or XDG_RUNTIME_DIR makes no candidate.
+func defaultSockets(home, xdg string, uid int) []string {
+	var c []string
+	if filepath.IsAbs(home) {
+		c = append(c, filepath.Join(home, "Library", "Application Support", "rex", "server.sock"))
+	}
+	if filepath.IsAbs(xdg) {
+		c = append(c, filepath.Join(xdg, "rex", "server.sock"))
+	}
+	return append(c, filepath.Join("/run/user", strconv.Itoa(uid), "rex", "server.sock"))
+}
+
+func socketPath(endpoint string) (string, bool) {
+	p, ok := strings.CutPrefix(endpoint, "unix://")
+	if !ok {
+		return "", false
+	}
+	p, err := url.PathUnescape(p)
+	if err != nil || !filepath.IsAbs(p) {
+		return "", false
+	}
+	return resolveSocket(p), true
+}
+
+func resolveSocket(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return p
 }
 
 func labSocket(server string) (string, error) {
