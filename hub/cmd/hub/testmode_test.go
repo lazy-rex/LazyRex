@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParityProblem(t *testing.T) {
@@ -121,11 +123,24 @@ func TestLabProofAccepts(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 	sock := filepath.Join(dir, "rex.sock")
-	cmd := exec.Command("/bin/sh", "-c", "sleep 30; true", "sh", "--listen", "unix://"+sock, "--state-dir", filepath.Join(dir, "state"))
+	// read is a shell builtin: the stand-in waits on the pipe that the test holds, with no child process.
+	cmd := exec.Command("/bin/sh", "-c", "read x", "sh", "--listen", "unix://"+sock, "--state-dir", filepath.Join(dir, "state"))
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer cmd.Process.Kill()
+	defer func() {
+		stdin.Close()
+		cmd.Wait()
+	}()
+	// The stand-in must have no child: a child would outlive the test.
+	time.Sleep(100 * time.Millisecond)
+	if exec.Command("pgrep", "-P", strconv.Itoa(cmd.Process.Pid)).Run() == nil {
+		t.Fatal("the stand-in lab server has a child process")
+	}
 	write := func(socket string, pid int) {
 		b, _ := json.Marshal(map[string]any{"socket": socket, "server_pid": pid, "nonce": "n"})
 		os.WriteFile(filepath.Join(dir, "lab.json"), b, 0o600)
