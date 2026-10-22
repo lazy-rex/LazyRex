@@ -525,8 +525,16 @@ end
 -- the capture: raw mode, no echo). reset = true clears the captured bytes after the read.
 function Agent:input(reset) return perform(self.client, 'agent.input', {reset = reset or false}).data end
 -- exit ends the agent process, as the user quits an agent CLI. The agent cannot be used again.
+-- It returns when the client has disconnected: a new agent with the same name has the same label,
+-- and its start would otherwise resolve this client.
 function Agent:exit()
   perform(self.client, 'agent.exit', {})
+  wait('agent ' .. self.id .. ' to disconnect', function()
+    local got = {}
+    local ok = pcall(function() got.ins, got.err = H.rex_call('client.inspect', {client_id = self.client}) end)
+    local cl = ok and not got.err and type(got.ins) == 'table' and got.ins.client or nil
+    return not (cl and cl.connection_state == 'connected')
+  end, 10)
   agents[self.id] = nil
 end
 -- call runs an exported plugin action through the agent face: the MCP path.
