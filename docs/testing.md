@@ -193,8 +193,10 @@ Use it to test the plugin's refusal of an unknown caller.
 A call with a client that is not a nonempty string fails in the runner with the code `bad_client`
 and a traceback; it never reaches Rex. A View's renderer client is checked the same way: the
 harness uses a client only when its ID starts with `client:` and `client.inspect` reports that same
-ID as connected. A refused candidate writes a `harness:` line with both raw Rex answers to
-`runner.log` (`tests/harness/tests/resolve_guard.lua`).
+ID as connected. Every other candidate writes a `harness:` line to `runner.log` with the raw
+`target.resolve` answer and the `client.inspect` answer or error: a malformed ID, an inspect error
+(returned or raised), or an answer for another ID. Only a client ID that `client.inspect` reports
+disconnected for that same ID is skipped without a line (`tests/harness/tests/resolve_guard.lua`).
 
 ### The UI user
 

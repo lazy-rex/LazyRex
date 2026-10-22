@@ -64,3 +64,38 @@ test('perform refuses a missing client before it calls Rex', function()
     expect(e.message).to_match('traceback')
   end
 end)
+
+test('resolve logs a candidate when client.inspect refuses it', function()
+  -- The lab answer to client.inspect {client_id = ""}: bad_request. rex.call may return the error or
+  -- raise it; both get a diagnostic line.
+  local refusal = {code = 'bad_request', message = 'client ID must start with "client:": ""'}
+  local fakes = {
+    function() return nil, refusal end,
+    function() error(refusal, 0) end,
+  }
+  for _, f in ipairs(fakes) do
+    local got = with_fake({['target.resolve'] = resolved(''), ['client.inspect'] = f},
+      function() return H.resolve('lazyrex-testview:v1') end)
+    expect(got.value).to_be(nil)
+    expect(got.lines).to_have_length(1)
+    expect(got.lines[1]).to_match('refused candidate ""')
+    expect(got.lines[1]).to_match('bad_request')
+  end
+end)
+
+test('resolve logs a malformed candidate that Rex calls disconnected', function()
+  local got = with_fake({['target.resolve'] = resolved('abc'),
+    ['client.inspect'] = {client = {client_id = 'abc', connection_state = 'disconnected'}}},
+    function() return H.resolve('lazyrex-testview:v1') end)
+  expect(got.value).to_be(nil)
+  expect(got.lines).to_have_length(1)
+  expect(got.lines[1]).to_match('refused candidate "abc"')
+end)
+
+test('resolve skips a disconnected client without a diagnostic', function()
+  local got = with_fake({['target.resolve'] = resolved('client:old'),
+    ['client.inspect'] = {client = {client_id = 'client:old', connection_state = 'disconnected'}}},
+    function() return H.resolve('lazyrex-testview:v1') end)
+  expect(got.value).to_be(nil)
+  expect(got.lines).to_have_length(0)
+end)

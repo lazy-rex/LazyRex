@@ -71,9 +71,11 @@ H.diag = function(text) io.write('harness: ', (text:gsub('\n', ' ')), '\n') end
 local function is_client_id(id) return type(id) == 'string' and id:sub(1, 7) == 'client:' and #id > 7 end
 
 -- resolve gives the one connected client with this label, or nil. A candidate counts only when its
--- ID is a client ID and client.inspect answers for that same ID, connected. A candidate that Rex
--- says is connected but fails that check is logged with both raw answers: it is the evidence for
--- a View with an empty client (the Worktrees flake, 2026-10-22).
+-- ID is a client ID and client.inspect answers for that same ID, connected. Every other candidate
+-- is logged with the raw target.resolve answer and the inspect answer or error (a refusal can come
+-- back as an error or be raised): it is the evidence for a View with an empty client (the Worktrees
+-- flake, 2026-10-22). Only a well-formed client that inspect reports disconnected is skipped
+-- without a line: a client that closed.
 local function resolve(label)
   local res, err = H.rex_call('target.resolve', {kinds = {'client'}, queries = {label}})
   if err or not res or not res.results or not res.results[1] then return nil end
@@ -81,15 +83,18 @@ local function resolve(label)
   local cands = r.status == 'resolved' and {r.target} or (r.candidates or {})
   local connected = {}
   for _, c in ipairs(cands) do
-    local ins = H.rex_call('client.inspect', {client_id = c.client_id})
-    local cl = ins and ins.client
-    if cl and cl.connection_state == 'connected' then
-      if is_client_id(c.client_id) and cl.client_id == c.client_id then
-        connected[#connected + 1] = c.client_id
-      else
-        H.diag(string.format('resolve %s: refused candidate %q: target.resolve %s; client.inspect %s', label,
-          tostring(c.client_id), rex.json.encode(res), rex.json.encode(ins)))
-      end
+    -- The answer goes into a table: this pcall gives only its first result back.
+    local got = {}
+    local ok, raised = pcall(function() got.ins, got.err = H.rex_call('client.inspect', {client_id = c.client_id}) end)
+    local ins, ierr = got.ins, got.err
+    if not ok then ins, ierr = nil, raised end
+    local cl = type(ins) == 'table' and ins.client or nil
+    if is_client_id(c.client_id) and cl and cl.client_id == c.client_id then
+      if cl.connection_state == 'connected' then connected[#connected + 1] = c.client_id end
+    else
+      local answer = ierr ~= nil and ('error ' .. rex.json.encode(ierr)) or rex.json.encode(ins)
+      H.diag(string.format('resolve %s: refused candidate %q: target.resolve %s; client.inspect %s', label,
+        tostring(c.client_id), rex.json.encode(res), answer))
     end
   end
   if #connected == 1 then return connected[1] end
