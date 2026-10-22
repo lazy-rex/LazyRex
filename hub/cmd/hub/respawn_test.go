@@ -67,7 +67,7 @@ func respawnHub(t *testing.T, manifests map[string]string, plugins func(dir stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, events := appModeHub(t)
+	h, events := uiTestHub(t)
 	h.cfg, h.entries, h.plugins, h.selfClosed = c, c.entries, map[string]*Plugin{}, map[string]bool{}
 	h.faults = &faults{}
 	h.entriesMu.Lock()

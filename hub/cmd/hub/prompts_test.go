@@ -11,7 +11,7 @@ import (
 // promptHub is a hub with one legacy agent bound to this test process (a live binding).
 func promptHub(t *testing.T) (*Hub, *Agent) {
 	t.Helper()
-	h, _ := appModeHub(t)
+	h, _ := uiTestHub(t)
 	pid := os.Getpid()
 	a := &Agent{ID: "alice", Name: "Alice", Session: "session:s", BlockID: "block:b", ChildPID: pid, ChildStart: startTime(pid), delivered: map[string]int64{}}
 	h.agents = map[string]*Agent{"alice": a}

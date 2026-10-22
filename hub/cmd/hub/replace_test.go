@@ -11,7 +11,7 @@ import (
 // session, or an intent that the store did not record. Nothing went to Rex (the hub has no Rex
 // client: a Rex call panics).
 func TestSpawnLocalFailureStages(t *testing.T) {
-	h, _ := appModeHub(t)
+	h, _ := uiTestHub(t)
 	pl := &Plugin{Name: "p"}
 	err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
 	var se *spawnError
@@ -70,7 +70,7 @@ func TestSpawnKnownFailureIntents(t *testing.T) {
 		{"a Rex refusal and its abandonment", "'abandoned'", true, "create", "sending"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h, _ := appModeHub(t)
+			h, _ := uiTestHub(t)
 			h.faults = &faults{}
 			h.test = &testState{}
 			if c.rexRefuses {

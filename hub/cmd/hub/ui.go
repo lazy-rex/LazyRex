@@ -5,7 +5,7 @@ package main
 //
 // Every plugin's tabs are mounted in the one LazyRex session. The hub owns a session by its record
 // in ui_sessions, never by its label. App mode and per-plugin app sessions are removed
-// (appmodestate.go).
+// (docs/hub.md, "Removed: app mode").
 //
 // Rex delivers requests to the hub one at a time (at most 16 waiting), so handlers here only
 // record intent and return. One worker does the Rex work for the whole session, serially.
@@ -143,9 +143,6 @@ func randomID(prefix string) string {
 func (h *Hub) uiStart(ctx context.Context) error {
 	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}, retire: map[string]time.Time{}, labeled: map[string]string{}}
 	if _, err := h.db.ExecContext(ctx, uiSchema); err != nil {
-		return err
-	}
-	if err := h.removeAppModeState(ctx); err != nil {
 		return err
 	}
 	if err := formsStart(ctx, h.db); err != nil {

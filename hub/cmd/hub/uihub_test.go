@@ -11,21 +11,8 @@ import (
 	"testing"
 )
 
-// The schema of app mode before its removal (the tables that removeAppModeState drops).
-const oldAppModeSchema = `
-CREATE TABLE ui_cycles (cycle TEXT PRIMARY KEY, seq INTEGER NOT NULL, phase TEXT NOT NULL,
-  origin TEXT NOT NULL DEFAULT '', problems TEXT NOT NULL DEFAULT '[]', windows INTEGER NOT NULL DEFAULT 0,
-  blocks INTEGER NOT NULL DEFAULT 0, restored_windows INTEGER NOT NULL DEFAULT 0, restored_blocks INTEGER NOT NULL DEFAULT 0,
-  created TEXT NOT NULL, updated TEXT NOT NULL);
-CREATE TABLE ui_hidden (cycle TEXT NOT NULL, session_id TEXT NOT NULL, spos INTEGER NOT NULL,
-  wpos INTEGER NOT NULL, window TEXT NOT NULL, active INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'hidden',
-  rebuilt_window TEXT NOT NULL DEFAULT '', PRIMARY KEY (cycle, session_id, wpos));
-CREATE TABLE ui_exit_keys (key TEXT PRIMARY KEY, cycle TEXT NOT NULL);
-CREATE TABLE ui_apps (plugin TEXT PRIMARY KEY, name TEXT NOT NULL);
-`
-
-// appModeHub is a hub with the UI schema and no Rex client: a Rex call panics.
-func appModeHub(t *testing.T) (*Hub, string) {
+// uiTestHub is a hub with the UI schema and no Rex client: a Rex call panics.
+func uiTestHub(t *testing.T) (*Hub, string) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := openDB(filepath.Join(dir, "hub.db"))
@@ -61,15 +48,6 @@ func eventsNamed(t *testing.T, path, name string) []map[string]any {
 	return out
 }
 
-func tableExists(t *testing.T, h *Hub, name string) bool {
-	t.Helper()
-	var n int
-	if err := h.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n > 0
-}
-
 // rowsOf returns every row of a query as text, for a before and after comparison.
 func rowsOf(t *testing.T, h *Hub, q string) []string {
 	t.Helper()
@@ -95,95 +73,8 @@ func rowsOf(t *testing.T, h *Hub, q string) []string {
 	return out
 }
 
-func TestRemoveAppModeState(t *testing.T) {
-	h, events := appModeHub(t)
-	ctx := context.Background()
-	if _, err := h.db.Exec(oldAppModeSchema); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{
-		// One cycle in each phase of the old build, and a refused one.
-		`INSERT INTO ui_cycles (cycle, seq, phase, created, updated) VALUES ('c1', 1, 'complete', 't', 't'), ('c2', 2, 'refused', 't', 't'),
-		  ('c3', 3, 'capturing', 't', 't'), ('c4', 4, 'hiding', 't', 't'), ('c5', 5, 'active', 't', 't'), ('c6', 6, 'restoring', 't', 't')`,
-		`INSERT INTO ui_hidden (cycle, session_id, spos, wpos, window, active) VALUES ('c5', 'session:user', 0, 0, '{}', 1), ('c5', 'session:user', 0, 1, '{}', 0)`,
-		`INSERT INTO ui_exit_keys VALUES ('exit-1', 'c1')`,
-		`INSERT INTO ui_apps VALUES ('messaging', 'Messages')`,
-		`INSERT INTO ui_restores VALUES ('n-hidden', 'hidden:c5:session:user:0', 't'), ('n-view', 'view-1', 't')`,
-		`INSERT INTO ui_state VALUES ('active', 'messaging'), ('nav', 'messaging/inbox')`,
-		`INSERT INTO ui_sessions VALUES ('*', 'session:home'), ('app:messaging', 'session:app'), ('messaging', 'session:old')`,
-		`INSERT INTO views (view_id, plugin, tab, route, status, session_id) VALUES ('view-1', 'messaging', 'inbox', '/', 'open', 'session:app'),
-		  ('view-2', 'messaging', 'thread/a', '/thread/a', 'sending', 'session:old'), ('view-3', 'home', 'home', '/', 'open', 'session:home')`,
-		`INSERT INTO ui_tabs (plugin, tab, title, route, pos) VALUES ('messaging', 'inbox', 'Inbox', '/', 0)`,
-	} {
-		if _, err := h.db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	kept := func() [][]string {
-		return [][]string{rowsOf(t, h, `SELECT * FROM ui_sessions ORDER BY plugin`), rowsOf(t, h, `SELECT * FROM views ORDER BY view_id`),
-			rowsOf(t, h, `SELECT * FROM ui_tabs`)}
-	}
-	before := kept()
-
-	if err := h.removeAppModeState(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range appModeTables {
-		if tableExists(t, h, name) {
-			t.Errorf("table %s still exists", name)
-		}
-	}
-	if got := rowsOf(t, h, `SELECT nonce FROM ui_restores`); !reflect.DeepEqual(got, []string{`["n-view"]`}) {
-		t.Errorf("ui_restores: %v, want only the view restore", got)
-	}
-	if got := rowsOf(t, h, `SELECT key FROM ui_state`); !reflect.DeepEqual(got, []string{`["nav"]`}) {
-		t.Errorf("ui_state: %v, want only nav", got)
-	}
-	if after := kept(); !reflect.DeepEqual(after, before) {
-		t.Errorf("sessions, views or tabs changed:\nbefore %v\nafter  %v", before, after)
-	}
-	got := eventsNamed(t, events, "app_mode_state_removed")
-	if len(got) != 1 {
-		t.Fatalf("events: %v, want one", got)
-	}
-	e := got[0]
-	delete(e, "at")
-	delete(e, "event")
-	delete(e, "generation")
-	want := map[string]any{
-		"cycles":    map[string]any{"complete": 1.0, "refused": 1.0, "capturing": 1.0, "hiding": 1.0, "active": 1.0, "restoring": 1.0},
-		"ui_hidden": 2.0, "ui_exit_keys": 1.0, "ui_apps": 1.0, "restore_placeholders": 1.0, "active_state": 1.0,
-		"tables": []any{"ui_cycles", "ui_hidden", "ui_exit_keys", "ui_apps"},
-	}
-	if !reflect.DeepEqual(e, want) {
-		t.Errorf("event %v\nwant  %v", e, want)
-	}
-
-	// A second start: nothing to remove, no event.
-	before = kept()
-	if err := h.removeAppModeState(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(eventsNamed(t, events, "app_mode_state_removed")); n != 1 {
-		t.Errorf("a second start emitted again: %d events", n)
-	}
-	if after := kept(); !reflect.DeepEqual(after, before) {
-		t.Error("a second start changed rows")
-	}
-}
-
-func TestRemoveAppModeStateOnANewDatabase(t *testing.T) {
-	h, events := appModeHub(t)
-	if err := h.removeAppModeState(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(eventsNamed(t, events, "app_mode_state_removed")); n != 0 {
-		t.Errorf("%d events on a database without app mode", n)
-	}
-}
-
 func TestLegacyViewIsAnySessionButTheLazyRexSession(t *testing.T) {
-	h, _ := appModeHub(t)
+	h, _ := uiTestHub(t)
 	h.ui.sess = map[string]string{"session:home": uiSessionKey, "session:app": "app:messaging", "session:old": "messaging"}
 	for sess, legacy := range map[string]bool{"session:home": false, "session:app": true, "session:old": true, "session:unknown": true} {
 		if got := h.legacyView(sess); got != legacy {
@@ -195,7 +86,7 @@ func TestLegacyViewIsAnySessionButTheLazyRexSession(t *testing.T) {
 // Legacy session cleanup (settleLegacySession) against a real Rex lab: SPAWN_LAB_SOCKET.
 func TestSettleLegacySessionLab(t *testing.T) {
 	r, ctx := labRex(t)
-	h, events := appModeHub(t)
+	h, events := uiTestHub(t)
 	h.rex = r
 	newSession := func(t *testing.T, pane bool) string {
 		t.Helper()
@@ -348,20 +239,4 @@ func TestSettleLegacySessionLab(t *testing.T) {
 		}
 		h.db.Exec(`DELETE FROM ui_sessions WHERE session_id = ?`, sess)
 	})
-}
-
-// Dispatch from a registered plugin: tests/harness/tests/removed_actions.lua.
-func TestAppModeActionsAreRemoved(t *testing.T) {
-	for _, action := range []string{"hub.ui.exit", "hub.ui.mode"} {
-		for _, name := range hubActionNames {
-			if name == action {
-				t.Errorf("%s is still a hub client action", action)
-			}
-		}
-		for _, tool := range hubToolActions {
-			if tool["name"] == action {
-				t.Errorf("%s is still a tool action", action)
-			}
-		}
-	}
 }
