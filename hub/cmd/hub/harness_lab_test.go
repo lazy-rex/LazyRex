@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -387,7 +388,9 @@ func TestLabKeeperKilledRun(t *testing.T) {
 		cmd.Wait()
 		t.Fatal("no runner of restart_timeout.lua in 60 s")
 	}
-	t.Cleanup(func() { removeLab(lab) })
+	// The shared decision ends the lab (endGoLab): a survivor keeps it as unproved evidence.
+	var unproved []string
+	t.Cleanup(func() { endGoLab(t, lab, unproved) })
 	time.Sleep(2 * time.Second) // the new hub starts
 	procs := descendants(t, cmd.Process.Pid)
 	cmd.Process.Kill() // SIGKILL: no cleanup of its own
@@ -407,17 +410,13 @@ func TestLabKeeperKilledRun(t *testing.T) {
 	if len(procs) < 4 {
 		t.Errorf("only %d processes under the test process: %v", len(procs), procs)
 	}
+	// A survivor gets no signal: this test did not start it, and a pid found by lookup can be reused
+	// (docs/testing.md). It is reported and kept as evidence.
 	for _, pid := range left {
 		argv, _ := procArgv(pid)
-		t.Errorf("a process of %s survived: pid %d %.160s", lab, pid, strings.Join(argv, " "))
-	}
-	// Stop what this test started and what survived (each group once).
-	for _, pid := range left {
-		if alive(pid, procs[pid]) {
-			if pg, err := syscall.Getpgid(pid); err == nil && pg > 1 {
-				syscall.Kill(-pg, syscall.SIGKILL)
-			}
-		}
+		p := fmt.Sprintf("a process of %s survived: pid %d, start %s, %.160s (not signaled)", lab, pid, procs[pid], strings.Join(argv, " "))
+		t.Error(p)
+		unproved = append(unproved, p)
 	}
 }
 
