@@ -465,6 +465,9 @@ func TestSelectedRunNoEntry(t *testing.T) {
 	if _, err := h.db.Exec(`UPDATE plugins SET selected_run = ? WHERE name = 'p'`, string(sel)); err != nil {
 		t.Fatal(err)
 	}
+	h.mu.Lock()
+	h.readPluginRow(context.Background(), pl) // the record reads its row again, as a start does
+	h.mu.Unlock()
 	p1Lose(t, h, pl)
 	if state, refusal, _ := p1State(h, pl); state != "refused" || refusal != "plugin p: run "+p1A+" is no longer available; start it again" {
 		t.Fatalf("state %s, refusal %q", state, refusal)
