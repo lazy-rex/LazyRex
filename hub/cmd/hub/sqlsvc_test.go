@@ -361,7 +361,7 @@ func TestSQLNoticesOutbox(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if got := fmt.Sprint(applied[0]); got != "[{1 a true} {2 b false}]" {
+	if got := fmt.Sprint(applied[0]); got != "[{1 {a true false false}} {2 {b false false false}}]" {
 		t.Fatalf("applied %s", got)
 	}
 	for time.Now().Before(deadline) && outbox() != 0 {
@@ -373,7 +373,7 @@ func TestSQLNoticesOutbox(t *testing.T) {
 	// A later commit gets a new seq: AUTOINCREMENT never gives a seq again.
 	tx = l.must("hub.sql.begin", `{}`)["tx"].(string)
 	l.must("hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"a", "pending":false}]}`)
-	if got := fmt.Sprint(applied[1]); got != "[{3 a false}]" {
+	if got := fmt.Sprint(applied[1]); got != "[{3 {a false false false}}]" {
 		t.Fatalf("applied %s", got)
 	}
 }
@@ -383,7 +383,7 @@ func TestSQLNoticesOutbox(t *testing.T) {
 func TestSQLNoticesReceipts(t *testing.T) {
 	h, _ := workerTestHub(t)
 	ctx := context.Background()
-	rows := []outboxRow{{1, "a", true}, {2, "b", true}}
+	rows := []outboxRow{{1, noticeOp{agent: "a", pending: true}}, {2, noticeOp{agent: "b", pending: true}}}
 	if err := h.db.applySQLNotices(ctx, "p", rows); err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestSQLNoticesReceipts(t *testing.T) {
 	if ra == 0 || rb == 0 {
 		t.Fatal("no notices")
 	}
-	if err := h.db.applySQLNotices(ctx, "p", append(rows, outboxRow{3, "a", true})); err != nil {
+	if err := h.db.applySQLNotices(ctx, "p", append(rows, outboxRow{3, noticeOp{agent: "a", pending: true}})); err != nil {
 		t.Fatal(err)
 	}
 	if rev("b") != rb || rev("a") == ra {
