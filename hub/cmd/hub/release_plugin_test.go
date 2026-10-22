@@ -519,3 +519,31 @@ func TestReleasePluginVerifyChecksPins(t *testing.T) {
 		})
 	}
 }
+
+// A crashing plugin in a plugin release. Forward: a record that crashed at FROM gets one guarded
+// hub.admin.start with expect_run TO and no replace; one that crashed at TO is refused with no
+// call. Rollback: a record that crashed at TO gets a guarded start with expect_run FROM after the
+// pin is back at FROM. The hub is never restarted.
+func TestReleasePluginCrashing(t *testing.T) {
+	w := newPluginWorld(t, "0")
+	w.freeze()
+	hub := w.hubPID
+	w.must("precheck", "backup", "pull")
+	w.crash("other")
+	w.must("replace")
+	if r := w.runs["other"]; r.commit != pluginTo || r.crashing || w.replaceCalls != 0 || w.startCalls != 1 || w.startCommit(0) != pluginTo {
+		t.Fatalf("forward crashing FROM: run %+v, %d replace, %d start", *r, w.replaceCalls, w.startCalls)
+	}
+	w.must("verify")
+	w.crash("other")
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "run rollback") || w.startCalls != 1 {
+		t.Fatalf("forward crashing TO: %v, %d start", err, w.startCalls)
+	}
+	w.must("rollback")
+	if got := w.lockPin(otherSrc); got != pinFrom {
+		t.Fatalf("lock pin after rollback %v", got)
+	}
+	if r := w.runs["other"]; r.commit != relCommitC || r.crashing || w.replaceCalls != 0 || w.startCalls != 2 || w.startCommit(1) != relCommitC || w.hubPID != hub {
+		t.Fatalf("rollback crashing TO: run %+v, %d replace, %d start, hub %d (was %d)", *r, w.replaceCalls, w.startCalls, w.hubPID, hub)
+	}
+}

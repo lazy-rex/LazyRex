@@ -826,6 +826,9 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 	if e.InstancePending {
 		return relFail("plugin %s has an unresolved spawn intent; do not retry: wait for the reconciliation, or report", c.Name)
 	}
+	if e.State == "crashing" {
+		return r.startCrashing(c, client, from, to, e, expectRun)
+	}
 	xrun := relExpectRun(c, to)
 	if e.Commit == to.Commit && e.State == "running" && e.Registered != nil && *e.Registered {
 		if !expectRun {
@@ -886,6 +889,37 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 		saved.ExpectRun = xrun
 	}
 	return call(saved)
+}
+
+// startCrashing makes a crashing plugin (desired running, its recorded instance exited, a respawn
+// due) run the pin to with a guarded hub.admin.start. Forward (to is TO) takes only a record that
+// crashed at FROM: a record that crashed at TO is the failed target, and only a rollback starts
+// it. A rollback (to is FROM) takes a record at FROM or at TO. The callers checked the lock and the
+// base first: at TO forward, at FROM in a rollback.
+// The hub runs the start and a due respawn one after the other (the plugin's lifecycle lock). A
+// respawn that ran first makes the start a no-op when it runs to, and candidate_changed when it
+// runs another run; a start that passes its refusals cancels the respawn. A refusal stops the step
+// with its code, and the respawn stays due: there is no retry here. A rerun reads hub.plugins
+// again, so a registered instance of to then takes the running path.
+func (r *releaser) startCrashing(c *relCandidate, client string, from, to relPin, e *relEntryState, expectRun bool) error {
+	rollback := to.Commit == c.From.Commit
+	switch {
+	case !expectRun:
+		return relFail("plugin %s is crashing, and this hub takes no expect_run for a guarded start; nothing is changed; stop and report", c.Name)
+	case e.Commit == to.Commit && !rollback:
+		return relFail("plugin %s is crashing at TO %s: the target failed; nothing is changed; run rollback", c.Name, to.Commit)
+	case e.Commit != from.Commit && e.Commit != to.Commit:
+		return relFail("plugin %s is crashing at %q, neither %s nor %s; nothing is changed; stop and report", c.Name, e.Commit, from.Commit, to.Commit)
+	}
+	xrun := relExpectRun(c, to)
+	r.say("plugin %s is crashing at %s (exited instance %s, a respawn is due): start it with expect_run %s", c.Name, e.Commit, e.InstanceID, to.Commit)
+	return r.mutate("start-crashing-"+to.Commit[:12], relReplaceSaved{ExpectInstance: e.InstanceID, ExpectRun: xrun}, func() (any, error) {
+		out, err := r.hubDo(client, "hub.admin.start", map[string]any{"plugin": c.Name, "expect_run": xrun})
+		if err == nil {
+			r.say("hub.admin.start -> %s", strings.TrimSpace(string(out)))
+		}
+		return json.RawMessage(nonEmptyJSON(out)), err
+	})
 }
 
 func nonEmptyJSON(b []byte) []byte {
