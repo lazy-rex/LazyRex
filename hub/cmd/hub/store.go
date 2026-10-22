@@ -12,6 +12,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -21,6 +22,9 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS records (ns TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY (ns, key));
 CREATE TABLE IF NOT EXISTS ops (ns TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY (ns, key));
 CREATE TABLE IF NOT EXISTS notices (ns TEXT NOT NULL, agent TEXT NOT NULL, pending INTEGER NOT NULL, intent_rev INTEGER NOT NULL, PRIMARY KEY (ns, agent));
+-- notice_deliveries: the last nudge the hub wrote for a notice row, and the conversation it reached
+-- (block, child pid and start). A hub restart or a shim reconnect does not write it again.
+CREATE TABLE IF NOT EXISTS notice_deliveries (ns TEXT NOT NULL, agent TEXT NOT NULL, intent_rev INTEGER NOT NULL, at INTEGER NOT NULL, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL, repeated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (ns, agent));
 CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
 -- status: prepared (request not sent), sending (outcome unknown until resolved), created, abandoned
@@ -45,8 +49,9 @@ func openDB(path string) (*DB, error) {
 		`ALTER TABLE plugins ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE spawn_intents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE bindings ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`, // Plugin.run as JSON; '' = no run
+		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`,    // Plugin.run as JSON; '' = no run
 		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`, // the exact source of the entry that bound the name
+		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`, // the agent read since the last revision
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return nil, err
@@ -262,9 +267,12 @@ type recordOp struct {
 	ifRev  *int64
 }
 
+// noticeOp is one notify op: {agent, pending}, {agent, pending: true, once: true} (a new revision
+// only if the row is not pending or the agent read since the last one), or {agent, read: true}
+// (the agent read; pending does not change).
 type noticeOp struct {
-	agent   string
-	pending bool
+	agent               string
+	pending, once, read bool
 }
 
 type batchOutcome struct {
@@ -298,18 +306,33 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 			}
 			nm, ok := n.(map[string]any)
 			if !ok || len(m) != 1 {
-				return nil, bad("a notify op is {notify: {agent, pending}}")
+				return nil, bad("a notify op is {notify: {agent, pending}}, {notify: {agent, pending: true, once: true}} or {notify: {agent, read: true}}")
 			}
 			agent, _ := nm["agent"].(string)
-			pending, okP := nm["pending"].(bool)
-			if !roster[agent] || !okP {
-				return nil, bad("notify needs a roster agent and a boolean pending")
+			if !roster[agent] {
+				return nil, bad("notify needs a roster agent")
+			}
+			op := noticeOp{agent: agent}
+			_, hasPending := nm["pending"]
+			_, hasOnce := nm["once"]
+			if r, hasRead := nm["read"]; hasRead {
+				if r != true || hasPending || hasOnce {
+					return nil, bad("a read is {notify: {agent, read: true}}, with no pending or once")
+				}
+				op.read = true
+			} else {
+				pending, okP := nm["pending"].(bool)
+				once, okO := nm["once"].(bool)
+				if !okP || (hasOnce && (!okO || !pending)) {
+					return nil, bad("notify needs a boolean pending; once is true or false, and only with pending: true")
+				}
+				op.pending, op.once = pending, once
 			}
 			if seenAgent[agent] {
 				return nil, bad("agent %q appears twice", agent)
 			}
 			seenAgent[agent] = true
-			notes = append(notes, noticeOp{agent, pending})
+			notes = append(notes, op)
 			continue
 		}
 		key, _ := m["key"].(string)
@@ -448,18 +471,37 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 	}
 	out.intentRev = map[string]int64{}
 	for _, n := range notes {
-		if n.pending {
-			// Each new pending:true advances the intent revision, so a new send can cause a new notice.
+		switch {
+		case n.read:
+			if _, err := tx.ExecContext(ctx, `UPDATE notices SET read = 1 WHERE ns = ? AND agent = ?`, ns, n.agent); err != nil {
+				return nil, err
+			}
+		case n.pending:
+			if n.once {
+				// One nudge until a read: a pending row that was not read since its revision stays.
+				var pending, read int
+				err := tx.QueryRowContext(ctx, `SELECT pending, read FROM notices WHERE ns = ? AND agent = ?`, ns, n.agent).Scan(&pending, &read)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return nil, err
+				}
+				if err == nil && pending == 1 && read == 0 {
+					continue
+				}
+			}
+			// A plain pending:true advances the intent revision each time, so each send can cause a
+			// new notice.
 			rev, err := nextRev(tx)
 			if err != nil {
 				return nil, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO notices VALUES (?, ?, 1, ?) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev`, ns, n.agent, rev); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO notices (ns, agent, pending, intent_rev, read) VALUES (?, ?, 1, ?, 0) ON CONFLICT (ns, agent) DO UPDATE SET pending = 1, intent_rev = excluded.intent_rev, read = 0`, ns, n.agent, rev); err != nil {
 				return nil, err
 			}
 			out.intentRev[n.agent] = rev
-		} else if _, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, ns, n.agent); err != nil {
-			return nil, err
+		default:
+			if _, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, ns, n.agent); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if opKey != "" {
@@ -484,13 +526,28 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 	return out, nil
 }
 
+// noticeConv names the conversation that a nudge reached: the agent's pane and its child process.
+type noticeConv struct {
+	block string
+	pid   int
+	start string
+}
+
+// pendingNotice is a pending notice row with its last delivery (delivRev 0: none).
 type pendingNotice struct {
 	ns, agent string
 	intentRev int64
+	read      bool // the agent read since the revision
+	delivRev  int64
+	delivAt   int64 // Unix milliseconds of the first write of delivRev
+	delivConv noticeConv
+	repeated  bool
 }
 
 func (db *DB) pendingNotices(ctx context.Context) ([]pendingNotice, error) {
-	rows, err := db.QueryContext(ctx, `SELECT ns, agent, intent_rev FROM notices WHERE pending = 1`)
+	rows, err := db.QueryContext(ctx, `SELECT n.ns, n.agent, n.intent_rev, n.read, COALESCE(d.intent_rev, 0), COALESCE(d.at, 0),
+		COALESCE(d.block_id, ''), COALESCE(d.child_pid, 0), COALESCE(d.child_start, ''), COALESCE(d.repeated, 0)
+		FROM notices n LEFT JOIN notice_deliveries d ON d.ns = n.ns AND d.agent = n.agent WHERE n.pending = 1`)
 	if err != nil {
 		return nil, err
 	}
@@ -498,10 +555,41 @@ func (db *DB) pendingNotices(ctx context.Context) ([]pendingNotice, error) {
 	var out []pendingNotice
 	for rows.Next() {
 		var p pendingNotice
-		if err := rows.Scan(&p.ns, &p.agent, &p.intentRev); err != nil {
+		if err := rows.Scan(&p.ns, &p.agent, &p.intentRev, &p.read, &p.delivRev, &p.delivAt, &p.delivConv.block, &p.delivConv.pid, &p.delivConv.start, &p.repeated); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// recordNotice stores that the hub wrote the nudge of n to conversation c at time at. A repeat
+// only marks the stored delivery: its time stays the first write's.
+func (db *DB) recordNotice(ctx context.Context, n pendingNotice, c noticeConv, at time.Time, repeat bool) error {
+	if repeat {
+		_, err := db.ExecContext(ctx, `UPDATE notice_deliveries SET repeated = 1 WHERE ns = ? AND agent = ? AND intent_rev = ?`, n.ns, n.agent, n.intentRev)
+		return err
+	}
+	_, err := db.ExecContext(ctx, `INSERT INTO notice_deliveries VALUES (?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT (ns, agent) DO UPDATE SET
+		intent_rev = excluded.intent_rev, at = excluded.at, block_id = excluded.block_id, child_pid = excluded.child_pid, child_start = excluded.child_start, repeated = 0`,
+		n.ns, n.agent, n.intentRev, at.UnixMilli(), c.block, c.pid, c.start)
+	return err
+}
+
+// noticeDue decides a pending notice for conversation c. mem is the revision that the hub wrote
+// to the agent's current connection (memory only). due: write the nudge; repeat: it is the one
+// repeat, after renudge with no read and no new revision. wake: when to look again (zero: no need).
+func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge time.Duration) (due, repeat bool, wake time.Time) {
+	stored := n.delivRev >= n.intentRev && n.delivConv == c
+	if n.intentRev > mem && !stored {
+		return true, false, time.Time{}
+	}
+	if !stored || n.delivRev != n.intentRev || n.repeated || n.read {
+		return false, false, time.Time{}
+	}
+	at := time.UnixMilli(n.delivAt).Add(renudge)
+	if now.Before(at) {
+		return false, false, at
+	}
+	return true, true, time.Time{}
 }

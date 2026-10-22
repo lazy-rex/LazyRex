@@ -857,6 +857,37 @@ The three focused hub checks also passed on that version.
 Observed on Rex `0.0.1792158932-g88fd41`: the real-hub test passed with an owned shared clone of restty.
 Creation completed in 657 ms in that run. This measurement is not a performance guarantee.
 
+## Notices (notify ops)
+
+A plugin with a `notice` in its manifest sets a pending notice for an agent with a `notify` op in
+`hub.store.batch`. The hub writes the notice text into the agent's pane when the agent is ready (see
+"Profiles and workers"). The ops:
+
+- `{notify: {agent, pending: true}}`: a pending notice with a new revision. Each one gives one
+  nudge (one pane write), also while an earlier nudge is unread.
+- `{notify: {agent, pending: true, once: true}}`: one nudge until a read (the user's rule,
+  2026-10-22). The revision is new only if the row is not pending, or the agent read since the last
+  revision. Otherwise the row stays as it is and no nudge follows.
+- `{notify: {agent, read: true}}`: the agent read. The next `once` op gives a nudge again, and the
+  repeat (below) is cancelled. `pending` does not change. A read for an agent with no row does
+  nothing. `read` takes no `pending` and no `once`.
+- `{notify: {agent, pending: false}}`: no pending notice.
+
+`once` is a boolean, and only with `pending: true`. Any other form is a malformed request, and
+nothing in the batch is written. A hub before this change ignores `once`, and refuses
+`{agent, read: true}` because it has no `pending`. So a plugin sends the new forms only after the
+hub release that has them.
+
+For every op form, the hub stores each nudge that it writes (`notice_deliveries`: the revision, the
+time, and the conversation: the block, the child pid and its start time). A hub restart, a shim
+reconnect or a rebind does not write it again. Another child process in the pane (a new
+conversation, a spawn, a resume or a restart) gets it again: that conversation never saw it. A
+nudge with no read and no new revision for 30 minutes is written once more (`notice_written` with
+`repeat: true`), then not again until a read or a new revision. A failed store write of the delivery
+leaves only the memory record, so a restart can give the nudge once more: never fewer nudges.
+Tests: `TestNoticeOnceUntilRead`, `TestNoticeOpForms`, `TestNoticeDue`, `TestNoticeDeliveryStored`,
+`tests/harness/tests/notice_once.lua`.
+
 ## Reply size
 
 Rex closes a client's connection when one frame from that client is larger than the welcome's
