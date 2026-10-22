@@ -26,7 +26,7 @@ Flags:
 | `-run <Lua pattern>` | Run only tests whose name matches. The run fails if no test matches. |
 | `-timeout 120s` | The time limit for one test file. |
 | `-keep` | Keep each lab directory (logs, events, state). The processes stop anyway. Each kept lab gets a `KEEP` marker (see "Lab directories"). |
-| `-clean <dir>...` | Remove the given lab directories (`/tmp/lrt-<digits>` of this user, with or without `KEEP`), then exit. A lab with a live server is refused. |
+| `-clean <dir>...` | Remove the given lab directories (`/tmp/lrt-<digits>` of this user, with or without `KEEP`), then exit. Only a lab that the probe proves ended is removed (see "Lab directories"): a live or uncertain lab is refused, with the reason. |
 | `-v` | Print the hub, plugin and runner logs. |
 | `-lazyrex <dir>` | The LazyRex checkout. Default: `../LazyRex` beside the plugin, `LAZYREX_DIR`, or the checkout of the binary. |
 
@@ -42,13 +42,30 @@ first.
 
 - A kept lab (`-keep`, or a Go lab test of the hub that failed) gets a file `KEEP`: JSON
   `{by, why, at}`, for example `{"by": "lazyrex-hub test -keep", "why": "tests/send.lua: 3 passed,
-  1 failed, 0 problems"}`. Keep a lab only while a message cites it as evidence. Remove it after the
-  review: `lazyrex-hub test -clean /tmp/lrt-<digits>`. A lab that you keep by hand needs a `KEEP`
-  file too.
+  1 failed, 0 problems"}`. Keep a lab only while a message cites it as evidence. A lab that you keep
+  by hand needs a `KEEP` file too.
+- A lab whose cleanup is not proved stays too, also without `-keep`: a process survived the stop,
+  the guard did not end, or the probe after the stop is not "absent". Its `KEEP` marker has
+  `{"by": "lazyrex-hub test", "why": "cleanup not proved: <reason>"}`, the file fails with a
+  problem that names the lab, and the summary line names it:
+  `FAIL tests/send.lua: 3 passed, 0 failed (lab kept: /tmp/lrt-123)`.
+- No run removes a kept lab. The only removal is `lazyrex-hub test -clean /tmp/lrt-<digits>`,
+  after the review. A lab server in a kept lab can still run, and `-clean` refuses that lab: stop
+  that server first, by the `server_pid` in its `lab.json` (check that its command names the lab's
+  `rex.sock`), never by a name pattern.
+- The probe (`labProbe`) says whether a lab is live, absent or uncertain. Live: a process whose
+  command line names the lab directory (this process and its ancestors do not count), or a server
+  that accepts a connection on `rex.sock`. Absent: no `rex.sock` and no such process; or
+  `rex.sock` refuses the connection and `lab.json` names a server pid that no longer runs.
+  Uncertain: every other case, for example a refusal without `lab.json` or with a server pid that
+  runs (a live server with a full connection queue also refuses on macOS), another connection
+  error, or a failed process listing (`ps -eww -o pid=,ppid=,command=`). Only an absent lab is
+  removed.
 - The sweep: at the start of each run, at most once per hour per user (the stamp file
   `/tmp/lrt-sweep-<uid>`), the command removes each `/tmp/lrt-<digits>` directory of this user that
-  has no `KEEP` file, is older than 24 hours, and has no server that accepts a connection on its
-  `rex.sock`. It prints one line for each removal. (24 hours for the first release; then 1 hour.)
+  has no `KEEP` file, is older than 24 hours, and is absent. It prints one line for each removal
+  and for each uncertain lab, which it keeps. A failed process listing stops the sweep. (24 hours
+  for the first release; then 1 hour.)
 - A killed run (SIGKILL) cannot clean up. Its lab directory waits for the sweep.
 - The lab guard: for each lab, the run also starts a guard process (the same binary) with a pipe
   from the run on its stdin. The run tells the guard each process group of the lab: the server,
