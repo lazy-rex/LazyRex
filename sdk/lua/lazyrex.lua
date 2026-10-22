@@ -356,6 +356,18 @@ local function push(encoded, limits)
   return {lazyrex_parts = {id = id, count = #parts, bytes = #encoded}}
 end
 
+-- preflight checks the reply of a handler before its commit, so that a refused reply rolls the
+-- transaction back: the reserved shape, and over max_total for the hub. It keeps the encoding for
+-- deliver (S.encoded).
+local function preflight(result)
+  check_reserved(result)
+  if not S.from_hub then return end
+  local limits = S.app.registration.limits
+  local encoded = rex.json.encode(result or {})
+  if encoded and #encoded > limits.max_total then fail('too_large', 'The reply is ' .. #encoded .. ' bytes; the limit is ' .. limits.max_total) end
+  S.encoded = {value = result, text = encoded}
+end
+
 -- parted answers the stub for result when its encoding is over inline_max, after it pushed the parts,
 -- or nil when result goes whole. Over max_total it fails with too_large before any part.
 local function parted(result, encoded)
@@ -383,7 +395,8 @@ local function sql_call(action, args)
 end
 
 -- run runs fn(...) in a new frame. spec: tx (default true), render, key, fingerprint, store
--- (default true). It commits at the end: with key and store, the reply is saved in the same commit,
+-- (default true), reply (the frame answers a caller: preflight checks its result before the commit).
+-- It commits at the end: with key and store, the reply is saved in the same commit,
 -- unless it is a running reply. An error rolls back and raises again.
 local function run(spec, fn, ...)
   -- in_render marks a view render. A render never opens a transaction (hub contract); the render token
@@ -403,14 +416,14 @@ local function run(spec, fn, ...)
     local out = {result = result} -- a field, not the local: see the note on S at the top
     S.frame = f
     local cok, cerr = pcall(function()
+      if spec.reply then preflight(result) end
       if not f.token then f.token = hub('hub.sql.begin', {}).tx end
       local args = {tx = f.token}
       if save then
         -- A large reply to the hub is saved from its parts: the commit names the set, and the reply
         -- is the stub of the same set (one upload, amendment 1).
-        check_reserved(result)
         args.key, args.fingerprint = spec.key, spec.fingerprint
-        f.stub = S.from_hub and parted(result or {}) or nil
+        f.stub = S.from_hub and parted(result or {}, S.encoded and S.encoded.value == result and S.encoded.text or nil) or nil
         if f.stub then args.reply_parts = f.stub.lazyrex_parts else args.reply = result or {} end
       end
       if #f.notices > 0 then args.notices = f.notices end
@@ -432,6 +445,7 @@ end
 -- spec.legacy_keys (the same key of the caller's legacy IDs). A call without a key, or with
 -- store = false, always runs fn. A new reply is saved under key only.
 local function with_replay(spec, fn, ...)
+  spec.reply = true
   if spec.key ~= nil and spec.store ~= false then
     local saved = hub('hub.sql.replay', {key = spec.key, fingerprint = spec.fingerprint})
     if saved.found then return saved.reply end
