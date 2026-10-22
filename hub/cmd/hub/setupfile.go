@@ -5,8 +5,11 @@ package main
 // the snapshot. Nothing here writes before that: -print and a run without a terminal never reach
 // write, so they create no file and no directory.
 //
-// A symlink is followed: setup reads and writes the file that it resolves to, so a link that a
-// dotfile manager keeps stays a link. A symlink that does not resolve to a regular file is blocked.
+// A symlink is followed: setup reads and writes the file that the complete path resolves to (every
+// symlink, also in the parent directories), so a link that a dotfile manager keeps stays a link. A
+// symlink that does not resolve to a regular file is blocked. The snapshot holds the resolved path
+// and the permissions, and write refuses a change of either. That recheck is not an atomic
+// compare-and-replace: a writer between the recheck and the rename is not detected.
 
 import (
 	"bytes"
@@ -21,7 +24,7 @@ import (
 
 type setupFile struct {
 	path   string      // the path that setup names to the user
-	target string      // the file that setup reads and writes: path, or the file a symlink at path resolves to
+	target string      // the file that setup reads and writes: path with every symlink resolved
 	exists bool        // the file existed at the snapshot
 	old    []byte      // the snapshot
 	perm   os.FileMode // the existing file's permissions, or the new file's
@@ -35,23 +38,27 @@ func snapshotFile(path string, newPerm os.FileMode) *setupFile {
 	f := &setupFile{path: path, target: path, perm: newPerm}
 	fi, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
+		if f.target, err = resolveNew(path); err != nil {
+			f.block = err.Error()
+		}
 		return f
 	}
 	if err != nil {
 		f.block = err.Error()
 		return f
 	}
-	if fi.Mode()&fs.ModeSymlink != 0 {
-		t, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			f.block = fmt.Sprintf("it is a symlink that does not resolve (%v); setup does not replace a symlink", err)
-			return f
+	t, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			err = fmt.Errorf("it is a symlink that does not resolve (%v); setup does not replace a symlink", err)
 		}
-		f.target = t
-		if fi, err = os.Stat(t); err != nil {
-			f.block = err.Error()
-			return f
-		}
+		f.block = err.Error()
+		return f
+	}
+	f.target = t
+	if fi, err = os.Stat(t); err != nil {
+		f.block = err.Error()
+		return f
 	}
 	if !fi.Mode().IsRegular() {
 		f.block = "it is not a regular file"
@@ -79,7 +86,7 @@ func (f *setupFile) write(now time.Time) (backup string, err error) {
 	if cur.block != "" {
 		return "", errors.New(cur.block)
 	}
-	if cur.target != f.target || cur.exists != f.exists || !bytes.Equal(cur.old, f.old) {
+	if cur.target != f.target || cur.exists != f.exists || !bytes.Equal(cur.old, f.old) || f.exists && cur.perm != f.perm {
 		return "", errors.New("the file changed after setup showed it; run setup again")
 	}
 	dir := filepath.Dir(f.target)
@@ -117,6 +124,23 @@ func (f *setupFile) write(now time.Time) (backup string, err error) {
 		return "", err
 	}
 	return "", nil
+}
+
+// resolveNew resolves the path of a file that does not exist: the part of its parent chain that
+// exists, with every symlink resolved, and then the rest of the path.
+func resolveNew(path string) (string, error) {
+	p, rest := filepath.Clean(path), ""
+	for {
+		r, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		parent := filepath.Dir(p)
+		if !errors.Is(err, fs.ErrNotExist) || parent == p {
+			return "", err
+		}
+		rest, p = filepath.Join(filepath.Base(p), rest), parent
+	}
 }
 
 // writeBackup writes old to a new file <target>.lazyrex-bak-<unix time>, with the original's

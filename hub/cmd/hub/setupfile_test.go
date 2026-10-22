@@ -36,7 +36,8 @@ func TestSetupFileNew(t *testing.T) {
 
 // An existing file keeps its permissions and gets a backup with its old text and permissions.
 func TestSetupFileChange(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "settings.json")
+	dir, _ := filepath.EvalSymlinks(t.TempDir()) // the backup is named after the resolved file
+	p := filepath.Join(dir, "settings.json")
 	os.WriteFile(p, []byte("old\n"), 0o640)
 	os.Chmod(p, 0o640)
 	f := snapshotFile(p, 0o644)
@@ -287,6 +288,67 @@ func TestHookFileRefuses(t *testing.T) {
 		f := hookProposal(t, old, "claude")
 		if !strings.Contains(f.block, want) || f.changes() {
 			t.Errorf("%s: block %q, changes %v", old, f.block, f.changes())
+		}
+	}
+}
+
+// The snapshot is the resolved file: a parent symlink that changes after it is refused (codex-24's
+// review of 3c3f3bd).
+func TestSetupFileParentSymlinkChange(t *testing.T) {
+	d := t.TempDir()
+	a, b := filepath.Join(d, "a"), filepath.Join(d, "b")
+	for _, x := range []string{a, b} {
+		os.Mkdir(x, 0o700)
+		os.WriteFile(filepath.Join(x, "config"), []byte("old"), 0o600)
+	}
+	l := filepath.Join(d, "link")
+	os.Symlink(a, l)
+	f := snapshotFile(filepath.Join(l, "config"), 0o600)
+	f.next = []byte("new")
+	os.Remove(l)
+	os.Symlink(b, l)
+	if _, err := f.write(setupNow); err == nil {
+		t.Fatal("a changed parent symlink was accepted")
+	}
+	if readFile(filepath.Join(b, "config")) != "old" || readFile(filepath.Join(a, "config")) != "old" {
+		t.Fatal("a file was written")
+	}
+
+	// A new file: the same for the parent chain that exists.
+	g := snapshotFile(filepath.Join(l, "sub", "new.json"), 0o600)
+	g.next = []byte("{}")
+	os.Remove(l)
+	os.Symlink(a, l)
+	if _, err := g.write(setupNow); err == nil {
+		t.Fatal("a new file under a changed parent symlink was accepted")
+	}
+}
+
+// Permissions are part of the snapshot.
+func TestSetupFilePermissionChange(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("old"), 0o644)
+	os.Chmod(p, 0o644)
+	f := snapshotFile(p, 0o600)
+	f.next = []byte("new")
+	os.Chmod(p, 0o600)
+	if _, err := f.write(setupNow); err == nil {
+		t.Fatal("changed permissions were accepted")
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 || readFile(p) != "old" {
+		t.Fatalf("mode %v, %q", fi.Mode(), readFile(p))
+	}
+}
+
+// Every existing hook file is parsed: only an absent file starts as an empty object.
+func TestHookFileEmptyExisting(t *testing.T) {
+	for _, old := range []string{"", "  \n"} {
+		p := filepath.Join(t.TempDir(), "hooks.json")
+		os.WriteFile(p, []byte(old), 0o600)
+		f := snapshotFile(p, 0o600)
+		hookFile(f, "codex", testHookCmd)
+		if f.block == "" || f.changes() {
+			t.Errorf("%q: block %q, changes %v", old, f.block, f.changes())
 		}
 	}
 }

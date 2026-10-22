@@ -205,7 +205,7 @@ func hookFile(f *setupFile, kind, command string) {
 		return
 	}
 	root := &jnode{kind: '{'}
-	if f.exists && len(bytes.TrimSpace(f.old)) > 0 {
+	if f.exists {
 		var err error
 		if root, err = parseJSON(f.old); err != nil {
 			f.block = "it is not valid JSON: " + err.Error()
