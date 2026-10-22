@@ -325,6 +325,9 @@ local function schema_of(s)
   end
   return out
 end
+-- chars answers the number of characters of UTF-8 text s: the bytes that are not continuation
+-- bytes (0x80-0xBF). JSON Schema minLength and maxLength count characters, as the hub does (runes).
+local function chars(s) return #(s:gsub('[\128-\191]', '')) end
 local function json_type(v)
   local t = type(v)
   if t == 'number' then return v % 1 == 0 and 'integer' or 'number' end
@@ -355,8 +358,8 @@ local function check(schema, args)
           or not (want == 'string' or want == 'integer' or want == 'number' or want == 'boolean' or want == 'object' or want == 'array') then fits = true end
       end
       if not fits then fail('invalid_input', 'Argument ' .. name .. ' must be ' .. table.concat(wants, ' or ')) end
-      if type(v) == 'string' and p.minLength and #v < p.minLength then fail('invalid_input', 'Argument ' .. name .. ' is too short') end
-      if type(v) == 'string' and p.maxLength and #v > p.maxLength then fail('invalid_input', 'Argument ' .. name .. ' is too long') end
+      if type(v) == 'string' and p.minLength and chars(v) < p.minLength then fail('invalid_input', 'Argument ' .. name .. ' is too short') end
+      if type(v) == 'string' and p.maxLength and chars(v) > p.maxLength then fail('invalid_input', 'Argument ' .. name .. ' is too long') end
       if type(v) == 'number' and p.minimum and v < p.minimum then fail('invalid_input', 'Argument ' .. name .. ' is too small') end
       if type(v) == 'number' and p.maximum and v > p.maximum then fail('invalid_input', 'Argument ' .. name .. ' is too large') end
       if p.enum then

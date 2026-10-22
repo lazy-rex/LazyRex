@@ -658,3 +658,12 @@ app.form('/forms/ok', {title = 'OK', id = 'confirm', label = 'Confirm it',
   expect(go({accept = false}).error.message).to_be('Check I accept')
   expect(go({accept = true}).result).to_equal({accepted = true, close_form = true})
 end)
+
+test('minLength and maxLength count characters, not UTF-8 bytes', function()
+  local s = plugin([[app.action('p.title', {title = {type = 'string', minLength = 2, maxLength = 60}}, function(ctx, args) return {ok = true} end, {store = false})]])
+  local e = '\195\169' -- é: two bytes, one character
+  expect(s:agent('p.title', {title = string.rep(e, 60)}).result, '60 characters').to_equal({ok = true})
+  expect(s:agent('p.title', {title = string.rep(e, 61)}).error.message).to_be('Argument title is too long')
+  expect(s:agent('p.title', {title = e}).error.message, 'one character, two bytes').to_be('Argument title is too short')
+  expect(s:agent('p.title', {title = '\240\159\152\128\240\159\152\128'}).result, 'two 4-byte characters').to_equal({ok = true})
+end)
