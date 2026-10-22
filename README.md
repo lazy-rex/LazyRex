@@ -10,24 +10,32 @@ Status: early. The design came from a series of spikes; `docs/` keeps their find
 
 Requirements:
 
-- Rex, with its server running.
-- Go 1.27.2 or later, to build the two binaries.
-- git.
-- The Claude Code or Codex CLI, for agents.
-- Network access. The build downloads Go modules, and git reads the released plugins.
-- Access to the [lazy-rex](https://github.com/lazy-rex) repositories on GitHub. The repositories are
-  private for now. git must authenticate to github.com for the clone, for setup's tag lookup and for
-  the plugin download (for example with `gh auth setup-git`).
+You need Rex, with its server running. LazyRex runs on macOS and Linux, arm64 and amd64.
 
-Build the hub and the renderer into one directory. Setup needs `lazyrex-view` beside `lazyrex-hub`:
+- git. Setup reads the plugin tags, and the plugin sync fetches the plugins.
+- The Claude Code or Codex CLI, for agents.
+- Access to the [lazy-rex](https://github.com/lazy-rex) repositories on GitHub. The repositories are
+  private for now, so the download uses the [GitHub CLI](https://cli.github.com) (`gh auth login`),
+  and git must authenticate to github.com (`gh auth setup-git`).
+
+Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
+`~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view` and the plugin SDK in `sdk/lua`. Download the
+latest release, check it, then unpack it:
 
 ```sh
-git clone https://github.com/lazy-rex/LazyRex.git
-cd LazyRex
-mkdir -p ~/.lazyrex/bin
-(cd hub && go build -o ~/.lazyrex/bin/lazyrex-hub ./cmd/hub)
-(cd view && go build -o ~/.lazyrex/bin/lazyrex-view .)
+version=$(gh release view --repo lazy-rex/LazyRex --json tagName --jq .tagName)
+os=$(uname -s | tr A-Z a-z)
+arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+archive=lazyrex-$version-$os-$arch.tar.gz
+cd "$(mktemp -d)"
+gh release download "$version" --repo lazy-rex/LazyRex --pattern "$archive" --pattern SHA256SUMS
+grep " $archive\$" SHA256SUMS | shasum -a 256 -c && mkdir -p ~/.lazyrex && tar -xzf "$archive" -C ~/.lazyrex
+~/.lazyrex/bin/lazyrex-hub version
 ```
+
+The last line prints the version, for example `v0.4.1 (commit 25f8c7d…)`. Without `shasum` (some
+Linux systems), use `sha256sum -c` in its place. A failed check unpacks nothing. To update, run the
+same commands again: the archive replaces the binaries and the SDK.
 
 ## Set up
 
@@ -119,6 +127,23 @@ lazy-rex/
   ...
 ```
 
+### Build from source
+
+This needs Go 1.27.2 or later. `scripts/release-build.sh` makes the same archive as a release, so
+the binaries and the SDK stay together. A version other than `dev` needs a clean checkout.
+
+```sh
+git clone https://github.com/lazy-rex/LazyRex.git
+cd LazyRex
+os=$(uname -s | tr A-Z a-z)
+arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+TARGETS=$os/$arch scripts/release-build.sh dev /tmp/lazyrex-dist
+mkdir -p ~/.lazyrex && tar -xzf /tmp/lazyrex-dist/lazyrex-dev-$os-$arch.tar.gz -C ~/.lazyrex
+```
+
+Without `TARGETS`, the script builds all four archives, as CI does on a tag
+(`.github/workflows/release.yml`).
+
 ### Run from the sources
 
 `hub.example.json` and `profiles.example.json` are the developer examples: their plugin sources
@@ -134,7 +159,8 @@ are the sibling checkouts. (Setup writes a user's `hub.json` with released plugi
 
 Legacy developer tools: `dev.sh` needs python3, and the Node tests (`tests/*.mjs`, `lab/lab.mjs`,
 `lib/rex-client.mjs`) need Node 22 or later. They are being removed. They are not requirements of
-LazyRex: install, setup, start and the plugin tests need only Rex, Go, git and an agent CLI.
+LazyRex: install, setup and start need only Rex, git, an agent CLI and, while the repositories are
+private, the GitHub CLI. A build from source also needs Go.
 
 ### Tests
 
