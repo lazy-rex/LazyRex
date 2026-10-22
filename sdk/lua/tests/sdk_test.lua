@@ -830,6 +830,28 @@ app.action('p.ok', {}, function() add('ok'); return {done = true} end, {store = 
   expect(#s.sql.rows('todos'), 'a normal unsaved reply commits').to_be(1)
 end)
 
+test('a commit that answers replayed delivers the saved large reply, not the candidate stub', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)'}
+app.action('p.big', {}, function() app.db.exec('INSERT INTO todos (text) VALUES (?)', 'late'); return {t = string.rep('x', 150 * 1024)} end)]])
+  -- Another call with the same key commits first, with another large reply: the commit answers
+  -- replayed, and the handler's writes and its candidate parts are not used.
+  local saved = {t = string.rep('y', 100 * 1024)}
+  s.sql.hooks['hub.sql.commit'] = function(a)
+    if a.key then s.sql.ops[a.key] = {fingerprint = a.fingerprint, reply = saved} end
+  end
+  local r = s:agent('p.big', {key = 'k1'})
+  expect(r.error, show(r)).to_be(nil)
+  local stub = r.result.lazyrex_parts
+  expect(stub ~= nil, 'the saved reply goes in parts').to_be(true)
+  check_parts(s, r.result, 'saved')
+  expect(rex.json.decode(joined(s, r.result)).t == saved.t, 'the parts join to the saved reply').to_be(true)
+  expect(#s.sql.rows('todos'), 'the handler writes are not committed').to_be(0)
+  local sets = 0
+  for _ in pairs(s.part_sets) do sets = sets + 1 end
+  expect(sets, 'the candidate set and the delivered set').to_be(2)
+end)
+
 test('a hub.register reply without limits fails the start', function()
   local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = false})
   s:start()
