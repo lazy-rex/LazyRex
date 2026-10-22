@@ -292,3 +292,77 @@ func TestPluginAttemptResolve(t *testing.T) {
 		}
 	}
 }
+
+// An operator resolution stays visible (lead-b8-resolved): every hold reply lists it in resolved,
+// never in unresolved, and hub.plugins.ops shows it on the op's attempt, also for a new hub on the
+// same store (a restart). A proved attempt has no resolved_by.
+func TestPluginResolutionVisible(t *testing.T) {
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
+	registerWait = 0
+	ctx := context.Background()
+	h, _, id := startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
+	var attempt string
+	if err := h.db.QueryRow(`SELECT attempt FROM plugin_op_attempts WHERE op_id = ?`, id).Scan(&attempt); err != nil {
+		t.Fatal(err)
+	}
+	opsAttemptRow(t, h, "p1", "stop")
+	h.db.Exec(`UPDATE plugin_op_attempts SET op_id = ?, at = 9999999999999, outcome = 'stop: done', proof = 'applied: the call returned' WHERE attempt = 'p1'`, id)
+	if _, err := resolveCall(h, map[string]any{"op_id": id, "attempt": attempt, "outcome": "not_applied", "note": "no block in session:home"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holdCall(t, h, "hub.plugins.hold.acquire", map[string]any{"release_id": "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, hub := range []*Hub{h, {db: h.db}} {
+		s := holdState(t, hub)
+		resolved, _ := s["resolved"].([]map[string]any)
+		if s["state"] != "held" || len(s["unresolved"].([]map[string]any)) != 0 || len(resolved) != 1 {
+			t.Fatalf("the hold status: %v", s)
+		}
+		r := resolved[0]
+		by, _ := r["resolved_by"].(map[string]any)
+		if r["op_id"] != id || r["attempt"] != attempt || r["call"] != "start" || r["note"] != "resolved by operator (attribution, not proof)" ||
+			by["by"] != "operator" || by["outcome"] != "not_applied" || by["note"] != "no block in session:home" {
+			t.Fatalf("the resolved entry: %v", r)
+		}
+		for _, args := range []map[string]any{{"op_id": id}, nil} {
+			raw := map[string]json.RawMessage{}
+			for k, v := range args {
+				b, _ := json.Marshal(v)
+				raw[k] = b
+			}
+			v, err := hub.pluginOpsList(ctx, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := json.Marshal(v)
+			var ops []map[string]any
+			if args == nil {
+				var list struct{ Ops []map[string]any }
+				json.Unmarshal(b, &list)
+				ops = list.Ops
+			} else {
+				var op map[string]any
+				json.Unmarshal(b, &op)
+				ops = []map[string]any{op}
+			}
+			if len(ops) != 1 {
+				t.Fatalf("hub.plugins.ops %v: %s", args, b)
+			}
+			atts, _ := ops[0]["attempts"].([]any)
+			if len(atts) != 2 {
+				t.Fatalf("the attempts %v: %s", args, b)
+			}
+			a, p := atts[0].(map[string]any), atts[1].(map[string]any)
+			ab, _ := a["resolved_by"].(map[string]any)
+			if a["attempt"] != attempt || a["call"] != "start" || a["proof"] != "" || a["outcome"] == "" ||
+				ab["outcome"] != "not_applied" || ab["by"] != "operator" || a["note"] != "resolved by operator (attribution, not proof)" {
+				t.Fatalf("the resolved attempt %v: %s", args, b)
+			}
+			if _, ok := p["resolved_by"]; ok || p["attempt"] != "p1" || p["proof"] != "applied: the call returned" {
+				t.Fatalf("the proved attempt %v: %s", args, b)
+			}
+		}
+	}
+}
