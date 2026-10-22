@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -202,13 +201,10 @@ func (b *b8Life) waitFor(what string, d time.Duration, ok func() bool) {
 func (b *b8Life) kill() {
 	b.t.Helper()
 	b.l.snapshot()
-	b.l.hubW.signal(syscall.SIGKILL)
-	select {
-	case <-b.l.hubExit:
-	case <-time.After(10 * time.Second):
-		b.t.Fatal("the hub did not end after SIGKILL")
+	if p := b.l.hub.kill(); len(p) > 0 { // SIGKILL to the hub's group, through its keeper
+		b.l.unproved = append(b.l.unproved, p...)
+		b.t.Fatalf("the hub did not end after SIGKILL: %v", p)
 	}
-	b.l.hubExit = nil
 }
 
 // runOld starts OLD on the same config, state and lab server, runs fn, and stops it with SIGTERM.
@@ -220,16 +216,11 @@ func (b *b8Life) runOld(fn func()) {
 	b.must("hub.plugins", nil)
 	fn()
 	b.l.snapshot()
-	b.l.hubW.signal(syscall.SIGTERM)
-	select {
-	case err := <-b.l.hubExit:
-		if err != nil {
-			b.t.Fatalf("OLD did not stop cleanly: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		b.t.Fatal("OLD did not stop in 10 s")
+	// SIGTERM through the keeper; a problem includes an exit status other than 0.
+	if p := b.l.hub.stop(); len(p) > 0 {
+		b.l.unproved = append(b.l.unproved, p...)
+		b.t.Fatalf("OLD did not stop cleanly: %v", p)
 	}
-	b.l.hubExit = nil
 	b.bin = b.hBin
 	b.note("OLD started and stopped cleanly (exit status 0)")
 }
