@@ -83,8 +83,9 @@ setting ahead of time. `lazyrex-hub status` shows what the hub last saw the app 
 
 In the Rex palette, run **LazyRex: Start Hub**. A pane opens, and the hub runs in it. Closing the
 pane stops the hub. **LazyRex: Hub Status** and **LazyRex: Stop Hub** are beside it. With the default
-plugins, the hub also opens two tabs at its start: **LazyRex** (the home view) and the Messaging
-thread of the **Team** group (its messages over a composer).
+plugins, the hub also opens one tab at its start: the Messaging thread of the **Team** group (its
+messages over a composer). The other LazyRex commands, such as **Agents…** and **Stop Worker…**,
+are in the palette.
 
 Start Hub runs this command, which you can also run in a terminal:
 
