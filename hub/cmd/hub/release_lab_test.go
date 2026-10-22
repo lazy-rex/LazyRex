@@ -94,7 +94,7 @@ func TestReleaseRehearseLabFailure(t *testing.T) {
 		}
 	}
 	if !t.Failed() {
-		if p := removeLab(lab); len(p) > 0 {
+		if p := removeRehearsalLab(lab); len(p) > 0 {
 			t.Error(p)
 		}
 	}
@@ -148,7 +148,7 @@ func labRehearse(t *testing.T, bin, f, run, lab string, onLine func(string), ext
 func labFixture(t *testing.T, f, bin string) {
 	t.Helper()
 	// The plugin cache dirs are read-only: make them writable before the TempDir cleanup removes f.
-	t.Cleanup(func() { removeLab(f) })
+	t.Cleanup(func() { removeRehearsalLab(f) })
 	git := func(dir string, args ...string) {
 		t.Helper()
 		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {

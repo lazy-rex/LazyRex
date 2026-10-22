@@ -168,7 +168,7 @@ func (h *rehearsal) finish(tier string, reasons []string) error {
 	if err := h.publish(tier, reasons); err != nil {
 		return err
 	}
-	if problems := removeLab(h.lab); len(problems) > 0 {
+	if problems := removeRehearsalLab(h.lab); len(problems) > 0 {
 		h.say("WARNING: the record is written, but %s; delete the lab %s by hand", strings.Join(problems, "; "), h.lab)
 		return nil
 	}
@@ -947,8 +947,8 @@ func (h *rehearsal) stopLab() []string {
 	return append(problems, h.l.stop()...)
 }
 
-// removeLab makes the lab tree writable, then deletes it.
-func removeLab(dir string) []string {
+// removeRehearsalLab makes the lab tree writable, then deletes it.
+func removeRehearsalLab(dir string) []string {
 	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
 			os.Chmod(p, 0o700)
