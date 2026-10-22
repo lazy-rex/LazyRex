@@ -627,7 +627,7 @@ func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []strin
 		if k := refKinds(r.Ref); len(k) == 1 {
 			kind = k[0]
 		}
-		if err := checkRef(ctx, tmpRoot, r.Ref); err != nil {
+		if err := checkRef(ctx, execGit, tmpRoot, r.Ref); err != nil {
 			failed = append(failed, fmt.Errorf("%s: %w", e.Source, err))
 			continue
 		}
