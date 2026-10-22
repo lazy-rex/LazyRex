@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -60,6 +62,11 @@ func TestFakeHub(t *testing.T) {
 		os.Exit(2)
 	case "exit3":
 		os.Exit(3)
+	case "refuse":
+		// A hub that fails at its start, for example on another hub's state lock.
+		fmt.Fprintln(os.Stderr, "hub: starting")
+		fmt.Fprintln(os.Stderr, "hub: another hub holds the state lock")
+		os.Exit(1)
 	case "ready-exit0":
 		signalReady(env.readyFD, env.expectState)
 		os.Exit(0)
@@ -551,5 +558,36 @@ func TestStatusTrustsOnlyTheLockHolder(t *testing.T) {
 	ctlLook(Config{Server: cfg.Server, State: other})
 	if _, err := os.Stat(filepath.Join(other, "restart.lock")); !os.IsNotExist(err) {
 		t.Errorf("status made restart.lock: %v", err)
+	}
+}
+
+// A hub that fails before its first ready: its last output lines go to the pane, before the
+// wrapper's own line, so the reason is readable there (the hub's output goes to hub.log only).
+func TestRestartShowsWhyTheFirstStartFailed(t *testing.T) {
+	wr := newWrapperTest(t, "refuse")
+	if code := waitCode(t, wr.runAsync()); code != 1 {
+		t.Fatalf("exit %d, want 1\n%s", code, wr.text())
+	}
+	s := wr.text()
+	why := strings.Index(s, "restart: hub: hub: another hub holds the state lock")
+	if why < 0 || why > strings.Index(s, "restart: the hub failed before its first ready") || !strings.Contains(s, "restart: hub: hub: starting") {
+		t.Fatalf("pane:\n%s", s)
+	}
+}
+
+// lastLines keeps the last lines of the last run only; a cut tail drops its partial first line.
+func TestRestartLogLastLines(t *testing.T) {
+	l := newRestartLog(t.TempDir(), io.Discard)
+	l.readRun(strings.NewReader("old run\n"))
+	l.readRun(strings.NewReader("a\n\nb\r\nc"))
+	if got := strings.Join(l.lastLines(10), "|"); got != "a|b|c" {
+		t.Fatalf("lines %q", got)
+	}
+	if got := strings.Join(l.lastLines(2), "|"); got != "b|c" {
+		t.Fatalf("last 2: %q", got)
+	}
+	l.readRun(strings.NewReader(strings.Repeat("x", tailMax) + "\nend\n"))
+	if got := strings.Join(l.lastLines(10), "|"); got != "end" {
+		t.Fatalf("a cut tail: %q", got)
 	}
 }

@@ -227,6 +227,13 @@ func (w *wrapper) run() int {
 			w.writeStatus("stopped", time.Time{})
 			return exitStateMismatch
 		case !everReady:
+			// The hub's output goes to hub.log only. Its last lines say why it failed (for example
+			// another hub that holds the state's lock), so the pane gets them too.
+			if w.log != nil {
+				for _, s := range w.log.lastLines(10) {
+					w.out.Printf("restart: hub: %s", s)
+				}
+			}
 			w.out.Printf("restart: the hub failed before its first ready; no restart")
 			w.writeStatus("stopped", time.Time{})
 			if end.code < 0 {

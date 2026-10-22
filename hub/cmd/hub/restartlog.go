@@ -13,6 +13,8 @@ package main
 //     goroutine. A full channel drops the line.
 //   - At open, the first file above 16 MiB is renamed once to hub.log.pre-restart if that name is
 //     free. Normalization deletes no bytes; that archive is never written again.
+//   - The reader also keeps the last 2 KiB of its run. A hub that fails before its first ready
+//     gets its last lines in the pane (lastLines), so a refusal is readable there.
 
 import (
 	"errors"
@@ -21,6 +23,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,6 +36,7 @@ const (
 	logRetry    = 60 * time.Second
 	logEndWait  = 2 * time.Second // the writer's and the pane's last flush at the wrapper's exit
 	paneLines   = 64
+	tailMax     = 2 << 10 // the end of a run that lastLines reads
 )
 
 type restartLog struct {
@@ -49,7 +53,8 @@ type restartLog struct {
 	queued    int
 	dropped   int64
 	dropSince time.Time
-	noticed   bool // the pane has the notice of the current drop
+	noticed   bool   // the pane has the notice of the current drop
+	tail      []byte // the end of the current run's output (tailMax)
 	closed    bool
 	kick      chan struct{}
 
@@ -141,16 +146,48 @@ func (l *restartLog) dropLocked(n int64) {
 
 // readRun moves one run's output into the queue until EOF or a closed read end.
 func (l *restartLog) readRun(r io.Reader) {
+	l.mu.Lock()
+	l.tail = l.tail[:0]
+	l.mu.Unlock()
 	buf := make([]byte, logChunk)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			l.push(buf[:n])
+			l.mu.Lock()
+			l.tail = append(l.tail, buf[:n]...)
+			if len(l.tail) > tailMax {
+				l.tail = append(l.tail[:0], l.tail[len(l.tail)-tailMax:]...)
+			}
+			l.mu.Unlock()
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+// lastLines is at most n of the last complete lines of the last run's output. The first line of a
+// cut tail is incomplete and left out; an empty line is left out.
+func (l *restartLog) lastLines(n int) []string {
+	l.mu.Lock()
+	s := string(l.tail)
+	cut := len(l.tail) == tailMax
+	l.mu.Unlock()
+	lines := strings.Split(s, "\n")
+	if cut && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	var out []string
+	for _, line := range lines {
+		if line = strings.TrimRight(line, "\r"); line != "" {
+			out = append(out, line)
+		}
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
 }
 
 // start normalizes and opens the log, then runs the writer.
