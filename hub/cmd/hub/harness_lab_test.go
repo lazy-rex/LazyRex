@@ -38,7 +38,7 @@ func runHarness(t *testing.T, bin, dir string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(bin, append(append([]string{"test"}, args...), dir)...)
 	cmd.Env = harnessEnv(t)
-	harnessStarts.LoadOrStore(t, time.Now().Add(-time.Second).UTC().Truncate(time.Second))
+	harnessStarted(t)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -94,9 +94,15 @@ func removeKeptLabs(t *testing.T, out string) {
 	})
 }
 
-// harnessStarts holds, for each test, the time before its first runHarness: a KEEP marker that the
+// harnessStarts holds, for each test, the time before its first harness run: a KEEP marker that the
 // harness wrote in that run is not older.
 var harnessStarts sync.Map // *testing.T -> time.Time
+
+// harnessStarted records the start of the test's first harness run. A test that starts the harness
+// itself (not with runHarness) calls it before the start, or removeIfEnded keeps its -keep labs.
+func harnessStarted(t *testing.T) {
+	harnessStarts.LoadOrStore(t, time.Now().Add(-time.Second).UTC().Truncate(time.Second))
+}
 
 // removeIfEnded removes a lab that a harness run of this test kept with -keep, when labProbe proves
 // it absent. A marker of another kind (failed, unproved: labKeep.class) stays and is logged: the
@@ -187,6 +193,7 @@ func TestHarnessInterrupt(t *testing.T) {
 	cmd.Env = harnessEnv(t)
 	var buf strings.Builder
 	cmd.Stdout, cmd.Stderr = &buf, &buf
+	harnessStarted(t)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +265,7 @@ func TestHarnessIsolation(t *testing.T) {
 	cmd := exec.Command(bin, "test", "-keep", filepath.Join(root, "tests", "isolation"))
 	cmd.Env = append(harnessEnv(t), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"TMPDIR="+filepath.Join(outer, "tmp"), "LRT_OUTER_SECRET="+secret)
+	harnessStarted(t)
 	outb, err := cmd.CombinedOutput()
 	out := string(outb)
 	removeKeptLabs(t, out)
