@@ -1041,7 +1041,11 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 			return nil, bad("only the home plugin reads the plugin operations")
 		}
 		var raw map[string]json.RawMessage
-		json.Unmarshal(p.Args, &raw)
+		if len(p.Args) > 0 && string(p.Args) != "null" {
+			if err := json.Unmarshal(p.Args, &raw); err != nil {
+				return nil, bad("args must be an object")
+			}
+		}
 		return h.pluginOpsList(ctx, raw)
 	case "hub.grant.create":
 		return h.grantCreate(ctx, p, ns, args)
