@@ -38,6 +38,9 @@ type testFile struct {
 	Args map[string]map[string]string `json:"args"`
 	// Prompts replaces test.prompts for this file: a list of plugin names, or false for none.
 	Prompts filePrompts `json:"prompts"`
+	// Home is the hub config "home" for this file: a plugin of the lab that the hub treats as the
+	// home plugin (default: lazyrex). For hub tests of the home rules with the harness fixture.
+	Home string `json:"home"`
 }
 
 // filePrompts is test.files.<file>.prompts. set is false when the file has no prompts entry.
@@ -211,6 +214,7 @@ func (m *manifest) checkPluginGraph(home *testDep) error {
 type testOpts struct {
 	fileArgs                              map[string]map[string]string // test.files args of the file that runs now
 	filePrompts                           filePrompts                  // test.files prompts of the file that runs now (promptGrant)
+	fileHome                              string                       // test.files home of the file that runs now
 	dir, lazyrex, self, rexBin, run, file string
 	home                                  *testDep // the home plugin; nil when it is the plugin under test
 	keep, verbose                         bool
@@ -538,6 +542,9 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	if o.m.Test.UISlot != "" {
 		cfg["ui_slot"] = o.m.Test.UISlot
 	}
+	if o.fileHome != "" {
+		cfg["home"] = o.fileHome
+	}
 	b, _ := json.MarshalIndent(cfg, "", " ")
 	path := filepath.Join(l.dir, "hub.json")
 	return path, os.WriteFile(path, b, 0o600)
@@ -630,11 +637,12 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 // runFile runs one test file in its own lab and hub.
 func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileResult {
 	res := &fileResult{name: strings.TrimPrefix(file, o.dir+"/"), parity: parity}
-	o.fileArgs, o.filePrompts = nil, filePrompts{}
+	o.fileArgs, o.filePrompts, o.fileHome = nil, filePrompts{}, ""
 	if !parity {
 		f := o.m.Test.Files[filepath.Base(file)]
 		o.fileArgs = f.Args
 		o.filePrompts = f.Prompts
+		o.fileHome = f.Home
 	}
 	l, err := o.startLab(ctx)
 	if l != nil {

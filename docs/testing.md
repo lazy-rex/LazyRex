@@ -162,7 +162,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
 | `test.env` | Variables added to the lab environment. See "Isolation". |
 | `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id`, `plugin_session`, `main` and `lazyrex_sdk` are refused. |
-| `test.files` | Plugin args for one test file: `{"gallery.lua": {"args": {"<plugin>": {"k": "v"}}}}`, keyed by the file's base name (the form of `-file`). For that file's lab, these args go over `test.args`; other files do not get them. The rules of `test.args` apply. An entry can also have `prompts`: a list of plugin names, or `false` for none. For that file's lab it replaces `test.prompts` (the names follow the `test.prompts` rules). The parity sweep uses `test.prompts`. |
+| `test.files` | Plugin args for one test file: `{"gallery.lua": {"args": {"<plugin>": {"k": "v"}}}}`, keyed by the file's base name (the form of `-file`). For that file's lab, these args go over `test.args`; other files do not get them. The rules of `test.args` apply. An entry can also have `prompts`: a list of plugin names, or `false` for none. For that file's lab it replaces `test.prompts` (the names follow the `test.prompts` rules). The parity sweep uses `test.prompts`. An entry can also have `home`: a plugin of the lab that the hub treats as its home plugin for that file (hub config `home`; default `lazyrex`), for hub tests of the home rules with the fixture (`tests/harness/tests/home_retire.lua`). |
 | `test.watch_roots` | Plugin watch roots (hub config `plugins[].watch_roots`, docs/hub.md "File watches"), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Each path starts with `${LAB}/` and stays in the lab. The harness creates each directory before the hub starts. |
 | `test.prompts` | The plugins that get the `prompts` grant (hub config `plugins[].prompts`, docs/hub.md "Agent prompts and acting as the user"): the plugin under test, a `test.plugins` entry or `lazyrex`. |
 | `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
@@ -462,7 +462,8 @@ a record (`plugstart_lab_test.go`). A hub without `-test` refuses the key.
 - The file `LAB/testview-hold` controls the test views of one route: line 1 is the route, line 2
   the mode. `hold` (the default) keeps them between attach and subscribe, at most 20 s; the
   subscribe is not sent yet. `fail-subscribe-once` makes the first subscribe fail, simulated by
-  the test view. `testview.status` reports `held`, `hold_expired`, `subscribed`,
+  the test view. `retire-wait` stands for unsaved text: the test view accepts `view.retire`, but it exits
+  only after the file stops naming `retire-wait` for its route. `testview.status` reports `held`, `hold_expired`, `subscribed`,
   `subscribe_failures` and `changes` (the count of `view.changed` notifications).
 
 ### Faults
