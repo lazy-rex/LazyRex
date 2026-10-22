@@ -30,6 +30,21 @@ func lockBase(l *pluginLock, key string) string {
 	return string(b)
 }
 
+// lockSnapshot is the admission snapshot of the lock (lock_base): the lockBase of each key, as
+// JSON. The read takes no flock: the lock is replaced by a rename, so it reads one whole version.
+func (h *Hub) lockSnapshot(keys []string) (string, error) {
+	lock, err := readLock(lockPath(h.cfg.path, h.cfg.Lock))
+	if err != nil {
+		return "", refuse("refused", "%v", err)
+	}
+	snap := map[string]string{}
+	for _, k := range keys {
+		snap[k] = lockBase(lock, k)
+	}
+	b, _ := json.Marshal(snap)
+	return string(b), nil
+}
+
 // newManaged is the managed entry that the op leaves in the file, with the stored target's
 // source: an add's entry from its input, or an update's base entry with the new source.
 func (op *pluginOp) newManaged(t opResolved) (managedFileEntry, error) {
@@ -89,7 +104,7 @@ func (h *Hub) lastIntended(ctx context.Context, op *pluginOp, call string) (stri
 // opLock writes the op's pin into the lock file, under both plugin command flocks. Its recovery
 // rule, after a crash at any point: the file hash is the intended hash of the op's last write:lock
 // attempt -> written; the key's pin is already the op's pin -> written; the key's pin is still the
-// base (the pin when the target was stored) -> write; else conflict. Before the op goes on, also
+// base (its admission snapshot, lock_base) -> write; else conflict. Before the op goes on, also
 // when the pin is written:
 //   - the op's cache entry must still verify (a CLI cleanup can remove a directory that no lock
 //     names): a pin that does not verify is fetched again;
@@ -100,8 +115,16 @@ func (h *Hub) lastIntended(ctx context.Context, op *pluginOp, call string) (stri
 // The new lock keeps every other entry as the locked read gave it.
 func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	var t opResolved
-	if err := json.Unmarshal([]byte(op.Target), &t); err != nil || t.LockBase == "" {
-		return h.setOpPhase(ctx, op, "failed", "", "lock: the stored target has no lock base")
+	var snap map[string]string
+	if err := json.Unmarshal([]byte(op.Target), &t); err != nil {
+		return h.setOpPhase(ctx, op, "failed", "", "lock: the stored target does not read")
+	}
+	base, ok := "", json.Unmarshal([]byte(op.LockBase), &snap) == nil
+	if ok {
+		base, ok = snap[t.Source]
+	}
+	if !ok {
+		return h.setOpPhase(ctx, op, "failed", "", "lock: the admission snapshot has no entry for "+t.Source)
 	}
 	var pin lockEntry
 	if err := json.Unmarshal([]byte(op.Pin), &pin); err != nil {
@@ -147,8 +170,8 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	cur := lockBase(lock, t.Source)
 	// written: by this op before a crash, or by another writer.
 	written := last != "" && b != nil && hashBytes(b) == last || cur == intended
-	if !written && cur != t.LockBase {
-		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock entry of %s changed since the operation resolved it: %s, now %s; nothing was written", t.Source, t.LockBase, cur))
+	if !written && cur != base {
+		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock changed during the %s; run it again (the entry of %s was %s at admission, now %s); nothing was written", op.Kind, t.Source, base, cur))
 	}
 	next := &pluginLock{Plugins: map[string]*lockEntry{}}
 	for k, v := range lock.Plugins {
