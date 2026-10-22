@@ -464,7 +464,14 @@ local function query_of(route)
   return out
 end
 
-local function slug(text) return (tostring(text):lower():gsub('[^%w]+', '-'):gsub('^%-+', ''):gsub('%-+$', '')) end
+-- slug turns a panel title into a command id: the hub accepts only a-z, 0-9 and _ (observed on
+-- hub/sql-r2 c840c92: 'command id "x.y": use a-z, 0-9 and _').
+local function slug(text) return (tostring(text):lower():gsub('[^%w]+', '_'):gsub('^_+', ''):gsub('_+$', '')) end
+-- check_command checks the command id at the declaration, so a bad id fails with a clear message.
+local function check_command(spec)
+  assert(type(spec.id) == 'string' and spec.id:match('^[a-z0-9_]+$'), 'A command id uses only a-z, 0-9 and _ (not ' .. tostring(spec.id) .. ')')
+  return spec
+end
 local function part(s) s = tostring(s); return #s .. ':' .. s end
 
 -- M.plugin(name) answers the app. Call it once, in the main file. The SDK registers the plugin
@@ -537,6 +544,7 @@ function M.plugin(name)
   function app.panel(title, fn, opts)
     opts = opts or {}
     local id = opts.id or slug(title)
+    check_command({id = id})
     local route = '/panels/' .. id
     panels[route] = {title = title, fn = fn}
     commands[#commands + 1] = {id = id, title = title, description = opts.description or ('Show ' .. title), keywords = opts.keywords or {id},
@@ -552,7 +560,7 @@ function M.plugin(name)
     views[#views + 1] = {route = route, prefix = route:sub(-1) == '*' and route:sub(1, -2) or nil, handlers = handlers, opts = opts or {}}
   end
   -- app.command(spec): an extra hub.register command (a palette entry).
-  function app.command(spec) commands[#commands + 1] = spec end
+  function app.command(spec) commands[#commands + 1] = check_command(spec) end
 
   -- app.start(fn, opts): runs once at start, after the registration and the migrations, in one
   -- transaction. opts.after_register = true runs it after the other start functions.
@@ -759,7 +767,7 @@ function M.plugin(name)
       local c = copy(spec.command)
       c.route = c.route or route
       if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
-      commands[#commands + 1] = c
+      commands[#commands + 1] = check_command(c)
     end
   end
 

@@ -984,3 +984,16 @@ app.action('p.boom', {}, function() app.db.exec('INSERT OR ROLLBACK INTO t (a) V
   expect(r.error.message:find('SQLite rolled back the transaction', 1, true) ~= nil, r.error.message).to_be(true)
   expect(calls[1], 'the SDK tried the rollback; its tx_expired is not the error').to_be('rollback')
 end)
+
+test('a panel with a title of several words gets a command id that the hub accepts (a-z, 0-9 and _)', function()
+  -- The hub refuses another command id: 'command id "notes.add_note": use a-z, 0-9 and _'
+  -- (observed by the fresh-agent doc test on hub/sql-r2 c840c92, 2026-10-22).
+  local s = plugin([[app.panel('My Notes!', function() return {} end)]])
+  local c = s.registered.commands[1]
+  expect(c.id).to_be('my_notes')
+  expect(c.route).to_be('/panels/my_notes')
+  expect(c.id:match('^[a-z0-9_]+$') ~= nil, c.id).to_be(true)
+  local bad = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.command({id = "notes.add", title = "Add", route = "/x"})'})
+  expect(bad.loaded, 'a bad command id fails at the declaration').to_be(false)
+  expect(tostring(bad.load_error):find('A command id uses only a-z, 0-9 and _ (not notes.add)', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
+end)
