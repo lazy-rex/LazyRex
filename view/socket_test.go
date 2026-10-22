@@ -147,6 +147,10 @@ func TestServerEndpoint(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "lab"), filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
 	}
+	// labSocket resolves symbolic links, so the lab socket path exists.
+	if err := os.WriteFile(filepath.Join(root, "lab", "rex.sock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	lab := "unix://" + filepath.Join(root, "lab", "rex.sock")
 	linked := "unix://" + filepath.Join(root, "link", "rex.sock")
 	other := "unix://" + filepath.Join(root, "other", "rex.sock")
