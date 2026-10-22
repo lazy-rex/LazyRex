@@ -945,3 +945,17 @@ test('the example manifest and the docs manifest name the SDK, so the launcher r
   expect(manifest ~= nil, 'the docs show a manifest').to_be(true)
   expect(rex.json.decode(manifest).sdk).to_be('0')
 end)
+
+test('notice v2: app.notice with once, and app.notice_read, go into the commit of the handler', function()
+  local s = plugin([[
+app.action('p.once', {}, function() app.notice('bob', true, {once = true}); return {} end)
+app.action('p.read', {}, function() app.notice_read('bob'); return {} end)
+app.action('p.bad', {}, function() app.notice('bob', false, {once = true}); return {} end)]])
+  s:agent('p.once', {})
+  expect(s.sql.notices).to_equal({{agent = 'bob', pending = true, once = true}})
+  s.sql.notices = nil -- the fake keeps every committed notice
+  s:agent('p.read', {})
+  expect(s.sql.notices, 'read: no pending, no once').to_equal({{agent = 'bob', read = true}})
+  local r = s:agent('p.bad', {})
+  expect(r.error and r.error.message).to_be('app.notice: once needs pending = true')
+end)

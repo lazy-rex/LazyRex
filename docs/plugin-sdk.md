@@ -176,7 +176,7 @@ errors and the transaction rules above.
 | `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
-| `app.notice(agent, pending)` | Wake an agent at the commit. |
+| `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |
 | `app.refresh()` | Render the open views again, for state outside SQL. |
 | `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
 | `app.args`, `app.dir` | The plugin arguments; the plugin directory. |

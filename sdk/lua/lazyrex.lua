@@ -495,13 +495,25 @@ function M.plugin(name)
   end
   -- app.refresh() renders every open view of the plugin again (state outside SQL).
   function app.refresh() pcall(hub, 'hub.ui.invalidate', {}) end
-  -- app.notice(agent, pending) wakes agent at the commit of the current handler.
-  function app.notice(agent, pending)
+  -- app.notice(agent, pending, opts) wakes agent at the commit of the current handler. opts.once = true
+  -- (notice v2, hub/nudge-once): a new nudge only if the agent is not pending or read since the last
+  -- one; it needs pending = true. app.notice_read(agent) records that the agent read (pending stays).
+  -- A hub without notice v2 ignores once and refuses read.
+  local function queue(name, notice)
     local f = frame()
-    if not f then fail('invalid_input', 'app.notice runs in a handler') end
-    no_write('app.notice')
-    f.notices[#f.notices + 1] = {agent = agent, pending = pending == true}
+    if not f then fail('invalid_input', name .. ' runs in a handler') end
+    no_write(name)
+    f.notices[#f.notices + 1] = notice
   end
+  function app.notice(agent, pending, opts)
+    local n = {agent = agent, pending = pending == true}
+    if opts and opts.once then
+      if not n.pending then fail('invalid_input', 'app.notice: once needs pending = true') end
+      n.once = true
+    end
+    queue('app.notice', n)
+  end
+  function app.notice_read(agent) queue('app.notice_read', {agent = agent, read = true}) end
 
   -- app.db.migrate {sql, ...}: each entry is one schema version (a SQL text or a function). The
   -- SDK runs the new ones in order, in one transaction, and sets PRAGMA user_version.
