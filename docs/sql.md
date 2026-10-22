@@ -111,10 +111,11 @@ authorized at CREATE.
   0.0.1792158932-g88fd41). Rex refuses a larger one before the hub sees it, so the SDK measures the
   request first and fails it with `too_large` (then nothing was written).
 - SQL text 32 KiB, 999 parameters, a value 1 MiB, the file 1 GiB (`too_large`).
-- Reply: the hub stops a query at about 1 040 000 bytes of rows (`complete = false`; the SDK pages
-  with keyset paging). A first row over the limit: `too_large`. An exec or batch reply (RETURNING
-  rows, column names and the exec fields, as encoded) over the limit: `too_large`, before the
-  commit; the statement or batch has no effect. The reply guard limit is 1 047 552 bytes (observed).
+- Reply: the hub stops a query at about 1 040 000 bytes of column names and rows (`complete =
+  false`; the SDK pages with keyset paging). A first row over the limit: `too_large`. An exec or
+  batch reply (RETURNING rows, column names and the exec fields, as encoded) over the limit:
+  `too_large`, before the commit; the statement or batch has no effect. The reply guard limit is
+  1 047 552 bytes (observed).
 - 5 s for each statement (`timeout`).
 - Errors are Rex action errors with a code: `invalid_input`, `refused`, `sql_error` (the text has
   the SQLite code name), `conflict` (`expect_changes`, `expect_rows`), `operation_conflict`,
