@@ -20,6 +20,7 @@ const (
 	relVerifyFwd     = "verify-fwd.json"
 	relVerifyBack    = "verify-back.json"
 	relLabTransform  = "lab-transform.json"
+	relSetJSON       = "set.json" // the set file of a release-set rehearsal
 )
 
 // The tiers of a rehearsal. The full tier adds the partial-failure cases.
@@ -40,6 +41,8 @@ type relRehearsal struct {
 	Mirrors     map[string]string   `json:"mirrors,omitempty"` // rehearse: the HEAD of each GitHub mirror of the lab
 	Commits     map[string][]string `json:"commits,omitempty"` // rehearse: the commits that the mirrors held, by owner/repo
 	SDK         []relSDKCheck       `json:"sdk,omitempty"`     // rehearse: the SDK byte check of each hub check point
+	Set         []relSetCheck       `json:"set,omitempty"`     // rehearse -set: every data check and probe of the set phase
+	Chunks      []relChunkCheck     `json:"chunks,omitempty"`  // rehearse -set: the chunking probe windows
 }
 
 type relPhase struct {
@@ -56,6 +59,7 @@ var relBoundFiles = [...]struct{ field, file string }{
 	{"verify-fwd", relVerifyFwd},
 	{"verify-back", relVerifyBack},
 	{"lab-transform", relLabTransform},
+	{"set", relSetJSON},
 }
 
 // bindings computes the values that a rehearsal record binds, for this run and the tool binary

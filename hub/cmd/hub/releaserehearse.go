@@ -49,8 +49,9 @@ func openRehearse(name string, args []string, stdout, stderr io.Writer) (*releas
 	run := fs.String("run", "", "the live run directory, after freeze (required)")
 	lab := fs.String("lab", "", "the new lab directory, /tmp/rexlab-release-<name> (required)")
 	tier := fs.String("tier", "", "full: run the full tier even when the default tier is enough")
+	set := fs.String("set", "", "the set file: the plugin releases that follow this hub release (a release-set rehearsal)")
 	if err := fs.Parse(args); err != nil || *run == "" || *lab == "" || fs.NArg() > 0 || (*tier != "" && *tier != tierFull) {
-		fmt.Fprintf(stderr, "usage: lazyrex-hub release %s -run <dir> -lab /tmp/%s<name> [-tier full]\n", name, relLabPrefix)
+		fmt.Fprintf(stderr, "usage: lazyrex-hub release %s -run <dir> -lab /tmp/%s<name> [-tier full] [-set <file>]\n", name, relLabPrefix)
 		return nil, relUsage
 	}
 	fail := func(err error) (*releaser, int) {
@@ -72,7 +73,7 @@ func openRehearse(name string, args []string, stdout, stderr io.Writer) (*releas
 		return fail(err)
 	}
 	return &releaser{run: *run, spec: s, step: name, out: stdout, cfg: cfg, ctx: context.Background(), unlock: func() {},
-		now: time.Now, rehearseLab: *lab, rehearseTier: *tier}, relOK
+		now: time.Now, rehearseLab: *lab, rehearseTier: *tier, rehearseSet: *set}, relOK
 }
 
 // rehearsal is one rehearse run.
@@ -96,6 +97,9 @@ type rehearsal struct {
 	sdk        []relSDKCheck         // the SDK byte checks, in order
 	n          int                   // the number of child steps (log names)
 	stopped    bool                  // stopLab ran
+	set        *relSetState          // rehearse -set: the plugin set, nil for a hub-only rehearsal
+	chunks     []relChunkCheck       // rehearse -set: the chunking probe windows
+	spDigest   string                // rehearse -set: the digest of the sp fixture (tests/sdk-parts of H)
 }
 
 func (h *rehearsal) say(format string, args ...any) { h.r.say(format, args...) }
@@ -111,6 +115,9 @@ func hubRehearse(r *releaser) (err error) {
 	}
 	h := &rehearsal{r: r, c: c, tool: tool, schemas: map[string][]string{}}
 	if err := h.supersede(); err != nil {
+		return err
+	}
+	if err := h.loadSet(); err != nil {
 		return err
 	}
 	if h.lab, err = createLab(r.rehearseLab); err != nil {
@@ -139,6 +146,11 @@ func hubRehearse(r *releaser) (err error) {
 	}
 	if err := h.phase("forward", func() error { return h.forwardAs("forward") }); err != nil {
 		return err
+	}
+	if h.set != nil {
+		if err := h.phase("set", h.setPhase); err != nil {
+			return err
+		}
 	}
 	if err := h.phase("rollback", func() error { return h.rollbackAs("rollback") }); err != nil {
 		return err
@@ -304,6 +316,11 @@ func (h *rehearsal) setup() error {
 	for _, e := range ll.Plugins {
 		need[e.Owner+"/"+e.Repo] = append(need[e.Owner+"/"+e.Repo], e.Commit)
 	}
+	if h.set != nil {
+		if err := h.setNeed(need, &ll); err != nil {
+			return err
+		}
+	}
 	if err := needCommits(L, need); err != nil {
 		return err
 	}
@@ -322,6 +339,11 @@ func (h *rehearsal) setup() error {
 	if _, err := h.cmd(filepath.Join(clone, "hub"), "go", "build", "-o", h.oldBin, "./cmd/hub"); err != nil {
 		return err
 	}
+	if h.set != nil {
+		if h.spDigest, err = h.chunkFixture(); err != nil {
+			return err
+		}
+	}
 
 	cfg, transform, err := labFiles(h.live, L, h.r.spec.LabArgs)
 	if err != nil {
@@ -333,6 +355,13 @@ func (h *rehearsal) setup() error {
 		return err
 	}
 	transform = append(transform, added...)
+	if h.set != nil {
+		more, err := h.setLabFiles(L, cfg)
+		if err != nil {
+			return err
+		}
+		transform = append(transform, more...)
+	}
 	if err := writeJSON(filepath.Join(h.r.run, relLabTransform), transform); err != nil {
 		return err
 	}
@@ -971,6 +1000,11 @@ func removeRehearsalLab(dir string) []string {
 
 // publish reads the live inputs again and writes the record only when they did not change.
 func (h *rehearsal) publish(tier string, reasons []string) error {
+	// A set rehearsal passes only with both chunking probe windows (the coordinator made the
+	// probe mandatory for 4.2): no record says "not proved".
+	if h.set != nil && len(h.chunks) != 2 {
+		return relFail("the chunking probe ran %d of 2 windows; no record", len(h.chunks))
+	}
 	now, err := h.capture()
 	if err != nil {
 		return err
@@ -990,6 +1024,10 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 		return err
 	}
 	rec := &relRehearsal{Pass: true, At: h.r.now().UTC().Format(time.RFC3339), Bound: bound, Tier: tier, TierReasons: reasons, Phases: h.phases, Lab: h.lab, Mirrors: h.mirrors, Commits: h.commits, SDK: h.sdk}
+	if h.set != nil {
+		rec.Set = h.set.checks
+		rec.Chunks = h.chunks
+	}
 	if err := h.r.writeRehearsal(rec); err != nil {
 		return err
 	}

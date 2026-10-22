@@ -165,6 +165,8 @@ type releaser struct {
 	testStop string
 	// rehearseLab and rehearseTier are the -lab and -tier flags of rehearse.
 	rehearseLab, rehearseTier string
+	// rehearseSet is the -set flag of rehearse: the set file of a release-set rehearsal.
+	rehearseSet string
 }
 
 func (r *releaser) say(format string, args ...any) {
