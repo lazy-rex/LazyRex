@@ -78,11 +78,20 @@ var opFinal = map[string]bool{"done": true, "failed": true, "conflict": true, "u
 const (
 	opBusyRetry = 2 * time.Second
 	opBusyNote  = 10 * time.Minute
+	// opRegisterPoll is the interval of the checks while a start observation waits for a
+	// registration (a registration also kicks the manager).
+	opRegisterPoll = time.Second
 )
+
+// opRegisterWait bounds the wait of a start observation for the registration of its intent's
+// instance (a test shortens it).
+var opRegisterWait = 60 * time.Second
 
 type pluginOpsSvc struct {
 	kick chan struct{}
 	busy map[string]time.Time // op ID -> the first busy try (the manager goroutine only)
+	// observing: attempt -> the first observation that waits for a registration (the manager goroutine only)
+	observing map[string]time.Time
 	// fault is a test hook: true at a point stops the manager there, as a crash would.
 	fault func(point string) bool
 }
@@ -563,6 +572,7 @@ func (h *Hub) opsLoop(ctx context.Context) {
 // opsRun runs the open ops in admission order. An op that must wait stops the run: the later ops
 // wait for it. It returns the wait (0: nothing to wait for).
 func (h *Hub) opsRun(ctx context.Context) time.Duration {
+	h.observeLater(ctx)
 	rows, err := h.db.QueryContext(ctx, `SELECT op_id FROM plugin_ops WHERE phase NOT IN ('done', 'failed', 'conflict', 'unknown') ORDER BY created, rowid`)
 	if err != nil {
 		log.Printf("plugin ops: %v", err)
@@ -934,9 +944,9 @@ var afterSentNone = map[string][]string{
 
 // returnProof is the proof that the return of a bound call gives (docs/hub.md, "attempt"):
 //   - a success: applied;
-//   - any return while sent_at is '': not_applied (no effect began);
+//   - any return while sent_at is empty: not_applied (no effect began);
 //   - after sent_at, a refusal of afterSentNone: not_applied;
-//   - else '': unresolved, until an observation or an operator.
+//   - else empty: unresolved, until an observation or an operator.
 //
 // attempt_bound proves nothing: the call did nothing, and the attempt keeps its own state.
 func (h *Hub) returnProof(ctx context.Context, call, attempt string, callErr error) (string, error) {
@@ -1077,7 +1087,7 @@ func (h *Hub) opStop(ctx context.Context, op *pluginOp, attempt string) (any, er
 // again: it reads what the hub knows. It runs only when the call cannot act any more: the call
 // returned in this process (a test fault), or the hub restarted. The proof follows the binding
 // of the start and stop handlers (adminattempt.go):
-//   - bound_at = '' (the handler never bound it) or sent_at = '' (no effect began): not_applied;
+//   - bound_at is empty (the handler never bound it) or sent_at is empty (no effect began): not_applied;
 //     the op failed, and nothing was changed by it.
 //   - stop: the stored record is stopped with no instance, its saved entry identity is the op's,
 //     and its instance_id is the target_instance that the handler bound -> applied (the same
@@ -1124,15 +1134,49 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 		}
 		return h.finishCall(ctx, op, attempt, "failed", "", "the "+call+" did not run: "+how+" (observed after the hub restarted)", "not_applied: "+how)
 	}
-	var desired, block, identity, instance, session, start, run, stamp string
-	var pid int
-	err := h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
-		Scan(&desired, &block, &identity, &instance, &session, &pid, &start, &run, &stamp)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	proof, detail, waiting, err := h.attemptEvidence(ctx, op, call, target, intent)
+	if err != nil {
 		return err
 	}
+	if proof == "" && waiting {
+		// The registration deadline decides only the op's phase: until it, the op waits for the
+		// registration of its intent's instance; after it, the op ends unknown, and observeLater
+		// keeps the observation of the attempt.
+		if h.pops.observing == nil {
+			h.pops.observing = map[string]time.Time{}
+		}
+		first, ok := h.pops.observing[attempt]
+		if !ok {
+			first = time.Now()
+			h.pops.observing[attempt] = first
+		}
+		if time.Since(first) < opRegisterWait {
+			return &opWait{after: opRegisterPoll, why: "waiting for the registration of " + intent}
+		}
+		detail += fmt.Sprintf(" The hub waited %v for the registration; it keeps the observation.", opRegisterWait)
+	}
+	delete(h.pops.observing, attempt)
+	if proof != "" {
+		return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), call+": "+detail+" (observed after the hub restarted)", "", proof)
+	}
+	return h.finishCall(ctx, op, attempt, "unknown", "", "the "+call+"'s outcome is unknown: "+detail, "")
+}
+
+// attemptEvidence is the observation of a sent start or stop attempt from stored identity only
+// (opObserve): an applied proof with what it saw, or "" with what it saw instead. The caller makes
+// sure that the call cannot act any more.
+//
+// waiting: a start whose intent can still register (not abandoned); the observation can wait.
+func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call, target, intent string) (proof, detail string, waiting bool, err error) {
+	var desired, block, identity, instance, session, start, run, stamp string
+	var pid int
+	err = h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
+		Scan(&desired, &block, &identity, &instance, &session, &pid, &start, &run, &stamp)
 	if errors.Is(err, sql.ErrNoRows) {
-		return h.finishCall(ctx, op, attempt, "unknown", "", "the "+call+"'s outcome is unknown: the plugin has no record", "")
+		return "", "the plugin has no record", false, nil
+	}
+	if err != nil {
+		return "", "", false, err
 	}
 	if stamp != entryStamp(desired, instance, session, block, pid, start, run) {
 		identity = "" // a write that does not know entry_identity changed the row (a rollback hub), or a kept record saved it
@@ -1140,15 +1184,15 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 	mine := op.EntryIdentity != "" && identity == op.EntryIdentity
 	if call == "stop" {
 		if mine && instance == target && desired == "stopped" && block == "" {
-			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "stop: stopped (observed after the hub restarted)", "", "applied: observed the stored record")
+			return "applied: observed the stored record", "stopped", false, nil
 		}
-		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the stop's outcome is unknown: the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, target, op.EntryIdentity), "")
+		return "", fmt.Sprintf("the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, target, op.EntryIdentity), false, nil
 	}
 	var status string
 	if intent != "" {
 		err := h.db.QueryRowContext(ctx, `SELECT status FROM spawn_intents WHERE instance_id = ?`, intent).Scan(&status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return "", "", false, err
 		}
 	}
 	h.mu.Lock()
@@ -1156,9 +1200,49 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 	registered := pl != nil && pl.InstanceID == intent && h.registeredLocked(op.Name)
 	h.mu.Unlock()
 	if intent != "" && status == "created" && mine && instance == intent && registered {
-		return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "start: running (observed after the hub restarted)", "", "applied: observed the created intent and its registration")
+		return "applied: observed the created intent and its registration", "running", false, nil
 	}
-	return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the start's outcome is unknown: the hub stopped during the start (intent %q, status %q). A new start runs only after the hub resolves the spawn intent (unresolved_intent).", intent, status), "")
+	return "", fmt.Sprintf("the start's intent is %q with status %q, and it has not registered. A new start runs only after the hub resolves the spawn intent (unresolved_intent).", intent, status), intent != "" && status != "abandoned", nil
+}
+
+// observeLater proves the sent start and stop attempts that are still unresolved, when exact
+// evidence appears later: for example, the instance of a start's created intent registers after
+// the op ended unknown (a lost answer, or a hub restart before the registration). Each attempt has
+// an outcome, so its call cannot act any more. It never calls again and never changes the op's
+// phase: only the attempt's proof (docs/hub.md, "attempt"). The hold reads that proof.
+func (h *Hub) observeLater(ctx context.Context) {
+	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.intent_id FROM plugin_op_attempts a
+		JOIN plugin_ops o ON o.op_id = a.op_id
+		WHERE a.proof = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop') AND o.phase = 'unknown'`)
+	if err != nil {
+		log.Printf("plugin ops: the later observation: %v", err)
+		return
+	}
+	type open struct{ attempt, op, call, target, intent string }
+	var list []open
+	for rows.Next() {
+		var a open
+		if rows.Scan(&a.attempt, &a.op, &a.call, &a.target, &a.intent) == nil {
+			list = append(list, a)
+		}
+	}
+	rows.Close()
+	for _, a := range list {
+		op, err := h.loadOp(ctx, a.op)
+		if err != nil {
+			continue
+		}
+		proof, _, _, err := h.attemptEvidence(ctx, op, a.call, a.target, a.intent)
+		if err != nil || proof == "" {
+			continue
+		}
+		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = ''`, proof+" (later)", a.attempt)
+		if n, _ := res.RowsAffected(); err != nil || n != 1 {
+			continue
+		}
+		h.ev.emit("plugin_op_attempt", map[string]any{"op_id": a.op, "attempt": a.attempt, "call": a.call, "proof": proof + " (later)"})
+		h.changed("plugins")
+	}
 }
 
 // pluginOpActions are hub.plugins.op and hub.plugins.ops on the agent face (agentKeymap).
