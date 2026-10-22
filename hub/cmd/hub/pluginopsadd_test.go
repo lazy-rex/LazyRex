@@ -115,7 +115,7 @@ func TestPluginOpUpdateAdmission(t *testing.T) {
 }
 
 // restart admission: any entry (managed or config), also from an agent; the plugin must run, and
-// its candidate must be its run; the home plugin is refused; the target is the run and the
+// its candidate must be its run; the home plugin too; the target is the run and the
 // instance at admission.
 func TestPluginOpRestartAdmission(t *testing.T) {
 	h, _, dir := opsTestHub(t, "")
@@ -153,8 +153,10 @@ func TestPluginOpRestartAdmission(t *testing.T) {
 	if op.Kind != "restart" || x.Instance != "x-1-aaaaaaaa" || x.Source != e.Source || op.Origin.Kind != "agent" {
 		t.Fatalf("the restart op: %+v %+v", op, x)
 	}
+	// The home plugin restarts like any entry (lead-b8-step4: restart of any entry); a stop and a
+	// remove of it stay refused.
 	h.cfg.Home = "x"
-	if err := restart("r3"); !isRefusal(err, "refused") || !strings.Contains(err.Error(), "home plugin") {
+	if err := restart("r3"); err != nil {
 		t.Fatalf("the home plugin: %v", err)
 	}
 }
