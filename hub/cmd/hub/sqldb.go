@@ -239,7 +239,7 @@ func (k *sqlConn) postDDL(ctx context.Context) error {
 		for rows.Next() {
 			var n string
 			rows.Scan(&n)
-			if !hubTables[strings.ToLower(n)] {
+			if schema == "temp" || !hubTables[strings.ToLower(n)] { // the hub's names live in main only
 				bad = append(bad, schema+"."+n)
 			}
 		}
