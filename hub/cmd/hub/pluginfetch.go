@@ -272,7 +272,10 @@ func fetchCommit(ctx context.Context, git gitRunner, stateDir, tmp, url, owner, 
 	}
 	files, err := archiveInto(ctx, git, gitDir, commit, tree, stage.Dir)
 	if err != nil {
-		stage.discard()
+		// An extraction that still runs owns the stage: it stays (unused disk state; no lock names it).
+		if running := (*outputRunningError)(nil); !errors.As(err, &running) {
+			stage.discard()
+		}
 		return nil, err
 	}
 	m, _, err := readPluginManifest(filepath.Join(stage.Dir, filepath.FromSlash(subdir)))
@@ -280,6 +283,10 @@ func fetchCommit(ctx context.Context, git gitRunner, stateDir, tmp, url, owner, 
 		stage.discard()
 		// The stage is removed, so the text names the commit in place of the stage path.
 		return nil, errors.New(strings.ReplaceAll(err.Error(), stage.Dir, "the tree of "+commit))
+	}
+	if err := ctx.Err(); err != nil { // a cancel after the extraction publishes nothing
+		stage.discard()
+		return nil, err
 	}
 	rel, err := stage.publish()
 	if err != nil {
@@ -341,6 +348,15 @@ func checkTreePath(p string) error {
 		return fmt.Errorf("the tree has a path that is not allowed: %q", p)
 	}
 	return nil
+}
+
+// outputRunningError is a runner's return while its stream callback still runs (the fetch child's
+// bound ended first). The callback owns what it writes until it returns: the caller reads none of
+// its results and leaves its files alone.
+type outputRunningError struct{}
+
+func (*outputRunningError) Error() string {
+	return "the archive reader did not end within the stop bound"
 }
 
 // archiveRead is a test hook: it wraps the archive stream before extractTar reads it. nil in
