@@ -33,6 +33,7 @@ func harnessBinary(t *testing.T) (bin, root string) {
 func runHarness(t *testing.T, bin, dir string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command(bin, append(append([]string{"test"}, args...), dir)...)
+	cmd.Env = harnessEnv(t)
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -40,7 +41,14 @@ func runHarness(t *testing.T, bin, dir string, args ...string) (string, int) {
 	} else if err != nil {
 		t.Fatal(err)
 	}
+	removeKeptLabs(t, string(out))
 	return string(out), code
+}
+
+// harnessEnv is the environment of a lazyrex-hub test that a test runs: its lab sweep uses a test
+// directory, never the real /tmp.
+func harnessEnv(t *testing.T) []string {
+	return append(os.Environ(), labSweepRootEnv+"="+t.TempDir())
 }
 
 var keptLab = regexp.MustCompile(`lab kept: (/tmp/lrt-[0-9]+)`)
@@ -59,8 +67,23 @@ func assertLabsGone(t *testing.T, out string) {
 				t.Errorf("a process of lab %s survived: %s", m[1], sc.Text())
 			}
 		}
-		os.RemoveAll(m[1])
+		if err := removeLab(m[1]); err != nil {
+			t.Error(err)
+		}
 	}
+}
+
+// removeKeptLabs removes, when the test ends, each lab that the harness output names as kept: a
+// harness test runs with -keep, and a check that fails before assertLabsGone must not leave its
+// labs (the lrt leak, 2026-10-22).
+func removeKeptLabs(t *testing.T, out string) {
+	t.Cleanup(func() {
+		for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+			if err := removeLab(m[1]); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 }
 
 func TestHarnessSelfTestsPass(t *testing.T) {
@@ -87,7 +110,7 @@ func TestHarnessFailures(t *testing.T) {
 			first, _, _ := strings.Cut(string(b), "\n")
 			want := strings.TrimPrefix(first, "-- want: ")
 			args := []string{"-keep", "-file", filepath.Base(f)}
-			if filepath.Base(f) == "timeout.lua" {
+			if strings.Contains(filepath.Base(f), "timeout") {
 				args = append(args, "-timeout", "8s")
 			}
 			out, code := runHarness(t, bin, dir, args...)
@@ -115,6 +138,7 @@ func TestHarnessRunMatchesNothing(t *testing.T) {
 func TestHarnessInterrupt(t *testing.T) {
 	bin, root := harnessBinary(t)
 	cmd := exec.Command(bin, "test", "-keep", "-file", "timeout.lua", "-timeout", "120s", filepath.Join(root, "tests", "harness-fail"))
+	cmd.Env = harnessEnv(t)
 	var buf strings.Builder
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	if err := cmd.Start(); err != nil {
@@ -124,6 +148,7 @@ func TestHarnessInterrupt(t *testing.T) {
 	cmd.Process.Signal(syscall.SIGINT)
 	err := cmd.Wait()
 	out := buf.String()
+	removeKeptLabs(t, out)
 	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
 		t.Errorf("exit %v, want 1\n%s", err, out)
 	}
@@ -160,10 +185,11 @@ func TestHarnessIsolation(t *testing.T) {
 	before := listing()
 	const secret = "lrt-outer-secret-7f3a"
 	cmd := exec.Command(bin, "test", "-keep", filepath.Join(root, "tests", "isolation"))
-	cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+	cmd.Env = append(harnessEnv(t), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"TMPDIR="+filepath.Join(outer, "tmp"), "LRT_OUTER_SECRET="+secret)
 	outb, err := cmd.CombinedOutput()
 	out := string(outb)
+	removeKeptLabs(t, out)
 	if err != nil || !strings.Contains(out, "tests/isolation.lua: 6 passed, 0 failed") {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -182,4 +208,34 @@ func TestHarnessIsolation(t *testing.T) {
 		})
 	}
 	assertLabsGone(t, out)
+}
+
+// A harness test that ends before assertLabsGone (a failed check) leaves no lab: runHarness
+// removes the kept labs when the test ends. Each kept lab has its KEEP marker until then. Before
+// the fix this left every -keep lab (the lrt leak, 2026-10-22).
+func TestHarnessKeptLabsRemoved(t *testing.T) {
+	bin, root := harnessBinary(t)
+	var labs []string
+	t.Run("run", func(t *testing.T) {
+		out, code := runHarness(t, bin, filepath.Join(root, "tests", "harness"), "-keep", "-file", "calls.lua")
+		if code != 0 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		for _, m := range keptLab.FindAllStringSubmatch(out, -1) {
+			labs = append(labs, m[1])
+			b, err := os.ReadFile(filepath.Join(m[1], labKeepFile))
+			if err != nil || !strings.Contains(string(b), `"by":"lazyrex-hub test -keep"`) {
+				t.Errorf("%s: KEEP marker %s %v", m[1], b, err)
+			}
+		}
+		// No assertLabsGone here: the test ends as a failed check would end it.
+	})
+	if len(labs) != 2 {
+		t.Fatalf("kept labs %v, want the parity sweep and calls.lua", labs)
+	}
+	for _, l := range labs {
+		if _, err := os.Stat(l); err == nil {
+			t.Errorf("lab %s stays after the test", l)
+		}
+	}
 }

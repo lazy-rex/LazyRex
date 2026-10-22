@@ -38,7 +38,9 @@ func TestHubWithoutTestModeHasNoFaults(t *testing.T) {
 			for _, p := range l.stop() {
 				t.Error(p)
 			}
-			os.RemoveAll(l.dir)
+			if err := removeLab(l.dir); err != nil {
+				t.Error(err)
+			}
 		}()
 	}
 	if err != nil {

@@ -25,12 +25,36 @@ Flags:
 | `-file send.lua` | Run only this file of `tests/`. |
 | `-run <Lua pattern>` | Run only tests whose name matches. The run fails if no test matches. |
 | `-timeout 120s` | The time limit for one test file. |
-| `-keep` | Keep each lab directory (logs, events, state). The processes stop anyway. |
+| `-keep` | Keep each lab directory (logs, events, state). The processes stop anyway. Each kept lab gets a `KEEP` marker (see "Lab directories"). |
+| `-clean <dir>...` | Remove the given lab directories (`/tmp/lrt-<digits>` of this user, with or without `KEEP`), then exit. A lab with a live server is refused. |
 | `-v` | Print the hub, plugin and runner logs. |
 | `-lazyrex <dir>` | The LazyRex checkout. Default: `../LazyRex` beside the plugin, `LAZYREX_DIR`, or the checkout of the binary. |
 
 Exit status: 0 when every file passes, 1 when a test or a check fails, 2 for a harness error (for
 example a bad manifest).
+
+## Lab directories
+
+Each test file runs in its own lab directory, `/tmp/lrt-<digits>` (a Unix socket path must stay
+short). The run removes it when the file ends, also after a failure, a file timeout, SIGINT or
+SIGTERM. A lab can hold read-only plugin cache entries; the removal makes each directory writable
+first.
+
+- A kept lab (`-keep`, or a Go lab test of the hub that failed) gets a file `KEEP`: JSON
+  `{by, why, at}`, for example `{"by": "lazyrex-hub test -keep", "why": "tests/send.lua: 3 passed,
+  1 failed, 0 problems"}`. Keep a lab only while a message cites it as evidence. Remove it after the
+  review: `lazyrex-hub test -clean /tmp/lrt-<digits>`. A lab that you keep by hand needs a `KEEP`
+  file too.
+- The sweep: at the start of each run, at most once per hour per user (the stamp file
+  `/tmp/lrt-sweep-<uid>`), the command removes each `/tmp/lrt-<digits>` directory of this user that
+  has no `KEEP` file, is older than 24 hours, and has no server that accepts a connection on its
+  `rex.sock`. It prints one line for each removal. (24 hours for the first release; then 1 hour.)
+- A killed run (SIGKILL) cannot clean up. Its lab directory waits for the sweep.
+- Give the tool call that runs `lazyrex-hub test` a time limit above `-timeout`, or run it in the
+  background. An agent tool's limit (for example 2 minutes) that kills the command first leaves the
+  lab server running: the server runs in its own process group.
+- The hub's own lab tests set `LAZYREX_LAB_SWEEP_ROOT` to a test directory: a test never sweeps the
+  real `/tmp`.
 
 ## What one run does
 

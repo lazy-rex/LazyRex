@@ -239,9 +239,32 @@ func testMain(argv []string) int {
 	fs.BoolVar(&o.verbose, "v", false, "print hub, plugin and runner logs")
 	fs.DurationVar(&o.timeout, "timeout", 120*time.Second, "time limit for one test file")
 	fs.StringVar(&o.lazyrex, "lazyrex", "", "the LazyRex checkout (default: ../LazyRex beside the plugin, or this binary's checkout)")
+	clean := fs.Bool("clean", false, "remove the lab directories given as arguments (kept labs after their review), then exit")
 	if err := fs.Parse(argv); err != nil {
 		return 2
 	}
+	if *clean {
+		if fs.NArg() == 0 {
+			fmt.Fprintln(os.Stderr, "usage: lazyrex-hub test -clean /tmp/lrt-<digits>...")
+			return 2
+		}
+		code := 0
+		for _, d := range fs.Args() {
+			if err := cleanLab("/tmp", d); err != nil {
+				fmt.Fprintln(os.Stderr, "lazyrex test -clean:", err)
+				code = 1
+				continue
+			}
+			fmt.Println("removed", d)
+		}
+		return code
+	}
+	// Labs that killed runs left (labclean.go).
+	sweepRoot := "/tmp"
+	if v := os.Getenv(labSweepRootEnv); v != "" {
+		sweepRoot = v
+	}
+	sweepLabs(sweepRoot, time.Now(), func(line string) { fmt.Fprintln(os.Stderr, line) })
 	if fs.NArg() > 1 {
 		fmt.Fprintln(os.Stderr, "usage: lazyrex-hub test [flags] [plugin dir]")
 		return 2
@@ -318,7 +341,7 @@ func testMain(argv []string) int {
 			fmt.Printf("     %s\n", p)
 		}
 		if o.keep && r.labDir != "" {
-			fmt.Printf("     lab kept: %s\n", r.labDir)
+			fmt.Printf("     lab kept: %s (it has a KEEP marker; remove it after its review: lazyrex-hub test -clean %s)\n", r.labDir, r.labDir)
 		}
 	}
 	if ctx.Err() != nil {
@@ -609,7 +632,12 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		res.labDir = l.dir
 		defer func() {
 			res.problems = append(res.problems, l.stop()...)
-			if note := removeRunLab(l.dir, o.keep, !res.ok()); note != "" {
+			if o.keep {
+				why := fmt.Sprintf("%s: %d passed, %d failed, %d problems", res.name, res.passed, res.failed, len(res.problems))
+				if err := markLabKept(l.dir, "lazyrex-hub test -keep", why); err != nil {
+					res.problems = append(res.problems, "lab KEEP marker: "+err.Error())
+				}
+			} else if note := removeRunLab(l.dir, false, !res.ok()); note != "" {
 				fmt.Println("  " + note)
 			}
 		}()
