@@ -35,7 +35,7 @@ about what the live renderer runs: row A records that.
 
 - The coordinator owns the live hub: release, start, stop, and the environment for the session.
   The guide does not start a second hub and does not regenerate live config or palette files.
-- Agent tests run in isolated labs under AGENTS.md. This checklist is for the user-guided live
+- Agent tests run in isolated labs under the lab rules in docs/testing.md. This checklist is for the user-guided live
   session in the coordinator's environment.
 - B.1 Effective plugins: the guide records the registered plugins from the running hub (the
   plugin list the hub reports, not a single config file: managed entries can come from
