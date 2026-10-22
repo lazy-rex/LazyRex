@@ -232,10 +232,11 @@ func TestKeeperCommandSIGTERMDefault(t *testing.T) {
 }
 
 // The command gets neither the keeper variables (the hub would start as a second keeper) nor the
-// keeper's pipes (fd 3 and 4).
+// keeper's pipes (fd 3 and 4). The probe of an fd is a subshell: dash exits at a failed redirection
+// of a special builtin.
 func TestKeeperCommandEnvAndFiles(t *testing.T) {
 	dir := t.TempDir()
-	k := startRawKeeper(t, []string{"/bin/sh", "-c", `env > "$0/env"; for fd in 3 4; do if { : >&$fd; } 2>/dev/null; then echo "fd $fd"; fi; done > "$0/fds"`, dir})
+	k := startRawKeeper(t, []string{"/bin/sh", "-c", `env > "$0/env"; for fd in 3 4; do if (true >&$fd) 2>/dev/null; then echo "fd $fd"; fi; done > "$0/fds"`, dir})
 	k.send(t, "start")
 	k.expect(t, "child ")
 	k.expect(t, "exit 0")
