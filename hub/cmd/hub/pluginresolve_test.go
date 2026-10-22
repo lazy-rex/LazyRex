@@ -294,9 +294,9 @@ func TestPluginsListCommit(t *testing.T) {
 	var got struct{ Entries, Kept []map[string]any }
 	json.Unmarshal(b, &got)
 	want := []string{
-		`{"candidate":{"error":"plugin a: refused"},"commit":"c1","desired":"running","dir":"/d1","entry":1,"instance_id":"","instance_pending":false,"name":"a","registered":false,"source":"s1","state":"running"}`,
-		`{"desired":"stopped","entry":2,"instance_id":"","instance_pending":false,"name":"b","registered":false,"source":"s2","state":"stopped"}`,
-		`{"commit":"c3","desired":"stopped","dir":"/d3","entry":3,"instance_id":"","instance_pending":false,"name":"c","registered":false,"source":"s3","state":"stopped"}`,
+		`{"candidate":{"error":"plugin a: refused"},"commit":"c1","desired":"running","dir":"/d1","entry":1,"instance_id":"","instance_pending":false,"name":"a","pinned_commit":"","registered":false,"source":"s1","state":"running"}`,
+		`{"desired":"stopped","entry":2,"instance_id":"","instance_pending":false,"name":"b","pinned_commit":"","registered":false,"source":"s2","state":"stopped"}`,
+		`{"commit":"c3","desired":"stopped","dir":"/d3","entry":3,"instance_id":"","instance_pending":false,"name":"c","pinned_commit":"","registered":false,"source":"s3","state":"stopped"}`,
 	}
 	for i, e := range got.Entries {
 		if b, _ := json.Marshal(e); string(b) != want[i] {
@@ -329,8 +329,8 @@ func TestPluginsListKindChange(t *testing.T) {
 	var got struct{ Entries []map[string]any }
 	json.Unmarshal(b, &got)
 	want := []string{
-		`{"candidate":{"commit":null,"dir":"/local/a"},"commit":"c1","desired":"stopped","dir":"/cache/a","entry":1,"instance_id":"","instance_pending":false,"name":"a","registered":false,"source":"/local/a","state":"stopped"}`,
-		`{"candidate":{"commit":"c2","dir":"/cache/b"},"desired":"stopped","dir":"/local/b","entry":2,"instance_id":"","instance_pending":false,"name":"b","registered":false,"source":"/local/b","state":"stopped"}`,
+		`{"candidate":{"commit":null,"dir":"/local/a"},"commit":"c1","desired":"stopped","dir":"/cache/a","entry":1,"instance_id":"","instance_pending":false,"name":"a","pinned_commit":"","registered":false,"source":"/local/a","state":"stopped"}`,
+		`{"candidate":{"commit":"c2","dir":"/cache/b"},"desired":"stopped","dir":"/local/b","entry":2,"instance_id":"","instance_pending":false,"name":"b","pinned_commit":"","registered":false,"source":"/local/b","state":"stopped"}`,
 	}
 	for i, e := range got.Entries {
 		if b, _ := json.Marshal(e); string(b) != want[i] {
