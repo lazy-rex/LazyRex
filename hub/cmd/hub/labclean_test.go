@@ -79,7 +79,7 @@ func TestSweepLabs(t *testing.T) {
 	readOnlyCache(t, old)
 	os.Chtimes(old, time.Now().Add(-30*time.Hour), time.Now().Add(-30*time.Hour)) // the cache entry made the directory new
 	kept := fakeLab(t, root, "lrt-101", 30*time.Hour)
-	markLabKept(kept, "test", "evidence")
+	markLabKept(kept, labKindKeep, "test", "evidence")
 	os.Chtimes(kept, time.Now().Add(-30*time.Hour), time.Now().Add(-30*time.Hour))
 	young := fakeLab(t, root, "lrt-102", 10*time.Minute)
 	live := fakeLab(t, root, "lrt-103", 30*time.Hour)
@@ -124,7 +124,7 @@ func TestSweepLabs(t *testing.T) {
 func TestCleanLab(t *testing.T) {
 	root := labTestRoot(t)
 	kept := fakeLab(t, root, "lrt-200", 0)
-	markLabKept(kept, "test", "evidence")
+	markLabKept(kept, labKindKeep, "test", "evidence")
 	readOnlyCache(t, kept)
 	if err := cleanLab(root, kept); err != nil || exists(kept) {
 		t.Errorf("clean of a kept lab: %v", err)
@@ -151,12 +151,12 @@ func TestCleanLab(t *testing.T) {
 // The KEEP marker says who kept the lab and why.
 func TestMarkLabKept(t *testing.T) {
 	dir := fakeLab(t, labTestRoot(t), "lrt-300", 0)
-	if err := markLabKept(dir, "lazyrex-hub test -keep", "tests/calls.lua: 5 passed, 0 failed, 0 problems"); err != nil {
+	if err := markLabKept(dir, labKindKeep, "lazyrex-hub test -keep", "tests/calls.lua: 5 passed, 0 failed, 0 problems"); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, labKeepFile))
 	var k labKeep
-	if err := json.Unmarshal(b, &k); err != nil || k.By != "lazyrex-hub test -keep" || !strings.Contains(k.Why, "calls.lua") || k.At == "" {
+	if err := json.Unmarshal(b, &k); err != nil || k.By != "lazyrex-hub test -keep" || !strings.Contains(k.Why, "calls.lua") || k.At == "" || k.Kind != labKindKeep {
 		t.Errorf("marker %s: %v", b, err)
 	}
 }
@@ -335,17 +335,17 @@ func TestProbeUncertain(t *testing.T) {
 func TestEndLab(t *testing.T) {
 	root := labTestRoot(t)
 	clean := fakeLab(t, root, "lrt-940", 0)
-	if kept, probs := endLab(clean, false, "f.lua", nil); kept || len(probs) != 0 || exists(clean) {
+	if kept, probs := endLab(clean, false, false, "f.lua", nil); kept || len(probs) != 0 || exists(clean) {
 		t.Errorf("a proved cleanup: kept %v, problems %v, exists %v", kept, probs, exists(clean))
 	}
 	keep := fakeLab(t, root, "lrt-941", 0)
-	if kept, probs := endLab(keep, true, "f.lua: 1 passed", nil); !kept || len(probs) != 0 || !strings.Contains(marker(t, keep), "-keep") {
+	if kept, probs := endLab(keep, true, false, "f.lua: 1 passed", nil); !kept || len(probs) != 0 || !strings.Contains(marker(t, keep), "-keep") {
 		t.Errorf("-keep: kept %v, problems %v, marker %s", kept, probs, marker(t, keep))
 	}
 	for _, k := range []bool{false, true} {
 		dir := fakeLab(t, root, "lrt-942"+strconv.FormatBool(k), 0)
 		surv := "cleanup: process survived the lab server: pid 4242"
-		kept, probs := endLab(dir, k, "f.lua", []string{surv})
+		kept, probs := endLab(dir, k, false, "f.lua", []string{surv})
 		if !kept || !exists(dir) || len(probs) != 1 || !strings.Contains(probs[0], dir) || !strings.Contains(probs[0], "pid 4242") {
 			t.Errorf("a survivor (keep %v): kept %v, problems %v", k, kept, probs)
 		}
@@ -355,7 +355,7 @@ func TestEndLab(t *testing.T) {
 	}
 	named := fakeLab(t, root, "lrt-943", 0)
 	namedProcess(t, filepath.Join(named, "x"))
-	if kept, probs := endLab(named, false, "f.lua", nil); !kept || !exists(named) || len(probs) != 1 || !strings.Contains(probs[0], "live") {
+	if kept, probs := endLab(named, false, false, "f.lua", nil); !kept || !exists(named) || len(probs) != 1 || !strings.Contains(probs[0], "live") {
 		t.Errorf("a process names the lab: kept %v, problems %v", kept, probs)
 	}
 }
@@ -441,7 +441,7 @@ func TestProbeNoSocketRunningServerPid(t *testing.T) {
 func TestRemoveIfEndedKeepsEvidence(t *testing.T) {
 	root := labTestRoot(t)
 	ev := fakeLab(t, root, "lrt-980", 0)
-	if kept, probs := endLab(ev, false, "failed cleanup", []string{"cleanup: process survived"}); !kept || len(probs) == 0 {
+	if kept, probs := endLab(ev, false, false, "failed cleanup", []string{"cleanup: process survived"}); !kept || len(probs) == 0 {
 		t.Fatal("endLab did not keep the evidence")
 	}
 	removeIfEnded(t, ev)
@@ -451,9 +451,94 @@ func TestRemoveIfEndedKeepsEvidence(t *testing.T) {
 	harnessStarts.Store(t, time.Now().Add(-time.Second).UTC().Truncate(time.Second))
 	t.Cleanup(func() { harnessStarts.Delete(t) })
 	ordinary := fakeLab(t, root, "lrt-981", 0)
-	markLabKept(ordinary, "lazyrex-hub test -keep", "tests/a.lua: 1 passed, 0 failed, 0 problems")
+	markLabKept(ordinary, labKindKeep, "lazyrex-hub test -keep", "tests/a.lua: 1 passed, 0 failed, 0 problems")
 	removeIfEnded(t, ordinary)
 	if exists(ordinary) {
 		t.Error("removeIfEnded kept an ordinary -keep lab of this run")
+	}
+}
+
+// writeKeep writes a KEEP marker as JSON, with the given time, as an older or newer binary may.
+func writeKeep(t *testing.T, dir string, m map[string]string, at time.Time) {
+	t.Helper()
+	m["at"] = at.UTC().Format(time.RFC3339)
+	b, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(dir, labKeepFile), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A failed file keeps its lab with a "failed" marker; -keep overrides it; a passed file removes its
+// lab; an unproved cleanup wins over both (the hub lead's proposal v2, coordinator-approved).
+func TestEndLabFailedFile(t *testing.T) {
+	root := labTestRoot(t)
+	failed := fakeLab(t, root, "lrt-990", 0)
+	kept, probs := endLab(failed, false, true, "tests/a.lua: 1 passed, 1 failed, 0 problems", nil)
+	k, err := readLabKeep(failed)
+	if !kept || len(probs) != 0 || err != nil || k.Kind != labKindFailed || k.By != labEvidenceBy || !strings.HasPrefix(k.Why, "failed: tests/a.lua") {
+		t.Errorf("a failed file: kept %v, problems %v, marker %+v %v", kept, probs, k, err)
+	}
+	withKeep := fakeLab(t, root, "lrt-991", 0)
+	endLab(withKeep, true, true, "tests/a.lua", nil)
+	if k, _ := readLabKeep(withKeep); k.Kind != labKindKeep {
+		t.Errorf("-keep on a failed file: %+v", k)
+	}
+	passed := fakeLab(t, root, "lrt-992", 0)
+	if kept, _ := endLab(passed, false, false, "tests/a.lua", nil); kept || exists(passed) {
+		t.Error("a passed file kept its lab")
+	}
+	both := fakeLab(t, root, "lrt-993", 0)
+	endLab(both, false, true, "tests/a.lua", []string{"cleanup: process survived"})
+	if k, _ := readLabKeep(both); k.Kind != labKindUnproved {
+		t.Errorf("a failed file with an unproved cleanup: %+v", k)
+	}
+}
+
+// The sweep removes a "failed" lab only 24 hours after its marker's time, and only when the probe
+// proves it absent. Every other marker stays: keep, unproved, a marker of an older binary without
+// a kind (by -keep is keep; by "lazyrex-hub test" is cleanup evidence; another by is protected),
+// and a kind that this binary does not know.
+func TestSweepFailedLabs(t *testing.T) {
+	root := labTestRoot(t)
+	now := time.Now()
+	day := now.Add(-25 * time.Hour)
+	mk := func(name string, m map[string]string, at time.Time) string {
+		d := fakeLab(t, root, name, 30*time.Hour)
+		writeKeep(t, d, m, at)
+		old(t, d)
+		return d
+	}
+	gone := mk("lrt-1000", map[string]string{"by": labEvidenceBy, "why": "failed: a", "kind": labKindFailed}, day)
+	young := mk("lrt-1001", map[string]string{"by": labEvidenceBy, "why": "failed: a", "kind": labKindFailed}, now.Add(-time.Hour))
+	live := mk("lrt-1002", map[string]string{"by": labEvidenceBy, "why": "failed: a", "kind": labKindFailed}, day)
+	namedProcess(t, filepath.Join(live, "x"))
+	stay := []string{young, live,
+		mk("lrt-1003", map[string]string{"by": "lazyrex-hub test -keep", "why": "a", "kind": labKindKeep}, day),
+		mk("lrt-1004", map[string]string{"by": labEvidenceBy, "why": "cleanup not proved: x", "kind": labKindUnproved}, day),
+		mk("lrt-1005", map[string]string{"by": "lazyrex-hub test -keep", "why": "a"}, day),
+		mk("lrt-1006", map[string]string{"by": labEvidenceBy, "why": "cleanup not proved: x"}, day),
+		mk("lrt-1007", map[string]string{"by": "go test TestX", "why": "the test failed"}, day),
+		mk("lrt-1008", map[string]string{"by": labEvidenceBy, "why": "failed: a", "kind": "later"}, day),
+	}
+	var lines []string
+	sweepLabs(root, now, func(s string) { lines = append(lines, s) })
+	if exists(gone) {
+		t.Errorf("the sweep kept an absent failed lab older than 24 hours; log %v", lines)
+	}
+	for _, d := range stay {
+		if !exists(d) {
+			t.Errorf("the sweep removed %s; log %v", d, lines)
+		}
+	}
+	for m, want := range map[labKeep]string{
+		{By: "lazyrex-hub test -keep"}:           labKindKeep,
+		{By: labEvidenceBy}:                      labKindUnproved,
+		{By: "go test TestX"}:                    labKindUnproved,
+		{By: labEvidenceBy, Kind: "later"}:       labKindUnproved,
+		{By: labEvidenceBy, Kind: labKindFailed}: labKindFailed,
+	} {
+		if got := m.class(); got != want {
+			t.Errorf("class of %+v: %s, want %s", m, got, want)
+		}
 	}
 }

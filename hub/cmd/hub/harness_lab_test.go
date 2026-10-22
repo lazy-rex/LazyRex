@@ -99,8 +99,8 @@ func removeKeptLabs(t *testing.T, out string) {
 var harnessStarts sync.Map // *testing.T -> time.Time
 
 // removeIfEnded removes a lab that a harness run of this test kept with -keep, when labProbe proves
-// it absent. Failure evidence (a KEEP marker for an unproved cleanup, labEvidenceBy) stays and is
-// logged: only -clean removes it. A lab without this test's own -keep marker, or that the probe does
+// it absent. A marker of another kind (failed, unproved: labKeep.class) stays and is logged: the
+// sweep or -clean removes it. A lab without this test's own -keep marker, or that the probe does
 // not prove ended, stays too, and the test fails with its path.
 func removeIfEnded(t *testing.T, dir string) {
 	t.Helper()
@@ -108,8 +108,8 @@ func removeIfEnded(t *testing.T, dir string) {
 		return
 	}
 	k, err := readLabKeep(dir)
-	if err == nil && k.By == labEvidenceBy {
-		t.Logf("lab %s kept: failure evidence (%s); remove it with lazyrex-hub test -clean after its review", dir, k.Why)
+	if err == nil && k.class() != labKindKeep {
+		t.Logf("lab %s kept: a %s marker (%s); %s", dir, k.class(), k.Why, keptHow(k))
 		return
 	}
 	since, _ := harnessStarts.Load(t)

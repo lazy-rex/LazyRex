@@ -45,14 +45,53 @@ var sweepForbidden []string
 
 // labKeep is the KEEP marker of a kept lab.
 type labKeep struct {
-	By  string `json:"by"`  // the command or test that kept it
-	Why string `json:"why"` // for example the file and its result
-	At  string `json:"at"`
+	By   string `json:"by"`  // the command or test that kept it
+	Why  string `json:"why"` // for example the file and its result
+	At   string `json:"at"`
+	Kind string `json:"kind,omitempty"` // labKindKeep, labKindFailed or labKindUnproved
 }
 
-// labEvidenceBy is the "by" of the KEEP marker of failure evidence: a lab whose cleanup a run did
-// not prove (endLab). No automatic path removes such a lab, even when a later probe says absent;
-// only -clean does, after its review.
+// The kinds of a KEEP marker. Each removal rule keys on the kind (labKeep.class):
+//   - keep: -keep. Only -clean removes it; a Go harness test removes the -keep labs of its own run
+//     (removeIfEnded).
+//   - failed: a failed test file or Go lab test. The sweep removes it 24 hours after its "at", when
+//     labProbe proves the lab absent.
+//   - unproved: failure evidence, a lab whose cleanup a run did not prove. Only -clean removes it.
+const (
+	labKindKeep     = "keep"
+	labKindFailed   = "failed"
+	labKindUnproved = "unproved"
+)
+
+// keptHow says how a kept lab is removed, for the output.
+func keptHow(k labKeep) string {
+	if k.class() == labKindFailed {
+		return "the sweep removes it 24 hours after it failed; or lazyrex-hub test -clean after its review"
+	}
+	return "remove it after its review: lazyrex-hub test -clean"
+}
+
+// labFailedKeptFor is how long a lab with a "failed" marker stays before the sweep may remove it.
+const labFailedKeptFor = 24 * time.Hour
+
+// class is the kind that the removal rules use. A marker of an older binary has no kind: by
+// "lazyrex-hub test -keep" is keep, by "lazyrex-hub test" (the cleanup evidence) is unproved.
+// Every other marker without a kind, and a kind that this binary does not know, is protected as
+// unproved: only -clean removes it.
+func (k labKeep) class() string {
+	switch k.Kind {
+	case labKindKeep, labKindFailed, labKindUnproved:
+		return k.Kind
+	case "":
+		if k.By == "lazyrex-hub test -keep" {
+			return labKindKeep
+		}
+	}
+	return labKindUnproved
+}
+
+// labEvidenceBy is the "by" of a KEEP marker that a lazyrex-hub test run wrote for its own reason:
+// an unproved cleanup (kind unproved) or a failed file (kind failed).
 const labEvidenceBy = "lazyrex-hub test"
 
 // readLabKeep reads the KEEP marker of the lab dir.
@@ -65,9 +104,9 @@ func readLabKeep(dir string) (labKeep, error) {
 	return k, err
 }
 
-// markLabKept writes the KEEP marker of the lab dir.
-func markLabKept(dir, by, why string) error {
-	b, _ := json.Marshal(labKeep{By: by, Why: why, At: time.Now().UTC().Format(time.RFC3339)})
+// markLabKept writes the KEEP marker of the lab dir, of the given kind.
+func markLabKept(dir, kind, by, why string) error {
+	b, _ := json.Marshal(labKeep{By: by, Why: why, At: time.Now().UTC().Format(time.RFC3339), Kind: kind})
 	return os.WriteFile(filepath.Join(dir, labKeepFile), append(b, '\n'), 0o600)
 }
 
@@ -279,7 +318,9 @@ func labAge(dir string, fi os.FileInfo, now time.Time) time.Duration {
 }
 
 // sweepLabs removes, in root, each lab directory (lrt-<digits>, not a symbolic link) of this user
-// that has no KEEP marker, is older than labStaleAfter and is absent (labProbe). A failed process
+// that is absent (labProbe) and either has no KEEP marker and is older than labStaleAfter, or has a
+// "failed" marker older than labFailedKeptFor (by the marker's own time). Every other KEEP marker
+// stays. A failed process
 // listing stops the sweep, and an uncertain lab stays, with one log line. It runs at most
 // once per labSweepEvery per user: the stamp file <root>/lrt-sweep-<uid> holds the time of the
 // last sweep. logf gets one line for each removal and each failure.
@@ -317,11 +358,17 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 		if err != nil || !fi.IsDir() || !labOwned(fi) {
 			continue
 		}
+		var age time.Duration
+		failedLab := false
 		if _, err := os.Lstat(filepath.Join(dir, labKeepFile)); !errors.Is(err, fs.ErrNotExist) {
-			continue // kept, or the marker cannot be checked
-		}
-		age := labAge(dir, fi, now)
-		if age < labStaleAfter {
+			// Kept. Only a "failed" marker older than labFailedKeptFor (by its own time) can go.
+			k, err := readLabKeep(dir)
+			at, terr := time.Parse(time.RFC3339, k.At)
+			if err != nil || terr != nil || k.class() != labKindFailed || now.Sub(at) < labFailedKeptFor {
+				continue
+			}
+			age, failedLab = now.Sub(at), true
+		} else if age = labAge(dir, fi, now); age < labStaleAfter {
 			continue
 		}
 		if st, why := labProbe(root, dir, procs); st != labAbsent {
@@ -334,15 +381,24 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 			logf("lab sweep: " + err.Error())
 			continue
 		}
+		if failedLab {
+			logf(fmt.Sprintf("lab sweep: removed %s (a failed file's lab, kept %s, no server or process)", dir, age.Round(time.Minute)))
+			continue
+		}
 		logf(fmt.Sprintf("lab sweep: removed %s (age %s, no KEEP marker, no server or process; to keep a lab, put a file named KEEP in it)", dir, age.Round(time.Minute)))
 	}
 }
 
 // endLab ends the lab dir of one test file after its stop. unproved lists why the stop could not
-// prove the cleanup (a survivor, the guard). The lab stays with a KEEP marker when the cleanup is
-// not proved (unproved, or a probe that is not absent: the evidence stays) or with -keep; else it
-// is removed. It returns whether the lab stays, and the problems for the run's result.
-func endLab(dir string, keep bool, why string, unproved []string) (bool, []string) {
+// prove the cleanup (a survivor, the guard). In order:
+//   - a cleanup that is not proved (unproved, or a probe after the stop that is not absent): the lab
+//     stays with a KEEP marker of kind unproved, and a problem with its path. The evidence stays.
+//   - -keep: the lab stays with kind keep, also when the file failed.
+//   - a failed file: the lab stays with kind failed; the sweep removes it after labFailedKeptFor.
+//   - else the lab is removed.
+//
+// It returns whether the lab stays, and the problems for the run's result.
+func endLab(dir string, keep, failed bool, why string, unproved []string) (bool, []string) {
 	reason := strings.Join(unproved, "; ")
 	if reason == "" {
 		procs, err := labProcs()
@@ -352,10 +408,14 @@ func endLab(dir string, keep bool, why string, unproved []string) (bool, []strin
 			reason = st.String() + ": " + w
 		}
 	}
-	by := "lazyrex-hub test -keep"
-	if reason != "" {
-		by, why = labEvidenceBy, "cleanup not proved: "+reason
-	} else if !keep {
+	kind, by := labKindKeep, "lazyrex-hub test -keep"
+	switch {
+	case reason != "":
+		kind, by, why = labKindUnproved, labEvidenceBy, "cleanup not proved: "+reason
+	case keep:
+	case failed:
+		kind, by, why = labKindFailed, labEvidenceBy, "failed: "+why
+	default:
 		if err := removeLab(dir); err != nil {
 			return false, []string{err.Error()}
 		}
@@ -365,7 +425,7 @@ func endLab(dir string, keep bool, why string, unproved []string) (bool, []strin
 	if reason != "" {
 		probs = append(probs, fmt.Sprintf("lab kept: %s: the cleanup is not proved (%s)", dir, reason))
 	}
-	if err := markLabKept(dir, by, why); err != nil {
+	if err := markLabKept(dir, kind, by, why); err != nil {
 		probs = append(probs, "lab KEEP marker: "+err.Error())
 	}
 	return true, probs

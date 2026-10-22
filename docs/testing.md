@@ -36,17 +36,26 @@ example a bad manifest).
 ## Lab directories
 
 Each test file runs in its own lab directory, `/tmp/lrt-<digits>` (a Unix socket path must stay
-short). The run removes it when the file ends, also after a failure, a file timeout, SIGINT or
-SIGTERM. A lab can hold read-only plugin cache entries; the removal makes each directory writable
+short). When a file passes, the run removes its lab. When it fails (also by a file timeout, SIGINT
+or SIGTERM), the lab stays with a `failed` marker for 24 hours (see below). A lab can hold read-only plugin cache entries; the removal makes each directory writable
 first.
 
-- A kept lab (`-keep`, or a Go lab test of the hub that failed) gets a file `KEEP`: JSON
-  `{by, why, at}`, for example `{"by": "lazyrex-hub test -keep", "why": "tests/send.lua: 3 passed,
-  1 failed, 0 problems"}`. Keep a lab only while a message cites it as evidence. A lab that you keep
-  by hand needs a `KEEP` file too.
+- A kept lab gets a file `KEEP`: JSON `{by, why, at, kind}`, for example `{"by": "lazyrex-hub test
+  -keep", "why": "tests/send.lua: 3 passed, 1 failed, 0 problems", "kind": "keep"}`. Keep a lab
+  only while a message cites it as evidence. A lab that you keep by hand needs a `KEEP` file too.
+  Each removal rule keys on the kind:
+  - `keep` (`-keep`): only `-clean` removes it (a Go harness test removes the `-keep` labs of its
+    own run, see below).
+  - `failed` (a failed file without `-keep`, by `lazyrex-hub test`, why `failed: <file>: ...`; or
+    a failed Go lab test of the hub): the sweep removes it 24 hours after the marker's `at`, and
+    only when the probe proves it absent. A passed file removes its lab at once.
+  - `unproved` (the cleanup is not proved): only `-clean` removes it.
+  - A marker without a kind (an older binary): by `lazyrex-hub test -keep` is `keep`; by
+    `lazyrex-hub test` is `unproved`; any other, and a kind that the binary does not know, is
+    protected as `unproved`.
 - A lab whose cleanup is not proved stays too, also without `-keep`: a process survived the stop,
   the guard did not end, or the probe after the stop is not "absent". Its `KEEP` marker has
-  `{"by": "lazyrex-hub test", "why": "cleanup not proved: <reason>"}`, the file fails with a
+  `{"by": "lazyrex-hub test", "why": "cleanup not proved: <reason>", "kind": "unproved"}`, the file fails with a
   problem that names the lab, and the summary line names it:
   `FAIL tests/send.lua: 3 passed, 0 failed (lab kept: /tmp/lrt-123)`.
 - No run removes failure evidence (a `KEEP` marker for an unproved cleanup). A Go harness test may
@@ -67,7 +76,8 @@ first.
   removed.
 - The sweep: at the start of each run, at most once per hour per user (the stamp file
   `/tmp/lrt-sweep-<uid>`), the command removes each `/tmp/lrt-<digits>` directory of this user that
-  has no `KEEP` file, is older than 24 hours, and is absent. It prints one line for each removal
+  is absent and either has no `KEEP` file and is older than 24 hours, or has a `failed` marker
+  older than 24 hours. It prints one line for each removal
   and for each uncertain lab, which it keeps. A failed process listing stops the sweep. (24 hours
   for the first release; then 1 hour.)
 - A killed run (SIGKILL) cannot clean up. Its lab directory waits for the sweep.
@@ -102,9 +112,10 @@ warning never fails the run.
       every process that it saw under them is gone. A survivor fails the file, and the output
       names its pid, start time and command. The harness sends a survivor no signal: on macOS a
       pid can be reused between a check and a signal, so the harness cannot prove that it owns it.
-   6. Without `-keep` it removes the lab directory, also when the file failed. For a failed file
-      the output says so after the log tails: `lab removed: /tmp/lrt-<digits> (run with -keep to
-      keep it)`, because the printed log paths no longer exist.
+   6. Without `-keep` it removes the lab directory of a passed file, when the probe proves the lab
+      ended. A failed file keeps its lab for 24 hours (a `failed` KEEP marker), and its FAIL line
+      names it, so the printed log paths still exist. A removal that fails is a problem of the
+      file. "Lab directories" below has the rules.
 4. Tests in one file share one hub and run in order. Files do not share anything.
 
 The same cleanup runs after a failure, a startup failure, a timeout and an interrupt (Ctrl-C).

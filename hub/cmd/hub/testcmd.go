@@ -346,7 +346,8 @@ func testMain(argv []string) int {
 			fmt.Printf("     %s\n", p)
 		}
 		if r.labKept {
-			fmt.Printf("     lab kept: %s (it has a KEEP marker; remove it after its review: lazyrex-hub test -clean %s)\n", r.labDir, r.labDir)
+			k, _ := readLabKeep(r.labDir)
+			fmt.Printf("     lab kept: %s (a %s KEEP marker; %s)\n", r.labDir, k.class(), keptHow(k))
 		}
 	}
 	if ctx.Err() != nil {
@@ -642,11 +643,8 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 			res.problems = append(res.problems, l.stop()...)
 			why := fmt.Sprintf("%s: %d passed, %d failed, %d problems", res.name, res.passed, res.failed, len(res.problems))
 			var probs []string
-			res.labKept, probs = endLab(l.dir, o.keep, why, l.unproved)
+			res.labKept, probs = endLab(l.dir, o.keep, !res.ok(), why, l.unproved)
 			res.problems = append(res.problems, probs...)
-			if note := removedNote(l.dir, res.labKept, len(probs) == 0, !res.ok()); note != "" {
-				fmt.Println("  " + note)
-			}
 		}()
 	}
 	if err != nil {
@@ -786,16 +784,6 @@ func (o *testOpts) parse(r io.Reader, res *fileResult, logw io.Writer, restart f
 // unescapeLRT reverses the runner's escaping of new lines in messages.
 func unescapeLRT(s string) string {
 	return strings.NewReplacer(`\n`, "\n       ", `\\`, `\`).Replace(s)
-}
-
-// removedNote is the output line after the log tails of a failed file whose lab endLab removed:
-// the printed log paths are gone, and -keep keeps them (the vanished-lab reports, 2026-10-22). A
-// kept lab, a failed removal (endLab reports it as a problem) and a passed file give no line.
-func removedNote(dir string, kept, removed, failed bool) string {
-	if kept || !removed || !failed {
-		return ""
-	}
-	return "lab removed: " + dir + " (run with -keep to keep it)"
 }
 
 func tail(path string, res *fileResult, all bool) {

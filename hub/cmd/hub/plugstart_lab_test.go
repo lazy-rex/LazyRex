@@ -115,7 +115,7 @@ func newStartLab(t *testing.T, sources ...string) *startLab {
 				t.Error(err)
 			}
 		} else {
-			markLabKept(l.dir, "go test "+t.Name(), "the test failed")
+			markLabKept(l.dir, labKindFailed, "go test "+t.Name(), "failed: the test failed")
 			t.Logf("lab kept: %s (remove it after the review: lazyrex-hub test -clean %s)", l.dir, l.dir)
 		}
 	})
