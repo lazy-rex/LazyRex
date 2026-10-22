@@ -293,6 +293,7 @@ func findRex(configured string) (string, error) {
 }
 
 func main() {
+	fetchChildMain() // a fetch watcher or gate of the plugin manager runs its role and exits (fetchchild.go)
 	// The restart wrapper's variables (restartenv.go): read and unset first, before any exec.
 	renv, renvErr := takeRestartEnv()
 	if renv.readyFD >= 0 {
