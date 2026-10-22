@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -275,4 +277,86 @@ func TestFetchChildStalledAfterGo(t *testing.T) {
 	assertGone(t, "stalled after go", w, g, git, helper)
 	psEvidence(t, "after the hard stop", w, g, git, helper, by.Process.Pid)
 	assertAlive(t, by)
+}
+
+// psField returns one ps field of pid ("" when the process does not exist).
+func psField(pid int, field string) string {
+	out, _ := exec.Command("ps", "-o", field+"=", "-p", strconv.Itoa(pid)).Output()
+	return strings.TrimSpace(string(out))
+}
+
+// A watcher that stalls after it killed the gate group and before it exits: the gate is still its
+// unreaped child (a zombie), so the number G is reserved when the hub's hard stop kills -G. The
+// test checks the reservation (gate state Z, parent W) at the moment of the hard stop.
+func TestFetchChildStalledBeforeExit(t *testing.T) {
+	stage := t.TempDir()
+	by := bystander(t, stage)
+	ctx, cancel := context.WithCancel(context.Background())
+	rec, pids := recordPids()
+	done := make(chan fetchResult)
+	go func() {
+		res, _ := runFetchChild(ctx, fakeGitArgv(stage, "quick"), []string{fetchStopEnv + "=before-exit"}, rec)
+		done <- res
+	}()
+	p := <-pids
+	w, g := p[0], p[1]
+	git, helper := waitPid(t, filepath.Join(stage, "git.pid")), waitPid(t, filepath.Join(stage, "helper.pid"))
+	for end := time.Now().Add(5 * time.Second); !strings.HasPrefix(psField(w, "stat"), "T"); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("watcher %d did not stop: %q", w, psField(w, "stat"))
+		}
+	}
+	if st, ppid := psField(g, "stat"), psField(g, "ppid"); !strings.HasPrefix(st, "Z") || ppid != strconv.Itoa(w) {
+		psEvidence(t, "failure", w, g)
+		t.Fatalf("gate %d: stat %q ppid %q, want a zombie child of %d", g, st, ppid, w)
+	}
+	psEvidence(t, "stalled before exit (watcher T, gate Z)", w, g, git, helper)
+	start := time.Now()
+	cancel()
+	res := <-done
+	t.Logf("cancel to return: %v, result %+v", time.Since(start), res)
+	if !res.Stopped || res.OK() || time.Since(start) > 5*time.Second {
+		t.Fatalf("stalled before exit: %v %+v", time.Since(start), res)
+	}
+	assertGone(t, "stalled before exit", w, g, git, helper)
+	assertAlive(t, by)
+}
+
+// Repeated fetches, normal and cancelled, leave no file descriptor and no goroutine of the hub
+// behind. GC is off, so no finalizer closes a leaked pipe.
+func TestFetchChildNoLeak(t *testing.T) {
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	fds := func() int {
+		e, err := os.ReadDir("/dev/fd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(e)
+	}
+	settle := func(want int, now func() int) int {
+		n := now()
+		for end := time.Now().Add(2 * time.Second); n > want && time.Now().Before(end); n = now() {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return n
+	}
+	fd0, g0 := fds(), runtime.NumGoroutine()
+	for i := 0; i < 10; i++ {
+		if res, err := runFetchChild(context.Background(), []string{"/usr/bin/true"}, nil, func(int, int) error { return nil }); err != nil || !res.OK() {
+			t.Fatalf("normal %d: %+v %v", i, res, err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		if res, _ := runFetchChild(ctx, []string{"/bin/sleep", "60"}, nil, func(int, int) error { cancel(); return nil }); res.OK() {
+			t.Fatalf("cancelled %d: %+v", i, res)
+		}
+		cancel()
+		if _, err := runFetchChild(context.Background(), []string{"/usr/bin/true"}, nil, func(int, int) error { return errors.New("refused") }); err == nil {
+			t.Fatalf("refused record %d: no error", i)
+		}
+	}
+	fd1, g1 := fds(), settle(g0, runtime.NumGoroutine)
+	t.Logf("fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
+	if fd1 != fd0 || g1 > g0 {
+		t.Fatalf("leak: fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
+	}
 }

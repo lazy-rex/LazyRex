@@ -24,13 +24,14 @@ import (
 //     members of G.
 //
 // Ownership: every pid that the hub or the watcher signals is reserved by an unreaped child. The
-// hub signals W (its child) and G only while W is stopped and not exited: then the gate, an
-// unreaped child of W, keeps the number G in use. The watcher signals G only before it reaps the
-// gate. No process is found by its argv.
+// watcher never reaps the gate: the gate stays its child (alive or a zombie) until the watcher
+// exits, and then init reaps it. So while W has not exited, the number G is in use. The hub
+// signals W (its own unreaped child), and G only while W is stopped and not exited. No process is
+// found by its argv.
 //
 // Stop rules, as a chain of pipes:
-//   - The watcher: stdin EOF (the hub closed the pipe or died) -> kill G, reap the gate, exit.
-//     The gate reports git's exit -> kill G (helpers too), reap the gate, report, exit.
+//   - The watcher: stdin EOF (the hub closed the pipe or died) -> kill G, exit.
+//     The gate reports git's exit -> kill G (helpers too), report, exit.
 //   - The gate: EOF on fd 3 (the watcher died, by any cause) -> kill its own group G.
 //   - The hub: a cancel closes stdin; after fetchGrace it stops W, kills G and W (fetchHardStop).
 
@@ -38,7 +39,8 @@ import (
 const fetchRoleEnv = "LAZYREX_FETCH_ROLE"
 
 // fetchStopEnv is a test hook of the watcher: it stops itself (SIGSTOP) at the named point
-// ("before-report" or "after-go"), so a test can prove the hub's bound with a stalled watcher.
+// ("before-report", "after-go" or "before-exit"), so a test can prove the hub's bound and the
+// gate reservation with a stalled watcher.
 const fetchStopEnv = "LAZYREX_FETCH_TEST_STOP"
 
 // fetchGrace is the time from a cancel to the hard stop. The hard stop itself returns at once, so
@@ -80,20 +82,35 @@ func runFetchChild(ctx context.Context, argv []string, env []string, record func
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		stdin.Close()
 		return res, err
 	}
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		stdout.Close()
 		return res, err
 	}
 	res.Watcher = cmd.Process.Pid
 	defer cmd.Process.Release()
+	// cmd.Wait is never called, so the hub closes its pipe ends itself, on every return. quit ends
+	// the reader when the caller returns before EOF.
+	quit := make(chan struct{})
+	defer func() {
+		close(quit)
+		stdin.Close()
+		stdout.Close()
+	}()
 	lines := make(chan string)
 	go func() {
+		defer close(lines)
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
-			lines <- sc.Text()
+			select {
+			case lines <- sc.Text():
+			case <-quit:
+				return
+			}
 		}
-		close(lines)
 	}()
 	// The hub reaps the watcher itself (wait4), so that one goroutine decides between "exited"
 	// and "still reserved" (fetchHardStop). cmd.Wait is never called.
@@ -243,10 +260,10 @@ func fetchWatcher(argv []string) int {
 	}
 	goR.Close()
 	g := gate.Process.Pid
-	// end kills G while the gate is unreaped (so the number g is still reserved), then reaps.
+	// end kills G. It never reaps the gate, so the number g stays reserved until the watcher
+	// exits (see Ownership).
 	end := func(code int) int {
 		syscall.Kill(-g, syscall.SIGKILL)
-		gate.Wait()
 		return code
 	}
 	fetchTestStop("before-report")
@@ -274,7 +291,9 @@ func fetchWatcher(argv []string) int {
 		select {
 		case line, ok := <-hub:
 			if !ok {
-				return end(2)
+				code := end(2)
+				fetchTestStop("before-exit")
+				return code
 			}
 			if line == "go" {
 				goW.Write([]byte{'g'}) // goW stays open: its close tells the gate that the watcher ended
@@ -286,6 +305,7 @@ func fetchWatcher(argv []string) int {
 				code = 0
 			}
 			fmt.Printf("exit %d\n", n)
+			fetchTestStop("before-exit")
 			return code
 		}
 	}
