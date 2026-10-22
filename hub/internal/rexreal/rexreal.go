@@ -29,20 +29,16 @@ func KnownDefault(endpoint string) bool {
 	return knownDefault(endpoint, home, os.Getenv("XDG_RUNTIME_DIR"), os.Getuid())
 }
 
+// From here to "End of the copy", the code is the same in hub/internal/rexreal/rexreal.go and
+// view/wire.go (two Go modules): keep both equal, and the TestKnownDefault tables too.
+
+// knownDefault: the default sockets of macOS and Linux, of any home or uid, count on either host.
 func knownDefault(endpoint, home, xdg string, uid int) bool {
 	p, ok := socketPath(endpoint)
 	if !ok {
 		return false
 	}
-	var candidates []string
-	if filepath.IsAbs(home) {
-		candidates = append(candidates, filepath.Join(home, "Library", "Application Support", "rex", "server.sock"))
-	}
-	if filepath.IsAbs(xdg) { // an unset or relative XDG_RUNTIME_DIR makes no candidate
-		candidates = append(candidates, filepath.Join(xdg, "rex", "server.sock"))
-	}
-	candidates = append(candidates, filepath.Join("/run/user", strconv.Itoa(uid), "rex", "server.sock"))
-	for _, c := range candidates {
+	for _, c := range defaultSockets(home, xdg, uid) {
 		if resolve(c) == p {
 			return true
 		}
@@ -60,6 +56,20 @@ func knownDefault(endpoint, home, xdg string, uid int) bool {
 	return false
 }
 
+// defaultSockets: macOS ~/Library/Application Support/rex/server.sock; Linux
+// $XDG_RUNTIME_DIR/rex/server.sock, then /run/user/<uid>/rex/server.sock (Rex's path without
+// XDG_RUNTIME_DIR). A relative home or XDG_RUNTIME_DIR makes no candidate.
+func defaultSockets(home, xdg string, uid int) []string {
+	var c []string
+	if filepath.IsAbs(home) {
+		c = append(c, filepath.Join(home, "Library", "Application Support", "rex", "server.sock"))
+	}
+	if filepath.IsAbs(xdg) {
+		c = append(c, filepath.Join(xdg, "rex", "server.sock"))
+	}
+	return append(c, filepath.Join("/run/user", strconv.Itoa(uid), "rex", "server.sock"))
+}
+
 // socketPath is the absolute socket path of a unix:// endpoint: unescaped, cleaned, and with
 // symbolic links resolved where they exist.
 func socketPath(endpoint string) (string, bool) {
@@ -74,17 +84,20 @@ func socketPath(endpoint string) (string, bool) {
 	return resolve(p), true
 }
 
+// resolve cleans p and resolves its symbolic links. For a socket that does not exist (a stopped
+// server), it resolves the directory.
 func resolve(p string) string {
 	p = filepath.Clean(p)
 	if r, err := filepath.EvalSymlinks(p); err == nil {
 		return r
 	}
-	// The socket may not exist (a stopped server): resolve its directory.
 	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
 		return filepath.Join(r, filepath.Base(p))
 	}
 	return p
 }
+
+// End of the copy.
 
 // SameEndpoint compares two unix:// endpoints by their socket paths.
 func SameEndpoint(a, b string) bool {
