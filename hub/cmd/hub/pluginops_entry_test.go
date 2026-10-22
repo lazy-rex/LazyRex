@@ -307,3 +307,35 @@ func TestPluginOpStopObservationAfterOldHub(t *testing.T) {
 		t.Fatalf("the observation took OLD's stop as the op's: %+v", op)
 	}
 }
+
+// codex-26's database round trip: a rollback hub (OLD) binds the name x to managed:y at the same
+// source, keeps the instance, and saves the row stopped. Its named-column UPDATE keeps managed:x's
+// entry_identity. A stop of managed:x that a crash interrupted before the rollback must not take
+// that row as its outcome: a write that does not know entry_identity makes it invalid.
+func TestPluginOpStopObservationAfterOldWriter(t *testing.T) {
+	h, _, dir := opsTestHub(t, "")
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "x"))
+	opsLoadEntries(t, h)
+	pl := &Plugin{Name: "x", entry: opsEntry(t, h, "managed:x")}
+	if err := h.loadPluginRow(context.Background(), pl); err != nil {
+		t.Fatal(err)
+	}
+	pl.InstanceID = "x-1-aaaaaaaa"
+	if err := h.savePlugin(context.Background(), pl); err != nil {
+		t.Fatal(err)
+	}
+	h.plugins["x"] = pl
+	id := opsMust(t, h, "stop-old", opRequest{Op: "stop", Entry: "managed:x"})
+	h.pops.fault = func(p string) bool { return p == "plugin-op-after-stop" }
+	h.opsRun(context.Background())
+	h.pops.fault = nil
+	// OLD's savePlugin at 0eee21b: the same instance, desired stopped, no entry_identity.
+	if _, err := h.db.Exec(`UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ?,
+		source = CASE WHEN ? != '' THEN ? ELSE source END WHERE name = ?`, "stopped", "x-1-aaaaaaaa", "", "", 0, "", "", "", "", "x"); err != nil {
+		t.Fatal(err)
+	}
+	h.opsRun(context.Background())
+	if op := opsOf(t, h, id); op.Phase != "unknown" {
+		t.Fatalf("the observation took the stale identity as proof: %+v", op)
+	}
+}
