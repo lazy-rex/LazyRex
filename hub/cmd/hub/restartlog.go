@@ -373,10 +373,10 @@ func (l *restartLog) put(b []byte) (int, bool) {
 	return n, true
 }
 
-// close ends the log: the writer gets at most wait to write the queue, the pane the same.
-// flush waits at most wait until the writer wrote every queued chunk and the pane took every
-// queued line. The log stays open: a relaunch flushes before its exec (the exec closes the file),
-// and after a failed exec the same writer goes on. It reports whether everything was written.
+// flush waits at most wait until the writer wrote every queued chunk and the pane goroutine took
+// every queued line. A pane write in progress may still be unfinished. The log stays open: a
+// relaunch flushes before its exec (the exec closes the file), and after a failed exec the same
+// writer goes on. true: the queue is written to the file and the pane channel is empty.
 func (l *restartLog) flush(wait time.Duration) bool {
 	select {
 	case l.kick <- struct{}{}:
@@ -397,6 +397,7 @@ func (l *restartLog) flush(wait time.Duration) bool {
 	}
 }
 
+// close ends the log: the writer gets at most wait to write the queue, the pane the same.
 func (l *restartLog) close(wait time.Duration) {
 	l.mu.Lock()
 	l.closed = true
