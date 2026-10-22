@@ -1033,6 +1033,34 @@ app.view('/v/writes', {render = render}, {refresh = 'writes'})
   end
 end)
 
+test('a failed hub call in a render omits refresh = "reads", also when the plugin catches the error', function()
+  -- "reads" states that every hub call of the render reached the hub and returned without error (hub
+  -- lead, lead-render-incomplete). Only the SDK sees a read that never reached the hub.
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)'}
+app.view('/v/r', {render = function()
+  local ok = pcall(app.db.first, 'SELECT id FROM t')
+  return {title = ok and 'read' or 'caught', nodes = {}}
+end}, {refresh = 'reads'})
+app.panel('Enc', function()
+  pcall(app.hub, 'hub.thing', {f = function() end})
+  return {}
+end, {refresh = 'reads'})
+]])
+  expect(s:render('/v/r', 'render-1').result.refresh, 'a clean render').to_be('reads')
+  for _, e in ipairs({{code = 'sql_error', message = 'a hub error'}, {code = 'timeout', message = 'lost'}}) do
+    s.sql.fail_next['hub.sql.query'] = e
+    local r = s:render('/v/r', 'render-2')
+    expect(r.error, e.code).to_be(nil)
+    expect(r.result.tree.title, e.code .. ': the plugin caught it').to_be('caught')
+    expect(r.result.refresh, e.code .. ': no refresh').to_be(nil)
+    expect(s:render('/v/r', 'render-3').result.refresh, e.code .. ': the next clean render').to_be('reads')
+  end
+  local r = s:render('/panels/enc', 'render-4')
+  expect(r.error, 'an encode failure: nothing sent').to_be(nil)
+  expect(r.result.refresh, 'an encode failure: no refresh').to_be(nil)
+end)
+
 test('a lost reply is unavailable: client_unavailable, and a table error with timeout, disconnected or client_unavailable', function()
   -- Rex fails a waiting request with client_unavailable when a connection drops (rex-protocol.md,
   -- client.perform; a reply frame over the limit closes the client). The outcome is unknown, as for a

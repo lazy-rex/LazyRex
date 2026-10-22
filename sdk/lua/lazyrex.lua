@@ -196,17 +196,22 @@ M.rex_error = rex_error
 
 local function hub(action, args)
   local app = S.app
+  -- A render frame with refresh = "reads" states that every hub call of the render reached the hub and
+  -- returned without error (hub lead, lead-render-incomplete). So each failure marks the frame first, in
+  -- a table field: the mark holds when the plugin catches the error.
+  local f = S.frame
+  local function failed() if f and f.state then f.state.failed = true end end
   local request = {client_id = app.hub_id, action = action, args = args or {}, timeout_ms = 10000}
   -- No protected call here: hub() runs inside handlers, and in Rex Lua a finished protected call or a
   -- caught error can split the handler's locals from its closures (docs/rex-protocol.md, "Rex Lua
   -- runtime"). rex.json.encode and rex.call return nil and an error; they do not raise (observed on
   -- Rex 0.0.1792158932-g88fd41, lab, 2026-10-22).
   local encoded, encode_err = rex.json.encode(request)
-  if encoded == nil then fail('invalid_input', action .. ': the request cannot be encoded as JSON: ' .. tostring(encode_err)) end
-  if #encoded > MAX_REQUEST then fail('too_large', action .. ': the request has ' .. #encoded .. ' bytes; the limit is ' .. MAX_REQUEST .. '. Nothing was sent.') end
+  if encoded == nil then failed(); fail('invalid_input', action .. ': the request cannot be encoded as JSON: ' .. tostring(encode_err)) end
+  if #encoded > MAX_REQUEST then failed(); fail('too_large', action .. ': the request has ' .. #encoded .. ' bytes; the limit is ' .. MAX_REQUEST .. '. Nothing was sent.') end
   local response, err = rex.call('client.perform', request)
-  if type(response) ~= 'table' then rex_error(err, action .. ' failed') end
-  if type(response.result) ~= 'table' then fail('internal', action .. ': invalid hub result') end
+  if type(response) ~= 'table' then failed(); rex_error(err, action .. ' failed') end
+  if type(response.result) ~= 'table' then failed(); fail('internal', action .. ': invalid hub result') end
   return response.result
 end
 
@@ -232,7 +237,7 @@ end
 local function run(spec, fn, ...)
   -- in_render marks a view render. A render never opens a transaction (hub contract); the render token
   -- only names the render for read tracking, and no hub sends it yet.
-  local f = {tx = spec.tx ~= false, render = spec.render, in_render = spec.in_render, notices = {}}
+  local f = {tx = spec.tx ~= false, render = spec.render, in_render = spec.in_render, state = spec.state, notices = {}}
   local outer = S.frame
   S.frame = f
   local ok, result = pcall(fn, ...)
@@ -872,10 +877,16 @@ function M.plugin(name)
     local panel = panels[a.route]
     if action == 'view.render' then
       if panel then
-        return sized({tree = run({tx = false, render = a.render, in_render = true}, function() return tree(panel, panel.fn(user_ctx(a))) end), refresh = panel.refresh})
+        local state = {}
+        local t = run({tx = false, render = a.render, in_render = true, state = state}, function() return tree(panel, panel.fn(user_ctx(a))) end)
+        return sized({tree = t, refresh = not state.failed and panel.refresh or nil})
       end
       local v = view_of(a.route)
-      if v and v.handlers.render then return sized({tree = run({tx = false, render = a.render, in_render = true}, v.handlers.render, user_ctx(a), a), refresh = v.refresh}) end
+      if v and v.handlers.render then
+        local state = {}
+        local t = run({tx = false, render = a.render, in_render = true, state = state}, v.handlers.render, user_ctx(a), a)
+        return sized({tree = t, refresh = not state.failed and v.refresh or nil})
+      end
       fail('not_found', 'Unknown route ' .. tostring(a.route))
     end
     local ctx = user_ctx(a)
