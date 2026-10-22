@@ -112,10 +112,11 @@ local function canonical(v, out)
   if t == 'table' then
     local keys = {}
     for k in pairs(v) do keys[#keys + 1] = k end
-    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    table.sort(keys, function(a, b) if type(a) ~= type(b) then return type(a) < type(b) end return tostring(a) < tostring(b) end)
     out[#out + 1] = '{'
     for _, k in ipairs(keys) do
-      out[#out + 1] = #tostring(k) .. ':' .. tostring(k) .. '='
+      -- The key type is part of the text: {'x'} (an array) is not {['1'] = 'x'} (an object).
+      out[#out + 1] = type(k):sub(1, 1) .. #tostring(k) .. ':' .. tostring(k) .. '='
       canonical(v[k], out)
       out[#out + 1] = ';'
     end

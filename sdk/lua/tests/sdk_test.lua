@@ -428,3 +428,9 @@ test('ctx.aliases are the legacy IDs of the hub.identify reply', function()
   expect(s:agent('p.who', {}).result).to_equal({agent = 'alice', aliases = {'claude', 'alice-old'}, session = 'session-alice'})
   expect(s:agent('p.who', {}, 8).result.aliases, 'none').to_equal({})
 end)
+
+test('fingerprints tell an array from an object with text keys', function()
+  local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
+  expect(sdk.fingerprint({value = {'x'}}) ~= sdk.fingerprint({value = {['1'] = 'x'}}), 'array and object').to_be(true)
+  expect(sdk.fingerprint({value = {[2] = 'x'}}) ~= sdk.fingerprint({value = {['2'] = 'x'}}), 'number and text key').to_be(true)
+end)
