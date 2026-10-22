@@ -27,7 +27,8 @@ var promptPushBackoff = []time.Duration{time.Second, 5 * time.Second, 30 * time.
 
 // promptPush makes the call. Tests replace it.
 var promptPush = func(ctx context.Context, h *Hub, client string, args map[string]any) error {
-	return h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "hub.prompt", "args": args, "timeout_ms": 3000}, nil)
+	_, err := h.performPlugin(ctx, client, "hub.prompt", args, 3000) // a parts stub ends its set
+	return err
 }
 
 // startPromptSender starts the sender of a new registration. The sender of an earlier

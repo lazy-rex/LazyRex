@@ -446,16 +446,11 @@ func (h *Hub) callPlugin(ctx context.Context, plugin, action string, args any, o
 	if client == "" {
 		return &rex.RexError{Code: "client_unavailable", Message: "plugin " + plugin + " is not registered"}
 	}
-	var res struct {
-		Result json.RawMessage `json:"result"`
-	}
-	if err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": action, "args": args, "timeout_ms": 10000}, &res); err != nil {
+	raw, err := h.performPlugin(ctx, client, action, args, 10000)
+	if err != nil || out == nil {
 		return err
 	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(res.Result, out)
+	return json.Unmarshal(raw, out)
 }
 
 // definiteFailure reports a plugin error answer, as opposed to an unknown outcome.
@@ -671,12 +666,14 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		rid := h.openRenderID(plugin, h.pluginClient(plugin), t.id, epoch)
 		args["render"] = rid
 		var err error
+		t0 := time.Now()
 		if viewRenderHook != nil {
 			err = viewRenderHook(h, ctx, plugin, args, &out)
 		} else {
 			err = h.callPlugin(ctx, plugin, "view.render", args, &out)
 		}
 		rec := h.closeRenderID(rid)
+		h.testRenderCallTime(t.id, time.Since(t0))
 		h.testRenderHold(plugin, t.route) // test mode: a view-render fault holds the result here
 		if _, definite := definiteFailure(err); err != nil && !definite {
 			// The plugin is not there yet or did not answer. Keep the current tree; plugin

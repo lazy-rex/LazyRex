@@ -42,7 +42,8 @@ var changedRetry = []time.Duration{100 * time.Millisecond, 200 * time.Millisecon
 
 // changedCall delivers one hub.changed. A test replaces it.
 var changedCall = func(ctx context.Context, h *Hub, client, what string) error {
-	return h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "hub.changed", "args": map[string]any{"what": what}, "timeout_ms": 3000}, nil)
+	_, err := h.performPlugin(ctx, client, "hub.changed", map[string]any{"what": what}, 3000) // a parts stub ends its set
+	return err
 }
 
 // deliverChanged starts a delivery for the pair, or marks the running one pending.

@@ -13,6 +13,8 @@ package main
 // of the plugin that is not a hub.sql.query with an open render ID of that plugin instance (an
 // untokened query, a closed or unknown ID, hub.store.get, any other hub action), a query that
 // failed with an error other than conflict, or a read of a sqlite_ table other than the schema.
+// A hub.reply.part of the instance does not untrack its renders: the parts of a reply come after
+// the handler returned and read nothing (replyparts.go).
 //
 // Selective refresh is the default. A render is tracked unless its
 // view.render reply has a refresh field: "all" is the opt-out (also the SDK's answer for a render
@@ -89,6 +91,15 @@ func (h *Hub) renderCall(plugin, client, action string, args map[string]any) {
 		id, _ := args["render"].(string)
 		if r := h.vs.renders[id]; r != nil && r.plugin == plugin && r.client == client {
 			return
+		}
+	}
+	if action == "hub.reply.part" {
+		// The parts of a reply come after the render's handler returned: they read nothing
+		// (replyparts.go). They keep the renders of the instance that sends them tracked.
+		for _, r := range h.vs.renders {
+			if r.plugin == plugin && r.client == client {
+				return
+			}
 		}
 	}
 	h.vs.untrackLocked(plugin)

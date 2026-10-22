@@ -19,6 +19,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 )
 
 // renderCause is a set of the reasons for a render. hub.test.renders counts each one.
@@ -320,6 +321,20 @@ type renderCount struct {
 	// SQLTracked: the view has a table set from a tracked render (renderreads.go). No
 	// table names: they are the plugin's storage.
 	SQLTracked bool `json:"sql_tracked"`
+	// LastCallMS: the time of the last view.render call, with its reply parts (replyparts.go).
+	LastCallMS float64 `json:"last_call_ms"`
+}
+
+// testRenderCallTime records the time of a view.render call (test mode).
+func (h *Hub) testRenderCallTime(id string, d time.Duration) {
+	if h.test == nil {
+		return
+	}
+	h.test.mu.Lock()
+	defer h.test.mu.Unlock()
+	if c := h.test.renders[id]; c != nil {
+		c.LastCallMS = float64(d.Microseconds()) / 1000
+	}
 }
 
 // testRenderAttempt counts a view.render call and its causes.

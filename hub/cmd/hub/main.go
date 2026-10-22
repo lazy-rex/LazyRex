@@ -156,6 +156,7 @@ func (pl *Plugin) clearInstance() {
 type Hub struct {
 	rc             remoteControl // the last observed Remote Control result for each app (remotecontrol.go)
 	sql            *sqlService   // the plugin SQL databases (sqlsvc.go)
+	parts          partSets      // reply parts of plugin clients (replyparts.go)
 	ensureMu       sync.Mutex    // hub.session.ensure: one create at a time (sessions.go)
 	cmdMu          sync.Mutex    // command saves, one at a time (persistCommands, plugins.go)
 	slots          slotState     // side slot locks (panels.go)
@@ -296,7 +297,7 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
 	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
 	"hub.prompts", "hub.prompt.answer",
-	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay"}
+	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part"}
 
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
@@ -491,6 +492,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	h.sql = newSQLService(cfg.State, h.currentClient)
 	h.sql.committed = h.markSQL // the views that read a changed table, and every view without a table set
 	h.sql.rendered = h.renderRead
+	h.sql.replyParts = func(client string, stub map[string]any) ([]byte, error) { return h.parts.join(client, stub, true) }
 	h.sql.admitNotices = h.admitSQLNotices
 	h.sql.applyNotices = func(plugin string, rows []outboxRow) error {
 		return h.db.applySQLNotices(context.Background(), plugin, rows)
@@ -968,6 +970,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	switch p.Action {
 	case "hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay":
 		return h.sql.dispatch(ctx, p.Action, sqlCall{plugin: ns, client: p.Requester.ClientID, args: args})
+	case "hub.reply.part":
+		return h.parts.part(p.Requester.ClientID, args)
 	case "hub.grant.create":
 		return h.grantCreate(ctx, p, ns, args)
 	case "hub.grant.get":
