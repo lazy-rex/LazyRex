@@ -31,6 +31,15 @@ type pluginCmdOpts struct {
 	afterResolve func(source string)
 	// warn takes the warning lines of a command (standard error). nil: no warnings.
 	warn io.Writer
+	// git runs the git commands. nil: execGit. The plugin manager sets the fetch child.
+	git gitRunner
+}
+
+func (o pluginCmdOpts) runner() gitRunner {
+	if o.git != nil {
+		return o.git
+	}
+	return execGit
 }
 
 func (o pluginCmdOpts) url(r githubRef) string {
@@ -222,7 +231,7 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 			continue
 		}
 		r := e.githubRef()
-		if err := checkRef(ctx, tmpRoot, r.Ref); err != nil {
+		if err := checkRef(ctx, o.runner(), tmpRoot, r.Ref); err != nil {
 			return fail(fmt.Errorf("%s: %w", e.Source, err))
 		}
 	}
@@ -351,7 +360,7 @@ func syncEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRo
 	default:
 		// A bare name is a branch or a tag; ls-remote tells which. The commit stays the locked one.
 		k, err := withTmp(tmpRoot, func(tmp string) (string, error) {
-			res, err := resolveRef(ctx, tmp, o.url(r), r.Ref)
+			res, err := resolveRef(ctx, o.runner(), tmp, o.url(r), r.Ref)
 			return res.Kind, err
 		})
 		if err != nil {
@@ -396,7 +405,7 @@ func updateEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmp
 // the resolved commit needs no fetch: fetchNew then gives nil.
 func fetchNew(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, keep func(resolved) bool) (*lockEntry, error) {
 	res, err := withTmp(tmpRoot, func(tmp string) (resolved, error) {
-		return resolveRef(ctx, tmp, o.url(r), r.Ref)
+		return resolveRef(ctx, o.runner(), tmp, o.url(r), r.Ref)
 	})
 	if err != nil {
 		return nil, err
@@ -414,7 +423,7 @@ func fetchNew(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoo
 // latest entry, else "".
 func fetchAt(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, r githubRef, fetchRef, commit, kind, tag string, byID bool) (*lockEntry, error) {
 	ft, err := withTmp(tmpRoot, func(tmp string) (*fetchedTree, error) {
-		return fetchCommit(ctx, cfg.state, tmp, o.url(r), r.Owner, r.Repo, r.Subdir, fetchRef, commit, byID)
+		return fetchCommit(ctx, o.runner(), cfg.state, tmp, o.url(r), r.Owner, r.Repo, r.Subdir, fetchRef, commit, byID)
 	})
 	if err != nil {
 		return nil, err
