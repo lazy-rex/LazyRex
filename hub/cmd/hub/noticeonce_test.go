@@ -122,10 +122,9 @@ func TestNoticeDue(t *testing.T) {
 		// Codex review of 8169791: a read before the first write ends that nudge; a repeat that this
 		// hub run wrote (its store write failed) is not written again.
 		{"read before the first write", pendingNotice{intentRev: 5, read: true}, 0, false, false, 0},
-		{"repeated in memory only", sent(5, 2*after, conv, false), 0, false, false, 0},
 	}
 	for _, c := range cases {
-		due, repeat, wake := noticeDue(c.n, conv, c.mem, c.name == "repeated in memory only", now, after)
+		due, repeat, wake := noticeDue(c.n, conv, c.mem, now, after)
 		var wantWake time.Time
 		if c.wakeIn != 0 {
 			wantWake = now.Add(c.wakeIn)
@@ -181,5 +180,44 @@ func TestNoticeDeliveryStored(t *testing.T) {
 	p, _ = db.pendingNotices(ctx)
 	if p[0].read || p[0].delivRev >= p[0].intentRev {
 		t.Fatalf("after a new revision: %+v", p[0])
+	}
+}
+
+// The memory record of a delivery stands for its stored row when a store write failed (Codex review
+// of a1205c1): a first write that only memory holds still gets its repeat at the right time, a
+// repeat that only memory holds is not written again, and a first write to another conversation
+// replaces the record, so that conversation gets its own repeat.
+func TestNoticeDeliveryMemory(t *testing.T) {
+	const after = 30 * time.Minute
+	t0 := time.Unix(3_000_000, 0)
+	a := noticeConv{block: "block:1", pid: 10, start: "s"}
+	b := noticeConv{block: "block:1", pid: 11, start: "t"}
+	row := pendingNotice{ns: "messaging", agent: "x", intentRev: 5} // no stored delivery: the store writes failed
+	first := noticeDelivery{rev: 5, at: t0.UnixMilli(), conv: a}
+	n := row.withDelivery(first, true)
+	if due, _, wake := noticeDue(n, a, 5, t0.Add(time.Minute), after); due || !wake.Equal(t0.Add(after)) {
+		t.Fatalf("a first write in memory only: due %v wake %v, want the wake at %v", due, wake, t0.Add(after))
+	}
+	if due, repeat, _ := noticeDue(n, a, 5, t0.Add(after), after); !due || !repeat {
+		t.Fatal("a first write in memory only: no repeat at its time")
+	}
+	rep := first
+	rep.repeated = true
+	if due, _, _ := noticeDue(row.withDelivery(rep, true), a, 5, t0.Add(2*after), after); due {
+		t.Fatal("a repeat in memory only was due again")
+	}
+	// Child B: its first write replaces the record of A's repeat.
+	tB := t0.Add(3 * after)
+	if due, repeat, _ := noticeDue(row.withDelivery(rep, true), b, 0, tB, after); !due || repeat {
+		t.Fatal("another conversation: want a first write")
+	}
+	nb := row.withDelivery(noticeDelivery{rev: 5, at: tB.UnixMilli(), conv: b}, true)
+	if due, repeat, _ := noticeDue(nb, b, 0, tB.Add(after), after); !due || !repeat {
+		t.Fatal("another conversation: no repeat of its own")
+	}
+	// A stored row and an equal memory record give the same result as the row alone.
+	stored := pendingNotice{ns: "messaging", agent: "x", intentRev: 5, delivRev: 5, delivAt: t0.UnixMilli(), delivConv: a}
+	if stored.withDelivery(first, true) != stored || stored.withDelivery(noticeDelivery{}, false) != stored {
+		t.Fatal("the merge changed a stored row")
 	}
 }
