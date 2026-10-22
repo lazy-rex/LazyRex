@@ -68,6 +68,14 @@ func DialHello(ctx context.Context, socket string, hello map[string]any) (*Rex, 
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", socket, err)
 	}
+	// Every failure after the dial closes the connection at once: a close handshake can wait 5 s
+	// for a peer that does not read (coder/websocket), longer than a caller's deadline.
+	ok := false
+	defer func() {
+		if !ok {
+			conn.CloseNow()
+		}
+	}()
 	conn.SetReadLimit(16 << 20) // session.list_blocks and block methods can be large
 	r := &Rex{conn: conn, pending: map[string]chan frame{}, Events: make(chan json.RawMessage, 256)}
 
@@ -107,6 +115,7 @@ func DialHello(ctx context.Context, socket string, hello map[string]any) (*Rex, 
 	if json.Unmarshal(data, &limits) == nil {
 		r.max = limits.Limits.MaxMessageBytes
 	}
+	ok = true
 	go r.readLoop()
 	return r, nil
 }
@@ -167,6 +176,9 @@ func RequestFrameBytes(method string, payload []byte) int {
 
 // Close ends the connection.
 func (r *Rex) Close() error { return r.conn.Close(websocket.StatusNormalClosure, "") }
+
+// CloseNow closes the connection at once, with no close handshake: it never waits for the peer.
+func (r *Rex) CloseNow() error { return r.conn.CloseNow() }
 
 // Closed reports whether the connection has ended.
 func (r *Rex) Closed() bool { return r.closed.Load() }
