@@ -959,3 +959,28 @@ app.action('p.bad', {}, function() app.notice('bob', false, {once = true}); retu
   local r = s:agent('p.bad', {})
   expect(r.error and r.error.message).to_be('app.notice: once needs pending = true')
 end)
+
+test('hub.sql changes on hub/sql-lab c5d228b: an exact insert ID; a statement error after which SQLite ended the transaction', function()
+  -- 1. An exec or batch reply id has the integer form of a cell: {int = "<decimal>"} beyond 2^53.
+  -- 2. After such an error every call with the token gives tx_expired, the rollback too. The handler
+  --    must fail with the statement error, not with the rollback's tx_expired.
+  local calls = {}
+  local s = plugin([[
+app.action('p.big', {}, function() return {id = app.db.exec('INSERT INTO t (a) VALUES (?)', 1).id, batch = app.db.batch({{'INSERT INTO t (a) VALUES (?)', 2}})[1].id} end)
+app.action('p.boom', {}, function() app.db.exec('INSERT OR ROLLBACK INTO t (a) VALUES (?)', 1); return {} end)]],
+    {hub = {
+      ['hub.sql.exec'] = function(a)
+        if a.sql:find('OR ROLLBACK', 1, true) then return nil, {code = 'sql_error', message = 'UNIQUE constraint failed: t.a; SQLite rolled back the transaction'} end
+        return {changes = 1, id = {int = '9007199254740993'}}
+      end,
+      ['hub.sql.batch'] = function() return {results = {{changes = 1, id = {int = '9007199254740995'}}}} end,
+      ['hub.sql.rollback'] = function() calls[#calls + 1] = 'rollback'; return nil, {code = 'tx_expired', message = 'the transaction ended'} end,
+    }})
+  local r = s:agent('p.big', {})
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result).to_equal({id = '9007199254740993', batch = '9007199254740995'})
+  r = s:agent('p.boom', {})
+  expect(r.error and r.error.code, show(r)).to_be('sql_error')
+  expect(r.error.message:find('SQLite rolled back the transaction', 1, true) ~= nil, r.error.message).to_be(true)
+  expect(calls[1], 'the SDK tried the rollback; its tx_expired is not the error').to_be('rollback')
+end)
