@@ -145,6 +145,7 @@ func (pl *Plugin) clearInstance() {
 }
 
 type Hub struct {
+	sql            *sqlService   // the plugin SQL databases (sqlsvc.go)
 	ensureMu       sync.Mutex    // hub.session.ensure: one create at a time (sessions.go)
 	slots          slotState     // side slot locks (panels.go)
 	noticeKick     chan struct{} // wakes noticeLoop (kickNotices)
@@ -269,7 +270,8 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
 	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
-	"hub.prompts", "hub.prompt.answer"}
+	"hub.prompts", "hub.prompt.answer",
+	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay"}
 
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
@@ -387,6 +389,7 @@ func main() {
 	}
 	h.shutdown = stop
 	h.run(ctx)
+	h.sql.close() // open handler transactions roll back
 	// Exit status (docs/hub.md, "Stop and exit status"): 0 after a signal or hub.admin.shutdown, 1
 	// when the Rex connection closed (h.run logged it) with the context still live.
 	if ctx.Err() == nil {
@@ -449,6 +452,8 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	}
 	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
+	h.sql = newSQLService(cfg.State, h.currentClient)
+	h.sql.committed = func(plugin string, marks []string) { h.kickViews(plugin, causeCommit) } // every view: render deps know no SQL table
 	for _, a := range cfg.Agents {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
 		h.agentOrder = append(h.agentOrder, a.ID)
@@ -687,6 +692,9 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 
 func (h *Hub) answer(ctx context.Context, p perform) {
 	t0 := time.Now()
+	if pl := h.pluginByClient(p.Requester.ClientID); pl != nil {
+		h.sql.touch(pl.Name, p.Requester.ClientID) // any hub call keeps an open SQL transaction of the instance
+	}
 	result, err := h.dispatchFaulted(ctx, p)
 	reply := map[string]any{"call_id": p.CallID}
 	if err != nil {
@@ -889,6 +897,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	}
 	ns := pl.Name
 	switch p.Action {
+	case "hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay":
+		return h.sql.dispatch(ctx, p.Action, sqlCall{plugin: ns, client: p.Requester.ClientID, args: args})
 	case "hub.grant.create":
 		return h.grantCreate(ctx, p, ns, args)
 	case "hub.grant.get":
@@ -1097,4 +1107,12 @@ func findSDK(flagValue string) string {
 		log.Printf("-sdk %s has no boot.lua: plugins that declare sdk cannot start", flagValue)
 	}
 	return ""
+}
+
+// currentClient reports whether client is the registered instance of plugin.
+func (h *Hub) currentClient(plugin, client string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl := h.plugins[plugin]
+	return pl != nil && client != "" && pl.ClientID == client
 }
