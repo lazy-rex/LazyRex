@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,16 +119,19 @@ func TestManifestIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := map[string]string{
-		`{"name":"p","main":"p.lua","test":{"env":{"HOME":"/x"}}}`:              "not allowed",
-		`{"name":"p","main":"p.lua","test":{"env":{"REX_SERVER":"x"}}}`:         "not allowed",
-		`{"name":"p","main":"p.lua","test":{"env":{"XDG_DATA_HOME":"x"}}}`:      "not allowed",
-		`{"name":"p","main":"p.lua","test":{"env":{"A":"${HOME}/x"}}}`:          "unknown placeholder",
-		`{"name":"p","main":"p.lua","test":{"args":{"nope":{"k":"v"}}}}`:        "not the plugin",
-		`{"name":"p","main":"p.lua","test":{"args":{"p":{"instance_id":"v"}}}}`: "not allowed",
-		`{"name":"p","main":"p.lua","test":{"profiles":"missing.json"}}`:        "not a file",
-		`{"name":"p","main":"p.lua","test":{"profiles":"../profiles.json"}}`:    "must stay",
-		`{"name":"p","main":"p.lua","test":{"profiles":"/etc/hosts"}}`:          "relative",
-		`{"name":"p","main":"p.lua","test":{"server":"x"}}`:                     "unknown field",
+		`{"name":"p","main":"p.lua","test":{"env":{"HOME":"/x"}}}`:                           "not allowed",
+		`{"name":"p","main":"p.lua","test":{"env":{"REX_SERVER":"x"}}}`:                      "not allowed",
+		`{"name":"p","main":"p.lua","test":{"env":{"XDG_DATA_HOME":"x"}}}`:                   "not allowed",
+		`{"name":"p","main":"p.lua","test":{"env":{"A":"${HOME}/x"}}}`:                       "unknown placeholder",
+		`{"name":"p","main":"p.lua","test":{"args":{"nope":{"k":"v"}}}}`:                     "not the plugin",
+		`{"name":"p","main":"p.lua","test":{"args":{"p":{"instance_id":"v"}}}}`:              "not allowed",
+		`{"name":"p","main":"p.lua","test":{"profiles":"missing.json"}}`:                     "not a file",
+		`{"name":"p","main":"p.lua","test":{"profiles":"../profiles.json"}}`:                 "must stay",
+		`{"name":"p","main":"p.lua","test":{"profiles":"/etc/hosts"}}`:                       "relative",
+		`{"name":"p","main":"p.lua","test":{"server":"x"}}`:                                  "unknown field",
+		`{"name":"p","main":"p.lua","test":{"files":{"tests/a.lua":{}}}}`:                    "base name",
+		`{"name":"p","main":"p.lua","test":{"files":{"a.lua":{"args":{"nope":{"k":"v"}}}}}}`: "not the plugin",
+		`{"name":"p","main":"p.lua","test":{"files":{"a.lua":{"args":{"p":{"main":"v"}}}}}}`: "not allowed",
 	}
 	for body, want := range bad {
 		if _, err := manifestIn(t, body); err == nil || !strings.Contains(err.Error(), want) {
@@ -140,11 +144,11 @@ func TestManifestIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ := loadManifest(dir)
-	if _, err := m.labValues(dir, t.TempDir()); err == nil || !strings.Contains(err.Error(), "outside") {
+	if _, err := m.labValues(dir, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Errorf("an env path outside the roots: %v", err)
 	}
 	m.Test.Env = map[string]string{"A": "cache/../../outside"}
-	if _, err := m.labValues(dir, t.TempDir()); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if _, err := m.labValues(dir, t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Errorf("a relative traversal: %v", err)
 	}
 }
@@ -172,5 +176,29 @@ func TestTestProfileCheck(t *testing.T) {
 		if err := testProfileCheck(q, roots); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%v %q: got %v", c.env, c.cwd, err)
 		}
+	}
+}
+
+// test.files args go over test.args, for one file's lab only.
+func TestTestFileArgs(t *testing.T) {
+	dir, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"args":{"p":{"a":"1","b":"2"}},"files":{"g.lua":{"args":{"p":{"b":"3","c":"${LAB}"}}}}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := loadManifest(dir)
+	lab := t.TempDir()
+	plain, err := m.labValues(dir, lab, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := m.labValues(dir, lab, m.Test.Files["g.lua"].Args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(plain.args["p"]); got != "map[a:1 b:2]" {
+		t.Errorf("without the file: %s", got)
+	}
+	if got := fmt.Sprint(file.args["p"]); got != "map[a:1 b:3 c:"+lab+"]" {
+		t.Errorf("with the file: %s", got)
 	}
 }

@@ -85,7 +85,8 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
 | `test.env` | Variables added to the lab environment. See "Isolation". |
-| `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id` and `plugin_session` are refused. |
+| `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id`, `plugin_session`, `main` and `lazyrex_sdk` are refused. |
+| `test.files` | Plugin args for one test file: `{"gallery.lua": {"args": {"<plugin>": {"k": "v"}}}}`, keyed by the file's base name (the form of `-file`). For that file's lab, these args go over `test.args`; other files do not get them. The rules of `test.args` apply. |
 | `test.watch_roots` | Plugin watch roots (hub config `plugins[].watch_roots`, docs/hub.md "File watches"), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Each path starts with `${LAB}/` and stays in the lab. The harness creates each directory before the hub starts. |
 | `test.prompts` | The plugins that get the `prompts` grant (hub config `plugins[].prompts`, docs/hub.md "Agent prompts and acting as the user"): the plugin under test, a `test.plugins` entry or `lazyrex`. |
 | `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
@@ -220,6 +221,7 @@ does not hide the result.
 | `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared}`, in `view_id` order. `declared` is the declaration that the view has now (`{prefixes, changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
 | `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
 | `H.args.lab` | The lab dir. |
+| `H.args.sdk` | The SDK directory that the hub gets (`<checkout>/sdk/lua`), for a sandbox test that loads the SDK itself. |
 | `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |
 | `operation(key)` | A view operation's durable state. |
 | `advance_rev(n)` | Moves the store revision counter forward (never back). |
