@@ -558,3 +558,86 @@ app.action('p.seen', {}, function() return {block = seen_block, code = seen_code
   s.events['terminal.child_exited']({block_id = 'b7', session_id = 's1'}, {exit_code = 3})
   expect(s:agent('p.seen', {}).result).to_equal({block = 'b7', code = 3})
 end)
+
+-- Forms ------------------------------------------------------------------------------------------
+
+local FORM = [[
+app.db.migrate {'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)'}
+app.form('/forms/add', {
+  title = function(ctx) return 'Add to ' .. (ctx.query.list or 'the list') end,
+  intro = 'One item per line is not supported.',
+  fields = function(ctx) return {
+    {id = 'text', label = 'Text', kind = 'text', required = true, value = ''},
+    {id = 'urgent', label = 'Urgent', kind = 'boolean', value = false},
+    {id = 'where', label = 'Where', kind = 'select', value = 'top', options = {{value = 'top', label = 'Top'}, {value = 'end', label = 'End'}}},
+  } end,
+  submit = {label = 'Add', tool = 'todo.add'},
+  on_submit = function(ctx, values)
+    if values.text == 'bad' then app.fail('invalid_input', 'Text: not this one') end
+    app.db.exec('INSERT INTO todos (text) VALUES (?)', values.text)
+    if values.where == 'end' then return {form = app.route('/forms/add', {list = 'b & c'})} end
+  end,
+  command = {id = 'add', title = 'Add Item…', description = 'Add an item', keywords = {'todo'}},
+})
+app.action('todo.add', {text = 'string'}, function() return {} end)
+app.form('/forms/broken', {title = 'Broken', fields = function() app.fail('not_found', 'This list is gone') end, on_submit = function() end})
+runs = 0
+app.form('/forms/long', {title = 'Long', fields = {}, submit = {user_only = 'navigation'}, tx = false, store = false,
+  on_submit = function() runs = runs + 1; if runs < 2 then return {status = 'running'} end return {close_form = true, runs = runs} end})]]
+
+local function submit(s, route, values, key)
+  return s:call('view.action', {route = route, node_id = 'form', action = 'submit', input = {values = values}, user = 'user', operation_key = key or 'f1', view_id = 'v1'})
+end
+
+test('app.form renders the title, the intro, the fields, the submit with its tool and Cancel', function()
+  local s = plugin(FORM)
+  local tree = s:call('view.render', {route = '/forms/add?list=Home%20list', user = 'user'}).result.tree
+  expect(tree.title).to_be('Add to Home list')
+  expect(tree.nodes[1]).to_equal({id = 'intro', type = 'widget', text = 'One item per line is not supported.'})
+  expect(tree.nodes[2].type).to_be('form')
+  expect(#tree.nodes[2].fields).to_be(3)
+  expect(tree.nodes[2].submit_action).to_equal({name = 'submit', label = 'Add', enabled = true, tool = 'todo.add'})
+  expect(tree.nodes[3].action.name).to_be('$cancel')
+  expect(tree.status.kind).to_be('question')
+  local cmd = find(s.registered.commands, function(c) return c.id == 'add' end)
+  expect(cmd.route).to_be('/forms/add')
+  expect(cmd.action, 'the command names the tool').to_be('todo.add')
+end)
+
+test('a form submit checks the values, runs on_submit in one transaction and closes the form', function()
+  local s = plugin(FORM)
+  expect(submit(s, '/forms/add', {text = '', urgent = false, where = 'top'}).error.message).to_be('Fill in Text')
+  expect(submit(s, '/forms/add', {text = 'x', where = 'middle'}).error.message).to_be('Where: choose one of the options')
+  expect(submit(s, '/forms/add', {text = 'x', color = 'red'}).error.message).to_be('Unknown field color')
+  expect(submit(s, '/forms/add', {text = 5}).error.message).to_be('Text must be string')
+  expect(submit(s, '/forms/add', {text = 'bad'}, 'f0').error).to_equal({code = 'invalid_input', message = 'Text: not this one'})
+  expect(#s.sql.rows('todos'), 'no write yet').to_be(0)
+  expect(submit(s, '/forms/add', {text = 'milk', urgent = true, where = 'top'}).result).to_equal({close_form = true})
+  expect(s.sql.rows('todos')[1].text).to_be('milk')
+  expect(submit(s, '/forms/add', {text = 'milk', urgent = true, where = 'top'}).result, 'a repeat replays').to_equal({close_form = true})
+  expect(#s.sql.rows('todos')).to_be(1)
+  local r = submit(s, '/forms/add?list=a', {text = 'eggs', where = 'end'}, 'f2')
+  expect(r.result.form).to_be('/forms/add?list=b%20%26%20c')
+end)
+
+test('a form whose fields fail shows the message in place of the form', function()
+  local s = plugin(FORM)
+  local tree = s:call('view.render', {route = '/forms/broken', user = 'user'}).result.tree
+  expect(tree.nodes[1]).to_equal({id = 'error', type = 'error', text = 'This list is gone'})
+  expect(tree.nodes[2].action.name).to_be('$cancel')
+  expect(submit(s, '/forms/broken', {}).error.code).to_be('not_found')
+end)
+
+test('a long form operation returns running until it ends; running is never saved', function()
+  local s = plugin(FORM)
+  expect(submit(s, '/forms/long', {}, 'L').result).to_equal({status = 'running'})
+  expect(submit(s, '/forms/long', {}, 'L').result).to_equal({close_form = true, runs = 2})
+  expect(s.sql.count('hub.sql.begin') - 1, 'no transaction besides the migration').to_be(0)
+end)
+
+test('ctx.query decodes the route query; a malformed escape drops that pair', function()
+  local s = plugin([[app.view('/forms/q', {render = function(ctx) return {title = rex.json.encode(ctx.query), nodes = {}} end}, {tx = false})]])
+  local title = s:call('view.render', {route = '/forms/q?a=1%2B1&b=x+y&c=%zz&d=%4', user = 'user'}).result.tree.title
+  expect(rex.json.decode(title)).to_equal({a = '1+1', b = 'x y'})
+  expect(s.sdk.route('/p', {b = 'é', a = 'x/y'})).to_be('/p?a=x%2Fy&b=%C3%A9')
+end)

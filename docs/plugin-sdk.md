@@ -90,6 +90,34 @@ terminals.
 `lazyrex-hub plugin new todo` writes `lazyrex.json`, `main.lua`, a passing test and a README.
 `lazyrex-hub plugin dev .` runs the plugin in a lab hub and loads it again on each save.
 
+## Forms
+
+```lua
+app.form('/forms/add', {
+  title = 'Add Item',
+  fields = {{id = 'text', label = 'Text', kind = 'text', required = true, value = ''}},
+  submit = {label = 'Add', tool = 'todo.add'},
+  on_submit = function(ctx, values) app.db.exec('INSERT INTO todos (text) VALUES (?)', values.text) end,
+  command = {id = 'add', title = 'Add Item…', description = 'Add an item'},
+})
+```
+
+- `title`, `fields` and `intro` are values or functions of `ctx`. `fields` runs at each render, and
+  again at the submit, in its transaction. Field kinds: `text`, `multiline`, `boolean`, `select`.
+- The SDK checks the values before `on_submit`: a required field must be filled in (a required
+  boolean must be true), a select value must be one of its options, and an unknown field is refused.
+  `app.fail('invalid_input', '...')` in `on_submit` shows another message.
+- `on_submit` returns nothing to close the form, or a result: `{form = route}`, `{navigate = ...}`,
+  `{status = 'running'}` (never saved: the hub calls again until the end).
+- An `app.fail` in `title`, `fields` or `intro` shows its message in place of the form.
+- The form has Cancel (`cancel = false` removes it; `cancel = 'Close'` relabels it) and the status
+  "Waiting for input". `submit.tool` names the agent action that does the same (agent parity);
+  without one, `submit.user_only` gives the reason. `submit.enabled = false` (or a function) refuses a
+  stale submit with `conflict`.
+- A route can carry values: `app.route('/forms/release', {profile = p})` builds
+  `/forms/release?profile=p`, and the form gets them decoded as `ctx.query`. A form route matches
+  itself with any query.
+
 ## v0: the advanced surface
 
 For what the simple surface does not cover yet. Each one keeps the caller checks, the structured

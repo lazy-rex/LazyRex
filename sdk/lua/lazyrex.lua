@@ -370,6 +370,34 @@ end
 
 -- The plugin ---------------------------------------------------------------------------------------
 
+-- Routes with a query. A form route can carry values (form v1 has no hidden field), for example
+-- /forms/release?profile=p&attempt=a. M.route(path, query) builds one; ctx.query has the decoded
+-- values (a malformed escape drops that pair).
+local function encode_part(s) return (tostring(s):gsub('[^%w%-%._~]', function(c) return string.format('%%%02X', c:byte()) end)) end
+function M.route(path, query)
+  local keys = {}
+  for k in pairs(query or {}) do keys[#keys + 1] = k end
+  if #keys == 0 then return path end
+  table.sort(keys)
+  local parts = {}
+  for _, k in ipairs(keys) do parts[#parts + 1] = encode_part(k) .. '=' .. encode_part(query[k]) end
+  return path .. '?' .. table.concat(parts, '&')
+end
+local function decode_part(s)
+  if s:find('%%[^%x]') or s:find('%%%x?$') or s:find('%%%x[^%x]') then return nil end
+  return (s:gsub('+', ' '):gsub('%%(%x%x)', function(h) return string.char(tonumber(h, 16)) end))
+end
+local function query_of(route)
+  local out = {}
+  local q = type(route) == 'string' and route:match('%?(.*)$')
+  for pair in (q or ''):gmatch('[^&]+') do
+    local k, v = pair:match('^([^=]*)=(.*)$')
+    k, v = decode_part(k or pair), decode_part(v or '')
+    if k and v and k ~= '' then out[k] = v end
+  end
+  return out
+end
+
 local function slug(text) return (tostring(text):lower():gsub('[^%w]+', '-'):gsub('^%-+', ''):gsub('%-+$', '')) end
 local function part(s) s = tostring(s); return #s .. ':' .. s end
 
@@ -382,7 +410,7 @@ function M.plugin(name)
   local args = rex.args or {}
   local app = {name = name, hub_id = assert(args.hub_client_id, 'hub_client_id is required (the hub starts the plugin)'),
     instance_id = assert(args.instance_id, 'instance_id is required'), session_id = args.plugin_session or rex.session_id,
-    args = {}, db = db, ui = {}, fail = fail, int = M.int, blob = M.blob}
+    args = {}, db = db, ui = {}, fail = fail, int = M.int, blob = M.blob, route = M.route}
   for k, v in pairs(args) do
     if k ~= 'hub_client_id' and k ~= 'instance_id' and k ~= 'plugin_session' and k ~= 'lazyrex_sdk' and k ~= 'main' then app.args[k] = v end
   end
@@ -446,6 +474,82 @@ function M.plugin(name)
   end
   -- app.command(spec): an extra hub.register command (a palette entry).
   function app.command(spec) commands[#commands + 1] = spec end
+
+  -- app.form(route, spec): a form view (form v1: text, multiline, boolean and select fields). spec:
+  --   title: text, or fn(ctx) -> text.
+  --   fields: a list, or fn(ctx) -> list of {id, label, kind, value, required, options, ...}. The
+  --     function runs at each render and again at the submit, in its transaction.
+  --   intro: text, or fn(ctx) -> text: a widget above the form.
+  --   submit: {label, tool = <agent action> | user_only = <reason>, enabled = bool | fn(ctx)}.
+  --   on_submit(ctx, values) -> result. nil closes the form; a table passes through ({form},
+  --     {navigate}, {close_form}, {status = 'running'}, ...).
+  --   cancel: the Cancel label (default 'Cancel'); false: no Cancel.
+  --   command: a palette command that opens the form ({id, title, description, keywords}).
+  --   tx, store: as for app.action.
+  -- An app.fail in title, fields or intro shows the message in place of the form. The SDK checks
+  -- the values first: a required field must be filled in (a required boolean must be true), a
+  -- select value must be an option, and an unknown field is refused.
+  function app.form(route, spec)
+    local function eval(v, ctx) if type(v) == 'function' then return v(ctx) end return v end
+    local function render_form(ctx)
+      -- out.title, not a local: a closure must not reassign a captured local (see S at the top).
+      local nodes, out = {}, {title = ''}
+      local ok, err = pcall(function()
+        out.title = tostring(eval(spec.title, ctx) or '')
+        local intro = eval(spec.intro, ctx)
+        if intro ~= nil and intro ~= '' then nodes[#nodes + 1] = {id = 'intro', type = 'widget', text = tostring(intro)} end
+        local submit = spec.submit or {}
+        local action = {name = submit.name or 'submit', label = submit.label or 'Submit', enabled = eval(submit.enabled, ctx) ~= false}
+        if submit.tool then action.tool = submit.tool else action.user_only = submit.user_only or 'navigation' end
+        nodes[#nodes + 1] = {id = 'form', type = 'form', fields = eval(spec.fields, ctx) or {}, submit_action = action}
+      end)
+      if not ok then nodes = {{id = 'error', type = 'error', text = normalize(err).message}} end
+      if spec.cancel ~= false then
+        nodes[#nodes + 1] = {id = 'cancel', type = 'widget', text = '', action = {name = '$cancel', label = spec.cancel or 'Cancel', enabled = true}}
+      end
+      return {title = out.title, nodes = nodes, status = {state = 'blocked', kind = 'question', msg = 'Waiting for input'}}
+    end
+    local function checked(fields, values)
+      local known, out = {}, {}
+      for _, f in ipairs(fields or {}) do
+        known[f.id] = true
+        local v = values[f.id]
+        local label = f.label or f.id
+        local empty = v == nil or v == '' or (f.kind == 'boolean' and v ~= true)
+        if f.required and empty then fail('invalid_input', 'Fill in ' .. label) end
+        if v ~= nil then
+          local want = f.kind == 'boolean' and 'boolean' or 'string'
+          if type(v) ~= want then fail('invalid_input', label .. ' must be ' .. want) end
+          if f.kind == 'select' and v ~= '' then
+            local found = false
+            for _, o in ipairs(f.options or {}) do if o.value == v then found = true end end
+            if not found then fail('invalid_input', label .. ': choose one of the options') end
+          end
+          out[f.id] = v
+        end
+      end
+      for id in pairs(values) do if not known[id] then fail('invalid_input', 'Unknown field ' .. tostring(id)) end end
+      return out
+    end
+    app.view(route, {
+      render = function(ctx) return render_form(ctx) end,
+      ['view.action'] = function(ctx, a)
+        local submit = spec.submit or {}
+        if a.node_id ~= 'form' or a.action ~= (submit.name or 'submit') then fail('invalid_input', 'Unknown form action') end
+        if eval(submit.enabled, ctx) == false then fail('conflict', 'This form cannot be sent now. It shows the current state.') end
+        local values = type(ctx.input.values) == 'table' and ctx.input.values or {}
+        local result = spec.on_submit(ctx, checked(eval(spec.fields, ctx), values))
+        if result == nil then return {close_form = true} end
+        return result
+      end,
+    }, {tx = spec.tx, store = spec.store})
+    if spec.command then
+      local c = copy(spec.command)
+      c.route = c.route or route
+      if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
+      commands[#commands + 1] = c
+    end
+  end
   -- app.start(fn, opts): runs once at start, after the registration and the migrations, in one
   -- transaction. opts.after_register = true runs it after the other start functions.
   function app.start(fn, opts) starts[#starts + 1] = {fn = fn, opts = opts or {}} end
@@ -524,7 +628,9 @@ function M.plugin(name)
   end
   local function view_of(route)
     for _, v in ipairs(views) do
-      if v.route == route or (v.prefix and tostring(route):sub(1, #v.prefix) == v.prefix) then return v end
+      -- A route matches itself, itself with a query ('?a=b'), or a prefix route ('...*').
+      local r = tostring(route)
+      if v.route == r or r:sub(1, #v.route + 1) == v.route .. '?' or (v.prefix and r:sub(1, #v.prefix) == v.prefix) then return v end
     end
   end
 
@@ -564,7 +670,7 @@ function M.plugin(name)
   local function user_ctx(a)
     local context = type(a.context) == 'table' and a.context or {}
     return {user = true, key = a.operation_key, route = a.route, input = type(a.input) == 'table' and a.input or {}, args = a,
-      session_id = context.session_id, view_id = a.view_id}
+      session_id = context.session_id, view_id = a.view_id, context = context, query = query_of(a.route)}
   end
   local function view_call(action, a)
     local panel = panels[a.route]
