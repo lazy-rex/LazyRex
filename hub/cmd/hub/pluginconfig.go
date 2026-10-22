@@ -28,6 +28,7 @@ type pluginRun struct {
 	Commit  string            `json:"commit,omitempty"` // a GitHub source: the locked commit; "" for a local source
 	Digest  string            `json:"digest,omitempty"` // a GitHub source: the locked digest of the cache entry; "" for a local source
 	Path    string            `json:"path"`
+	SDK     string            `json:"sdk,omitempty"` // the manifest sdk: start through the SDK launcher
 	Events  string            `json:"events,omitempty"`
 	Notice  string            `json:"notice,omitempty"`
 	Depends []string          `json:"depends,omitempty"`
@@ -371,7 +372,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 			// A name in use is a duplicate name: checkGraph refuses every entry with it. The owner
 			// keeps the binding (uses below), and its running instance continues.
 			s.Name, s.Depends = m.Name, m.Depends
-			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Digest: digest, Path: main, Events: m.Events, Notice: m.Notice,
+			runs[i] = &pluginRun{Name: m.Name, Source: e.Source, Dir: dir, Commit: commit, Digest: digest, Path: main, SDK: m.SDK, Events: m.Events, Notice: m.Notice,
 				Depends: m.Depends, Args: e.Args, WatchRoots: e.WatchRoots, Prompts: e.Prompts, UserMessaging: e.UserMessaging}
 		}
 	}

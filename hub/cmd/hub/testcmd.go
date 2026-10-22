@@ -40,6 +40,7 @@ import (
 type manifest struct {
 	Name    string   `json:"name"`
 	Main    string   `json:"main"`
+	SDK     string   `json:"sdk"`
 	Events  string   `json:"events"`
 	Notice  string   `json:"notice"`
 	Depends []string `json:"depends"`
@@ -107,7 +108,7 @@ func loadManifest(dir string) (*manifest, error) {
 	if err := decodeManifest(path, b, &m); err != nil {
 		return nil, err
 	}
-	rt := pluginManifest{Name: m.Name, Main: m.Main, Events: m.Events, Notice: m.Notice, Depends: m.Depends}
+	rt := pluginManifest{Name: m.Name, Main: m.Main, SDK: m.SDK, Events: m.Events, Notice: m.Notice, Depends: m.Depends}
 	if err := rt.check(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -709,7 +710,7 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 	if err != nil {
 		return err
 	}
-	l.hub = exec.Command(o.self, "-config", cfg, "-test")
+	l.hub = exec.Command(o.self, "-config", cfg, "-test", "-sdk", filepath.Join(o.lazyrex, "sdk", "lua"))
 	l.hub.Env, l.hub.Dir, l.hub.Stdout, l.hub.Stderr = l.env, l.home(), logf, logf
 	l.hub.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := l.hub.Start(); err != nil {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"time"
@@ -600,6 +601,9 @@ func (h *Hub) checkStart(pl *Plugin) (*configEntry, *pluginRun, error) {
 		return nil, nil, errKept
 	}
 	cand, err := e.cand, e.err
+	if err == nil && cand != nil && cand.SDK != "" && h.cfg.SDK == "" {
+		err = errors.New("the manifest declares sdk, and the hub has no SDK directory (-sdk, with boot.lua)")
+	}
 	pl.refusal = ""
 	if pl.state != "waiting" {
 		pl.state = "" // a waiting plugin stays waiting until startOrWait compares the names
@@ -836,13 +840,19 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	if _, err := h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'sending' WHERE instance_id = ?`, instance); err != nil {
 		return h.knownFailure(ctx, "sending", instance, "prepared", err) // nothing was sent
 	}
-	command := []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", run.Path, "-s", sess,
+	script, launch := run.Path, []string(nil)
+	if run.SDK != "" {
+		// The SDK launcher sets package.path for the SDK and the plugin directory, then runs main.
+		script, launch = filepath.Join(h.cfg.SDK, "boot.lua"), []string{"main=" + run.Path}
+	}
+	command := []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", script, "-s", sess,
 		"hub_client_id=" + h.clientID, "instance_id=" + instance}
 	if run.Events == "all" {
 		// Rex refuses --all with -s (lab, Rex 1203). The plugin gets its session as an argument.
-		command = []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", run.Path, "--all",
+		command = []string{h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "do", script, "--all",
 			"plugin_session=" + sess, "hub_client_id=" + h.clientID, "instance_id=" + instance}
 	}
+	command = append(command, launch...)
 	keys := make([]string, 0, len(run.Args))
 	for k := range run.Args {
 		keys = append(keys, k)

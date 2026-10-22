@@ -37,7 +37,10 @@ type Config struct {
 	// no palette entries.
 	PaletteLua string `json:"palette_lua"`
 	Real       bool   `json:"-"` // set from -real-server; renderers get -real-server too
-	Test       bool   `json:"-"` // set from -test (testmode.go)
+	// SDK is the directory of the plugin SDK (sdk/lua: boot.lua and lazyrex.lua), set from -sdk. Empty: a
+	// plugin that declares sdk in its manifest cannot start.
+	SDK  string `json:"-"`
+	Test bool   `json:"-"` // set from -test (testmode.go)
 	// TestRoots are the directories that test-mode profiles and spawn cwds must stay in (the lab,
 	// the plugin and the manifest directories; isolation.go). Only -test accepts it.
 	TestRoots []string `json:"test_roots"`
@@ -257,7 +260,7 @@ func loadConfig(path string) (Config, error) {
 
 // pluginArgKey is the form of a plugin arg key. The hub sets pluginArgReserved itself.
 var pluginArgKey = regexp.MustCompile(`^[a-z0-9_]+$`)
-var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true}
+var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true, "main": true, "lazyrex_sdk": true}
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
 var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join", "hub.tools",
@@ -316,6 +319,7 @@ func main() {
 	realServer := flag.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
 	testMode := flag.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
 	restart := flag.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")
+	sdkDir := flag.String("sdk", "", "the plugin SDK directory (sdk/lua of the LazyRex checkout); default: sdk/lua above this binary")
 	flag.Parse()
 	if *realServer && len(fs.list) > 0 {
 		log.Fatal("-lab-fault is refused with -real-server")
@@ -336,6 +340,7 @@ func main() {
 	}
 	cfg.Real = *realServer
 	cfg.Test = *testMode
+	cfg.SDK = findSDK(*sdkDir)
 	if !cfg.Test && len(cfg.TestRoots) > 0 {
 		log.Fatal("test_roots needs -test")
 	}
@@ -1068,4 +1073,28 @@ func (h *Hub) fencedBatch(ctx context.Context, pl *Plugin, client string, args m
 func (h *Hub) fenceStoreWrites(pl *Plugin) {
 	pl.writes.Lock()
 	pl.writes.Unlock()
+}
+// findSDK returns the SDK directory: the -sdk value, else sdk/lua in a directory above this
+// binary (a hub built in its checkout). A directory without boot.lua is no SDK: the hub logs it,
+// and plugins that declare sdk cannot start.
+func findSDK(flagValue string) string {
+	var candidates []string
+	if flagValue != "" {
+		candidates = []string{flagValue}
+	} else if self, err := os.Executable(); err == nil {
+		for d := filepath.Dir(self); d != "/" && d != "."; d = filepath.Dir(d) {
+			candidates = append(candidates, filepath.Join(d, "sdk", "lua"))
+		}
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(filepath.Join(c, "boot.lua")); err == nil {
+			if abs, err := filepath.Abs(c); err == nil {
+				return abs
+			}
+		}
+	}
+	if flagValue != "" {
+		log.Printf("-sdk %s has no boot.lua: plugins that declare sdk cannot start", flagValue)
+	}
+	return ""
 }

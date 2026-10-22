@@ -65,6 +65,7 @@ type startLab struct {
 	c        *helperConn
 	hub      string // the hub client
 	starts   int
+	args     []string // extra hub flags
 }
 
 // writeSource writes the source dir src/<dir> with a manifest and the fixture as main.lua.
@@ -147,7 +148,7 @@ func (s *startLab) start() {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	s.l.hub = exec.Command(s.bin, "-config", s.cfg, "-test")
+	s.l.hub = exec.Command(s.bin, append([]string{"-config", s.cfg, "-test"}, s.args...)...)
 	s.l.hub.Env, s.l.hub.Dir, s.l.hub.Stdout, s.l.hub.Stderr = s.l.env, s.l.home(), logf, logf
 	s.l.hub.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := s.l.hub.Start(); err != nil {
