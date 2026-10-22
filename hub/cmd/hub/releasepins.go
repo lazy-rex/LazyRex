@@ -39,6 +39,7 @@ type relCandidate struct {
 	LockPins string            `json:"lockpins"` // sha256 of the lock without its cache dirs
 	// Hub release only.
 	OldExpectRun bool     `json:"old_expect_run"` // OLD's hub.admin.replace takes expect_run
+	OldSDK       bool     `json:"old_sdk"`        // OLD can run SDK plugins (dev.sh passes -sdk, sdk/lua exists)
 	Inherited    []string `json:"inherited"`      // dependencies that OLD or H brings, for example python3
 }
 

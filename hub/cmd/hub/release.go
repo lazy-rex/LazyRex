@@ -142,9 +142,15 @@ type releaser struct {
 	unlock func()   // releases the operator flock
 
 	// Hooks for the unit tests. Nil: the real implementation.
-	exec      func(c relCmd) (stdout, stderr []byte, err error)
-	buildInfo func(path string) (revision string, modified bool, err error)
-	now       func() time.Time
+	exec       func(c relCmd) (stdout, stderr []byte, err error)
+	buildInfo  func(path string) (revision string, modified bool, err error)
+	now        func() time.Time
+	alive      func(pid int, start string) bool // a process lifetime still runs
+	startOf    func(pid int) string             // the start time of a process, "" if gone
+	exeOf      func(pid int) string             // the executable of a process
+	sleep      func(d time.Duration)
+	tool       string                              // the tool binary for the rehearsal gate; "": this executable
+	syncDigest func(source string) (string, error) // the digest of a commit-form source
 	// testStop allows RELEASE_TEST_STOP outside a proved lab (unit tests only).
 	testStop string
 }
@@ -467,7 +473,32 @@ type relStep struct {
 // relStepFor returns the step of a subcommand name. The steps are a switch, not a package map:
 // release code keeps no package state (see the top of this file).
 func relStepFor(name string) (relStep, bool) {
+	hub := func(run func(*releaser) error) (relStep, bool) {
+		return relStep{open: openStep, run: relKind("hub", run)}, true
+	}
 	switch name {
+	case "freeze":
+		return relStep{open: openFreeze, run: relKind("hub", hubFreeze)}, true
+	case "precheck":
+		return hub(hubPrecheck)
+	case "stop":
+		return hub(hubStop)
+	case "backup":
+		return hub(hubBackup)
+	case "checkout":
+		return hub(hubCheckout)
+	case "pull":
+		return hub(hubPull)
+	case "start":
+		return hub(hubStart)
+	case "replace":
+		return hub(hubReplace)
+	case "verify":
+		return hub(hubVerify)
+	case "rollback":
+		return hub(hubRollback)
+	case "resume":
+		return hub(hubResume)
 	}
 	return relStep{}, false
 }
