@@ -52,8 +52,8 @@ func newPluginFiles(name string) (map[string][]byte, error) {
 // pluginNew is lazyrex-hub plugin new <name> [-dir <path>]. It writes the files of a new plugin
 // into a stage directory beside the destination, then renames the stage to the destination. So
 // the destination has every file or none: a failure removes the stage. The destination must not
-// exist, or must be an empty directory; one that becomes nonempty before the rename is refused
-// by the rename itself.
+// exist, also not as an empty directory: os.Rename refuses an existing directory, so one that
+// appears before the rename is refused too.
 func pluginNew(name, dir string, w io.Writer) error {
 	fail := func(err error) error { return fmt.Errorf("plugin new: %w; nothing is written", err) }
 	if !pluginName.MatchString(name) {
@@ -88,7 +88,7 @@ func pluginNew(name, dir string, w io.Writer) error {
 		os.RemoveAll(stage)
 		return fail(fmt.Errorf("%s: %w", dest, err))
 	}
-	if err := writeLines(w, []string{"plugin new: wrote " + dest + "\n", "Next: cd " + dir + " && lazyrex-hub test\n"}); err != nil {
+	if err := writeLines(w, []string{"plugin new: wrote " + dest + "\n", "Next: run lazyrex-hub test in that directory.\n"}); err != nil {
 		return fmt.Errorf("plugin new: %s is written, but the result lines are not: %w", dest, err)
 	}
 	return nil

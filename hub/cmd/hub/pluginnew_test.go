@@ -122,6 +122,19 @@ func TestPluginNewFailures(t *testing.T) {
 	}
 }
 
+// A directory with a space and a single quote: the files are written, and the output prints the
+// path as text, not as a shell command.
+func TestPluginNewShellText(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "my 'odd' plugin")
+	var out bytes.Buffer
+	if err := pluginNew("odd", dest, &out); err != nil || len(dirFiles(t, dest)) != 4 {
+		t.Fatalf("%v", err)
+	}
+	if want := "plugin new: wrote " + dest + "\nNext: run lazyrex-hub test in that directory.\n"; out.String() != want {
+		t.Fatalf("output %q, want %q", out.String(), want)
+	}
+}
+
 // An output failure after the rename says that the plugin is written.
 func TestPluginNewOutputFailure(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "p")
