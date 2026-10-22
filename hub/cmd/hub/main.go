@@ -322,6 +322,9 @@ func main() {
 			os.Exit(setupMain(os.Args[2:]))
 		case "stop", "status":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:], os.Stdout, os.Stderr))
+		case "version":
+			fmt.Println(versionText())
+			os.Exit(0)
 		}
 	}
 	fs := &faults{}

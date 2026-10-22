@@ -22,7 +22,12 @@ func main() {
 	window := flag.Int("window", 200, "fixture mode: the number of latest messages in the history window")
 	gallery := flag.Bool("gallery", false, "fixture transcript: cycle the gallery message styles with s and S")
 	every := flag.Duration("every", 5*time.Second, "fixture mode: add an agent message at this interval (0 turns it off)")
+	showVersion := flag.Bool("version", false, "print the release version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	style, err := parseTranscriptStyle(*styleName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

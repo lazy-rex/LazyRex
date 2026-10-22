@@ -1,0 +1,72 @@
+#!/bin/sh
+# release-build.sh <version> <out-dir>: the release archives of LazyRex. CI runs it on a tag push
+# (.github/workflows/release.yml); the labs and a source install run the same script.
+#
+# One archive per target: lazyrex-<version>-<os>-<arch>.tar.gz, and SHA256SUMS for all of them.
+# An archive unpacks into ~/.lazyrex:
+#   bin/lazyrex-hub, bin/lazyrex-view   setup needs both in one directory
+#   sdk/lua/boot.lua, sdk/lua/lazyrex.lua   the plugin SDK; the hub finds sdk/lua above its binary
+#
+# The builds keep the Go VCS stamp (vcs.revision, vcs.modified): the release tool checks it with
+# go version -m. A version other than "dev" needs a clean checkout. TARGETS (os/arch, separated by
+# spaces) limits the targets.
+set -eu
+
+if [ $# -ne 2 ]; then
+	echo "usage: scripts/release-build.sh <vX.Y.Z | vX.Y.Z-rc.N | dev> <out-dir>" >&2
+	exit 2
+fi
+version=$1
+out=$2
+case $version in
+dev) ;;
+v[0-9]*.[0-9]*.[0-9]*) ;;
+*)
+	echo "release-build: version $version is not vX.Y.Z, vX.Y.Z-rc.N or dev" >&2
+	exit 2
+	;;
+esac
+root=$(cd "$(dirname "$0")/.." && pwd)
+if [ "$version" != dev ] && [ -n "$(git -C "$root" status --porcelain)" ]; then
+	echo "release-build: the checkout has changes; a release builds from a clean checkout" >&2
+	exit 1
+fi
+targets=${TARGETS:-darwin/arm64 darwin/amd64 linux/arm64 linux/amd64}
+
+# Everything is built outside the checkout first: an archive in an out-dir inside the checkout
+# would be an untracked file, and the next build would be stamped vcs.modified=true.
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+mkdir "$stage/archives"
+
+for target in $targets; do
+	os=${target%/*}
+	arch=${target#*/}
+	name=lazyrex-$version-$os-$arch
+	dir=$stage/$name
+	mkdir -p "$dir/bin" "$dir/sdk/lua"
+	for mod in hub:./cmd/hub:lazyrex-hub view:.:lazyrex-view; do
+		src=${mod%%:*}
+		rest=${mod#*:}
+		pkg=${rest%%:*}
+		bin=${rest#*:}
+		(cd "$root/$src" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+			-ldflags "-X main.version=$version" -o "$dir/bin/$bin" "$pkg")
+	done
+	cp "$root/sdk/lua/boot.lua" "$root/sdk/lua/lazyrex.lua" "$dir/sdk/lua/"
+	tar -C "$dir" -czf "$stage/archives/$name.tar.gz" bin sdk
+	echo "release-build: $name.tar.gz"
+done
+
+mkdir -p "$out"
+rm -f "$out"/lazyrex-"$version"-*.tar.gz "$out/SHA256SUMS"
+mv "$stage"/archives/* "$out/"
+cd "$out"
+if command -v sha256sum >/dev/null; then
+	sha256sum lazyrex-"$version"-*.tar.gz >SHA256SUMS
+	sha256sum -c SHA256SUMS >/dev/null
+else
+	shasum -a 256 lazyrex-"$version"-*.tar.gz >SHA256SUMS
+	shasum -a 256 -c SHA256SUMS >/dev/null
+fi
+echo "release-build: SHA256SUMS"

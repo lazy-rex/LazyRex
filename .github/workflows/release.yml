@@ -1,0 +1,58 @@
+# The release build: a push of a vX.Y.Z tag (or vX.Y.Z-rc.N, a prerelease) builds the archives with
+# scripts/release-build.sh, checks them, and makes the GitHub release of that tag with them. The
+# coordinator makes the tags. CI is a build service: nothing of LazyRex runs it.
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"]
+
+permissions:
+  contents: write # the release and its assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # The exact tag: go build stamps vcs.revision from the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: hub/go.mod
+          cache: false
+      - name: Vet
+        run: |
+          (cd hub && go vet ./...)
+          (cd view && go vet ./...)
+      # Outside the checkout, so the build of each target sees a clean tree.
+      - name: Build
+        run: scripts/release-build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/dist"
+      # Each archive: the checksum, the layout, and the stamp of the checked-out commit, not modified.
+      - name: Check
+        run: |
+          commit=$(git rev-parse HEAD)
+          cd "$RUNNER_TEMP/dist"
+          sha256sum -c SHA256SUMS
+          for a in lazyrex-"$GITHUB_REF_NAME"-*.tar.gz; do
+            test "$(tar -tzf "$a" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')" = "bin/lazyrex-hub bin/lazyrex-view sdk/lua/boot.lua sdk/lua/lazyrex.lua "
+            d=$(mktemp -d)
+            tar -xzf "$a" -C "$d"
+            for b in "$d"/bin/*; do
+              go version -m "$b" | grep -qx "	build	vcs.revision=$commit"
+              go version -m "$b" | grep -qx "	build	vcs.modified=false"
+            done
+          done
+          d=$(mktemp -d)
+          tar -xzf lazyrex-"$GITHUB_REF_NAME"-linux-amd64.tar.gz -C "$d"
+          test "$("$d"/bin/lazyrex-hub version)" = "$GITHUB_REF_NAME (commit $commit)"
+          test "$("$d"/bin/lazyrex-view -version)" = "$GITHUB_REF_NAME"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=
+          case $GITHUB_REF_NAME in *-rc.*) pre=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/dist/lazyrex-"$GITHUB_REF_NAME"-*.tar.gz "$RUNNER_TEMP/dist/SHA256SUMS" \
+            --verify-tag --title "$GITHUB_REF_NAME" --notes "LazyRex $GITHUB_REF_NAME" $pre
