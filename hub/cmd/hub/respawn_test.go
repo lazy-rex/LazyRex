@@ -59,7 +59,7 @@ func (c *fakeClock) count() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c
 // hub has no work session, so a spawn fails before anything goes to Rex (stage session).
 func respawnHub(t *testing.T, manifests map[string]string, plugins func(dir string) string) (*Hub, *fakeClock, string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := cacheTemp(t) // a start publishes a read-only local snapshot under the state
 	for name, body := range manifests {
 		writePlugin(t, filepath.Join(dir, name), body)
 	}
