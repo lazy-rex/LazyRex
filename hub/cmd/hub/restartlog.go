@@ -11,8 +11,7 @@ package main
 //     writes "dropped N bytes" (best effort: a disk that stays stalled gets no such line).
 //   - Pane lines (the wrapper's own lines, drop notices) go through a bounded channel to one pane
 //     goroutine. A full channel drops the line.
-//   - At open, the first file above 16 MiB is renamed once to hub.log.pre-restart if that name is
-//     free. Normalization deletes no bytes; that archive is never written again.
+//   - At open, a hub.log at the size is rotated first.
 //   - The reader also keeps the last 2 KiB of its run. A hub that fails before its first ready
 //     gets its last lines in the pane (lastLines), so a refusal is readable there.
 
@@ -205,35 +204,10 @@ func paneSafe(s string) string {
 	}, s)
 }
 
-// start normalizes and opens the log, then runs the writer.
+// start opens the log, then runs the writer.
 func (l *restartLog) start() {
-	l.normalize()
 	l.open()
 	go l.writer()
-}
-
-// normalize renames the first file above the size to hub.log.pre-restart, once; any other file
-// above the size gets a pane line. It deletes no bytes.
-func (l *restartLog) normalize() {
-	archive := l.path + ".pre-restart"
-	_, err := os.Lstat(archive)
-	free := errors.Is(err, fs.ErrNotExist)
-	for _, p := range l.files() {
-		st, err := os.Stat(p)
-		if err != nil || !st.Mode().IsRegular() || st.Size() <= l.fileMax {
-			continue // only a regular file is renamed; a directory in the way is an open failure
-		}
-		if free {
-			if err := os.Rename(p, archive); err == nil {
-				free = false
-				l.paneLine(fmt.Sprintf("restart: %s was %d bytes; renamed to %s, which is never written again\n", p, st.Size(), archive))
-				continue
-			} else {
-				l.paneLine(fmt.Sprintf("restart: %s cannot be renamed: %v\n", p, err))
-			}
-		}
-		l.paneLine(fmt.Sprintf("restart: %s is %d bytes, above the %d-byte file size: the size bound does not hold until it leaves through rotation, or until you delete it\n", p, st.Size(), l.fileMax))
-	}
 }
 
 func (l *restartLog) files() []string {

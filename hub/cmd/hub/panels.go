@@ -46,12 +46,14 @@ import (
 // was resumed with the old ID first; the hub still closes the late pane), user_closed (the user
 // closed the old view while the row waited; the hub closes a late pane), late_closed, skipped (a
 // closed form's return in layer mode whose focus check failed; terminal, no pane was asked for).
+// kept is 1 when the user kept the old view at the confirm step.
 // return_of is the closed form of such a return (” for every other row).
 const panelSchema = `
 CREATE TABLE IF NOT EXISTS ui_replacements (repl_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
   window_id TEXT NOT NULL, old_view TEXT NOT NULL DEFAULT '', new_view TEXT NOT NULL, plugin TEXT NOT NULL,
   route TEXT NOT NULL, context TEXT NOT NULL, focus INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL,
-  next_title TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, return_of TEXT NOT NULL DEFAULT '');
+  next_title TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, kept INTEGER NOT NULL DEFAULT 0,
+  return_of TEXT NOT NULL DEFAULT '');
 `
 
 // slotReturn is the panel that a form replaced. The form's end opens it again.

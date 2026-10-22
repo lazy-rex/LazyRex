@@ -43,7 +43,7 @@ func (tl *testLog) paneText() string { tl.mu.Lock(); defer tl.mu.Unlock(); retur
 // sizes returns the size of each log file that exists, by name.
 func (tl *testLog) sizes() map[string]int64 {
 	out := map[string]int64{}
-	for _, p := range append(tl.files(), tl.path+".4", tl.path+".pre-restart") {
+	for _, p := range append(tl.files(), tl.path+".4") {
 		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
 			out[filepath.Base(p)] = st.Size()
 		}
@@ -54,7 +54,7 @@ func (tl *testLog) sizes() map[string]int64 {
 func (tl *testLog) checkBound(t *testing.T) {
 	t.Helper()
 	for name, n := range tl.sizes() {
-		if name != "hub.log.pre-restart" && n > tl.fileMax {
+		if n > tl.fileMax {
 			t.Errorf("%s is %d bytes, above %d", name, n, tl.fileMax)
 		}
 	}
@@ -160,8 +160,7 @@ func TestRestartLogRotationFailure(t *testing.T) {
 	tl.checkBound(t)
 }
 
-// An open that fails (hub.log is a directory): drop mode, a pane line, and push does not wait. Normalization
-// does not rename the directory (a directory size can pass the file size: 4096 on Linux).
+// An open that fails (hub.log is a directory): drop mode, a pane line, and push does not wait.
 func TestRestartLogOpenFailure(t *testing.T) {
 	tl := newTestLog(t, 1024)
 	os.MkdirAll(filepath.Join(tl.path, "x"), 0o700)
@@ -171,73 +170,18 @@ func TestRestartLogOpenFailure(t *testing.T) {
 	}
 	waitLog(t, func() bool { return strings.Contains(tl.paneText(), "cannot be written") })
 	tl.close(time.Second)
-	if _, err := os.Stat(tl.path + ".pre-restart"); !os.IsNotExist(err) {
-		t.Errorf("the directory was renamed: %v", err)
-	}
 }
 
-// Normalization at open renames the first oversized file to hub.log.pre-restart, once. It deletes
-// and rewrites nothing: an existing archive stays as it is, a failed rename leaves the file, and
-// every file that stays oversized gets a pane line.
-func TestRestartLogNormalization(t *testing.T) {
-	big := bytes.Repeat([]byte("o"), 2048)
-	t.Run("rename", func(t *testing.T) {
-		tl := newTestLog(t, 1024)
-		os.WriteFile(tl.path, big, 0o600)
-		tl.start()
-		tl.close(time.Second)
-		if s := tl.sizes(); s["hub.log.pre-restart"] != 2048 || s["hub.log"] != 0 {
-			t.Errorf("sizes %v", s)
-		}
-	})
-	t.Run("archive exists", func(t *testing.T) {
-		tl := newTestLog(t, 1024)
-		os.WriteFile(tl.path, big, 0o600)
-		os.WriteFile(tl.path+".pre-restart", []byte("old"), 0o600)
-		tl.start()
-		tl.close(time.Second)
-		if b, _ := os.ReadFile(tl.path + ".pre-restart"); string(b) != "old" {
-			t.Errorf("the archive changed: %q", b)
-		}
-		if !strings.Contains(tl.paneText(), "the size bound does not hold") {
-			t.Errorf("pane:\n%s", tl.paneText())
-		}
-	})
-	t.Run("rename fails twice", func(t *testing.T) {
-		tl := newTestLog(t, 1024)
-		os.WriteFile(tl.path+".2", big, 0o600)
-		os.MkdirAll(filepath.Join(tl.path+".pre-restart", "x"), 0o700)
-		for i := 0; i < 2; i++ { // a second start meets the same state, with no leftover
-			l := newRestartLog(tl.dir, syncWriter{&tl.mu, tl.pane})
-			l.fileMax = 1024
-			l.start()
-			l.close(time.Second)
-		}
-		entries, _ := os.ReadDir(tl.dir)
-		var names []string
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		if strings.Join(names, " ") != "hub.log hub.log.2 hub.log.pre-restart" {
-			t.Errorf("files %v", names)
-		}
-		if n := strings.Count(tl.paneText(), "the size bound does not hold"); n != 2 {
-			t.Errorf("%d pane lines, want 2:\n%s", n, tl.paneText())
-		}
-	})
-	t.Run("two oversized files", func(t *testing.T) {
-		tl := newTestLog(t, 1024)
-		os.WriteFile(tl.path, big, 0o600)
-		os.WriteFile(tl.path+".2", big, 0o600)
-		tl.start()
-		tl.close(time.Second)
-		if s := tl.sizes(); s["hub.log.pre-restart"] != 2048 || s["hub.log.2"] != 2048 {
-			t.Errorf("sizes %v", s)
-		}
-		if n := strings.Count(tl.paneText(), "the size bound does not hold"); n != 1 {
-			t.Errorf("%d pane lines, want 1:\n%s", n, tl.paneText())
-		}
-	})
+// A hub.log above the size at open is rotated first: the run writes to a new hub.log.
+func TestRestartLogFullAtOpen(t *testing.T) {
+	tl := newTestLog(t, 1024)
+	os.WriteFile(tl.path, bytes.Repeat([]byte("o"), 2048), 0o600)
+	tl.start()
+	tl.push([]byte("new\n"))
+	tl.close(time.Second)
+	if s := tl.sizes(); s["hub.log.1"] != 2048 || s["hub.log"] != 4 {
+		t.Errorf("sizes %v", s)
+	}
 }
 
 // A pane that nobody reads does not slow the log: wrapper lines and output are taken at once.
