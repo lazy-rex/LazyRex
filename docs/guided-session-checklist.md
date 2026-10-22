@@ -40,8 +40,9 @@ about what the live renderer runs: row A records that.
 - B.1 Effective plugins: the guide records the registered plugins from the running hub (the
   plugin list the hub reports, not a single config file: managed entries can come from
   state/plugins.json) and the palette entries the Rex app actually shows. Both with a time.
-  Observation for context (16:20Z, 2026-10-22, files only): `~/.lazyrex/hub-live.json` lists only
-  the lazyrex plugin; `~/.config/rex/lazyrex_palette.lua` has 15 entries and no Restart entries.
+  Observation for context (16:20Z, 2026-10-22, files only, on the machine used to draft this
+  checklist): `<hub-dir>/hub-live.json` listed only the lazyrex plugin, and
+  `<rex-config-dir>/lazyrex_palette.lua` had 15 entries and no Restart entries.
   These file observations do not prove what the runtime loads.
 - B.2 One rule for every action that changes state (any submit, any list or button action other
   than open/close/refresh, every palette entry that is not a pure open, and Set Up): before the
