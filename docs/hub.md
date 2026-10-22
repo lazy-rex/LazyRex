@@ -742,6 +742,16 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 
 **Agent panes without an identity** (the user, 2026-10-22). For `running`, `status` then reads `hub.workers` from that hub and prints one advisory line for each worker with an `agent_id`, state `running` and `identity` `none`: `agent <title> (pane <block>): no current conversation identity yet. Claude Code reports at its start; Codex can report only at its first prompt. If it stays, check the LazyRex hook (lazyrex-hub setup; Codex: trust it with /hooks).` The line comes at once (no grace period: Codex can wait for its first prompt indefinitely), and the exit status stays 0. An exited agent gets no line: its CLI no longer runs. Unknown is never silence: a failed read, a reply without the `workers` list, an unknown `identity` value, or a running or exited agent worker without the field (an older hub) prints `agents: unknown: <why>`. Starting and failed agent workers have no field and print nothing. Text from the hub goes through the same terminal filter as the other lines. Tests: `TestAgentIdentityLines`; lab: `tests/harness/tests/agent_identity.lua` (a spawned agent CLI that does not run its hook shows the line; after the real `lazyrex-hub hook claude` from its pane, the line is gone).
 
+**Remote Control** (the user, 2026-10-22; see "Remote Control (observed)"). For `running`, `status` then reads `hub.app.remote_control` from that hub and prints one line for each connected Rex app, with the app's label and client ID (two apps can have the same label). The lines show the last observed result, never the current setting: the user can change the setting with no app action in between. The exit status stays 0.
+
+- `Remote Control (app <label> <client>): last observed on at <time> (<action>)`, where `<time>` is RFC 3339 in local time, with its date and zone (an observation can be days old)
+- `Remote Control (app <label> <client>): last observed off at <time> (<action> refused). Turn it on in the Rex app: Settings, Rex Server, Remote Control. LazyRex needs it for Go to Session and Insert Path.`
+- `Remote Control (app <label> <client>): unknown: no retained app action observation for this app`
+- No connected app: `Remote Control: no Rex app is connected`.
+- Unknown is never silence: a failed read, a reply without the `apps` list, or an unknown `state` prints `Remote Control: unknown: <why>`.
+
+Tests: `TestRemoteControlLines`.
+
 The text comes from the hub, so a control character becomes `?` (`paneSafe`). Tests: `TestPluginRefusalLines`, `TestStatusShowsRefusedPlugins`.
 
 `stop` sends no signal:
@@ -1124,7 +1134,7 @@ A permanent legacy alias follows its first conversation, including after the pan
 Spawns follow the alias at lookup (the coordinator, 2026-10-19; replaces a row rewrite at alias time that missed work made after the alias). A spawn row keeps the ID that made it; `hub.workers` reports that recorded `parent`. The agent of an ID is its identity plus each legacy ID that the identity took over (`identity_aliases`, read at each call; a legacy ID belongs only to its first identity). `hub.spawn` and `hub.spawn_window` replay a key made by any ID of the caller's agent, and `hub.stop` accepts any ID of the parent's agent. A key that two IDs of one agent used before they became one is refused (`conflict`), even for equal requests: a replay cannot tell which request it repeats. Each of those workers stays stoppable by its spawn ID. The admission transaction checks the alias set again before it inserts: the hub's database has one connection, so the check and the insert are atomic with every other admission and every alias write. A second ID of one agent that admits the same key at the same time gets `conflict`; a retry with that key replays the first row. Observed before the fix (lab, `tests/harness/tests/spawn_migration.lua` and `spawn_resume.lua`): the same key from the identity created a second worker.
 A conflicting pair of nonempty drafts stops migration with an error and preserves both drafts.
 
-See `tests/README.md` for verification and `../../skills/lazyrex/SKILL.md` for agent instructions.
+See `../skills/lazyrex/SKILL.md` for agent instructions.
 The skill is stored in this repository. Installing it in an agent's configuration is a separate step.
 
 ### Thread titles from Rex tabs
@@ -1541,6 +1551,20 @@ Tests (observed, Rex 0.0.1792158932-g88fd41, lab):
 - `tests/templates-lab.mjs` 2, 5 and 6 (real hub and renderer, a fake app client): the app gets one `session.select` with the new session and its first tab; none for a start into the current session; two apps give `ambiguous_app`, no call, and the hint in the panel. Two full runs with `TEMPLATES_RESTART=1` passed.
 
 Not tested: the real app. A lab has no app, so what `session.select` does on screen is unknown until the maintainer approves a check.
+
+### Remote Control (observed)
+
+The Rex app refuses client actions until the user turns on Remote Control (Rex app: Settings, Rex Server). The hub never asks the app to find out (the user, 2026-10-22: no probe). It records the result of the app actions that it runs anyway (`hub/cmd/hub/remotecontrol.go`):
+
+- The calls: `client.perform` to the app from `hub.view.app_action` (`pane.insert_path`), `hub.app.select_session` and the navigation step (`session.select` on each app). The `session.view`, `client.list` and `client.inspect` calls around them record nothing.
+- The rule: a result without error is `on`. A `refused` error whose message starts with `Rex.app is not accepting actions` is `off`. Any other result (a timeout, another refusal) keeps the earlier observation and its time. The refusal form is observed by the CLI on Rex 1203 ("Driving the Rex app" in rex-protocol.md); the form that the hub gets is untested until an ordinary app action shows it on a real app.
+- Memory only, for each app client ID: a hub restart forgets it. A client that Rex keeps while it reconnects (the same ID) keeps its observation and its time; an observation never moves to another ID. A read deletes the observations of clients that `client.list` no longer names, and only those that it saw before its `client.list` call.
+
+`hub.app.remote_control` (no arguments; any client; a read) returns `{"apps": [{"client_id", "label", "state", "action"?, "at"?}]}`: every connected app of `client.list` (`info.kind` `app`). `label` is the client's label, else its name, else empty. `state` is `on` or `off` (the last observed result, with `action` and `at`, RFC 3339 UTC) or `unknown` (no retained observation; no `action`, no `at`). An empty list means no connected app. A failed `client.list` is an error, never an empty list. Hub Status shows it ("Stop and status").
+
+Setup prints one paragraph about Remote Control: what needs it and where to turn it on. It does not ask the app either.
+
+Tests: `TestRemoteControlState` (the rule, also with the error wrapped as `rex.Call` wraps it), `TestRemoteControlRecordSites` (only the `client.perform` result counts; a timeout keeps the observation), `TestRemoteControlRead` (connected apps, unobserved apps, a reconnecting app, an absent client, the same ID back, no app, a failed list), `TestRemoteControlReadKeepsARecordDuringTheCall`. Lab: `tests/harness/tests/remote_control.lua` (a fake app answers the refusal text: a form action and a navigation each give `off`, then `on`, and Hub Status shows the lines). The fake app proves the transport and the recording, not the real app's setting.
 
 ## File watches (hub.watch)
 

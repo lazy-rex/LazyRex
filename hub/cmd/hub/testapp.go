@@ -1,15 +1,16 @@
 package main
 
-// Fake Rex apps for tests (H2; the coordinator, 2026-10-19: test mode only). No app runs in a lab,
-// so hub.app.select_session and hub.view.app_action refuse with no_app. A test asks the hub for a
-// fake app: a second Rex connection whose hello says kind "app", as the real app's does
-// (templates-lab.mjs did the same from Node). It declares the app actions, shows the sessions
-// that the test names (session.attach), answers each client.perform with {} (or a chosen error)
-// and records it. userApp finds it like a real app. It lives in the hub process: a hub restart
-// closes it.
+// Fake Rex apps for tests (test mode only). No app runs in a lab, so hub.app.select_session and
+// hub.view.app_action refuse with no_app. A test asks the hub for a fake app: a second Rex
+// connection whose hello says kind "app", as the real app's does. It declares the app actions,
+// shows the sessions that the test names (session.attach), answers each client.perform with {} (or
+// a chosen error) and records it. userApp finds it like a real app. It lives in the hub process:
+// a hub restart closes it.
 //
 // hub.test.app {name, sessions?, fail?} opens the app (or reuses it) and attaches sessions.
 //   fail: an error code that the app answers instead of {} (empty: answer {}).
+//   fail_message: the message of that error (default "fake app error"), for example the real
+//   app's Remote Control refusal (remotecontrol.go).
 // hub.test.app.calls {name} -> {client_id, calls: [{action, args}]}
 // hub.test.app.close {name}
 
@@ -25,10 +26,11 @@ import (
 var fakeAppActions = []string{"session.select", "pane.insert_path"}
 
 type testFakeApp struct {
-	r     *rex.Rex
-	mu    sync.Mutex
-	calls []map[string]any
-	fail  string
+	r       *rex.Rex
+	mu      sync.Mutex
+	calls   []map[string]any
+	fail    string
+	failMsg string
 }
 
 func (h *Hub) testApp(ctx context.Context, args map[string]any) (any, error) {
@@ -66,6 +68,7 @@ func (h *Hub) testApp(ctx context.Context, args map[string]any) (any, error) {
 	if fail, ok := args["fail"].(string); ok {
 		app.mu.Lock()
 		app.fail = fail
+		app.failMsg, _ = args["fail_message"].(string)
 		app.mu.Unlock()
 	}
 	list, _ := args["sessions"].([]any)
@@ -97,11 +100,14 @@ func (a *testFakeApp) serve() {
 		ev := env.Payload.Payload
 		a.mu.Lock()
 		a.calls = append(a.calls, map[string]any{"action": ev.Action, "args": ev.Args})
-		fail := a.fail
+		fail, msg := a.fail, a.failMsg
 		a.mu.Unlock()
 		reply := map[string]any{"call_id": ev.CallID, "result": map[string]any{}}
+		if msg == "" {
+			msg = "fake app error"
+		}
 		if fail != "" {
-			reply = map[string]any{"call_id": ev.CallID, "error": &rex.RexError{Code: fail, Message: "fake app error"}}
+			reply = map[string]any{"call_id": ev.CallID, "error": &rex.RexError{Code: fail, Message: msg}}
 		}
 		a.r.Call(context.Background(), "client.reply", reply, nil)
 	}

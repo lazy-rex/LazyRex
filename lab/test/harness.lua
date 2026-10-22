@@ -802,9 +802,10 @@ function App:wait_shows(session)
   end)
 end
 
--- show attaches one more session; fail(code) changes the answer ('' answers {}).
+-- show attaches one more session; fail(code, message) changes the answer ('' answers {}; message:
+-- the error message, default "fake app error").
 function App:show(session) hub('hub.test.app', {name = self.name, sessions = {session}}); self:wait_shows(session) end
-function App:fail(code) hub('hub.test.app', {name = self.name, fail = code or ''}) end
+function App:fail(code, message) hub('hub.test.app', {name = self.name, fail = code or '', fail_message = message or ''}) end
 -- calls lists every client.perform that the app got: {action, args}.
 function App:calls() return hub('hub.test.app.calls', {name = self.name}).calls end
 function App:close() return hub('hub.test.app.close', {name = self.name}) end

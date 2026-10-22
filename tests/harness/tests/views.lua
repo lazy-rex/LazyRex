@@ -121,10 +121,10 @@ test('a palette form freezes the source pane directory in its context', function
   local form = user:view('/forms/fix', nil, s)
   expect(form.context.source_pwd, 'the raw value, not decoded').to_be(uri)
   expect(form.context.source_pwd_error).to_be(nil)
-  -- The tests session's pane sends no OSC 7: the form gets the reason, and no value.
+  -- The tests session's pane reports no folder (no OSC 7): the form gets the reason, and no value.
   user:command('fix_form')
   local plain = user:view("/forms/fix", nil, H.args.tests_session)
   expect(plain.context.source_pwd).to_be(nil)
-  expect(plain.context.source_pwd_error:find('reports no directory', 1, true) ~= nil, plain.context.source_pwd_error).to_be(true)
+  expect(plain.context.source_pwd_error:find('did not report its folder', 1, true) ~= nil, plain.context.source_pwd_error).to_be(true)
   close_session(s)
 end)

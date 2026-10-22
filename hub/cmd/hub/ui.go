@@ -1104,7 +1104,8 @@ func (h *Hub) selectOnApps(ctx context.Context, sess, window string, about map[s
 			if window != "" {
 				args["window_id"] = window
 			}
-			err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": c.ClientID, "action": "session.select", "args": args, "timeout_ms": 5000}, nil)
+			err := appCall(h, ctx, "client.perform", map[string]any{"client_id": c.ClientID, "action": "session.select", "args": args, "timeout_ms": 5000}, nil)
+			h.observeApp(c.ClientID, "session.select", err)
 			if err != nil {
 				result = err.Error()
 			}

@@ -1,7 +1,6 @@
 -- Agent identity, stage 2 on the hub (hub/cmd/hub/identity.go): a pane that never joins is known by
 -- its report alone; hub.agents lists identities; hub.agents.resolve by ID, prefix, tab name and
--- legacy alias; a joined legacy pane's first report makes a permanent alias. It replaces the Node
--- lab identity-stage2-lab.mjs. The notice part of that lab belongs to Messaging.
+-- legacy alias; a joined legacy pane's first report makes a permanent alias.
 
 local function agents(all)
   local list = H.hub('hub.agents', {all = all or nil}).agents or {}

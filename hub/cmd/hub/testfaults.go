@@ -66,7 +66,7 @@ type testFault struct {
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
 	"plugin-create": {"refuse", "lose-answer", "hold-send"}, "resume-prompt": {"hold", "lose-answer"},
-	"prompt-answer": {"close", "refuse", "lose-reply", "short"}, "view-render": {"hold"}}
+	"prompt-answer": {"close", "refuse", "lose-reply"}, "view-render": {"hold"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
@@ -119,7 +119,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send), prompt-answer (close, refuse, lose-reply, short), resume-prompt (hold, lose-answer) or view-render (hold)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer) or view-render (hold)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -459,8 +459,7 @@ func (h *Hub) promptAnswerFault(when string, p *prompt) {
 
 // promptWriteFaulted is promptWrite with the armed prompt-answer write faults (when = write, the
 // keys or the paste, or enter): refuse writes nothing and fails with fail_code (default
-// not_found); lose-reply writes and then reports a lost reply; short writes and reports one byte
-// fewer.
+// not_found); lose-reply writes and then reports a lost reply.
 func (h *Hub) promptWriteFaulted(ctx context.Context, when string, p *prompt, data string) (int, error) {
 	var f *testFault
 	if h.test != nil {
@@ -476,9 +475,6 @@ func (h *Hub) promptWriteFaulted(ctx context.Context, when string, p *prompt, da
 	n, err := promptWrite(ctx, h, p.Session, p.Block, data)
 	if f == nil || err != nil {
 		return n, err
-	}
-	if f.Mode == "short" {
-		return n - 1, nil
 	}
 	return n, &rex.RexError{Code: "disconnected", Message: "injected fault: the write reply was lost"}
 }

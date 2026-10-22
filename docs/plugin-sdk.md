@@ -17,7 +17,9 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 ```
 
 - `"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
-  `require('lazyrex')` works.
+  `require('lazyrex')` works. The hub uses the `-sdk` directory, else the first `sdk/lua` with a
+  `boot.lua` above its binary (the release archive puts it in `~/.lazyrex/sdk/lua`). Its log says
+  which at each start: `sdk: <directory>`, or `sdk: none` (then such plugins cannot start).
 - `test.agents` lists the agents that the lab tests can open with `agent('alice')`.
 
 `main.lua`:
