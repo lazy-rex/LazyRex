@@ -240,9 +240,9 @@ func TestPluginOpReturnProof(t *testing.T) {
 // identity and its registration, proves applied. An intent that is still open (its block was not
 // found) proves nothing: the op stays unknown, not not_applied.
 func TestPluginOpStartObservation(t *testing.T) {
-	wait := opRegisterWait
-	t.Cleanup(func() { opRegisterWait = wait })
-	opRegisterWait = 0 // no wait for a registration: the first observation decides the phase
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
+	registerWait = 0 // no wait for a registration: the first observation decides the phase
 	for _, created := range []bool{true, false} {
 		h, c, dir := opsTestHub(t, "")
 		ctx := context.Background()
@@ -363,11 +363,11 @@ func createAndRegister(t *testing.T, h *Hub, pl *Plugin) {
 //   - a start that returned spawn_unknown in this process (no crash): the same later proof;
 //   - a resolved attempt (a proof that is not empty) does not change.
 func TestPluginOpLateRegistration(t *testing.T) {
-	wait := opRegisterWait
-	t.Cleanup(func() { opRegisterWait = wait })
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
 	ctx := context.Background()
 
-	opRegisterWait = time.Minute
+	registerWait = time.Minute
 	h, pl, id := startOpHub(t, nil, true)
 	if w := h.opsRun(ctx); w <= 0 {
 		t.Fatalf("the observation did not wait: %v; op %+v", w, opsOf(t, h, id))
@@ -381,7 +381,7 @@ func TestPluginOpLateRegistration(t *testing.T) {
 		t.Fatalf("a registration before the deadline: op %+v, proof %q", op, proof)
 	}
 
-	opRegisterWait = 0
+	registerWait = 0
 	for _, c := range []struct {
 		name  string
 		ret   error
