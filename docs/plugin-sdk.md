@@ -95,6 +95,9 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
 - **Errors.** `error('text')` in a handler gives the caller an error with that text. The database
   changes of that handler are undone. A call to another service (for example a message that the
   handler sent) is not undone.
+- **Long lists.** Under the SDK, `table.concat` has no length limit (Rex Lua alone fails at about
+  2560 items). Do not `unpack` a list of more than about 2000 items, and do not pass that many
+  arguments: Rex Lua fails with "registry overflow".
 - **Big numbers.** Lua holds integers exactly only up to 2^53. A larger integer from the database
   comes back as a decimal string.
 - **Panels refresh by themselves.** You never call a refresh. Keep a panel function fast: it runs

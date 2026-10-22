@@ -1026,3 +1026,43 @@ app.form('/forms/add', {title = 'Add', fields = {}, on_submit = function() end,
   expect(c.user_only).to_be('navigation')
   expect(c.action, 'no action next to user_only').to_be(nil)
 end)
+
+test('concat gives what table.concat gives, also for 2560 items and more', function()
+  -- Rex Lua: table.concat of 2560 items or more fails with "registry overflow" (observed on Rex
+  -- 0.0.1792158932-g88fd41, lab, 2026-10-22), and fewer when more of the stack is in use (2559
+  -- failed here). Up to 2000 items, the Rex table.concat is the reference. Both are called as a
+  -- field, so that an error names the function as "concat".
+  local R, C = {concat = table.concat}, {concat = sandbox(sdk_dir, base, {source = 'return 1'}).sdk.concat}
+  local function raw(...) return R.concat(...) end
+  local function concat(...) return C.concat(...) end
+  local function err(fn, ...) local ok, e = pcall(fn, ...); expect(ok, 'an error').to_be(false); return (tostring(e):gsub('^[^\n]-:%d+: ', '', 1)) end
+  local function list(n) local t = {}; for k = 1, n do t[k] = tostring(k % 10) end; return t end
+  local cases = {{{}}, {{'a'}, ','}, {{'a', 'b', 'c'}, ', ', 2, 3}, {{'a', 'b'}, ',', 3, 2}, {{1, 2.5, 'x'}, '-'},
+    {list(1)}, {list(500), ','}, {list(501), ','}, {list(1001), ','}, {list(2000), ','}, {list(2000), ',', 7, 2000}}
+  for n, c in ipairs(cases) do expect(concat(unpack(c, 1, 4)), 'case ' .. n).to_be(raw(unpack(c, 1, 4))) end
+  local function slow(t, sep, i, j) local s = ''; for k = i, j do s = s .. t[k] .. (k < j and sep or '') end; return s end
+  for _, n in ipairs({2560, 10000}) do
+    local t = list(n)
+    expect(concat(t, ','), n .. ' items').to_be(slow(t, ',', 1, n))
+    expect(concat(t), n .. ' items, no separator').to_be(slow(t, '', 1, n))
+  end
+  local t = list(10000)
+  expect(concat(t, '; ', 500, 9000), 'a long range').to_be(slow(t, '; ', 500, 9000))
+  t[2500] = {}
+  expect(err(concat, t, ','), 'a bad item names its own index').to_be(err(raw, t, ',', 2001, 3000))
+  expect(err(concat, {'a', {}}), 'a short list').to_be(err(raw, {'a', {}}))
+  expect(err(concat, nil), 'not a table').to_be(err(raw, nil))
+end)
+
+test('boot.lua sets table.concat to the SDK concat before it runs the main file', function()
+  local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
+  local env = {rex = {args = {main = '/plugin/main.lua'}}, package = {path = ''}, debug = debug, assert = assert, type = type,
+    table = {concat = table.concat}}
+  env.require = function(name) expect(name).to_be('lazyrex'); return sdk end
+  env.dofile = function(path) env.ran, env.concat_at_main = path, env.table.concat end
+  local chunk = assert(loadfile(sdk_dir .. '/boot.lua'))
+  setfenv(chunk, env)
+  chunk()
+  expect(env.ran).to_be('/plugin/main.lua')
+  expect(env.concat_at_main == sdk.concat, 'the main file sees the SDK concat').to_be(true)
+end)
