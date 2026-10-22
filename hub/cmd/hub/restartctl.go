@@ -47,9 +47,10 @@ type ctlView struct {
 	rexErr   error       // the Rex server could not be asked
 	holder   int         // the restart.lock holder; 0 when none
 	status   *restartStatus
-	trusted  bool  // status belongs to holder
-	ownTwice bool  // more than one connected hub reports this state
-	localErr error // the state or its restart lock cannot be read: nothing about this state is known
+	trusted  bool     // status belongs to holder
+	ownTwice bool     // more than one connected hub reports this state
+	localErr error    // the state or its restart lock cannot be read: nothing about this state is known
+	plugins  []string // the refused plugins of the own hub (pluginrefusal.go); nil when not read
 }
 
 type hubClient struct {
@@ -77,6 +78,7 @@ func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
 	}
 	v := ctlLook(cfg)
 	if cmd == "status" {
+		v.readPlugins()
 		code, text := v.statusText()
 		fmt.Fprintln(stdout, text)
 		return code
@@ -139,6 +141,11 @@ func readRestart(state string) (holder int, st *restartStatus, trusted bool, err
 func (v *ctlView) rexCmd(deadline time.Time, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	return v.rexCmdCtx(ctx, args...)
+}
+
+// rexCmdCtx runs rex until ctx ends.
+func (v *ctlView) rexCmdCtx(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, v.rex, append([]string{"-S", v.cfg.Server, "--autostart=false", "--timeout", "3s"}, args...)...)
 	cmd.WaitDelay = 500 * time.Millisecond // a killed rex whose child keeps the pipes open
 	var out, errb bytes.Buffer
@@ -151,7 +158,13 @@ func (v *ctlView) rexCmd(deadline time.Time, args ...string) ([]byte, error) {
 
 // hubIDs lists the client IDs of the connected lazyrex-hub clients.
 func (v *ctlView) hubIDs(deadline time.Time) ([]string, error) {
-	out, err := v.rexCmd(deadline, "client", "ls", "--json")
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	return v.hubIDsCtx(ctx)
+}
+
+func (v *ctlView) hubIDsCtx(ctx context.Context) ([]string, error) {
+	out, err := v.rexCmdCtx(ctx, "client", "ls", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +268,9 @@ func (v *ctlView) statusText() (int, string) {
 			s += fmt.Sprintf("; restart wrapper pid %d", v.status.PID)
 		}
 		add(s)
+		for _, l := range v.plugins {
+			add(l)
+		}
 	case v.holder > 0 && !v.trusted:
 		code = ctlUnknown
 		add(fmt.Sprintf("unknown: a restart wrapper (pid %d) holds %s; its status file does not match", v.holder, v.state))

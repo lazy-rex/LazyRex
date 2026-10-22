@@ -603,6 +603,7 @@ Test: `SHUTDOWN_LAB=1 go test ./cmd/hub -run TestHubShutdownExitStatusLab`. The 
 **The child.** The wrapper starts its own binary with two environment variables. The hub reads and unsets both at the top of `main`, so no process that the hub starts inherits them (`restartenv.go`):
 
 - `LAZYREX_READY_FD=3`: the write end of a pipe. After `hub_started`, the hub writes `ready <canonical state>` once and closes it. A failed or short write is logged once (`ready fd: ...`); the hub runs on, and the wrapper sees no ready line. The wrapper has no ready time limit: it stays in `starting` while that hub runs, and the hub's later exit counts as an exit before ready (`TestRestartWithoutAReadyLine`). Ready means that the hub has started (after `hub_started`). It does not mean that the plugins are healthy. The hub sets FD_CLOEXEC on the fd, so no child of the hub holds the pipe open.
+- After each ready, the wrapper reads the refused plugins of that hub and prints each line as `restart: <line>` (see "Refused plugins" in "Stop and status"). The read finds the hub by its `hub.info` pid (the child's pid) and state, so a hub of an earlier run cannot answer for this run. The read runs beside the wait: an exit or a signal never waits for it. It ends after 10 s or with the run, and the wrapper discards a result that comes after the run. A refusal never stops or restarts the hub. Tests: `TestRestartShowsRefusedPlugins`, `TestRestartRefusalReadIsBoundToTheRun` (a stalled read: the stop is not delayed, and the read's context is cancelled), `TestRestartDiscardsALateRefusalRead`.
 - `LAZYREX_EXPECT_STATE`: the wrapper's canonical state. After `loadConfig`, before it makes the state directory or takes `hub.lock`, the hub compares its config state in the canonical form. Another state, or a state that cannot be resolved, prints `... start a new wrapper` and exits 3. No store, no Rex connection, no plugin.
 
 **When the child exits.** The wrapper classifies an exit only after the ready pipe ends (at most 2 s after the exit), so "ready, then an immediate exit" counts as after ready. Then the wrapper closes its read end of the pipe, also when a descendant of the hub still holds the write end, so no reader is left for the next start.
@@ -655,6 +656,15 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 | `backoff`, `starting` | a wrapper owns the state, and no hub of it is seen. When the Rex server cannot be asked, this is no proof that no hub is connected | 3 |
 | `unknown` | a wrapper holds the lock, but the status file does not match it; two connected hubs report this state; the state or `restart.lock` cannot be read; or, with no wrapper, the Rex server cannot be asked or a connected hub does not answer `hub.info`. A failed look is never `not running` | 4 |
 | (usage or config error) | | 2 |
+
+**Refused plugins.** For `running`, `status` also reads `hub.plugins` from that hub and prints one line for each item of its `refused` list (plugin-sources.md), after the `running` line. The exit status stays 0: a refusal does not stop the hub.
+
+- A refused entry: `plugin <source>: refused: <error>`. A plugin of hub.json that is not installed shows here, with its `lazyrex-hub plugin sync` hint.
+- The managed file (once, when it cannot be read): `plugins: managed file <path>: <error>`.
+- A failed read, a reply without the `refused` list, or an item without a source: `plugins: unknown: <error>`. A failed read is never "no refusals".
+- A `retained` plugin is not refused, and an empty list prints nothing.
+
+The text comes from the hub, so a control character becomes `?` (`paneSafe`). Tests: `TestPluginRefusalLines`, `TestStatusShowsRefusedPlugins`.
 
 `stop` sends no signal:
 

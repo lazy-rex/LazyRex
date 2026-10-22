@@ -34,8 +34,10 @@ func TestHubControlsLab(t *testing.T) {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
 	socket := "unix://" + lab + "/rex.sock"
+	// A plugin that is not installed (the lab state has no plugin cache): the hub refuses it and runs.
+	const labRefused = "github:lazy-rex/Messaging@v0.1.2"
 	cfg := filepath.Join(lab, "hub.json")
-	os.WriteFile(cfg, []byte(`{"server":"`+socket+`","state":"`+filepath.Join(lab, "state")+`","agents":[{"id":"user","name":"User"}]}`), 0o600)
+	os.WriteFile(cfg, []byte(`{"server":"`+socket+`","state":"`+filepath.Join(lab, "state")+`","agents":[{"id":"user","name":"User"}],"plugins":[{"source":"`+labRefused+`"}]}`), 0o600)
 	rexcfg := filepath.Join(lab, "rexcfg")
 	os.MkdirAll(rexcfg, 0o755)
 	os.WriteFile(filepath.Join(rexcfg, "lazyrex_boot.lua"), []byte(setupBootLua(bin, lab, socket, hubControls{config: cfg, server: socket})), 0o644)
@@ -140,8 +142,30 @@ func TestHubControlsLab(t *testing.T) {
 	if out := must("-C", hubClient(), "do", "hub.info"); !strings.Contains(out, lab) {
 		t.Fatalf("hub.info: %s", out)
 	}
-	code, screen = exited(run("lazyrexboot_status"), 20*time.Second)
+	// The refused plugin: the Start pane shows it after the ready, Status shows it after the running
+	// line, and the hub runs on.
+	refusal := "plugin " + labRefused + ": refused: plugin " + labRefused + " is not installed: run lazyrex-hub plugin sync"
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		pane := must("block", "capture", "--unwrap", "-s", s.ID, "-b", start)
+		if strings.Contains(pane, "restart: "+refusal) {
+			t.Logf("the Start pane:\n%s", pane)
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the Start pane shows no refusal:\n%s", pane)
+		}
+	}
+	status := run("lazyrexboot_status")
+	code, _ = exited(status, 20*time.Second)
+	screen = must("block", "capture", "--unwrap", "-s", s.ID, "-b", status)
+	t.Logf("Hub Status: exit %d\n%s", code, screen)
 	expect("status while it runs", code, screen, 0, "running")
+	if i := strings.Index(screen, "running: hub pid"); i < 0 || !strings.Contains(screen[i:], "\n"+refusal) {
+		t.Fatalf("status shows no refusal after the running line:\n%s", screen)
+	}
+	if !hubListed() {
+		t.Fatal("the hub stopped after the refusal")
+	}
 
 	// A second Start while the wrapper runs: the wrapper's lock refuses it.
 	code, screen = exited(run("lazyrexboot_start"), 20*time.Second)

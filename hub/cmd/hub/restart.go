@@ -14,6 +14,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +34,8 @@ const (
 	restartMax      = 4 // restarts within restartWindow; the next one is refused
 	restartMaxDelay = 60 * time.Second
 	childStopWait   = 10 * time.Second
-	readyEOFWait    = 2 * time.Second // after the child's exit; only a leaked fd holds the pipe open
+	readyEOFWait    = 2 * time.Second  // after the child's exit; only a leaked fd holds the pipe open
+	refusalReadWait = 10 * time.Second // the plugin refusal read after a ready
 )
 
 type wrapper struct {
@@ -48,6 +50,7 @@ type wrapper struct {
 	backoff  func(time.Duration) <-chan time.Time // the delay before a restart
 	stopWait time.Duration
 	sigs     chan os.Signal
+	refusals func(ctx context.Context, pid int) []string // the refused plugins of the hub with this pid; nil: no read
 
 	state    string // canonical, set by main
 	attempt  int
@@ -77,6 +80,7 @@ func restartMain(cfg Config, args []string) int {
 	}
 	w := &wrapper{bin: bin, args: args, pane: os.Stderr, now: time.Now,
 		after: time.After, backoff: time.After, stopWait: childStopWait, sigs: sigs}
+	w.refusals = func(ctx context.Context, pid int) []string { return hubRefusals(cfg, w.state)(ctx, pid) }
 	return w.main(cfg.State)
 }
 
@@ -352,6 +356,11 @@ func (w *wrapper) runChild() childEnd {
 	w.out.Printf("restart: started hub pid %d (attempt %d)", pid, w.attempt)
 	w.writeStatus("starting", time.Time{})
 
+	// After the ready, the refused plugins of this run. The read never holds up an exit or a
+	// signal: it ends with this run, and a result after the run is discarded.
+	readCtx, endRead := context.WithCancel(context.Background())
+	defer endRead()
+	refusedc := make(chan []string, 1)
 	ready := false
 	onReady := func(line string) bool {
 		got, ok := strings.CutPrefix(strings.TrimSuffix(line, "\n"), "ready ")
@@ -362,10 +371,21 @@ func (w *wrapper) runChild() childEnd {
 		ready = true
 		w.out.Printf("restart: hub pid %d ready", pid)
 		w.writeStatus("running", time.Time{})
+		if w.refusals != nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(readCtx, refusalReadWait)
+				defer cancel()
+				refusedc <- w.refusals(ctx, pid)
+			}()
+		}
 		return true
 	}
 	for {
 		select {
+		case lines := <-refusedc:
+			for _, l := range lines {
+				w.out.Printf("restart: %s", l)
+			}
 		case line := <-readyc:
 			if !onReady(line) {
 				w.stopChild(pid, cmd, exitc, retire)
