@@ -158,7 +158,7 @@ type releaser struct {
 	// syncManifest is the digest and the manifest of a commit-form source (a plugin freeze).
 	syncManifest func(source string) (string, []byte, error)
 	buildRecord  func(path string) ([]string, error) // the build record of a Go binary
-	argvOf       func(pid int) []string              // the argv of a process
+	argvOf       func(pid int) ([]string, error)     // the argv of a process
 	// testStop allows RELEASE_TEST_STOP outside a proved lab (unit tests only).
 	testStop string
 	// rehearseLab and rehearseTier are the -lab and -tier flags of rehearse.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -434,4 +435,89 @@ func TestReleasePluginStartBarrier(t *testing.T) {
 	w.freeze()
 	w.perform = []string{"gone"}
 	w.stepErr("precheck", "did not finish its start")
+}
+
+// Review R14 (codex-26's TestReviewPluginFailedPrecheckCannotPull): a failed precheck leaves no
+// checkpoint, so pull refuses after backup and the pin stays at FROM. A failed rerun after a passed
+// precheck removes the earlier checkpoint too.
+func TestReleasePluginFailedPrecheckCannotPull(t *testing.T) {
+	w := newPluginWorld(t, "0")
+	w.freeze()
+	w.perform = []string{"gone"}
+	w.stepErr("precheck", "did not finish its start")
+	w.must("backup")
+	w.stepErr("pull", "no hub of precheck")
+	if got := w.lockPin(otherSrc); got != pinFrom {
+		t.Fatalf("the pin moved after a failed precheck: %v", got)
+	}
+
+	w = newPluginWorld(t, "0")
+	w.freeze()
+	w.must("precheck")
+	w.perform = []string{"gone"}
+	w.stepErr("precheck", "did not finish its start")
+	w.must("backup")
+	w.stepErr("pull", "no hub of precheck")
+}
+
+// Review R15 (codex-26's TestReviewPluginFailedArgvReadCannotFreeze): a failed or empty argv read
+// of the hub refuses freeze; it is not "no -sdk". A read argv without -sdk is that state (a plugin
+// without the SDK passes).
+func TestReleasePluginArgvReadFailure(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		read func(int) ([]string, error)
+		want string
+	}{
+		{"error", func(int) ([]string, error) { return nil, errors.New("sysctl failed") }, "sysctl failed"},
+		{"empty", func(int) ([]string, error) { return nil, nil }, "the argv is empty"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newPluginWorld(t, "")
+			if err := createRun(w.run, w.specP); err != nil {
+				t.Fatal(err)
+			}
+			r := w.open("freeze")
+			defer r.unlock()
+			r.argvOf = c.read
+			if err := relPluginFreeze(r); err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "-sdk directory is unknown") {
+				t.Fatalf("freeze: %v", err)
+			}
+		})
+	}
+	w := newPluginWorld(t, "")
+	w.sdkDir = "" // the argv is read, and it has no -sdk
+	w.freeze()
+	if c := mustCandidate(t, w); c.SDKDir != "" || c.SDKDigest != "" {
+		t.Fatalf("candidate %+v", c)
+	}
+}
+
+// Review R16 (codex-26's TestReviewPluginVerifyChecksPins): verify checks the pins. The lock of P
+// back at FROM while P runs TO, or another pin moved, fails verify.
+func TestReleasePluginVerifyChecksPins(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		set  func(w *relWorld)
+		want string
+	}{
+		{"P lock at FROM", func(w *relWorld) {
+			l, _ := readLock(lockPath(w.cfg, ""))
+			l.Plugins[otherSrc].Commit, l.Plugins[otherSrc].Digest = pinFrom.Commit, pinFrom.Digest
+			writeLock(lockPath(w.cfg, ""), l)
+		}, `not "to to"`},
+		{"another pin", func(w *relWorld) {
+			l, _ := readLock(lockPath(w.cfg, ""))
+			l.Plugins[homeSrc].Commit = commitH
+			writeLock(lockPath(w.cfg, ""), l)
+		}, "a pin other than"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newPluginWorld(t, "0")
+			w.freeze()
+			w.must("precheck", "backup", "pull", "replace")
+			c.set(w)
+			w.stepErr("verify", c.want)
+		})
+	}
 }

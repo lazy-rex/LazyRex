@@ -515,15 +515,15 @@ func (w *relWorld) open(step string) *releaser {
 		}
 		return "", errors.New("unknown source " + src)
 	}
-	r.argvOf = func(pid int) []string {
+	r.argvOf = func(pid int) ([]string, error) {
 		if pid != w.hubPID {
-			return nil
+			return nil, errors.New("no such process")
 		}
 		argv := []string{filepath.Join(w.state, "dev", "hub"), "-config", w.cfg}
 		if w.sdkDir != "" {
 			argv = append(argv, "-sdk", w.sdkDir)
 		}
-		return argv
+		return argv, nil
 	}
 	r.buildRecord = func(p string) ([]string, error) { return w.buildRec, nil }
 	r.syncManifest = func(src string) (string, []byte, error) {

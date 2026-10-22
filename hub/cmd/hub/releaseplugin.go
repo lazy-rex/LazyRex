@@ -10,7 +10,9 @@ package main
 import (
 	"debug/buildinfo"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -220,16 +222,18 @@ func (r *releaser) buildSettings(path string) ([]string, error) {
 	return out, nil
 }
 
-// argvOfPID is the argv of a process; tests replace it.
-func (r *releaser) argvOfPID(pid int) []string {
-	if r.argvOf != nil {
-		return r.argvOf(pid)
+// argvOfPID is the argv of a process; tests replace it. A failed or empty read is an error: it
+// does not prove that the process has no -sdk flag (review R15).
+func (r *releaser) argvOfPID(pid int) ([]string, error) {
+	read := r.argvOf
+	if read == nil {
+		read = procArgv
 	}
-	argv, err := procArgv(pid)
-	if err != nil {
-		return nil
+	argv, err := read(pid)
+	if err == nil && len(argv) == 0 {
+		err = errors.New("the argv is empty")
 	}
-	return argv
+	return argv, err
 }
 
 // sdkArg is the value of the -sdk flag in a hub argv, "" without one.
@@ -272,7 +276,11 @@ func (r *releaser) liveHub() (h *relHub, commit, sum, sdk string, err error) {
 	if sum, err = sha256File(dev); err != nil {
 		return nil, "", "", "", relFail("the sha256 of %s: %v", dev, err)
 	}
-	return h, rev, sum, sdkArg(r.argvOfPID(h.PID)), nil
+	argv, err := r.argvOfPID(h.PID)
+	if err != nil {
+		return nil, "", "", "", relFail("the argv of the hub pid %d: %v; its -sdk directory is unknown", h.PID, err)
+	}
+	return h, rev, sum, sdkArg(argv), nil
 }
 
 func relPluginFreeze(r *releaser) error {
@@ -370,7 +378,7 @@ func relPluginFreeze(r *releaser) error {
 // checkPluginHub checks that the running hub is the frozen hub of a plugin release: it runs
 // <state>/dev/hub with the frozen sha256, a clean build of the frozen commit, and its -sdk
 // directory has the frozen digest. It runs before every mutation and in verify.
-//   - mode "precheck" saves the hub as the release hub.
+//   - mode "precheck" only checks; precheck saves the hub after all its checks pass.
 //   - mode "forward" refuses a hub that started after precheck (another generation).
 //   - mode "rollback" accepts another generation of the same binary: it reports it, journals it,
 //     and decides from the real state.
@@ -395,7 +403,7 @@ func (r *releaser) checkPluginHub(c *relCandidate, mode string) (*relHub, error)
 		}
 	}
 	if mode == "precheck" {
-		return h, writeJSON(filepath.Join(r.run, relPluginHubFile), h)
+		return h, nil
 	}
 	saved := r.readHub(relPluginHubFile)
 	if saved == nil {
@@ -501,6 +509,15 @@ func relPluginPrecheck(r *releaser) error {
 	if err != nil {
 		return err
 	}
+	if s, _ := r.stamp(); s != "" {
+		return relFail("a backup stamp exists (%s): this run already passed step backup", s)
+	}
+	// The saved hub is the checkpoint of a passed precheck. A failed precheck, also a failed rerun,
+	// leaves none, so pull and replace refuse (review R14).
+	hubFile := filepath.Join(r.run, relPluginHubFile)
+	if err := os.Remove(hubFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	if err := r.holdOK(c); err != nil {
 		return err
 	}
@@ -520,9 +537,6 @@ func relPluginPrecheck(r *releaser) error {
 	if len(panes) != 1 {
 		return relFail("expected one %s pane, found %d", devPaneLabel, len(panes))
 	}
-	if s, _ := r.stamp(); s != "" {
-		return relFail("a backup stamp exists (%s): this run already passed step backup", s)
-	}
 	h, err := r.checkPluginHub(c, "precheck")
 	if err != nil {
 		return err
@@ -531,6 +545,9 @@ func relPluginPrecheck(r *releaser) error {
 		return err
 	}
 	if err := r.startEnded(c, h.Client, c.FromSDK); err != nil {
+		return err
+	}
+	if err := writeJSON(hubFile, h); err != nil {
 		return err
 	}
 	r.say("OK: %s runs FROM %s, every pin and file as frozen, the frozen hub (pid %d), rehearsal record matches", c.Name, c.From.Commit, h.PID)
@@ -594,6 +611,11 @@ func relPluginReplace(r *releaser) error {
 func relPluginVerify(r *releaser) error {
 	c, err := r.readCandidate()
 	if err != nil {
+		return err
+	}
+	// The pins too: the lock and base of P at TO; every other pin and base, the config and the
+	// managed file as in the backup (review R16). A restart must run what verify saw.
+	if err := r.holdAfterPull(c); err != nil {
 		return err
 	}
 	h, err := r.checkPluginHub(c, "forward")
