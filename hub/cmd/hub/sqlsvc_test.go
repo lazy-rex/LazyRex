@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -303,4 +304,118 @@ func TestSQLQueryPaging(t *testing.T) {
 	}
 	l.fails("conflict", "hub.sql.query", `{"sql":"SELECT s FROM t", "expect_rows":3}`)
 	l.fails("too_large", "hub.sql.exec", `{"sql":"UPDATE t SET s = s RETURNING s"}`)
+}
+
+// Notices of a commit go through the outbox: a rollback has none; a failed apply keeps the rows,
+// and the retry applies them; the outbox is empty after an apply.
+func TestSQLNoticesOutbox(t *testing.T) {
+	l := newSQLLab(t)
+	var mu sync.Mutex
+	var applied [][]outboxRow
+	failing := true
+	l.s.admitNotices = func(plugin string, notes []noticeOp) error {
+		for _, n := range notes {
+			if n.agent == "ghost" {
+				return refuse("invalid_input", "unknown agent")
+			}
+		}
+		return nil
+	}
+	l.s.applyNotices = func(plugin string, rows []outboxRow) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if failing {
+			failing = false
+			return errors.New("hub.db is busy")
+		}
+		applied = append(applied, rows)
+		return nil
+	}
+	outbox := func() int {
+		p, _ := l.s.open(context.Background(), "p")
+		p.lock <- struct{}{}
+		defer p.release()
+		n, _ := p.w.hubInt(context.Background(), "SELECT count(*) FROM lazyrex_notice_outbox")
+		return int(n)
+	}
+	tx := l.must("hub.sql.begin", `{}`)["tx"].(string)
+	l.fails("invalid_input", "hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"a", "pending":true}, {"agent":"a", "pending":false}]}`)
+	l.fails("invalid_input", "hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"ghost", "pending":true}]}`)
+	l.must("hub.sql.rollback", `{"tx":"`+tx+`"}`)
+	if outbox() != 0 {
+		t.Fatal("a refused commit wrote notices")
+	}
+	// The first apply fails: the commit stands, and the rows wait for the retry.
+	tx = l.must("hub.sql.begin", `{}`)["tx"].(string)
+	l.must("hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"a", "pending":true}, {"agent":"b", "pending":false}]}`)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(applied)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the retry did not apply the notices")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := fmt.Sprint(applied[0]); got != "[{1 a true} {2 b false}]" {
+		t.Fatalf("applied %s", got)
+	}
+	for time.Now().Before(deadline) && outbox() != 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if outbox() != 0 {
+		t.Fatal("the outbox kept applied rows")
+	}
+	// A later commit gets a new seq: AUTOINCREMENT never gives a seq again.
+	tx = l.must("hub.sql.begin", `{}`)["tx"].(string)
+	l.must("hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"a", "pending":false}]}`)
+	if got := fmt.Sprint(applied[1]); got != "[{3 a false}]" {
+		t.Fatalf("applied %s", got)
+	}
+}
+
+// applySQLNotices skips a row with a receipt: a crash after the apply and before the outbox
+// delete applies nothing twice. A plugin whose notices moved cannot send store notices.
+func TestSQLNoticesReceipts(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	rows := []outboxRow{{1, "a", true}, {2, "b", true}}
+	if err := h.db.applySQLNotices(ctx, "p", rows); err != nil {
+		t.Fatal(err)
+	}
+	rev := func(agent string) int64 {
+		var r int64
+		h.db.QueryRow(`SELECT intent_rev FROM notices WHERE ns = 'p' AND agent = ?`, agent).Scan(&r)
+		return r
+	}
+	ra, rb := rev("a"), rev("b")
+	if ra == 0 || rb == 0 {
+		t.Fatal("no notices")
+	}
+	if err := h.db.applySQLNotices(ctx, "p", append(rows, outboxRow{3, "a", true})); err != nil {
+		t.Fatal(err)
+	}
+	if rev("b") != rb || rev("a") == ra {
+		t.Fatalf("receipts: b %d -> %d (want the same), a %d -> %d (want a new one)", rb, rev("b"), ra, rev("a"))
+	}
+	h.db.dropNoticeReceipts(ctx, "p", 3)
+	var n int
+	h.db.QueryRow(`SELECT count(*) FROM notice_receipts WHERE plugin = 'p'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d receipts left", n)
+	}
+	if moved, _ := h.db.noticesMoved(ctx, "p"); moved {
+		t.Fatal("moved before a move")
+	}
+	h.db.moveNotices(ctx, "p")
+	if moved, _ := h.db.noticesMoved(ctx, "p"); !moved {
+		t.Fatal("not moved")
+	}
+	if !hasNotify(map[string]any{"ops": []any{map[string]any{"key": "k"}, map[string]any{"notify": map[string]any{"agent": "a", "pending": true}}}}) {
+		t.Fatal("hasNotify")
+	}
 }

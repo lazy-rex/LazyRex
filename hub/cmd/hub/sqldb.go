@@ -47,7 +47,7 @@ var hubTables = map[string]bool{"lazyrex_ops": true, "lazyrex_ops_at": true, "la
 
 const sqlHubSchema = `CREATE TABLE IF NOT EXISTS lazyrex_ops (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, reply TEXT NOT NULL, at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS lazyrex_ops_at ON lazyrex_ops(at);
-CREATE TABLE IF NOT EXISTS lazyrex_notice_outbox (seq INTEGER PRIMARY KEY, agent TEXT NOT NULL, pending INTEGER NOT NULL)`
+CREATE TABLE IF NOT EXISTS lazyrex_notice_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT NOT NULL, pending INTEGER NOT NULL)`
 
 // readPragmas are the pragmas that a plugin may run; user_version is the only one that it may
 // also write.
