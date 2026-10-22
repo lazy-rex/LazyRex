@@ -460,3 +460,62 @@ func TestReleaseRehearsalFormatFailuresAreUncertain(t *testing.T) {
 		t.Fatalf("a pull that fails under both binaries is not uncertain: %v", reasons)
 	}
 }
+
+// c3e: the lab gets the probe agent and the probe profile; a profile file is added when the config
+// has none; a live agent or profile with the probe ID refuses.
+func TestReleaseLabProbeAgent(t *testing.T) {
+	lab := t.TempDir()
+	cfg := filepath.Join(lab, "hub-live.json")
+	os.WriteFile(cfg, []byte(`{"agents":[{"id":"user","name":"User"}]}`), 0o600)
+	out, err := labProbeAgent(lab, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Agents   []map[string]string `json:"agents"`
+		Profiles string              `json:"profiles"`
+	}
+	json.Unmarshal(mustRead(cfg), &c)
+	if len(c.Agents) != 2 || c.Agents[1]["id"] != relProbeAgent || c.Profiles != filepath.Join(lab, "home", "profiles.json") {
+		t.Fatalf("the lab config: %+v", c)
+	}
+	var pf struct {
+		Profiles []Profile `json:"profiles"`
+	}
+	json.Unmarshal(mustRead(c.Profiles), &pf)
+	if len(pf.Profiles) != 1 || pf.Profiles[0].ID != relProbeProfile || validProfile(pf.Profiles[0]) != nil || pf.Profiles[0].Kind != "accessory" {
+		t.Fatalf("the lab profiles: %+v", pf)
+	}
+	if len(out) != 3 {
+		t.Errorf("the transform additions: %+v", out)
+	}
+	if _, err := labProbeAgent(lab, cfg); err == nil || !strings.Contains(err.Error(), "the live config has the agent") {
+		t.Errorf("a second probe agent: %v", err)
+	}
+	os.WriteFile(cfg, []byte(`{"profiles":"`+c.Profiles+`"}`), 0o600)
+	if _, err := labProbeAgent(lab, cfg); err == nil || !strings.Contains(err.Error(), "the live profiles have the profile") {
+		t.Errorf("a live probe profile: %v", err)
+	}
+}
+
+// c3e, design v2 G: the failing go logs each call, exits 1 for go build, and runs the real go for
+// every other call.
+func TestReleaseFailGo(t *testing.T) {
+	dir := t.TempDir()
+	real, calls, shim := filepath.Join(dir, "realgo"), filepath.Join(dir, "calls"), filepath.Join(dir, "go")
+	os.WriteFile(real, []byte("#!/bin/sh\necho \"real $*\"\n"), 0o700)
+	os.WriteFile(shim, []byte(failGoScript(calls, real)), 0o700)
+	c := exec.Command(shim, "mod", "download")
+	c.Dir = dir
+	if out, err := c.Output(); err != nil || string(out) != "real mod download\n" {
+		t.Fatalf("go mod download: %q %v", out, err)
+	}
+	c = exec.Command(shim, "build", "-o", "x", "./cmd/hub")
+	c.Dir = dir
+	if out, err := c.Output(); err == nil || len(out) != 0 {
+		t.Fatalf("go build: %q %v", out, err)
+	}
+	if got := goBuilds(calls); len(got) != 1 || got[0] != dir {
+		t.Errorf("the build calls: %v (log %q)", got, mustRead(calls))
+	}
+}

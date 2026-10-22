@@ -77,23 +77,24 @@ func openRehearse(name string, args []string, stdout, stderr io.Writer) (*releas
 
 // rehearsal is one rehearse run.
 type rehearsal struct {
-	r       *releaser     // the live run: rehearse writes only its record files there
-	c       *relCandidate // the live candidate
-	tool    string
-	lab     string
-	l       *lab
-	env     []string // the environment of every lab child (labEnv and the Go caches)
-	cfg     string   // the lab config
-	run     string   // the lab run
-	oldBin  string
-	live    relLiveFiles
-	start   map[string]string // the live inputs and bindings at the start
-	phases  []relPhase
-	schemas map[string][]string // the hub.db columns by phase
-	mirrors map[string]string   // the HEAD of each GitHub mirror, by owner/repo
-	commits map[string][]string // the commits that the mirrors must hold, by owner/repo
-	n       int                 // the number of child steps (log names)
-	stopped bool                // stopLab ran
+	r          *releaser     // the live run: rehearse writes only its record files there
+	c          *relCandidate // the live candidate
+	tool       string
+	lab        string
+	l          *lab
+	env        []string // the environment of every lab child (labEnv and the Go caches)
+	cfg        string   // the lab config
+	run        string   // the lab run
+	oldBin     string
+	live       relLiveFiles
+	start      map[string]string // the live inputs and bindings at the start
+	phases     []relPhase
+	schemas    map[string][]string            // the hub.db schema items by phase
+	mirrors    map[string]string              // the HEAD of each GitHub mirror, by owner/repo
+	commits    map[string][]string            // the commits that the mirrors must hold, by owner/repo
+	fileProbes map[string][]map[string]string // the rows of the spec probe file, by table (full tier)
+	n          int                            // the number of child steps (log names)
+	stopped    bool                           // stopLab ran
 }
 
 func (h *rehearsal) say(format string, args ...any) { h.r.say(format, args...) }
@@ -135,10 +136,10 @@ func hubRehearse(r *releaser) (err error) {
 	if err := h.setup(); err != nil {
 		return err
 	}
-	if err := h.phase("forward", h.forward); err != nil {
+	if err := h.phase("forward", func() error { return h.forwardAs("forward") }); err != nil {
 		return err
 	}
-	if err := h.phase("rollback", h.rollback); err != nil {
+	if err := h.phase("rollback", func() error { return h.rollbackAs("rollback") }); err != nil {
 		return err
 	}
 	tier, reasons, err := h.tier()
@@ -146,7 +147,9 @@ func hubRehearse(r *releaser) (err error) {
 		return err
 	}
 	if tier == tierFull {
-		return relFail("the full tier is selected (%s); its phases come in a later commit of c3c", strings.Join(reasons, "; "))
+		if err := h.full(); err != nil {
+			return err
+		}
 	}
 	if err := h.finish(tier, reasons); err != nil {
 		return err
@@ -324,6 +327,11 @@ func (h *rehearsal) setup() error {
 		return err
 	}
 	h.cfg = cfg
+	added, err := labProbeAgent(L, cfg)
+	if err != nil {
+		return err
+	}
+	transform = append(transform, added...)
 	if err := writeJSON(filepath.Join(h.r.run, relLabTransform), transform); err != nil {
 		return err
 	}
@@ -535,21 +543,25 @@ func (h *rehearsal) phase(name string, fn func() error) error {
 	return err
 }
 
-// forward is the forward run: every step of the live run, then the data, the schema, zero replaces
-// of the home plugin under H (B-l1), and OLD's plugin status on the lock that H wrote (C3 d).
-func (h *rehearsal) forward() error {
-	for _, s := range []string{"precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify"} {
-		if err := h.child(s, nil); err != nil {
-			return err
-		}
+// forwardAs is a forward run: every step of the live run, then forwardChecks.
+func (h *rehearsal) forwardAs(name string) error {
+	if err := h.steps("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify"); err != nil {
+		return err
 	}
+	return h.forwardChecks(name)
+}
+
+// forwardChecks checks a forward run: the environment of the lab processes, the data, the schema,
+// zero replaces of the home plugin under H (B-l1), and OLD's plugin status on the lock that H
+// wrote (C3 d).
+func (h *rehearsal) forwardChecks(name string) error {
 	if err := h.checkLabEnv(); err != nil {
 		return err
 	}
-	if err := h.data("forward"); err != nil {
+	if err := h.data(name); err != nil {
 		return err
 	}
-	if err := h.schema("forward"); err != nil {
+	if err := h.schema(name); err != nil {
 		return err
 	}
 	labCfg, err := readPluginCmdConfig(h.cfg)
@@ -577,16 +589,6 @@ func (h *rehearsal) forward() error {
 		return relFail("OLD's plugin status on the lock that H wrote: %d entries are cache ok, not %d", n, len(l.Plugins))
 	}
 	return nil
-}
-
-func (h *rehearsal) rollback() error {
-	if err := h.child("rollback", nil); err != nil {
-		return err
-	}
-	if err := h.data("rollback"); err != nil {
-		return err
-	}
-	return h.schema("rollback")
 }
 
 // hubDB opens the lab hub.db.
