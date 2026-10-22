@@ -87,7 +87,7 @@ func TestResolveLatest(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	got, err := resolveLatest(ctx, t.TempDir(), r.url())
+	got, err := resolveLatest(ctx, execGit, t.TempDir(), r.url())
 	want := latestRelease{
 		resolved: resolved{Commit: c2, Kind: "latest", FetchRef: "refs/tags/v1.10.0"},
 		Tag:      "v1.10.0",
@@ -103,12 +103,12 @@ func TestResolveLatest(t *testing.T) {
 
 	// A lightweight tag to a commit; c1 is not the tip of a branch.
 	r.git("tag", "v3.0.1", c1)
-	got, err = resolveLatest(ctx, t.TempDir(), r.url())
+	got, err = resolveLatest(ctx, execGit, t.TempDir(), r.url())
 	if err != nil || got.Commit != c1 || got.Tag != "v3.0.1" || got.FetchRef != "refs/tags/v3.0.1" || got.Ignored != nil {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 	r.git("tag", "v10.0.0", c3)
-	if got, err = resolveLatest(ctx, t.TempDir(), r.url()); err != nil || got.Commit != c3 || got.Tag != "v10.0.0" {
+	if got, err = resolveLatest(ctx, execGit, t.TempDir(), r.url()); err != nil || got.Commit != c3 || got.Tag != "v10.0.0" {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 }
@@ -120,14 +120,14 @@ func TestResolveLatestNone(t *testing.T) {
 	r.commit(map[string]string{"a": "1"})
 	ctx := context.Background()
 	const none = "the repository has no version tag vX.Y.Z that points to a commit"
-	if _, err := resolveLatest(ctx, t.TempDir(), r.url()); err == nil || err.Error() != none {
+	if _, err := resolveLatest(ctx, execGit, t.TempDir(), r.url()); err == nil || err.Error() != none {
 		t.Fatalf("no tags: %v", err)
 	}
 	r.git("tag", "v1.0.0-rc.1")
 	r.git("tag", "latest")
 	r.git("branch", "v2.0.0")
 	r.git("tag", "v1.0.0", r.git("rev-parse", "HEAD^{tree}"))
-	if _, err := resolveLatest(ctx, t.TempDir(), r.url()); err == nil || err.Error() != none {
+	if _, err := resolveLatest(ctx, execGit, t.TempDir(), r.url()); err == nil || err.Error() != none {
 		t.Fatalf("no release tag to a commit: %v", err)
 	}
 }
@@ -146,7 +146,7 @@ func TestResolveLatestFetchFails(t *testing.T) {
 	if !strings.Contains(r.git("ls-remote", "--tags", r.url()), "refs/tags/v2.0.0") {
 		t.Fatal("the fixture: ls-remote does not list v2.0.0")
 	}
-	got, err := resolveLatest(context.Background(), t.TempDir(), r.url())
+	got, err := resolveLatest(context.Background(), execGit, t.TempDir(), r.url())
 	if err == nil || !strings.HasPrefix(err.Error(), "fetch refs/tags/v2.0.0: ") {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -155,7 +155,7 @@ func TestResolveLatestFetchFails(t *testing.T) {
 // A failure of ls-remote is the error of the resolution.
 func TestResolveLatestRemoteFails(t *testing.T) {
 	gitTestEnv(t)
-	_, err := resolveLatest(context.Background(), t.TempDir(), "file://"+filepath.Join(t.TempDir(), "none"))
+	_, err := resolveLatest(context.Background(), execGit, t.TempDir(), "file://"+filepath.Join(t.TempDir(), "none"))
 	if err == nil {
 		t.Fatal("no error")
 	}
@@ -167,7 +167,7 @@ func TestResolveLatestFetch(t *testing.T) {
 	r := newTestRepo(t)
 	c := r.commit(map[string]string{"lazyrex.json": `{"name":"messaging","main":"m.lua"}`, "m.lua": ""})
 	r.git("tag", "-a", "-m", "release", "v1.0.0")
-	res, err := resolveLatest(context.Background(), t.TempDir(), r.url())
+	res, err := resolveLatest(context.Background(), execGit, t.TempDir(), r.url())
 	if err != nil || res.Commit != c {
 		t.Fatalf("resolve: %+v %v", res, err)
 	}
