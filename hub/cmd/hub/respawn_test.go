@@ -89,9 +89,25 @@ func oneHub(t *testing.T) (*Hub, *fakeClock, string, *Plugin) {
 	return h, clock, events, pl
 }
 
-// running records an instance of pl that the hub spawned now, as spawn does.
+// running records an instance of pl that the hub spawned now, as spawn does: from the published
+// run of its candidate, which becomes the selected run of the automatic starts.
 func running(h *Hub, pl *Plugin, instance string) {
 	h.mu.Lock()
+	e := pl.entry
+	h.mu.Unlock()
+	var run *pluginRun
+	if e != nil && e.cand != nil {
+		run, _ = h.publishLocal(e, e.cand)
+	}
+	h.mu.Lock()
+	if run != nil {
+		// Only the selection is saved: the instance below stays in memory, so a start that reads the
+		// row retires nothing (a retirement calls Rex).
+		pl.run, pl.selected = *run, &selectedRun{Entry: entryIdentity(e), Run: *run}
+		sel, _ := json.Marshal(pl.selected)
+		h.ensurePluginRow(context.Background(), pl.Name)
+		h.db.Exec(`UPDATE plugins SET selected_run = ? WHERE name = ?`, string(sel), pl.Name)
+	}
 	pl.Desired, pl.InstanceID, pl.BlockID, pl.ClientID = "running", instance, "block:"+instance, "client:"+instance
 	pl.respawn.spawned = h.clock()
 	h.mu.Unlock()
