@@ -23,7 +23,7 @@ nohub) echo 'hub not found' >&2; exit 4 ;;
 slow) exec sleep 10 ;;
 esac
 case "$*" in
-*"client ls --json") printf '%s' "$HOOK_CLIENTS"; exit 0 ;;
+*"client ls --json") printf '%s\0' "$@" > "$HOOK_CAPTURE.ls"; printf '%s' "$HOOK_CLIENTS"; exit 0 ;;
 esac
 [ "$HOOK_MODE" = hang ] && exec sleep 10
 printf '%s\0' "$$" "$PPID" "$@" > "$HOOK_CAPTURE.tmp" && mv "$HOOK_CAPTURE.tmp" "$HOOK_CAPTURE"
@@ -324,10 +324,63 @@ func atoi(t *testing.T, s string) int {
 	return n
 }
 
-// The reporter mode is reachable through the CLI (`lazyrex-hub hook -reporter codex`). Without the
-// Rex variables it must not call Rex either: Rex would choose a server.
+// A Linux Rex pane has REX_SESSION and REX_BLOCK but no REX_SERVER. The hook still reports: both
+// Rex calls (client ls and the report) go without -S, so Rex uses its own default endpoint, and
+// never start a server. The hub's pane and process proof decides whether the report counts. With
+// REX_SERVER set, both calls keep -S REX_SERVER.
+func TestHookWithoutRexServerUsesRexDefault(t *testing.T) {
+	event := map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"}
+	l := newHookLab(t)
+	server := l.env["REX_SERVER"]
+	for _, c := range []struct {
+		name   string
+		server string
+		prefix []string
+	}{
+		{"REX_SERVER set", server, []string{"-S", server}},
+		{"no REX_SERVER (a Linux pane)", "", nil},
+	} {
+		if c.server == "" {
+			delete(l.env, "REX_SERVER")
+		}
+		for _, kind := range []string{"claude", "codex"} {
+			os.Remove(l.capture + ".ls")
+			args := l.run(event, kind)
+			want := append(append([]string(nil), c.prefix...), "--autostart=false", "--timeout", "2s", "-C", "client:hub", "do", "hub.identity.report", "--args")
+			if len(args) < len(want) || strings.Join(args[:len(want)], "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("%s, %s: the report %q", c.name, kind, args)
+			}
+			ls, _ := os.ReadFile(l.capture + ".ls")
+			wantLs := append(append([]string(nil), c.prefix...), "--autostart=false", "--timeout", "1s", "client", "ls", "--json")
+			if got := strings.TrimSuffix(string(ls), "\x00"); got != strings.Join(wantLs, "\x00") {
+				t.Fatalf("%s, %s: client ls %q", c.name, kind, strings.Split(got, "\x00"))
+			}
+		}
+	}
+}
+
+// Outside a Rex pane (no REX_SESSION or no REX_BLOCK), the hook calls no Rex: Rex would choose a
+// server for a process that no pane holds.
+func TestHookOutsideAPaneCallsNoRex(t *testing.T) {
+	event := map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"}
+	for _, missing := range [][]string{{"REX_SESSION"}, {"REX_BLOCK"}, {"REX_SESSION", "REX_SERVER"}, {"REX_BLOCK", "REX_SERVER"}} {
+		l := newHookLab(t)
+		for _, k := range missing {
+			delete(l.env, k)
+		}
+		if args := l.run(event, "codex"); args != nil {
+			t.Fatalf("without %v the hook reported: %q", missing, args)
+		}
+		if _, err := os.Stat(l.capture + ".ls"); !os.IsNotExist(err) {
+			t.Fatalf("without %v the hook listed clients", missing)
+		}
+	}
+}
+
+// The reporter mode is reachable through the CLI (`lazyrex-hub hook -reporter codex`). Outside a
+// Rex pane it must not call Rex either.
 func TestHookReporterModeKeepsTheServerGate(t *testing.T) {
-	for _, missing := range []string{"REX_SERVER", "REX_SESSION", "REX_BLOCK"} {
+	for _, missing := range []string{"REX_SESSION", "REX_BLOCK"} {
 		l := newHookLab(t)
 		delete(l.env, missing)
 		input, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": "id", "source": "startup"})
@@ -342,6 +395,9 @@ func TestHookReporterModeKeepsTheServerGate(t *testing.T) {
 		}
 		if c := l.read(); c != nil {
 			t.Fatalf("without %s the reporter called Rex: %q", missing, c)
+		}
+		if _, err := os.Stat(l.capture + ".ls"); !os.IsNotExist(err) {
+			t.Fatalf("without %s the reporter listed clients", missing)
 		}
 	}
 }

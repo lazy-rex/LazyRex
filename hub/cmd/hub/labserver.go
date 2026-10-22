@@ -53,6 +53,11 @@ func newNonce() string {
 // startServer starts the Rex server of the lab in l.dir (rex.sock, state, blocks), with l.env and
 // the working directory l.home(), writes the lab proof, and waits until the server answers (10 s).
 func (l *lab) startServer(ctx context.Context, rexBin string) error {
+	// Lab panes inherit REX_SERVER from the server. Without it, a hook in a lab pane uses Rex's
+	// default endpoint, which is the user's real server (hook.go; the hub lead, 2026-10-22).
+	if err := labServerEnv(l.env, l.server); err != nil {
+		return err
+	}
 	logf, err := os.Create(filepath.Join(l.dir, "server.log"))
 	if err != nil {
 		return err
@@ -260,4 +265,23 @@ func (l *lab) stop() []string {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return problems
+}
+
+// labServerEnv checks the environment of a lab server: exactly one REX_SERVER, the lab's own
+// endpoint, and no REX_SESSION, REX_BLOCK or REX_CLIENT of the pane that started the test.
+func labServerEnv(env []string, server string) error {
+	var servers []string
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch k {
+		case "REX_SERVER":
+			servers = append(servers, v)
+		case "REX_SESSION", "REX_BLOCK", "REX_CLIENT":
+			return fmt.Errorf("the lab server environment has %s", k)
+		}
+	}
+	if len(servers) != 1 || servers[0] != server {
+		return fmt.Errorf("the lab server environment must set REX_SERVER=%s once (lab panes inherit it), got %q", server, servers)
+	}
+	return nil
 }

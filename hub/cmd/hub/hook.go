@@ -117,11 +117,17 @@ func hookReport(kind string) {
 	if err != nil {
 		return
 	}
-	server := os.Getenv("REX_SERVER")
+	// The pane's server. A Linux Rex pane has no REX_SERVER: both calls then go without -S, and Rex
+	// uses its own default endpoint (never started: --autostart=false). The hub's pane and process
+	// proof decides whether a report from that server counts.
+	var server []string
+	if s := os.Getenv("REX_SERVER"); s != "" {
+		server = []string{"-S", s}
+	}
 	// Rex keeps lost clients during reconnection. Select one connected hub explicitly.
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	ls := exec.CommandContext(ctx, rex, "-S", server, "--autostart=false", "--timeout", "1s", "client", "ls", "--json")
+	ls := exec.CommandContext(ctx, rex, append(server, "--autostart=false", "--timeout", "1s", "client", "ls", "--json")...)
 	ls.WaitDelay = 100 * time.Millisecond // a child that keeps the output pipe open does not hold the reporter
 	out, err := ls.Output()
 	if err != nil {
@@ -153,8 +159,8 @@ func hookReport(kind string) {
 	if err != nil {
 		return
 	}
-	argv := []string{rex, "-S", server, "--autostart=false", "--timeout", "2s", "-C", hubs[0], "do", "hub.identity.report",
-		"--args", string(report)}
+	argv := append(append([]string{rex}, server...), "--autostart=false", "--timeout", "2s", "-C", hubs[0], "do", "hub.identity.report",
+		"--args", string(report))
 	// Exec keeps the reporter's pid and start time across the Rex call. Rex gets no input and its
 	// output goes nowhere.
 	quiet, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
@@ -170,9 +176,10 @@ func hookReport(kind string) {
 }
 
 // inRexPane gates both the hook and the reporter (which the CLI can also run): never let Rex
-// choose the user's default server for a hook outside a Rex pane.
+// choose the user's default server for a hook outside a Rex pane. A pane has REX_SESSION and
+// REX_BLOCK; REX_SERVER is not required (a Linux Rex pane has none).
 func inRexPane() bool {
-	for _, k := range []string{"REX_SERVER", "REX_SESSION", "REX_BLOCK"} {
+	for _, k := range []string{"REX_SESSION", "REX_BLOCK"} {
 		if os.Getenv(k) == "" {
 			return false
 		}
