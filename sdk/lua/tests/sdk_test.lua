@@ -934,3 +934,14 @@ test('app.notice in a render fails clearly and opens no transaction (a render on
   expect(r.error and r.error.message, show(r)).to_be('A render cannot write: app.notice runs in an action or a select handler')
   expect(s.sql.count('hub.sql.begin') - before, 'no hub.sql.begin').to_be(0)
 end)
+
+test('the example manifest and the docs manifest name the SDK, so the launcher runs boot.lua', function()
+  -- The hub launcher runs a plugin through sdk/lua/boot.lua only when lazyrex.json has "sdk" (hub
+  -- plugins.go, the SDK launch; reviewer codex-15).
+  local function read(path) local f = assert(io.open(path)); local t = f:read('*a'); f:close(); return t end
+  expect(rex.json.decode(read(sdk_dir .. '/examples/todo/lazyrex.json')).sdk).to_be('0')
+  local doc = read(sdk_dir .. '/../../docs/plugin-sdk.md')
+  local manifest = doc:match('`lazyrex.json`:%s*```json%s*(%b{})')
+  expect(manifest ~= nil, 'the docs show a manifest').to_be(true)
+  expect(rex.json.decode(manifest).sdk).to_be('0')
+end)

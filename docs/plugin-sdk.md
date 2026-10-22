@@ -13,8 +13,11 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 `lazyrex.json`:
 
 ```json
-{"name": "todo", "main": "main.lua"}
+{"name": "todo", "main": "main.lua", "sdk": "0"}
 ```
+
+`"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
+`require('lazyrex')` works.
 
 `main.lua`:
 
