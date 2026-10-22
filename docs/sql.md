@@ -166,6 +166,13 @@ authorized at CREATE.
 
 - Built: a commit (or an exec or batch without `tx`) that changed a table renders the plugin's open
   views again.
+- Built: render IDs (docs/hub.md, "Render IDs"). `hub.sql.query` takes an optional `render`, the
+  render ID of the `view.render` call that reads. A missing or null `render` is no render; any other
+  value that is not a non-empty string is `invalid_input`. A render ID is a read-only token:
+  `hub.sql.begin`, `exec`, `batch`, `commit`, `rollback` and `replay` with `render` (any value but
+  null), and `hub.sql.query` with `tx` and `render`, fail with `refused` ("a render cannot write").
+  The refusal comes before the hub opens the database, so it changes nothing, and an open
+  transaction stays usable.
 - Not yet: read tracking (the views that read a changed table render again, not every view).
 
 ## 11. Rollback: hub.admin.sql_return (built)

@@ -306,6 +306,9 @@ func (s *sqlService) dispatch(ctx context.Context, action string, c sqlCall) (an
 	if s == nil {
 		return nil, refuse("unavailable", "the hub has no SQL service")
 	}
+	if _, err := renderArg(action, c.args); err != nil {
+		return nil, err
+	}
 	p, err := s.open(ctx, c.plugin)
 	if err != nil {
 		return nil, refuse("unavailable", "open the plugin database: %v", err)

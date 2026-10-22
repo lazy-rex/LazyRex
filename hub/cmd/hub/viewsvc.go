@@ -50,6 +50,7 @@ type viewSvc struct {
 	workers map[string]chan struct{}         // plugin -> kick channel
 	seen    map[string]map[string]string     // plugin -> route -> reason the user looked at it, not yet sent
 	history map[string]*historyFetch         // view_id + "\x00" + before -> a page fetch (viewHistory)
+	renders map[string]*openRender           // render ID -> a view.render call that has not returned (renderreads.go)
 }
 
 // historyFetch is one view.history call that runs outside the hub's request queue.
@@ -591,6 +592,9 @@ func viewArgs(viewID, route, context string) map[string]any {
 	return args
 }
 
+// viewRenderHook replaces the plugin's view.render call (tests only).
+var viewRenderHook func(h *Hub, ctx context.Context, plugin string, args map[string]any, out any) error
+
 // renderViews renders every open, attached view of the plugin and sends view.changed when a
 // tree changed or an operation of that view completed.
 // renderPruneHook runs between the target read and the prune of a pass (tests only).
@@ -655,7 +659,16 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		}
 		gen := h.testRenderStart(t.id) // test mode: the requested render that this one covers
 		h.testRenderAttempt(plugin, t.id, t.route, causes)
-		err := h.callPlugin(ctx, plugin, "view.render", viewArgs(t.id, t.route, t.context), &out)
+		args := viewArgs(t.id, t.route, t.context)
+		rid := h.openRenderID(plugin, h.pluginClient(plugin), t.id, epoch)
+		args["render"] = rid
+		var err error
+		if viewRenderHook != nil {
+			err = viewRenderHook(h, ctx, plugin, args, &out)
+		} else {
+			err = h.callPlugin(ctx, plugin, "view.render", args, &out)
+		}
+		h.closeRenderID(rid)
 		h.testRenderHold(plugin, t.route) // test mode: a view-render fault holds the result here
 		if _, definite := definiteFailure(err); err != nil && !definite {
 			// The plugin is not there yet or did not answer. Keep the current tree; plugin

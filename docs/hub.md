@@ -139,6 +139,18 @@ Lifetime and races:
   running render gives), and the view renders again after it. So a commit that changes the
   declaration is never lost. There is at most one pending render for each view.
 
+### Render IDs
+
+The hub gives each `view.render` call a new render ID in `args.render` (a string; "r-" and 128
+random bits in hex; renderreads.go). The ID is open from just before the call until the call
+returns, for any outcome. Then it is closed, and the hub never makes it again.
+
+- The plugin sends the ID with each `hub.sql.query` of that render (the SDK does it). The ID is a
+  read-only token: every other `hub.sql` action refuses an argument `render`, and so does a query
+  with `tx` (`refused`, "a render cannot write"). See docs/sql.md section 9.
+- A plugin that does not know the field ignores it: the view.render arguments allow extra fields.
+- The hub does not yet use the reads of a render (hub 4.2 work, docs/sql.md section 9).
+
 ### Version 1 view tree
 
 The root is an object with `title`, `back`, and ordered `nodes`.
