@@ -581,7 +581,7 @@ app.form('/forms/add', {
 app.action('todo.add', {text = 'string'}, function() return {} end)
 app.form('/forms/broken', {title = 'Broken', fields = function() app.fail('not_found', 'This list is gone') end, on_submit = function() end})
 runs = 0
-app.form('/forms/long', {title = 'Long', fields = {}, submit = {user_only = 'navigation'}, tx = false, store = false,
+app.form('/forms/long', {title = 'Long', fields = {}, submit = {user_only = 'navigation'}, tx = false, store = false, command = {id = 'long', title = 'Long'},
   on_submit = function() runs = runs + 1; if runs < 2 then return {status = 'running'} end return {close_form = true, runs = runs} end})]]
 
 local function submit(s, route, values, key)
@@ -601,6 +601,8 @@ test('app.form renders the title, the intro, the fields, the submit with its too
   local cmd = find(s.registered.commands, function(c) return c.id == 'add' end)
   expect(cmd.route).to_be('/forms/add')
   expect(cmd.action, 'the command names the tool').to_be('todo.add')
+  local long = find(s.registered.commands, function(c) return c.id == 'long' end)
+  expect(long.user_only, 'a form without a tool: the command is user_only').to_be('navigation')
 end)
 
 test('a form submit checks the values, runs on_submit in one transaction and closes the form', function()

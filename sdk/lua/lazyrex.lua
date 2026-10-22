@@ -772,6 +772,8 @@ function M.plugin(name)
       local c = copy(spec.command)
       c.route = c.route or route
       if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
+      -- Agent parity: a command without an action gives the reason (as the submit does).
+      if c.action == nil and c.user_only == nil then c.user_only = (spec.submit or {}).user_only or 'navigation' end
       commands[#commands + 1] = check_command(c)
     end
   end
