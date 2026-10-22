@@ -421,3 +421,10 @@ test('a key that is saved between the replay check and the commit gives the save
   expect(r.result).to_equal({id = 99})
   expect(#s.sql.rows('todos')).to_be(0)
 end)
+
+test('ctx.aliases are the legacy IDs of the hub.identify reply', function()
+  local s = plugin([[app.action('p.who', {}, function(ctx) return {agent = ctx.agent, aliases = ctx.aliases, session = ctx.session_id} end, {store = false})]],
+    {legacy = {alice = {'claude', 'alice-old'}}})
+  expect(s:agent('p.who', {}).result).to_equal({agent = 'alice', aliases = {'claude', 'alice-old'}, session = 'session-alice'})
+  expect(s:agent('p.who', {}, 8).result.aliases, 'none').to_equal({})
+end)

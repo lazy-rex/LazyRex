@@ -513,7 +513,7 @@ function M.plugin(name)
   local function identify(pid)
     local r = hub('hub.identify', {pid = pid})
     if r.found ~= true or type(r.agent) ~= 'string' or r.agent == '' then fail('refused', 'The hub does not recognize this agent') end
-    return {agent = r.agent, session_id = r.session_id, block_id = r.block_id, requester_pid = pid, aliases = r.aliases, identity = r}
+    return {agent = r.agent, session_id = r.session_id, block_id = r.block_id, requester_pid = pid, aliases = r.legacy or {}, identity = r}
   end
   -- The saved-reply key of a caller: the user and each agent have their own key space.
   local function op_key(ctx, key)
