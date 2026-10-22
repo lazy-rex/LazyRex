@@ -129,8 +129,14 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
 - **Empty lists.** An `app.ui.list` with no items renders as a widget with the text "Nothing here
   yet." (`app.ui.list(id, items, {empty = 'No notes'})` sets the text). It has no `items` then:
   in a test, `node(tree, id).text` is the text and `node(tree, id).items` is nil.
-- **View size.** A rendered panel, view or form over 48 KiB (encoded, with its status) fails with
-  `too_large`: Rex delivers no message over 64 KiB. Show fewer items, or page them.
+- **Reply size.** The limits come from the `hub.register` reply (`app.registration.limits`; the hub
+  owns the numbers). A reply to the hub over `inline_max` goes in parts: the SDK sends each slice of
+  the encoded reply with `hub.reply.part`, then replies with the stub `{lazyrex_parts = {id, count,
+  bytes}}`, and the hub joins the parts. The plugin code does nothing for it. A reply over
+  `max_total` fails with `too_large` before any part goes. A reply to a caller that is not the hub
+  stays whole. A result that is an object with the one key `lazyrex_parts` fails with
+  `reserved_result`. A keyed reply that went in parts is saved whole: a same-key retry gets it again.
+  The SDK fails at start if the `hub.register` reply has no limits.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
   run: `app.action(name, schema, fn, {user_only = true})`.
 - **Retries.** A UI action that the user's renderer sends again runs once. An agent gives a `key` in
