@@ -20,22 +20,28 @@ You need Rex, with its server running. LazyRex runs on macOS and Linux, arm64 an
 
 Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
 `~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view` and the plugin SDK in `sdk/lua`. Download the
-latest release, check it, then unpack it:
+latest release, check it, then unpack it. Paste the whole block: it stops at the first failure.
 
 ```sh
-version=$(gh release view --repo lazy-rex/LazyRex --json tagName --jq .tagName)
-os=$(uname -s | tr A-Z a-z)
-arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
-archive=lazyrex-$version-$os-$arch.tar.gz
-cd "$(mktemp -d)"
-gh release download "$version" --repo lazy-rex/LazyRex --pattern "$archive" --pattern SHA256SUMS
-grep " $archive\$" SHA256SUMS | shasum -a 256 -c && mkdir -p ~/.lazyrex && tar -xzf "$archive" -C ~/.lazyrex
-~/.lazyrex/bin/lazyrex-hub version
+(
+  set -eu
+  version=$(gh release view --repo lazy-rex/LazyRex --json tagName --jq .tagName)
+  os=$(uname -s | tr A-Z a-z)
+  arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+  archive=lazyrex-$version-$os-$arch.tar.gz
+  dir=$(mktemp -d); cd "$dir"
+  gh release download "$version" --repo lazy-rex/LazyRex --pattern "$archive" --pattern SHA256SUMS
+  grep " $archive\$" SHA256SUMS > check
+  if command -v shasum > /dev/null; then shasum -a 256 -c check; else sha256sum -c check; fi
+  mkdir -p ~/.lazyrex
+  tar -xzf "$archive" -C ~/.lazyrex
+  ~/.lazyrex/bin/lazyrex-hub version
+)
 ```
 
-The last line prints the version, for example `v0.4.1 (commit 25f8c7d…)`. Without `shasum` (some
-Linux systems), use `sha256sum -c` in its place. A failed check unpacks nothing. To update, run the
-same commands again: the archive replaces the binaries and the SDK.
+The last line prints the version, for example `v0.4.1 (commit 25f8c7d…)`. A failed download, a
+missing checksum line or a failed check stops the block before it unpacks anything. These steps are
+for a first installation; they do not stop or restart a running hub.
 
 ## Set up
 
@@ -130,15 +136,22 @@ lazy-rex/
 ### Build from source
 
 This needs Go 1.27.2 or later. `scripts/release-build.sh` makes the same archive as a release, so
-the binaries and the SDK stay together. A version other than `dev` needs a clean checkout.
+the binaries and the SDK stay together. A version other than `dev` needs a clean checkout. The block
+stops at the first failure, and each build writes to a new directory.
 
 ```sh
-git clone https://github.com/lazy-rex/LazyRex.git
-cd LazyRex
-os=$(uname -s | tr A-Z a-z)
-arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
-TARGETS=$os/$arch scripts/release-build.sh dev /tmp/lazyrex-dist
-mkdir -p ~/.lazyrex && tar -xzf /tmp/lazyrex-dist/lazyrex-dev-$os-$arch.tar.gz -C ~/.lazyrex
+(
+  set -eu
+  git clone https://github.com/lazy-rex/LazyRex.git
+  cd LazyRex
+  os=$(uname -s | tr A-Z a-z)
+  arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+  out=$(mktemp -d)
+  TARGETS=$os/$arch scripts/release-build.sh dev "$out"
+  mkdir -p ~/.lazyrex
+  tar -xzf "$out/lazyrex-dev-$os-$arch.tar.gz" -C ~/.lazyrex
+  ~/.lazyrex/bin/lazyrex-hub version
+)
 ```
 
 Without `TARGETS`, the script builds all four archives, as CI does on a tag
