@@ -4,6 +4,9 @@ A plugin repository contains only Lua: the plugin and its tests. `lazyrex-hub te
 tests against the **real hub**, on an isolated lab Rex server that the command starts and stops.
 No test touches your own Rex server.
 
+Requirements: Rex and Go 1.27.2 or later (to build `lazyrex-hub`). The plugin tests need no Node and
+no Python.
+
 Status: observed on Rex 0.0.1792158932-g88fd41 (lab), 2026-10-19.
 
 ## Run
