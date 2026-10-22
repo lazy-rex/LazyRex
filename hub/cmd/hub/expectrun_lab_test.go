@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -192,5 +193,33 @@ func TestExpectRunDependencyStopsLab(t *testing.T) {
 	time.Sleep(2 * time.Second) // a wake, if any, runs now
 	if e := s.expectEntry("b"); e["desired"] != "stopped" || s.intents("b") != intents {
 		t.Errorf("b after a registered again: %v, %d intents (want desired stopped, %d)", e, s.intents("b"), intents)
+	}
+}
+
+// A guarded start of a crashing plugin (the release tool's recovery of a crash): c registers and
+// exits at once, so the hub reports it crashing with a respawn due. Its source is then fixed, and
+// hub.admin.start with expect_run starts it. Whichever comes first, the start or the due respawn,
+// the end state is one live registered instance, and no later respawn spawns another.
+func TestExpectRunCrashingStartLab(t *testing.T) {
+	s := newStartLab(t, "c")
+	s.writeSource("c", `{"name":"c","main":"main.lua"}`, "")
+	if err := os.WriteFile(filepath.Join(s.src, "c", "main.lua"), []byte(crashFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.start()
+	s.wait("crashing", func() bool { return s.entry("c")["state"] == "crashing" })
+	s.writeSource("c", "", "c")
+	spawned := len(s.events("plugin_spawned", "c"))
+	s.must("hub.admin.start", map[string]any{"plugin": "c", "expect_run": map[string]any{"source": "src/c"}})
+	s.registered("c")
+	st := s.status("c")
+	time.Sleep(3 * time.Second) // longer than the respawn delay that was due (1 or 2 s)
+	after := s.status("c")
+	e := s.entry("c")
+	if after.InstanceID != st.InstanceID || !alive(after.ChildPID, startTime(after.ChildPID)) || e["state"] != "running" || e["registered"] != true || e["respawn_at"] != nil {
+		t.Fatalf("after the start: %+v (was %+v), entry %v", after, st, e)
+	}
+	if n := len(s.events("plugin_spawned", "c")) - spawned; n != 1 {
+		t.Fatalf("%d spawns from the start on; want 1 (the start, or a respawn that came first)", n)
 	}
 }
