@@ -163,18 +163,27 @@ func parseManaged(path string) ([]*configEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseManagedBytes(b)
+}
+
+// managedFileEntry is one entry of the managed file, as the file has it. The plugin manager
+// writes the file from these values (pluginops.go).
+type managedFileEntry struct {
+	ID         string            `json:"id"`
+	Source     string            `json:"source"`
+	Args       map[string]string `json:"args"`
+	WatchRoots []string          `json:"watch_roots"`
+}
+
+// parseManagedBytes is parseManaged on the bytes of the file.
+func parseManagedBytes(b []byte) ([]*configEntry, error) {
 	if len(b) > managedFileLimit {
 		return nil, fmt.Errorf("the file is over the %d-byte limit", managedFileLimit)
 	}
 	var file struct {
 		// A pointer: a root of null, {} or {"plugins": null} leaves it nil. Such a file is malformed,
 		// never an empty list, so it cannot remove the managed entries.
-		Plugins *[]struct {
-			ID         string            `json:"id"`
-			Source     string            `json:"source"`
-			Args       map[string]string `json:"args"`
-			WatchRoots []string          `json:"watch_roots"`
-		} `json:"plugins"`
+		Plugins *[]managedFileEntry `json:"plugins"`
 	}
 	if err := decodeManifest("the file", b, &file); err != nil {
 		return nil, err
