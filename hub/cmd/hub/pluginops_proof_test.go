@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // opsAttemptRow inserts an attempt row of call, as opCall does before its call.
@@ -237,6 +238,9 @@ func TestPluginOpReturnProof(t *testing.T) {
 // identity and its registration, proves applied. An intent that is still open (its block was not
 // found) proves nothing: the op stays unknown, not not_applied.
 func TestPluginOpStartObservation(t *testing.T) {
+	wait := opRegisterWait
+	t.Cleanup(func() { opRegisterWait = wait })
+	opRegisterWait = 0 // no wait for a registration: the first observation decides the phase
 	for _, created := range []bool{true, false} {
 		h, c, dir := opsTestHub(t, "")
 		ctx := context.Background()
@@ -298,4 +302,112 @@ func opsAttemptStateOf(t *testing.T, h *Hub, id, call string) attemptState {
 		t.Fatal(err)
 	}
 	return opsAttemptState(t, h, attempt)
+}
+
+// startOpHub is a hub with entry managed:y and a start op on it whose fake start inserts the
+// attempt's intent and saves the run, then returns ret. The op ran once.
+func startOpHub(t *testing.T, ret error, crash bool) (*Hub, *Plugin, string) {
+	t.Helper()
+	h, c, dir := opsTestHub(t, "")
+	ctx := context.Background()
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "y"))
+	opsLoadEntries(t, h)
+	pl := &Plugin{Name: "y", entry: opsEntry(t, h, "managed:y")}
+	h.plugins["y"] = pl
+	if err := h.loadPluginRow(ctx, pl); err != nil {
+		t.Fatal(err)
+	}
+	c.reply = func(_ string, args map[string]any) (any, error) {
+		pl.opAttempt = args["attempt"].(string)
+		defer func() { pl.opAttempt = "" }()
+		if err := h.insertIntent(ctx, pl, "y-1-aaaaaaaa", "session:home"); err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		pl.InstanceID, pl.SessionID = "y-1-aaaaaaaa", "session:home"
+		if err := h.savePlugin(ctx, pl); err != nil {
+			return nil, err
+		}
+		return nil, ret
+	}
+	id := opsMust(t, h, "start", opRequest{Op: "start", Entry: "managed:y"})
+	if crash {
+		h.pops.fault = func(p string) bool { return p == "plugin-op-after-start" }
+	}
+	h.opsRun(ctx)
+	h.pops.fault = nil
+	return h, pl, id
+}
+
+// createAndRegister marks the intent created (its block was found) and registers its instance.
+func createAndRegister(t *testing.T, h *Hub, pl *Plugin) {
+	t.Helper()
+	if _, err := h.db.Exec(`UPDATE spawn_intents SET status = 'created', block_id = 'block:1' WHERE instance_id = 'y-1-aaaaaaaa'`); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pl.BlockID, pl.ClientID, pl.ChildPID, pl.ChildStart = "block:1", "client:1", os.Getpid(), startTime(os.Getpid())
+	if err := h.savePlugin(context.Background(), pl); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The registration deadline decides only the op's phase (lead-b8-late-obs):
+//   - a registration before the deadline: proof applied, and the op ends done;
+//   - after the deadline: the op ends unknown with no proof, and a later registration stores the
+//     proof (later); the phase stays unknown, and nothing is called again;
+//   - a start that returned spawn_unknown in this process (no crash): the same later proof;
+//   - a resolved attempt (a proof that is not empty) does not change.
+func TestPluginOpLateRegistration(t *testing.T) {
+	wait := opRegisterWait
+	t.Cleanup(func() { opRegisterWait = wait })
+	ctx := context.Background()
+
+	opRegisterWait = time.Minute
+	h, pl, id := startOpHub(t, nil, true)
+	if w := h.opsRun(ctx); w <= 0 {
+		t.Fatalf("the observation did not wait: %v; op %+v", w, opsOf(t, h, id))
+	}
+	if op := opsOf(t, h, id); op.Phase != "starting" {
+		t.Fatalf("waiting: op %+v", op)
+	}
+	createAndRegister(t, h, pl)
+	h.opsRun(ctx)
+	if op, proof := opsOf(t, h, id), opsProof(t, h, id, "start"); op.Phase != "done" || !strings.HasPrefix(proof, "applied") {
+		t.Fatalf("a registration before the deadline: op %+v, proof %q", op, proof)
+	}
+
+	opRegisterWait = 0
+	for _, c := range []struct {
+		name  string
+		ret   error
+		crash bool
+	}{
+		{"after the deadline", nil, true},
+		{"spawn_unknown", refuse("spawn_unknown", "may still create a block"), false},
+	} {
+		h, pl, id := startOpHub(t, c.ret, c.crash)
+		h.opsRun(ctx)
+		if op, proof := opsOf(t, h, id), opsProof(t, h, id, "start"); op.Phase != "unknown" || proof != "" {
+			t.Fatalf("%s: op %+v, proof %q", c.name, op, proof)
+		}
+		createAndRegister(t, h, pl)
+		h.opsRun(ctx)
+		op, proof := opsOf(t, h, id), opsProof(t, h, id, "start")
+		if op.Phase != "unknown" || !strings.HasPrefix(proof, "applied") || !strings.HasSuffix(proof, "(later)") {
+			t.Errorf("%s, a later registration: op %+v, proof %q", c.name, op, proof)
+		}
+	}
+
+	h, pl, id = startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
+	if _, err := h.db.Exec(`UPDATE plugin_op_attempts SET proof = 'not_applied: resolved by an operator' WHERE op_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	createAndRegister(t, h, pl)
+	h.opsRun(ctx)
+	if proof := opsProof(t, h, id, "start"); proof != "not_applied: resolved by an operator" {
+		t.Errorf("a resolved attempt changed: %q", proof)
+	}
 }
