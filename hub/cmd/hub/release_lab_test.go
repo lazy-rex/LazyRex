@@ -155,6 +155,18 @@ func labRehearse(t *testing.T, bin, f, run, lab string, onLine func(string), ext
 
 // labFixture writes the "live" fixture into f and freezes it into f/run.
 func labFixture(t *testing.T, f, bin string) {
+	labFixtureAt(t, f, bin, labOld, labH, nil)
+}
+
+// labPlugin is a GitHub plugin of a fixture: its source without a ref, and its lock pin.
+type labPlugin struct {
+	source, commit string
+}
+
+// labFixtureAt writes a "live" fixture with the hub at old, the home plugin and plugins at their
+// pins, into f, and freezes a hub release to h into f/run. With plugins, the config also names a
+// profile file, as a live config does.
+func labFixtureAt(t *testing.T, f, bin, old, h string, plugins []labPlugin) {
 	t.Helper()
 	// The plugin cache dirs are read-only: make them writable before the TempDir cleanup removes f.
 	t.Cleanup(func() { removeRehearsalLab(f) })
@@ -169,14 +181,19 @@ func labFixture(t *testing.T, f, bin string) {
 	if out, err := exec.Command("git", "clone", "-q", relLiveRepo, clone).CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v\n%s", err, out)
 	}
-	git(clone, "checkout", "-q", "--detach", labOld)
+	git(clone, "checkout", "-q", "--detach", old)
 
-	// The digest of the home plugin at OLD: a sync of the commit form in a scratch config.
+	// The digest of each pin: a sync of the commit forms in a scratch config.
 	home := "github:lazy-rex/LazyRex/plugins/lazyrex"
+	pins := append([]labPlugin{{home, old}}, plugins...)
 	scratch := filepath.Join(f, "digest")
 	os.MkdirAll(scratch, 0o700)
 	sc := filepath.Join(scratch, "hub.json")
-	b, _ := json.Marshal(map[string]any{"state": filepath.Join(scratch, "state"), "plugins": []any{map[string]string{"source": home + "@" + labOld}}})
+	var forms []any
+	for _, p := range pins {
+		forms = append(forms, map[string]string{"source": p.source + "@" + p.commit})
+	}
+	b, _ := json.Marshal(map[string]any{"state": filepath.Join(scratch, "state"), "plugins": forms})
 	os.WriteFile(sc, b, 0o600)
 	if err := runPluginCmd(context.Background(), "sync", sc, nil, pluginCmdOpts{}, io.Discard); err != nil {
 		t.Fatalf("the digest sync: %v", err)
@@ -185,26 +202,41 @@ func labFixture(t *testing.T, f, bin string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := sl.Plugins[home+"@"+labOld]
-	if e == nil || e.Commit != labOld {
-		t.Fatalf("the digest sync: %+v", sl.Plugins)
-	}
 
 	cfg := filepath.Join(f, "hub-live.json")
 	state := filepath.Join(f, "state")
 	os.MkdirAll(state, 0o700)
-	b, _ = json.Marshal(map[string]any{"server": "unix:///nonexistent/release-fixture/rex.sock", "state": state, "view": filepath.Join(f, "view"),
-		"agents": []any{map[string]string{"id": "user", "name": "User"}}, "plugins": []any{map[string]string{"source": home + "@main"}}})
+	live := map[string]any{"server": "unix:///nonexistent/release-fixture/rex.sock", "state": state, "view": filepath.Join(f, "view"),
+		"agents": []any{map[string]string{"id": "user", "name": "User"}}}
+	lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{}}
+	base := map[string]basePin{}
+	var sources []any
+	for _, p := range pins {
+		e := sl.Plugins[p.source+"@"+p.commit]
+		if e == nil || e.Commit != p.commit {
+			t.Fatalf("the digest sync of %s: %+v", p.source, sl.Plugins)
+		}
+		src := p.source + "@main"
+		sources = append(sources, map[string]string{"source": src})
+		entry := *e
+		entry.Ref, entry.RefKind = "main", "branch"
+		lock.Plugins[src] = &entry
+		base[src] = basePin{Commit: e.Commit, Digest: e.Digest}
+	}
+	live["plugins"] = sources
+	if len(plugins) > 0 {
+		profiles := filepath.Join(f, "profiles.json")
+		os.WriteFile(profiles, []byte(`{"profiles":[]}`), 0o600)
+		live["profiles"] = profiles
+	}
+	b, _ = json.Marshal(live)
 	os.WriteFile(cfg, b, 0o600)
 	os.WriteFile(filepath.Join(state, "plugins.json"), []byte(`{"plugins":[]}`), 0o600)
-	src := home + "@main"
-	entry := *e
-	entry.Ref, entry.RefKind = "main", "branch"
 	lk := lockPath(cfg, "")
-	if err := writeLock(lk, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{src: &entry}}); err != nil {
+	if err := writeLock(lk, lock); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePeers(lk, &peerBase{Version: 1, Peers: map[string]map[string]basePin{pinHub: {src: {Commit: e.Commit, Digest: e.Digest}}}}); err != nil {
+	if err := writePeers(lk, &peerBase{Version: 1, Peers: map[string]map[string]basePin{pinHub: base}}); err != nil {
 		t.Fatal(err)
 	}
 	// The probe file of the full tier: rows in a table of OLD, as a stand-in for a table that H adds.
@@ -213,7 +245,7 @@ func labFixture(t *testing.T, f, bin string) {
 INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k2', '{"v":2}', 1);
 `), 0o600)
 	spec := filepath.Join(f, "spec.json")
-	b, _ = json.Marshal(map[string]any{"kind": "hub", "h": labH, "config": cfg, "release_dir": filepath.Join(f, "release"),
+	b, _ = json.Marshal(map[string]any{"kind": "hub", "h": h, "config": cfg, "release_dir": filepath.Join(f, "release"),
 		"server": "unix:///nonexistent/release-fixture/rex.sock", "dev_log": filepath.Join(f, "dev.log"), "probes": probes})
 	os.WriteFile(spec, b, 0o600)
 	if out, err := exec.Command(bin, "release", "freeze", "-spec", spec, "-run", filepath.Join(f, "run")).CombinedOutput(); err != nil {
