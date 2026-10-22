@@ -161,18 +161,23 @@ function M.fingerprint(v) return 'v1/' .. digest(join(canonical(v, {}))) end
 -- "(status=<n> code=<code>)" (observed on Rex 0.0.1792158932-g88fd41). A hub.sql error message
 -- starts with "<code>: " (handoff v1, C). Only an error with no code, or with unavailable,
 -- disconnected or timeout, is unavailable: the outcome is unknown, and the caller can retry.
+-- LOST: the Rex codes of a call whose outcome is unknown (a timeout, a dropped connection). A caller
+-- retries an unavailable call with the same key.
+local LOST = {timeout = true, disconnected = true, client_unavailable = true}
 local function rex_error(err, default)
-  if type(err) == 'table' then fail(err.code or 'unavailable', err.message or default) end
+  if type(err) == 'table' then
+    if err.code == nil or LOST[err.code] then fail('unavailable', err.message or default) end
+    fail(err.code, err.message or default)
+  end
   local text = tostring(err or default)
   local code = text:match('code=([%w_]+)%)$')
   local message = text:match('failed: (.-) %(status=%d+ code=[%w_]+%)$') or text
   local inner, rest = message:match('^([%l_]+): (.*)$')
-  if inner and (code == nil or code == 'internal' or code == 'failed' or code == inner) then
-    code, message = inner, rest -- a hub code: hub.sql timeout means rolled back (handoff v1, C)
-  elseif code == 'timeout' then
-    code = nil -- a Rex timeout: the outcome is unknown
+  -- The hub never sends client_unavailable or disconnected, so those stay Rex codes.
+  if inner and inner ~= 'client_unavailable' and inner ~= 'disconnected' and (code == nil or code == 'internal' or code == 'failed' or code == inner) then
+    fail(inner, rest) -- a hub code: hub.sql timeout means rolled back (handoff v1, C)
   end
-  if not code or code == 'disconnected' then fail('unavailable', text) end
+  if not code or LOST[code] then fail('unavailable', text) end -- a Rex code: the outcome is unknown
   fail(code, message)
 end
 M.rex_error = rex_error

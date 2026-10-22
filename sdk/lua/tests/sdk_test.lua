@@ -997,3 +997,18 @@ test('a panel with a title of several words gets a command id that the hub accep
   expect(bad.loaded, 'a bad command id fails at the declaration').to_be(false)
   expect(tostring(bad.load_error):find('A command id uses only a-z, 0-9 and _ (not notes.add)', 1, true) ~= nil, tostring(bad.load_error)).to_be(true)
 end)
+
+test('a lost reply is unavailable: client_unavailable, and a table error with timeout, disconnected or client_unavailable', function()
+  -- Rex fails a waiting request with client_unavailable when a connection drops (rex-protocol.md,
+  -- client.perform; a reply frame over the limit closes the client). The outcome is unknown, as for a
+  -- timeout (Automations implementer report, 2026-10-22).
+  local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
+  local function code(err) local _, e = pcall(sdk.rex_error, err, 'x failed'); return e.code end
+  expect(code('client.perform failed: disconnected while the request waited (status=503 code=client_unavailable)')).to_be('unavailable')
+  expect(code('client.perform failed: client_unavailable: the client left (status=503 code=client_unavailable)')).to_be('unavailable')
+  for _, c in ipairs({'timeout', 'disconnected', 'client_unavailable'}) do
+    expect(code({code = c, message = 'lost'}), c).to_be('unavailable')
+  end
+  expect(code({code = 'not_found', message = 'gone'}), 'another table code stays').to_be('not_found')
+  expect(code('client.perform failed: timeout: statement timeout (status=500 code=internal)'), 'a hub.sql timeout stays timeout (rolled back)').to_be('timeout')
+end)
