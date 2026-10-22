@@ -1,34 +1,46 @@
 -- Times the SDK's own encode and slice steps for the 150 KiB timing payload (view/chunk_lab_test.go
 -- TestReplyPartsTimingLab, the sp panel Big). It loads sdk/lua/lazyrex.lua and finds the local
--- functions wire_nodes and slices through the upvalues of the module's functions: the probe runs the
+-- functions wire_nodes and slices through upvalues (from the module and an app): the probe runs the
 -- SDK's functions, not copies. It does not measure the live path (no handler, no transport, no
--- hub join). Run: rex do lab/probes/parts-sdk-timing.lua sdk=<sdk/lua dir> [runs=21]
+-- hub join). Run on a lab server: rex do lab/probes/parts-sdk-timing.lua sdk=<sdk/lua dir> [runs=21]
+-- The app that the probe makes installs an event handler, so after the result the script keeps
+-- listening; stop it with Ctrl-C.
 local dir = assert(rex.args.sdk, 'sdk=<the sdk/lua directory> is required')
 package.path = dir .. '/?.lua;' .. package.path
 local M = require('lazyrex')
 
--- find returns the first function upvalue named name, searched from every function of M.
+-- wire_nodes is local to lazyrex.plugin, so the probe makes an app. The hub and instance IDs are
+-- placeholders, and the probe calls no hub action.
+rex.args = rex.args or {}
+rex.args.hub_client_id, rex.args.instance_id = 'client:00000000-0000-4000-8000-000000000000', 'probe'
+local app = M.plugin('probe')
+M._state.register = function() end -- the start timer registers with no hub; the probe needs none
+
+-- find returns the first function upvalue named name. It searches from the functions of M and app,
+-- through function upvalues and the tables that they reach.
 local function find(name)
-  local seen, queue = {}, {}
-  for _, v in pairs(M) do
-    if type(v) == 'function' then queue[#queue + 1] = v end
-  end
+  local seen, queue = {}, {M, app}
   while #queue > 0 do
-    local f = table.remove(queue, 1)
-    if not seen[f] then
-      seen[f] = true
-      for i = 1, 255 do
-        local n, v = debug.getupvalue(f, i)
-        if not n then break end
-        if n == name and type(v) == 'function' then return v end
-        if type(v) == 'function' then queue[#queue + 1] = v end
+    local v = table.remove(queue, 1)
+    if not seen[v] then
+      seen[v] = true
+      if type(v) == 'table' then
+        for _, x in pairs(v) do
+          if type(x) == 'function' or type(x) == 'table' then queue[#queue + 1] = x end
+        end
+      else
+        for i = 1, 255 do
+          local n, x = debug.getupvalue(v, i)
+          if not n then break end
+          if n == name and type(x) == 'function' then return x end
+          if type(x) == 'function' or type(x) == 'table' then queue[#queue + 1] = x end
+        end
       end
     end
   end
   error('no SDK function ' .. name)
 end
 local slices = find('slices')
-M._state.app = {hub_id = 'client:probe', instance_id = 'probe'}
 local limits = {inline_max = 45056, part_bytes = 57344, max_total = 786432}
 
 -- The payload of the sp panel Big (tests/sdk-parts/main.lua filler(150)) as the SDK replies it.
