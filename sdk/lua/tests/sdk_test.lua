@@ -1012,3 +1012,48 @@ test('a lost reply is unavailable: client_unavailable, and a table error with ti
   expect(code({code = 'not_found', message = 'gone'}), 'another table code stays').to_be('not_found')
   expect(code('client.perform failed: timeout: statement timeout (status=500 code=internal)'), 'a hub.sql timeout stays timeout (rolled back)').to_be('timeout')
 end)
+
+test('a catch inside the SDK does not split the locals of a running plugin handler (Rex Lua pcall defect)', function()
+  -- Rex Lua: after pcall catches a Lua error, a closure made earlier and the local of a function that
+  -- is still running are separate copies (docs/rex-protocol.md, "Rex Lua runtime"; observed on Rex
+  -- 0.0.1792158932-g88fd41). app.refresh catches a failed hub.ui.invalidate while the handler runs.
+  local s = plugin([[
+app.action('p.split', {}, function()
+  local n = 0
+  local function inc() n = n + 1 end
+  inc()
+  app.refresh()
+  inc()
+  return {n = n}
+end)]], {hub = {['hub.ui.invalidate'] = function() return nil, {code = 'unavailable', message = 'no hub'} end}})
+  local r = s:agent('p.split', {})
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result.n, 'the closure and the handler see one n').to_be(2)
+end)
+
+test('a hub call whose arguments cannot be encoded fails with invalid_input, and nothing is sent', function()
+  -- hub() checks the encoded size without a protected call: rex.json.encode returns nil and an error
+  -- for a Lua function (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-22).
+  local s = plugin([[
+app.action('p.bad', {}, function() app.hub('hub.thing', {f = function() end}); return {} end)]],
+    {hub = {['hub.thing'] = function() error('the call must not reach the hub') end}})
+  local before = #s.hub_calls
+  local r = s:agent('p.bad', {})
+  expect(r.error and r.error.code, show(r)).to_be('invalid_input')
+  expect(r.error.message:find('cannot be encoded as JSON', 1, true) ~= nil, r.error.message).to_be(true)
+  local sent = {}
+  for i = before + 1, #s.hub_calls do sent[#sent + 1] = s.hub_calls[i] end
+  expect(table.concat(sent, ' '):find('hub.thing', 1, true), 'hub.thing was not sent').to_be(nil)
+end)
+
+test('app.refresh sends hub.ui.invalidate to the hub, and a failure does not fail the handler', function()
+  local s = plugin([[
+app.action('p.refresh', {}, function() app.refresh(); return {done = true} end)]])
+  local r = s:agent('p.refresh', {})
+  expect(r.result, show(r)).to_equal({done = true})
+  expect(s.invalidated, 'one hub.ui.invalidate').to_be(1)
+  local f = plugin([[
+app.action('p.refresh', {}, function() app.refresh(); return {done = true} end)]],
+    {hub = {['hub.ui.invalidate'] = function() return nil, {code = 'unavailable', message = 'no hub'} end}})
+  expect(f:agent('p.refresh', {}).result, 'a refused invalidate is ignored').to_equal({done = true})
+end)
