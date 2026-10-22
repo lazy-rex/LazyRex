@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // syncRecorder is a plugin sync that records its config paths and answers with err.
@@ -127,6 +128,49 @@ func TestSetupNoSyncWithoutAUsableConfig(t *testing.T) {
 			}
 			if s := out.String(); len(rec.configs) != 0 || asked != 0 || strings.Contains(s, syncQuestion) || strings.Contains(s, "plugin sync") || strings.Contains(s, "Plugins: installed.") {
 				t.Fatalf("sync %v, status looks %d:\n%s", rec.configs, asked, s)
+			}
+		})
+	}
+}
+
+// The sync follows what happened to hub.json in this run, and the file as it is now (codex-24's
+// review of 10a9632: a write that failed because another writer made hub.json after the diff was
+// still followed by the status read and the sync). A failed write, and a kept file that lost its
+// server during setup, give no status read, no question, no sync and no command.
+func TestSetupNoSyncAfterTheConfigChanged(t *testing.T) {
+	for _, c := range []struct {
+		name, existing, during string // existing: hub.json before setup; during: written at the first file write
+		exit                   int
+	}{
+		{name: "another writer made hub.json after the diff", during: `{"server":"unix:///another.sock","state":"/another"}`, exit: 1},
+		{name: "the kept hub.json lost its server", existing: `{"server":"unix:///other/rex.sock"}`, during: `{"state":"/s"}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, out := setupTestEnv(t, strings.Repeat("y\n", 10), true)
+			dir := filepath.Join(e.home, ".lazyrex")
+			cfg := filepath.Join(dir, "hub.json")
+			if c.existing != "" {
+				os.MkdirAll(dir, 0o755)
+				os.WriteFile(cfg, []byte(c.existing), 0o600)
+			}
+			once := false
+			e.now = func() time.Time {
+				if !once {
+					once = true
+					os.MkdirAll(dir, 0o755)
+					os.WriteFile(cfg, []byte(c.during), 0o600)
+				}
+				return setupNow
+			}
+			looks := 0
+			e.installed = func(string) bool { looks++; return false }
+			rec := &syncRecorder{}
+			e.sync = rec.sync
+			if got := runSetup(e, dir, false); got != c.exit {
+				t.Fatalf("exit %d, want %d\n%s", got, c.exit, out)
+			}
+			if s := out.String(); looks != 0 || len(rec.configs) != 0 || strings.Contains(s, syncQuestion) || strings.Contains(s, "plugin sync") || strings.Contains(s, "Plugins: installed.") {
+				t.Fatalf("status looks %d, sync %v:\n%s", looks, rec.configs, s)
 			}
 		})
 	}

@@ -512,6 +512,9 @@ func runSetup(e setupEnv, dir string, print bool) int {
 
 	var written, declined, blocked, failed []string
 	rexWritten := false // the boot file or the Rex config was written
+	// hubKept: hub.json is the file that setup kept (it existed, setup proposes no change) or the
+	// one that this run wrote. A declined, blocked or failed hub.json is neither.
+	hubKept := hub.block == "" && hub.exists && !hub.changes()
 	eof := false
 	for _, f := range files {
 		if f.block != "" {
@@ -540,6 +543,7 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		}
 		backup, err := f.write(e.now())
 		rexWritten = rexWritten || err == nil && (f == boot || f == init)
+		hubKept = hubKept || err == nil && f == hub
 		switch {
 		case err != nil:
 			failed = append(failed, f.path+": "+err.Error())
@@ -562,10 +566,16 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		say("Nothing to write.")
 	}
 	// The plugins of hub.json: the hub refuses a plugin that is not installed, so setup offers the
-	// sync last, with a question like the files (the coordinator, 2026-10-22). Only for a hub.json
-	// that the hub controls can use: one that exists now and names a server.
+	// sync last, with a question like the files (the coordinator, 2026-10-22). Only for the hub.json
+	// that setup kept or wrote, read again now: another writer can change it during setup, so its
+	// earlier snapshot does not count (codex-24's review of 10a9632).
 	syncCmd, syncFailed := "", false
-	if _, err := os.Stat(hub.path); err == nil && ctl.err == "" {
+	usable := false
+	if b, err := os.ReadFile(hub.path); err == nil && hubKept && ctl.err == "" {
+		_, why := configServer(b)
+		usable = why == ""
+	}
+	if usable {
 		switch {
 		case e.installed(hub.path):
 			say("\nPlugins: installed.")
