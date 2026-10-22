@@ -51,8 +51,13 @@ func TestLayoutFitsAndPinsComposer(t *testing.T) {
 						send = i
 					}
 				}
-				if send != size[1]-3 {
-					t.Fatalf("Send row %d, want %d", send, size[1]-3)
+				// Send is on the first footer row of the composer. A narrow pane has a second hint row.
+				want := size[1] - 3
+				if size[0] < 60 {
+					want--
+				}
+				if send != want {
+					t.Fatalf("Send row %d, want %d", send, want)
 				}
 				if view.WindowTitle != "Team" || !view.ReportFocus {
 					t.Fatal("Missing title or focus reporting")

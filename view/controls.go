@@ -8,7 +8,7 @@ import (
 
 func (m *model) checkboxView(id, label string, checked bool) string {
 	p := m.palette()
-	indicatorColor := m.controlBorder()
+	indicatorColor := p.control
 	if checked || m.focus == id || m.hover == id {
 		indicatorColor = p.accent
 	}

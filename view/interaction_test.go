@@ -194,8 +194,8 @@ func TestPaddedSendTargetsMatchVisibleRows(t *testing.T) {
 				t.Fatal("Send target includes adjacent hint")
 			}
 		}
-		if count != 3 {
-			t.Fatalf("Send target has %d rows, want3", count)
+		if count != 1 {
+			t.Fatalf("Send target has %d rows, want 1", count)
 		}
 	}
 }
@@ -224,6 +224,9 @@ func TestPaddedListAndChoices(t *testing.T) {
 	}
 	for _, id := range []string{"list:a", "list:b", "choice:form/member", "form:submit"} {
 		want := 3
+		if id == "form:submit" {
+			want = 1 // a one-row Charm button
+		}
 		if strings.HasPrefix(id, "list:") {
 			want = 4
 		}
@@ -266,7 +269,7 @@ func TestFormShortcutFromComposer(t *testing.T) {
 	}
 }
 
-func TestButtonHoverChangesCapsAndLabel(t *testing.T) {
+func TestButtonHoverChangesTheButton(t *testing.T) {
 	for _, dark := range []bool{false, true} {
 		m := testModel()
 		m.dark = dark
@@ -284,16 +287,14 @@ func TestButtonHoverChangesCapsAndLabel(t *testing.T) {
 		if x < 0 {
 			t.Fatal("Missing Send target")
 		}
-		before := m.buttonLines("composer:send", "Send ↑", 10, true, true)
+		before := m.buttonView("composer:send", "Send ↑", 10, true, true)
 		m.Update(tea.MouseMotionMsg{X: x, Y: y})
 		if m.hover != "composer:send" || m.reuseView {
 			t.Fatal("Hover did not invalidate the Send frame")
 		}
-		after := m.buttonLines("composer:send", "Send ↑", 10, true, true)
-		for i := range before {
-			if before[i] == after[i] {
-				t.Fatalf("Button row%d did not change on hover", i)
-			}
+		after := m.buttonView("composer:send", "Send ↑", 10, true, true)
+		if before == after {
+			t.Fatal("The button did not change on hover")
 		}
 	}
 }
@@ -302,13 +303,13 @@ func TestDisabledButtonIgnoresHoverAndPress(t *testing.T) {
 	for _, dark := range []bool{false, true} {
 		m := testModel()
 		m.dark = dark
-		before := m.buttonLines("button", "Send", 14, true, false)
+		before := m.buttonView("button", "Send", 14, true, false)
 		m.hover, m.pressed, m.focus = "button", "button", "button"
-		after := m.buttonLines("button", "Send", 14, true, false)
+		after := m.buttonView("button", "Send", 14, true, false)
 		if before != after {
 			t.Fatal("Disabled button changed on hover, press, or focus")
 		}
-		if !strings.Contains(before[1], "╱") || !strings.Contains(before[1], " Send ") {
+		if !strings.Contains(before, "╱") || !strings.Contains(before, " Send ") {
 			t.Fatal("Disabled button needs stripes and a clear label")
 		}
 	}

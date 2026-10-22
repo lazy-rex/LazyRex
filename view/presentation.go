@@ -15,13 +15,37 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-type palette struct{ text, muted, accent, border, surface color.Color }
+// palette holds the semantic color roles. Every control color comes from a role, and the literal
+// colors of the roles are only here. The control roles port huh's ThemeCharm (huh v2.0.3,
+// theme.go): title is Charm indigo, highlight is Charm fuchsia (the selector and the focused
+// button), onHighlight is cream, selected is green, danger is red. ThemeCharm v2.0.3 passes its
+// normal text and blurred button colors to LightDark in the wrong order (light text on a light
+// background); these roles use the order of huh v1 (AdaptiveColor{Light: "235", Dark: "252"}).
+type palette struct {
+	text, muted, accent, border, surface color.Color
+	// Form controls.
+	title, highlight, onHighlight, selected, danger color.Color
+	control                                         color.Color // the border of an idle control
+	button                                          color.Color // the background of a secondary button
+	hover, press                                    color.Color // a secondary control under the pointer
+	highlightHover, highlightPress                  color.Color // a primary button under the pointer
+}
 
 func (m *model) palette() palette {
 	if m.dark {
-		return palette{lipgloss.Color("#E2E8F0"), lipgloss.Color("#94A3B8"), lipgloss.Color("#A5B4FC"), lipgloss.Color("#475569"), lipgloss.Color("#1E293B")}
+		return palette{
+			text: lipgloss.Color("#E2E8F0"), muted: lipgloss.Color("#94A3B8"), accent: lipgloss.Color("#A5B4FC"), border: lipgloss.Color("#475569"), surface: lipgloss.Color("#1E293B"),
+			title: lipgloss.Color("#7571F9"), highlight: lipgloss.Color("#F780E2"), onHighlight: lipgloss.Color("#FFFDF5"), selected: lipgloss.Color("#02BF87"), danger: lipgloss.Color("#ED567A"),
+			control: lipgloss.Color("#94A3B8"), button: lipgloss.Color("237"), hover: lipgloss.Color("#253145"), press: lipgloss.Color("#334155"),
+			highlightHover: lipgloss.Color("#FAA5EB"), highlightPress: lipgloss.Color("#D660C2"),
+		}
 	}
-	return palette{lipgloss.Color("#1E293B"), lipgloss.Color("#526176"), lipgloss.Color("#4338CA"), lipgloss.Color("#CBD5E1"), lipgloss.Color("#EEF2FF")}
+	return palette{
+		text: lipgloss.Color("#1E293B"), muted: lipgloss.Color("#526176"), accent: lipgloss.Color("#4338CA"), border: lipgloss.Color("#CBD5E1"), surface: lipgloss.Color("#EEF2FF"),
+		title: lipgloss.Color("#5A56E0"), highlight: lipgloss.Color("#F780E2"), onHighlight: lipgloss.Color("#FFFDF5"), selected: lipgloss.Color("#02BA84"), danger: lipgloss.Color("#FF4672"),
+		control: lipgloss.Color("#64748B"), button: lipgloss.Color("252"), hover: lipgloss.Color("#F1F3F5"), press: lipgloss.Color("#DCE1E7"),
+		highlightHover: lipgloss.Color("#FAA5EB"), highlightPress: lipgloss.Color("#D660C2"),
+	}
 }
 func (m *model) contentWidth() int { return max(8, m.width-6) }
 func (m *model) leftMargin() int   { return max(0, (m.width-m.contentWidth())/2) }
@@ -106,37 +130,37 @@ func (m *model) bodyRows() []row {
 		add(lipgloss.NewStyle().Foreground(p.muted).Render(plain(text)), anchor, nil)
 	}
 	button := func(text, anchor string, c control) {
-		c.HitWidth = min(width, max(10, lipgloss.Width(plain(text))+4))
-		lines := m.buttonLines(c.ID, text, c.HitWidth, c.Kind == "submit", true)
-		add(strings.Join(lines[:], "\n"), anchor, &c)
+		c.HitWidth = min(width, buttonWidth(plain(text)))
+		add(m.buttonView(c.ID, text, c.HitWidth, c.Kind == "submit", true), anchor, &c)
 	}
-	// buttonRow puts buttons side by side, two cells apart. They stack when they do not fit.
+	// buttonRow puts buttons side by side, one cell apart (huh ThemeBase: MarginRight(1)). They
+	// stack when they do not fit, with a blank row between them.
 	buttonRow := func(texts []string, anchor string, cs []control) {
-		const gap = 2
+		const gap = 1
 		total := 0
 		for i := range cs {
-			cs[i].HitWidth = max(10, lipgloss.Width(plain(texts[i]))+4)
+			cs[i].HitWidth = buttonWidth(plain(texts[i]))
 			cs[i].Left = total
 			total += cs[i].HitWidth + gap
 		}
 		if total-gap > width {
 			for i := range cs {
+				if i > 0 {
+					add("", fmt.Sprintf("%s:%d:gap", anchor, i), nil)
+				}
 				cs[i].Left = 0
 				button(texts[i], fmt.Sprintf("%s:%d", anchor, i), cs[i])
 			}
 			return
 		}
-		var lines [3]string
+		line := ""
 		for i := range cs {
-			b := m.buttonLines(cs[i].ID, texts[i], cs[i].HitWidth, cs[i].Kind == "submit", true)
-			for k := range lines {
-				if i > 0 {
-					lines[k] += strings.Repeat(" ", gap)
-				}
-				lines[k] += b[k]
+			if i > 0 {
+				line += strings.Repeat(" ", gap)
 			}
+			line += m.buttonView(cs[i].ID, texts[i], cs[i].HitWidth, cs[i].Kind == "submit", true)
 		}
-		add(strings.Join(lines[:], "\n"), anchor, &cs[0], cs[1:]...)
+		add(line, anchor, &cs[0], cs[1:]...)
 	}
 
 	if m.effectFailure != nil {
@@ -237,7 +261,8 @@ func (m *model) bodyRows() []row {
 					fieldLabel += " *"
 				}
 				if f.Kind != "boolean" {
-					label(fieldLabel, id+":label")
+					// The field title of huh ThemeCharm: the title role, bold.
+					add(lipgloss.NewStyle().Foreground(p.title).Bold(true).Render(plain(fieldLabel)), id+":label", nil)
 				}
 				if f.Kind == "boolean" || f.Kind == "select" {
 					value := fmt.Sprint(e.Choice)
@@ -255,7 +280,7 @@ func (m *model) bodyRows() []row {
 					}
 				} else {
 					c := &control{ID: "edit:" + id, Node: n.ID, Field: f.ID, Kind: "edit", HitWidth: m.controlWidth()}
-					border := m.controlBorder()
+					border := p.control
 					if m.focus == c.ID || m.hover == c.ID {
 						border = p.accent
 					}
@@ -263,14 +288,21 @@ func (m *model) bodyRows() []row {
 					if bw := browseWidth(f, m.controlWidth()); bw > 0 {
 						// Browse… sits beside its text box, or under it in a narrow pane.
 						bc := control{ID: "browse:" + id, Node: n.ID, Field: f.ID, Kind: "browse", HitWidth: bw}
-						b := m.buttonLines(bc.ID, "Browse…", bw, false, m.ready && len(m.operations) == 0)
+						b := m.buttonView(bc.ID, "Browse…", bw, false, m.ready && len(m.operations) == 0)
 						if browseBeside(m.controlWidth()) {
+							// The button is on the first text row of the box. Only that row has its target.
 							c.HitWidth = lipgloss.Width(box)
 							bc.Left = c.HitWidth + 1
-							add(lipgloss.JoinHorizontal(lipgloss.Top, box, " ", strings.Join(b[:], "\n")), id, c, bc)
+							for i, line := range strings.Split(box, "\n") {
+								if i == 1 {
+									add(line+" "+b, fmt.Sprintf("%s:%d", id, i), c, bc)
+								} else {
+									add(line, fmt.Sprintf("%s:%d", id, i), c)
+								}
+							}
 						} else {
 							add(box, id, c)
-							add(strings.Join(b[:], "\n"), id+":browse", &bc)
+							add(b, id+":browse", &bc)
 						}
 					} else {
 						add(box, id, c)
@@ -386,21 +418,20 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 		innerWidth := width - 4
 		hintWidth := max(0, innerWidth-sendWidth-1)
 		hint = ansi.Truncate(hint, hintWidth, "")
-		left := []string{"", hint, ""}
+		// The footer is the hint and the one-row Send button. A narrow pane adds a second hint row.
+		muted := lipgloss.NewStyle().Foreground(p.muted)
+		footer := muted.Render(hint) + strings.Repeat(" ", max(0, innerWidth-sendWidth-lipgloss.Width(hint))) + m.buttonView(n.ID+":send", "Send ↑", sendWidth, true, sendControl != nil)
+		footerRows := 1
 		if width < 60 {
-			left[2] = ansi.Truncate("Shift+Enter ↵", hintWidth, "")
+			footer += "\n" + muted.Render(ansi.Truncate("Shift+Enter ↵", hintWidth, ""))
+			footerRows = 2
 		}
-		button := m.buttonLines(n.ID+":send", "Send ↑", sendWidth, true, sendControl != nil)
-		footerLines := make([]string, 3)
-		for i := range footerLines {
-			footerLines[i] = lipgloss.NewStyle().Foreground(p.muted).Render(left[i]) + strings.Repeat(" ", max(0, innerWidth-sendWidth-lipgloss.Width(left[i]))) + button[i]
-		}
-		footer := strings.Join(footerLines, "\n")
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).Padding(0, 1).Render(area + "\n" + footer)
 		lines := strings.Split(box, "\n")
+		sendRow := len(lines) - 1 - footerRows
 		for i, line := range lines {
 			ctl := c
-			if i >= len(lines)-4 && i <= len(lines)-2 {
+			if i == sendRow {
 				ctl = sendControl
 			}
 			if i == len(lines)-1 {
@@ -415,11 +446,8 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 			add("Saved: "+ansi.Truncate(strings.ReplaceAll(plain(e.RemoteText), "\n", " ↵ "), max(1, width-7), "…"), n.ID+":remote", nil)
 			for _, choice := range []struct{ kind, text string }{{"keep_local", "Keep my text"}, {"use_saved", "Use saved text"}} {
 				ctl := &control{ID: n.ID + ":" + choice.kind, Node: n.ID, Kind: choice.kind}
-				style := lipgloss.NewStyle().Foreground(p.accent)
-				style = m.controlStyle(ctl.ID, style)
-				ctl.HitWidth = min(width, lipgloss.Width(choice.text)+4)
-				padding := strings.Repeat(" ", ctl.HitWidth)
-				add(padding+"\n"+style.Background(p.surface).Width(ctl.HitWidth).Padding(0, 2).Render(choice.text)+"\n"+padding, n.ID+":"+choice.kind, ctl)
+				ctl.HitWidth = min(width, buttonWidth(choice.text))
+				add(m.buttonView(ctl.ID, choice.text, ctl.HitWidth, false, true), n.ID+":"+choice.kind, ctl)
 				add("", n.ID+":"+choice.kind+":gap", nil)
 			}
 		}

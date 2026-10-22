@@ -258,7 +258,7 @@ func TestSelectOverlayPlacement(t *testing.T) {
 		above           bool
 		capacity        int
 	}{
-		{"below", 30, 0, false, 8}, {"above", 20, 11, true, 8}, {"shrink", 18, 4, false, 4}, {"minimum", 18, 5, false, 3},
+		{"below", 30, 0, false, 8}, {"above", 20, 11, true, 8}, {"shrink", 18, 6, false, 4}, {"minimum", 17, 6, false, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := selectModel()
@@ -307,6 +307,14 @@ func TestSelectOverlayPlacement(t *testing.T) {
 func TestSelectOverlayMousePriorityAndOutsideClick(t *testing.T) {
 	m := selectModel()
 	m.height = 30
+	// A text field after the select puts the one-row submit button under the option rows.
+	s := m.snapshot
+	for i := range s.Tree.Nodes {
+		if s.Tree.Nodes[i].Type == "form" {
+			s.Tree.Nodes[i].Fields = append(s.Tree.Nodes[i].Fields, Field{ID: "note", Kind: "text", Label: "Note"})
+		}
+	}
+	m.apply(s)
 	selectKey(m, tea.KeyEnter)
 	o := m.selectOverlay()
 	// The option covers the submit button. The click must not submit the form.

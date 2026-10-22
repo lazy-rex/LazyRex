@@ -11,10 +11,10 @@ import (
 
 func (m *model) controlStyle(id string, style lipgloss.Style) lipgloss.Style {
 	if m.hover == id {
-		style = style.Background(m.hoverColor())
+		style = style.Background(m.palette().hover)
 	}
 	if m.pressed == id && m.hover == id {
-		style = style.Background(m.pressColor())
+		style = style.Background(m.palette().press)
 	}
 	return style
 }
@@ -184,10 +184,8 @@ func (m *model) scrollbarTarget(x, y int) string {
 	return "$scrollbar-track"
 }
 
+// primaryStyle is the focused button of huh ThemeCharm: cream on fuchsia.
 func (m *model) primaryStyle() lipgloss.Style {
-	foreground := lipgloss.Color("#FFFFFF")
-	if m.dark {
-		foreground = lipgloss.Color("#0F172A")
-	}
-	return lipgloss.NewStyle().Foreground(foreground).Background(m.palette().accent).Bold(true)
+	p := m.palette()
+	return lipgloss.NewStyle().Foreground(p.onHighlight).Background(p.highlight).Bold(true)
 }

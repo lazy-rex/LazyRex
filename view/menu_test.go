@@ -219,7 +219,7 @@ func TestNoMenuOrOlderMessagesButtons(t *testing.T) {
 	s.Tree.Nodes = append([]Node{{ID: "thread-menu", Type: "menu", Label: "Thread…", Action: &Action{Name: "open", Enabled: true}}, history}, s.Tree.Nodes...)
 	m.apply(s)
 	out := ansi.Strip(m.View().Content)
-	if strings.Contains(out, "Older messages") || strings.Contains(out, "▄") && strings.Contains(out, "  Thread…  ") {
+	if strings.Contains(out, "Older messages") || strings.Contains(out, "  Thread…  ") {
 		t.Fatalf("a menu or Older messages button is shown:\n%s", out)
 	}
 	if !strings.Contains(out, "Ctrl+O Thread…") {
