@@ -27,6 +27,10 @@ package main
 //     an unknown outcome at once, and the hub sends the request only after
 //     hub.test.fault_release (at most 30 s, or hold_ms ms): the block appears later, so an intent
 //     stays unresolved until the release.
+//   - resume-prompt: the first prompt of an agent resume (resume.go; key = the identity, "" = any).
+//     hold waits after prompt_sending is stored, before the write, until hub.test.fault_release (at
+//     most 30 s, or hold_ms ms): a test can stop the hub there. lose-answer writes the prompt, then
+//     reports a lost answer.
 // nth = n fires on the n-th call that matches (default 1). A call that a closed gate refuses
 // counts for no fault: it does not reach the hub.
 // hub.test.* actions exist only with -test, so a hub without -test has no faults.
@@ -56,7 +60,7 @@ type testFault struct {
 
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
-	"plugin-create": {"refuse", "lose-answer", "hold-send"},
+	"plugin-create": {"refuse", "lose-answer", "hold-send"}, "resume-prompt": {"hold", "lose-answer"},
 	"prompt-answer": {"close", "refuse", "lose-reply", "short"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
@@ -66,7 +70,8 @@ var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op"
 	"status-read":     {"point", "mode", "key", "plugin", "nth"},
 	"start-admission": {"point", "mode", "key", "plugin", "nth", "hold_ms"},
 	"plugin-create":   {"point", "mode", "key", "plugin", "nth", "hold_ms"},
-	"prompt-answer":   {"point", "mode", "when", "fail_code", "plugin", "nth"}}
+	"prompt-answer":   {"point", "mode", "when", "fail_code", "plugin", "nth"},
+	"resume-prompt":   {"point", "mode", "key", "plugin", "nth", "hold_ms"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
@@ -108,7 +113,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send) or prompt-answer (close, refuse, lose-reply, short)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send), prompt-answer (close, refuse, lose-reply, short) or resume-prompt (hold, lose-answer)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -118,7 +123,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		f.Plugin = plugin
 	case "status-read":
 		f.Key, _ = args["key"].(string)
-	case "start-admission", "plugin-create":
+	case "start-admission", "plugin-create", "resume-prompt":
 		f.Key, _ = args["key"].(string)
 	case "prompt-answer":
 		f.When, _ = args["when"].(string)

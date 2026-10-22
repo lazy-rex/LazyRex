@@ -496,7 +496,7 @@ func (h *Hub) resumeAdvance(ctx context.Context, t *opTarget) error {
 		if !h.setPhase(ctx, t, "launched", "prompt_sending", "", nil) {
 			return nil
 		}
-		if err := h.writeNotice(ctx, s.Session, s.Block, resumePrompt); err != nil {
+		if err := h.writeResumePrompt(ctx, s.Session, s.Block, t.identity); err != nil {
 			h.setPhase(ctx, t, "prompt_sending", "unknown", "the first prompt write failed, its outcome is unknown: "+err.Error(), nil)
 			return nil
 		}
@@ -641,4 +641,24 @@ func (h *Hub) paneProgram(ctx context.Context, sess, block string) (paneState, e
 		}
 	}
 	return p, nil
+}
+
+// writeResumePrompt writes the first prompt. In test mode a resume-prompt fault holds before the
+// write (hold) or loses the answer after it (lose-answer).
+func (h *Hub) writeResumePrompt(ctx context.Context, sess, block, identity string) error {
+	match := func(mode string) func(*testFault) bool {
+		return func(f *testFault) bool {
+			return f.Point == "resume-prompt" && f.Mode == mode && (f.Key == "" || f.Key == identity)
+		}
+	}
+	if f := h.takeFault(match("hold")); f != nil {
+		h.waitRelease(f)
+	}
+	if err := h.writeNotice(ctx, sess, block, resumePrompt); err != nil {
+		return err
+	}
+	if h.takeFault(match("lose-answer")) != nil {
+		return errors.New("injected fault: the answer of the prompt write was lost")
+	}
+	return nil
 }
