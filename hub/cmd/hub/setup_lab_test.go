@@ -177,11 +177,25 @@ func TestSetupLab(t *testing.T) {
 	syncPrompt := "Install the plugins of " + filepath.Join(dir, "hub.json") + " now (lazyrex-hub plugin sync)? [y/N] "
 	waitFor(syncPrompt, func(s string) bool { return strings.HasSuffix(s, syncPrompt) })
 	cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], "n\r")
+	// Rex's own skill and hooks: the real rex installs them into the lab HOME, for Claude only
+	// (setup found no Codex), and its status confirms them.
+	skillPrompt := "Install Rex's own skill and hooks for claude now (rex skill setup --agent claude)? [y/N] "
+	waitFor(skillPrompt, func(s string) bool { return strings.HasSuffix(s, skillPrompt) })
+	cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], "y\r")
 	got := waitFor("the report", func(s string) bool {
 		return strings.Contains(s, "Load the LazyRex palette entries: rex -S "+shellWord(socket)+" config reload")
 	})
 	if want := "Install the plugins: " + shellWord(bin) + " plugin sync -config " + shellWord(filepath.Join(dir, "hub.json")); !strings.Contains(got, want) {
 		t.Fatalf("no %q:\n%s", want, got)
+	}
+	if !strings.Contains(got, "Rex's skill and hooks: installed for claude.") || strings.Contains(got, "Install Rex's own skill and hooks: ") {
+		t.Fatalf("the Rex skill:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "rex")); err != nil {
+		t.Fatalf("no Rex skill in the lab HOME: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "rex")); !os.IsNotExist(err) {
+		t.Fatalf("rex skill setup went beyond Claude: %v", err)
 	}
 	if strings.Count(got, "Written:") != 5 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
 		t.Fatalf("report:\n%s", got)

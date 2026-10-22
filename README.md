@@ -50,7 +50,7 @@ profiles, the LazyRex palette entries for Rex, and the agent hooks and skill. De
 Then, in this order:
 
 1. Run the `rex -S <server> config reload` line that setup prints. It loads the palette entries.
-2. Run `rex skill setup`, as setup prints. It installs Rex's own skill and hooks.
+2. Setup also offers `rex skill setup` for the agents that it found: Rex's own skill and hooks. If you answer no, run the command that setup prints.
 3. Codex: if setup says so, review and trust the new hook in Codex with `/hooks`.
 4. If setup printed `Install the plugins: ...`, run that command.
 

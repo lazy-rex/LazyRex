@@ -55,10 +55,14 @@ type setupEnv struct {
 	// sync installs them (plugin sync) and prints a line for each change to w.
 	installed func(config string) bool
 	sync      func(config string, w io.Writer) error
-	in        *bufio.Reader // the answers
-	tty       bool          // in is a terminal
-	out       io.Writer
-	now       func() time.Time
+	// skillStatus is the output of `rex skill status --json` (it changes nothing); skillSetup runs
+	// `rex skill setup` with args and prints its output to w.
+	skillStatus func() ([]byte, error)
+	skillSetup  func(args []string, w io.Writer) error
+	in          *bufio.Reader // the answers
+	tty         bool          // in is a terminal
+	out         io.Writer
+	now         func() time.Time
 }
 
 func setupMain(args []string) int {
@@ -89,6 +93,7 @@ func setupMain(args []string) int {
 			defer stop()
 			return runPluginCmd(ctx, "sync", cfg, nil, pluginCmdOpts{}, w)
 		},
+		skillStatus: rexSkillStatus, skillSetup: rexSkillSetup,
 		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now,
 	}
 	if *dir == "" {
@@ -122,6 +127,72 @@ func rexEndpoint(server string) (string, error) {
 		return "", errors.New("rex server status gave no endpoint")
 	}
 	return s.Endpoint, nil
+}
+
+// rexSkillStatus is `rex skill status --json`: it reads the agents' files and changes nothing.
+func rexSkillStatus() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "rex", "--autostart=false", "skill", "status", "--json").Output()
+}
+
+// rexSkillSetup runs `rex skill setup` with args. It never adds --force: Rex refuses to replace
+// a skill named rex that it did not install, and setup keeps that refusal.
+func rexSkillSetup(args []string, w io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "rex", append([]string{"--autostart=false"}, args...)...)
+	cmd.Stdout, cmd.Stderr = w, w
+	return cmd.Run()
+}
+
+// skillSetupArgs are the arguments of `rex skill setup` for exactly the agents that setup found
+// (kinds): a bare `rex skill setup` installs into every agent that Rex finds. No agent, no args.
+func skillSetupArgs(agents []setupAgent) (args, kinds []string) {
+	for _, a := range agents {
+		if a.found {
+			kinds = append(kinds, a.kind)
+			args = append(args, "--agent", a.kind)
+		}
+	}
+	if kinds == nil {
+		return nil, nil
+	}
+	return append([]string{"skill", "setup"}, args...), kinds
+}
+
+// rexSkillCurrent reports whether `rex skill status --json` (b, err) says that Rex's skill and
+// hook are both "current" in each agent of kinds. A failed, malformed or incomplete status is not.
+func rexSkillCurrent(b []byte, err error, kinds []string) bool {
+	var st struct {
+		Harnesses []struct {
+			ID    string `json:"id"`
+			Items []struct {
+				Kind  string `json:"kind"`
+				State string `json:"state"`
+			} `json:"items"`
+		} `json:"harnesses"`
+	}
+	if err != nil || json.Unmarshal(b, &st) != nil || len(kinds) == 0 {
+		return false
+	}
+	for _, k := range kinds {
+		current := map[string]bool{}
+		for _, h := range st.Harnesses {
+			if h.ID != k {
+				continue
+			}
+			for _, it := range h.Items {
+				if it.State == "current" {
+					current[it.Kind] = true
+				}
+			}
+		}
+		if !current["skill"] || !current["hook"] {
+			return false
+		}
+	}
+	return true
 }
 
 // lazyRexTags lists a lazy-rex repository's tags with git.
@@ -491,11 +562,19 @@ func runSetup(e setupEnv, dir string, print bool) int {
 			say("             %s", n)
 		}
 	}
+	skillArgs, skillKinds := skillSetupArgs(agents)
+	skillCmd := ""
+	if skillArgs != nil {
+		skillCmd = "rex " + strings.Join(skillArgs, " ")
+	}
 	if print || !e.tty {
 		for _, f := range files {
 			if f.changes() {
 				say("\n%s (%s):\n%s", f.path, fileState(f), fileDiff(f.old, f.next))
 			}
+		}
+		if skillCmd != "" {
+			say("\nRex's own skill and hooks: setup offers `%s` in a terminal.", skillCmd)
 		}
 		if print {
 			say("-print: setup wrote nothing.")
@@ -599,7 +678,43 @@ func runSetup(e setupEnv, dir string, print bool) int {
 			}
 		}
 	}
-	say("\nNext: run `rex skill setup` to install Rex's own skill and hooks. Setup does not run it.")
+	// Rex's own skill and hooks, for exactly the agents that setup found (the user, 2026-10-22).
+	// Only a status that says "current" for the skill and the hook of each one counts as installed.
+	skillFailed := false
+	skillCurrent := func() bool {
+		b, err := e.skillStatus()
+		return rexSkillCurrent(b, err, skillKinds)
+	}
+	names := strings.Join(skillKinds, ", ")
+	switch {
+	case skillCmd == "":
+	case skillCurrent():
+		say("\nRex's skill and hooks: installed for %s.", names)
+		skillCmd = ""
+	case eof:
+	default:
+		fmt.Fprintf(e.out, "\nInstall Rex's own skill and hooks for %s now (%s)? [y/N] ", names, skillCmd)
+		line, err := e.in.ReadString('\n')
+		if err != nil {
+			say("")
+		}
+		if a := strings.ToLower(strings.TrimSpace(line)); err == nil && (a == "y" || a == "yes") {
+			switch err := e.skillSetup(skillArgs, e.out); {
+			case err != nil:
+				say("Rex skill setup failed: %v", err)
+				skillFailed = true
+			case !skillCurrent():
+				say("Rex skill setup finished, but rex skill status does not report the skill and hooks as current for %s.", names)
+				skillFailed = true
+			default:
+				say("Rex's skill and hooks: installed for %s.", names)
+				skillCmd = ""
+			}
+		}
+	}
+	if skillCmd != "" {
+		say("\nInstall Rex's own skill and hooks: %s", skillCmd)
+	}
 	if rexWritten {
 		// The server that setup configured: a bare `rex config reload` would reach the caller's.
 		say("Load the LazyRex palette entries: rex -S %s config reload", shellWord(server))
@@ -607,9 +722,9 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	if syncCmd != "" {
 		say("Install the plugins: %s", syncCmd)
 	}
-	// A blocked file, a failed write or a failed sync is an error; a declined file or sync is the
-	// user's choice.
-	if len(failed) > 0 || len(blocked) > 0 || syncFailed {
+	// A blocked file, a failed write, a failed sync or a failed skill setup is an error; a declined
+	// file, sync or skill setup is the user's choice.
+	if len(failed) > 0 || len(blocked) > 0 || syncFailed || skillFailed {
 		return 1
 	}
 	return 0

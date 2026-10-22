@@ -549,10 +549,18 @@ Exit status:
 | Every file was written, unchanged, or declined | 0 |
 | A file is blocked, or a write failed (also with `-print`, for a blocked file) | 1 |
 | The plugin sync failed | 1 |
+| `rex skill setup` failed, or `rex skill status` does not confirm it afterwards | 1 |
 | A prerequisite is missing | 1 |
 | Standard input is not a terminal (without `-print`) | 2 |
 
-A decline is the user's choice, not an error. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
+A decline is the user's choice, not an error.
+
+Rex's own skill and hooks (the user, 2026-10-22). Rex installs them with `rex skill setup`; setup offers that command last, for exactly the agents that it found (`--agent claude`, `--agent codex`). It never runs a bare `rex skill setup`, which reaches every agent that Rex finds, and it never adds `--force`: Rex refuses to replace a skill named rex that it did not install.
+
+- No agent found: no question and no command.
+- `rex skill status --json` says that the skill and the hook of each agent are `current`: setup says `Rex's skill and hooks: installed for <agents>.` and asks nothing. A failed, malformed or incomplete status is not an installed claim.
+- Otherwise it asks `Install Rex's own skill and hooks for <agents> now (rex skill setup --agent ...)? [y/N]`. On `y` it runs the command and shows its output, then asks `rex skill status` again. Only a status that says `current` for each agent prints the installed line; a failed setup or an unconfirmed status is an error (exit 1).
+- On `N`, at the end of input, with `-print` and without a terminal, setup runs no rex skill command and prints the exact command.
 
 Plugins. The hub refuses a plugin of hub.json that is not installed ("is not installed: run lazyrex-hub plugin sync"), so setup ends with the plugin sync (the coordinator, 2026-10-22). After the files, and only for a hub.json that exists and names a server (the one that the hub controls read):
 

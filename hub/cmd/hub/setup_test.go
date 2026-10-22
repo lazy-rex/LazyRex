@@ -43,10 +43,13 @@ func setupTestEnv(t *testing.T, answers string, tty bool) (setupEnv, *strings.Bu
 		// sets its own (setupsync_test.go).
 		installed: func(string) bool { return false },
 		sync:      func(string, io.Writer) error { return errors.New("no sync in this test") },
-		in:        bufio.NewReader(strings.NewReader(answers)),
-		tty:       tty,
-		out:       out,
-		now:       func() time.Time { return setupNow },
+		// Rex's skill and hooks are current; setupskill_test.go tests the offer.
+		skillStatus: func() ([]byte, error) { return skillStatusJSON("current", "claude", "codex"), nil },
+		skillSetup:  func([]string, io.Writer) error { return errors.New("no rex skill setup in this test") },
+		in:          bufio.NewReader(strings.NewReader(answers)),
+		tty:         tty,
+		out:         out,
+		now:         func() time.Time { return setupNow },
 	}, out
 }
 
