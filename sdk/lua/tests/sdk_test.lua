@@ -47,7 +47,7 @@ test('a second start runs no migration again', function()
 end)
 
 test('a database with a newer schema: the start runs on, keeps user_version and logs one line', function()
-  -- Expand/contract (docs/sql.md section 2): a rollback runs the previous release on the newer schema.
+  -- Expand/contract (docs/sql.md section 1): a rollback runs the previous release on the newer schema.
   local s = sandbox(sdk_dir, base, {main = TODO})
   s.sql.state.user_version = 2
   s.sql.state.tables.todos = {columns = {'id', 'text', 'done', 'note'}, rows = {}, seq = 0} -- schema 2 added note

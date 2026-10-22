@@ -14,7 +14,7 @@
 local M = {}
 local S = {app = nil, frame = nil}
 
-local MAX_REQUEST = 64 * 1024 -- Rex refuses a larger client.perform request (observed, docs/sql.md section 5).
+local MAX_REQUEST = 64 * 1024 -- Rex refuses a larger client.perform request (observed, docs/sql.md section 6).
 -- Rex delivers no control message over 64 KiB, and the hub then keeps the old tree (Worktrees README,
 -- "Panel pages"). The SDK refuses a rendered view over 48 KiB, with room for the frame around it.
 local MAX_VIEW = 48 * 1024
@@ -933,7 +933,7 @@ function M.plugin(name)
     if #migrations == 0 then return end
     run({tx = true}, function()
       local have = tonumber((db.first('PRAGMA user_version') or {}).user_version) or 0
-      -- Expand/contract (docs/sql.md section 2): a newer schema is a rollback to this release. Run on.
+      -- Expand/contract (docs/sql.md section 1): a newer schema is a rollback to this release. Run on.
       if have > #migrations then
         print('lazyrex: the database has schema ' .. have .. '; this plugin knows ' .. #migrations .. '; running on (expand-only rule, docs/sql.md)')
       end
