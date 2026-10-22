@@ -198,6 +198,9 @@ type Hub struct {
 	// resolveNext stores it later.
 	unsentSpawns map[string]string
 
+	// pops is the plugin manager's op service (pluginops.go).
+	pops pluginOpsSvc
+
 	changedQ changedQueue // hub.changed deliveries in flight (changed.go)
 }
 
@@ -271,7 +274,7 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
+	"hub.plugins", "hub.plugins.reload", "hub.plugins.ops", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
 	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
 	"hub.prompts", "hub.prompt.answer"}
 
@@ -501,6 +504,9 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	go h.uiWorker(context.Background())
 	h.kickUI("")
 	if err := h.viewsStart(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.pluginOpsStart(ctx); err != nil {
 		return nil, err
 	}
 	h.workersRun(ctx)
@@ -874,6 +880,17 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	}
 	ns := pl.Name
 	switch p.Action {
+	case "hub.plugins.ops":
+		// The plugins panel of the home plugin reads the plugin manager's ops (pluginops.go).
+		h.mu.Lock()
+		home := h.homeRecordLocked(pl.Name)
+		h.mu.Unlock()
+		if !home {
+			return nil, bad("only the home plugin reads the plugin operations")
+		}
+		var raw map[string]json.RawMessage
+		json.Unmarshal(p.Args, &raw)
+		return h.pluginOpsList(ctx, raw)
 	case "hub.grant.create":
 		return h.grantCreate(ctx, p, ns, args)
 	case "hub.grant.get":

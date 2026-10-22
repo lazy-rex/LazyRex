@@ -114,6 +114,7 @@ func (h *Hub) agentKeymap(ctx context.Context) error {
 		}
 	}
 	actions = append(actions, agentListActions...)
+	actions = append(actions, pluginOpActions...)
 	forward := map[string]string{} // plugin action -> the plugin's client, for agentDispatch
 	type owner struct {
 		client  string
@@ -200,6 +201,9 @@ func (h *Hub) agentAnswer(ctx context.Context, p perform) {
 }
 
 func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
+	if p.Action == "hub.plugins.op" || p.Action == "hub.plugins.ops" {
+		return h.pluginOpAgent(ctx, p) // the agent face only (pluginops.go)
+	}
 	if agentHubActions[p.Action] {
 		return h.dispatch(ctx, p)
 	}
