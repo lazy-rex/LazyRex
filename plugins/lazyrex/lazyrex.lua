@@ -1,5 +1,5 @@
 -- LazyRex home. The hub owns profiles, workers, and navigation. Home has no tab: its palette
--- entries are "Agents…" (a panel), "Stop Worker…" and, while no Profiles plugin is registered,
+-- entries are "Agents…" (a panel), "Stop Worker…" and, while no other plugin offers a launch,
 -- "Launch Profile…" (forms). A view at '/' is the retired home tab; it renders the panel until the
 -- hub retires it.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
@@ -227,14 +227,24 @@ local function perform(args)
   fail('invalid_input', 'Unknown home action')
 end
 
--- The palette entries. "Launch Profile…" only while no Profiles plugin is registered: Profiles
--- has its own Start Agent… and Start Accessory… (decision Q1 A, 2026-10-22).
+-- launch_offered: another registered plugin has a palette command whose action is hub.spawn, as
+-- Profiles' Start Agent… and Start Accessory… are. The capability decides, not a plugin name.
+local function launch_offered()
+  for _, plugin in ipairs(hub('hub.plugins').plugins or {}) do
+    if plugin.id ~= 'lazyrex' then
+      for _, c in ipairs(plugin.commands or {}) do if c.action == 'hub.spawn' then return true end end
+    end
+  end
+  return false
+end
+-- The palette entries. "Launch Profile…" only while no other plugin offers a launch (decision Q1 A,
+-- 2026-10-22; the hub lead: gate on the capability).
 local function commands()
   local list = {
     {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
     {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'},
   }
-  if not registered('profiles') then
+  if not launch_offered() then
     list[#list + 1] = {id = 'launch', title = 'Launch Profile…', route = '/forms/launch', action = 'hub.spawn'}
   end
   return list
@@ -268,7 +278,7 @@ for name in pairs(handlers) do actions[#actions + 1] = {name = name, kind = 'cli
   args = {type = 'object', additionalProperties = true}} end
 rex.call('client.keymap', {actions = actions})
 -- The first registration names the base commands, so the hub knows the plugin; sync then adds
--- Launch Profile… when no Profiles plugin is registered.
+-- Launch Profile… when no other plugin offers a launch.
 hub('hub.register', {plugin = 'lazyrex', instance_id = instance_id, exports = {}, commands = {
   {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
   {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'}}})

@@ -1,13 +1,13 @@
 -- Ported from the Node test home.mjs (coverage map: tests/README.md): launching workers.
 -- Both paths: the user submits the Launch Profile… form (tool = 'hub.spawn'); an agent calls
 -- hub.spawn. The task profile writes its two args to LAB/home/task-args. The file stops the
--- profiles stub first: the home plugin registers Launch Profile… only while no Profiles plugin is
--- registered.
+-- launcher stub first: the home plugin registers Launch Profile… only while no other plugin offers
+-- a launch (a palette command whose action is hub.spawn).
 
 local codex = agent('codex')
 local args_file = H.args.lab .. '/home/task-args'
 
-H.hub('hub.admin.stop', {plugin = 'profiles'})
+H.hub('hub.admin.stop', {plugin = 'launcher'})
 wait('the home plugin registers Launch Profile…', function()
   for _, c in ipairs(H.hub('hub.test.commands', {plugin = 'lazyrex'}).commands or {}) do
     if c.id == 'launch' then return true end

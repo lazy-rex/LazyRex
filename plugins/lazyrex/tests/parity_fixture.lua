@@ -6,11 +6,11 @@ local function commands()
   for _, c in ipairs(H.hub('hub.test.commands', {plugin = 'lazyrex'}).commands or {}) do ids[c.id] = true end
   return ids
 end
-H.hub('hub.admin.stop', {plugin = 'profiles'})
+H.hub('hub.admin.stop', {plugin = 'launcher'})
 wait('the home plugin registers Launch Profile…', function() return commands().launch end)
 user:command('launch')
 user:view('/forms/launch'):render()
-H.hub('hub.admin.start', {plugin = 'profiles'})
+H.hub('hub.admin.start', {plugin = 'launcher'})
 wait('the home plugin drops Launch Profile…', function() return not commands().launch end)
 
 local w = agent('codex'):call('hub.spawn', {profile = 'shell', key = 'parity-worker', title = 'Parity worker'})

@@ -4,8 +4,9 @@
 local codex = agent('codex')
 local function workers() return codex:call('hub.workers', {}).workers or {} end
 
--- The launch form is registered only while no Profiles plugin is (the stub is stopped here).
-H.hub('hub.admin.stop', {plugin = 'profiles'})
+-- The launch form is registered only while no other plugin offers a launch (the launcher stub is
+-- stopped here).
+H.hub('hub.admin.stop', {plugin = 'launcher'})
 wait('the home plugin registers Launch Profile…', function()
   for _, c in ipairs(H.hub('hub.test.commands', {plugin = 'lazyrex'}).commands or {}) do
     if c.id == 'launch' then return true end

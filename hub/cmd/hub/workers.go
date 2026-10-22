@@ -1589,6 +1589,10 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			list = append(list, map[string]any{"key": t.Key, "title": t.Title, "route": t.Route})
 		}
 		entry := map[string]any{"plugin": name, "id": name, "name": name, "tabs": list, "source": c.Source, "dir": c.Dir}
+		// The palette commands (id, title, route, surface, landing, action or user_only): the home
+		// plugin offers Launch Profile… only while no other plugin has a command whose action is
+		// hub.spawn (Profiles' Start Agent…).
+		entry["commands"] = h.pluginCommands(ctx, name)
 		if cmd := h.landingPanel(ctx, name); cmd != "" {
 			entry["panel"] = cmd // the panel command a Home click opens (panels.go)
 		}

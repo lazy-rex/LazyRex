@@ -62,7 +62,12 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	if pl.promptsGranted() {
 		h.startPromptSender(pl)
 	}
-	go h.saveCommands(context.Background(), name, cmds) // go: register holds h.mu
+	// go: register holds h.mu. The commands are saved before hub.changed (plugins): the home plugin
+	// reads them from hub.plugins (its Launch Profile… entry depends on them).
+	go func() {
+		h.saveCommands(context.Background(), name, cmds)
+		h.changed("plugins")
+	}()
 	h.kickAgentKeymap()
 	h.kickWaiting() // a dependent can wait for this plugin
 	h.ev.emit("plugin_registered", map[string]any{"plugin": name, "instance_id": instance, "client_id": pl.ClientID})
@@ -71,7 +76,6 @@ func (h *Hub) register(p perform, args map[string]any) (any, error) {
 	if h.watches != nil {
 		h.watches.pluginRegistered(name) // rows may wait for it
 	}
-	go h.changed("plugins") // the home lists running plugins; go: register holds h.mu
 	return map[string]any{"namespace": name, "generation": revString(h.generation)}, nil
 }
 

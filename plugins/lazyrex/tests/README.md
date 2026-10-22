@@ -8,16 +8,18 @@ lazyrex-hub test plugins/lazyrex
 ```
 
 The home plugin has no tab. Its palette entries are "Agents…" (the panel `/panels/agents`, the
-landing), "Stop Worker…" (`/forms/stop`) and, only while no plugin named `profiles` is registered,
-"Launch Profile…" (`/forms/launch`). An active worker's "Manage…" opens the menu form
+landing), "Stop Worker…" (`/forms/stop`) and, only while no other plugin offers a launch,
+"Launch Profile…" (`/forms/launch`). The gate is a capability: no other registered plugin has a
+palette command whose action is `hub.spawn`. An active worker's "Manage…" opens the menu form
 `/forms/worker/<spawn_id>`.
 
 The manifest loads three plugins:
 
 - a messaging stub (`stubs/messaging/`: a landing panel and lazy `thread/<id>` tabs);
-- a profiles stub (`stubs/profiles/`: it only registers). A test stops and starts it with
-  `hub.admin.stop` and `hub.admin.start`. `launch.lua` and `errors.lua` stop it first, so the
-  launch form is registered;
+- a launcher stub (`stubs/launcher/`): it registers a palette command whose action is `hub.spawn`,
+  as Profiles' Start Agent… does. A test stops and starts it with `hub.admin.stop` and
+  `hub.admin.start`. `launch.lua` and `errors.lua` stop it first, so the launch form is registered.
+  In `capability.lua` it registers with no command (`test.files` args);
 - the harness fixture (`tests/harness`, a plugin with a tab).
 
 Profiles come from `profiles.json`. The `task` profile writes its two args to
@@ -28,8 +30,8 @@ Profiles come from `profiles.json`. The `task` profile writes its two args to
 
 | Behavior | Test |
 | --- | --- |
-| No tabs; the palette entries; Launch Profile… only without Profiles | render.lua "declares no tabs"; commands.lua |
-| A burst of Profiles changes: one final command set, the latest; no registration loop | commands.lua "a burst of changes" |
+| No tabs; the palette entries; Launch Profile… only without a launch command elsewhere | render.lua "declares no tabs"; commands.lua; capability.lua (a registered plugin without the command) |
+| A burst of launcher changes: one final command set, the latest; no registration loop | commands.lua "a burst of changes" |
 | Panel: agents without the user, Message only with Messaging | render.lua "the panel lists the agents"; navigation.lua "Messaging absent" |
 | Panel: Manage… for an active worker, Dismiss for a failed one | render.lua "workers" |
 | Worker detail from the status record (`idle · Ready`) | render.lua "a worker detail" |

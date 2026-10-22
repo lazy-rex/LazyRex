@@ -957,13 +957,20 @@ func (h *Hub) commandTitle(ctx context.Context, plugin, route string) string {
 	return route
 }
 
-// landingPanel is the ID of plugin's landing panel command, or "".
-func (h *Hub) landingPanel(ctx context.Context, plugin string) string {
+// pluginCommands returns a plugin's registered palette commands (none when it has no record).
+func (h *Hub) pluginCommands(ctx context.Context, plugin string) []paletteCommand {
 	var raw string
 	h.db.QueryRowContext(ctx, `SELECT commands FROM ui_commands WHERE plugin = ?`, plugin).Scan(&raw)
-	var list []paletteCommand
-	json.Unmarshal([]byte(raw), &list)
-	for _, c := range list {
+	list := []paletteCommand{}
+	if json.Unmarshal([]byte(raw), &list) != nil || list == nil {
+		return []paletteCommand{}
+	}
+	return list
+}
+
+// landingPanel is the ID of plugin's landing panel command, or "".
+func (h *Hub) landingPanel(ctx context.Context, plugin string) string {
+	for _, c := range h.pluginCommands(ctx, plugin) {
 		if c.Surface == "panel" && c.Landing {
 			return c.ID
 		}

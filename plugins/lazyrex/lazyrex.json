@@ -2,10 +2,11 @@
  "name": "lazyrex",
  "main": "lazyrex.lua",
  "test": {
-  "plugins": [{"source": "tests/stubs/messaging"}, {"source": "tests/stubs/profiles"}, {"source": "../../tests/harness"}],
+  "plugins": [{"source": "tests/stubs/messaging"}, {"source": "tests/stubs/launcher"}, {"source": "../../tests/harness"}],
   "agents": [{"id": "codex", "name": "Codex"}],
   "profiles": "tests/profiles.json",
   "parity_fixture": "tests/parity_fixture.lua",
-  "parity_routes": ["/forms/launch"]
+  "parity_routes": ["/forms/launch"],
+  "files": {"capability.lua": {"args": {"launcher": {"commands": "none"}}}}
  }
 }

@@ -1,5 +1,5 @@
 -- The home plugin has no tab: its palette entries and the Agents… panel tree on the real hub.
--- Profiles come from tests/profiles.json; the plugins are the messaging and profiles stubs and the
+-- Profiles come from tests/profiles.json; the plugins are the messaging and launcher stubs and the
 -- harness fixture.
 
 local codex = agent('codex')
@@ -16,7 +16,7 @@ end
 
 test('the home plugin declares no tabs; its palette entries are Agents… and Stop Worker…', function()
   expect(tabs()).to_equal({})
-  -- The profiles stub is registered: no Launch Profile… (Profiles has its own start forms).
+  -- The launcher stub offers a launch (hub.spawn): no Launch Profile….
   expect(command_ids()).to_equal({'agents', 'stop'})
   local cmds = H.hub('hub.test.commands', {plugin = 'lazyrex'}).commands
   expect(cmds[1]).to_equal({id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'})

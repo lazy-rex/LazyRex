@@ -117,7 +117,7 @@ func TestHomePluginManifest(t *testing.T) {
 	for _, d := range m.deps {
 		names = append(names, d.m.Name)
 	}
-	if strings.Join(names, ",") != "messaging,profiles,harnessfix" {
+	if strings.Join(names, ",") != "messaging,launcher,harnessfix" {
 		t.Errorf("test.plugins: %v", names)
 	}
 }
