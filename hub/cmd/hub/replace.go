@@ -98,13 +98,13 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	// The row read inserts no row: up to sent_at the call has no effect (adminattempt.go).
 	h.mu.Lock()
 	err = h.readPluginRow(ctx, pl)
-	target, block := pl.InstanceID, pl.BlockID
+	target, block, session := pl.InstanceID, pl.BlockID, pl.SessionID
 	h.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	if attempt != "" {
-		if err := h.bindAttempt(ctx, attempt, "replace", target, block); err != nil {
+		if err := h.bindAttempt(ctx, attempt, "replace", target, block, session); err != nil {
 			return nil, err
 		}
 		pl.opAttempt = attempt // the spawn of this call writes its intent_id (spawn)
