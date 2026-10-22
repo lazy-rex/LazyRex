@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -183,8 +184,7 @@ func TestPluginOpLockCrashRecovery(t *testing.T) {
 }
 
 // Another writer changed the key's entry after the target was stored: conflict, and the lock is
-// unchanged. The same pin from another writer (here, with its own cache directory) counts as
-// written, with no write.
+// unchanged.
 func TestPluginOpLockBase(t *testing.T) {
 	t.Run("changed", func(t *testing.T) {
 		r, _ := fetchTestRepo(t)
@@ -197,22 +197,6 @@ func TestPluginOpLockBase(t *testing.T) {
 		}
 		if after, _ := os.ReadFile(opLockFile(h)); string(after) != string(before) || len(lockProofs(t, h, op.ID)) != 0 {
 			t.Fatal("the lock was written")
-		}
-	})
-	t.Run("same pin", func(t *testing.T) {
-		r, _ := fetchTestRepo(t)
-		h := fetchTestHub(t, r)
-		op := fetchedAdd(t, h, "y", "github:acme/notes@v1.0.0")
-		var pin lockEntry
-		json.Unmarshal([]byte(op.Pin), &pin)
-		cli := pin
-		cli.Dir = "github/acme/notes/cli-dir"
-		writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": &cli}})
-		if err := h.opLock(context.Background(), op); err != nil || op.Phase != "writing" {
-			t.Fatalf("op %+v %v", op, err)
-		}
-		if got := readTestLock(t, h).Plugins["github:acme/notes@v1.0.0"]; got.Dir != cli.Dir || len(lockProofs(t, h, op.ID)) != 0 {
-			t.Fatalf("the lock was written: %+v", got)
 		}
 	})
 }
@@ -426,5 +410,69 @@ func TestPluginOpLockBaseReplay(t *testing.T) {
 	}
 	if got := opsOf(t, h, v["op_id"].(string)).LockBase; got != first || !strings.Contains(first, `"absent"`) {
 		t.Fatalf("the snapshot %q, first %q", got, first)
+	}
+}
+
+// The lock already has the op's pin with another writer's cache directory (R2b, lead-c3final): the
+// op verifies that retained directory before it goes on.
+//   - valid (a verified copy of the entry): written, no write;
+//   - missing, or a changed file (a digest mismatch): the op writes its own verified entry (the same
+//     pin), and the lock then names a directory that verifies;
+//   - a crash after the repair rename (of a missing directory): the recovery sees its own write and
+//     writes no second time.
+func TestPluginOpLockRetainedDir(t *testing.T) {
+	for _, c := range []string{"valid", "missing", "changed", "crash after repair"} {
+		t.Run(c, func(t *testing.T) {
+			r, _ := fetchTestRepo(t)
+			h := fetchTestHub(t, r)
+			op := fetchedAdd(t, h, "rd", "github:acme/notes@v1.0.0")
+			var pin lockEntry
+			json.Unmarshal([]byte(op.Pin), &pin)
+			cli := pin
+			cli.Dir = "github/acme/notes/" + pin.Commit + ".c1c1000000000000"
+			own := filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(pin.Dir))
+			other := filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(cli.Dir))
+			if c == "valid" || c == "changed" {
+				if out, err := exec.Command("cp", "-Rp", own, other).CombinedOutput(); err != nil {
+					t.Fatalf("copy: %v %s", err, out)
+				}
+			}
+			if c == "changed" {
+				os.Chmod(other, 0o755)
+				os.Chmod(filepath.Join(other, "main.lua"), 0o644)
+				if err := os.WriteFile(filepath.Join(other, "main.lua"), []byte("return 3\n"), 0o444); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": &cli}})
+			if c == "crash after repair" {
+				h.pops.fault = func(p string) bool { return p == "plugin-op-after-lock-rename" }
+				if err := h.opLock(context.Background(), op); !errors.Is(err, errOpCrash) {
+					t.Fatalf("the crash: %v", err)
+				}
+				h.pops.fault = nil
+				op = opsOf(t, h, op.ID)
+			}
+			if err := h.opLock(context.Background(), op); err != nil || op.Phase != "writing" {
+				t.Fatalf("op %+v %v", op, err)
+			}
+			got := readTestLock(t, h).Plugins["github:acme/notes@v1.0.0"]
+			attempts := len(lockProofs(t, h, op.ID))
+			e := &configEntry{Source: "github:acme/notes@v1.0.0"}
+			e.checkSource("")
+			if _, _, err := lockedDir(h.cfg.path, h.cfg.State, readTestLock(t, h), e); err != nil {
+				t.Fatalf("the lock entry does not verify: %v", err)
+			}
+			switch c {
+			case "valid":
+				if got.Dir != cli.Dir || attempts != 0 {
+					t.Fatalf("a write: %+v, %d attempts", got, attempts)
+				}
+			default:
+				if got.Dir != pin.Dir || attempts != 1 {
+					t.Fatalf("no repair: %+v, %d attempts", got, attempts)
+				}
+			}
+		})
 	}
 }
