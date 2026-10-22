@@ -1348,13 +1348,13 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 		if !kept {
 			now = entryIdentity(pl.entry)
 		}
-		instance, block := pl.InstanceID, pl.BlockID
+		instance, block, session := pl.InstanceID, pl.BlockID, pl.SessionID
 		h.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}
 		if attempt != "" {
-			if err := h.bindAttempt(ctx, attempt, strings.TrimPrefix(action, "hub.admin."), instance, block); err != nil {
+			if err := h.bindAttempt(ctx, attempt, strings.TrimPrefix(action, "hub.admin."), instance, block, session); err != nil {
 				return nil, err
 			}
 			pl.opAttempt = attempt // the spawn of this call writes its intent_id (spawn)
