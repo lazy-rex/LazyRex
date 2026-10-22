@@ -738,6 +738,7 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
+	h.sql.fence(pl.Name) // the old instance's SQL transaction rolls back before the retirement returns
 	if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": sess, "block_id": old}, nil); err != nil {
 		log.Printf("close old plugin block %s: %v", old, err)
 	}
