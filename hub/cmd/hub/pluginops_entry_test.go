@@ -235,3 +235,43 @@ func TestAdminExpectEntryArgument(t *testing.T) {
 		t.Errorf("a matching stop: %v (desired %q)", err, pl.Desired)
 	}
 }
+
+// Admission reads its entry's fields while a reload changes the same entry in place
+// (updateManaged, under reloadMu, entriesMu and mu): every field that admission uses is read under
+// entriesMu, so the stored identity is one snapshot (codex-27's TestReviewerEntryAdmissionReloadRace,
+// a -race check).
+func TestPluginOpAdmissionReloadRace(t *testing.T) {
+	h, _, dir := opsTestHub(t, "")
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "x"))
+	opsLoadEntries(t, h)
+	e := opsEntry(t, h, "managed:x")
+	a, b := *e, *e
+	b.Source = a.Source + "-changed"
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			h.reloadMu.Lock()
+			h.entriesMu.Lock()
+			h.mu.Lock()
+			if i%2 == 0 {
+				updateManaged(e, &a)
+			} else {
+				updateManaged(e, &b)
+			}
+			h.mu.Unlock()
+			h.entriesMu.Unlock()
+			h.reloadMu.Unlock()
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		op, err := h.opAdmission(opOrigin{Kind: "user", ID: "reviewer"}, opRequest{Op: "stop", Entry: "managed:x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{expectEntryArg("managed:x", a.Source), expectEntryArg("managed:x", b.Source)}; op.EntryIdentity != want[0] && op.EntryIdentity != want[1] {
+			t.Fatalf("identity %s is not one snapshot", op.EntryIdentity)
+		}
+	}
+	<-done
+}
