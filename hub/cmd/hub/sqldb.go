@@ -460,7 +460,7 @@ type stmtResult struct {
 	columns  []string
 	rows     [][]any
 	complete bool
-	size     int // the encoded size of rows (run); of the complete exec reply (stmt)
+	size     int // the encoded size of the column names and rows (run); of the complete exec reply (stmt)
 	changes  int64
 	id       int64
 	changed  int64           // total_changes() during the statement: trigger and cascade writes count
@@ -510,8 +510,8 @@ func (k *sqlConn) sqlError(ctx context.Context, err error) error {
 }
 
 // run runs one plugin statement on the connection, in the caller's transaction. budget is the
-// reply size that the rows may use; a query stops at it (complete false), and an exec with
-// RETURNING fails with too_large.
+// reply size that the column names and the rows may use; a query stops at it (complete false), and
+// an exec with RETURNING fails with too_large.
 func (k *sqlConn) run(ctx context.Context, q string, params []any, readOnly bool, budget int) (*stmtResult, error) {
 	if len(q) > sqlTextMax {
 		return nil, refuse("too_large", "the SQL text is at most %d bytes", sqlTextMax)
@@ -536,6 +536,9 @@ func (k *sqlConn) run(ctx context.Context, q string, params []any, readOnly bool
 	}
 	r := &stmtResult{complete: true}
 	r.columns, _ = rows.Columns()
+	if b, err := json.Marshal(r.columns); err == nil {
+		r.size = len(b) // the reply has the column names too: a long alias leaves less room for rows
+	}
 	vals := make([]any, len(r.columns))
 	ptrs := make([]any, len(r.columns))
 	for i := range vals {
