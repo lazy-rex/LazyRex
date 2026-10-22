@@ -175,6 +175,15 @@ type Hub struct {
 	paletteLoaded  string        // the palette file content of the last config reload (paletteLoop only)
 	lock           *os.File      // holds the flock; kept for the life of the process
 	test           *testState    // test mode (-test, testmode.go); nil otherwise
+
+	// The palette loop and its stop (forms.go, paletteStop). paletteLoop owns paletteLoaded and
+	// paletteMine until paletteDone closes; then paletteStop owns them.
+	paletteCancel context.CancelFunc // ends paletteLoop; nil before startPalette
+	paletteDone   chan struct{}      // closed when paletteLoop returns
+	paletteTried  chan struct{}      // closed after the first writePalette (the lab fault palette-start)
+	paletteMine   string             // the content that this hub put in the file, or found there
+	paletteOnce   sync.Once          // paletteStop runs once
+	paletteHook   func()             // tests only: runs before a file is published; nil in production
 	// shutdown cancels main's signal context, as SIGTERM does (hub.admin.shutdown). nil: no stop.
 	shutdown func()
 	calls    *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
@@ -401,7 +410,8 @@ func main() {
 	}
 	h.shutdown = stop
 	h.run(ctx)
-	h.sql.close() // open handler transactions roll back
+	h.paletteStop() // no hub entry stays in the palette after the hub ends; the exit status does not change
+	h.sql.close()   // open handler transactions roll back
 	// Exit status (docs/hub.md, "Stop and exit status"): 0 after a signal or hub.admin.shutdown, 1
 	// when the Rex connection closed (h.run logged it) with the context still live.
 	if ctx.Err() == nil {
@@ -545,9 +555,15 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	}
 	h.formsSweep(ctx)
 	h.slotSweep(ctx)
-	go h.paletteLoop(context.Background())
-	h.kickPalette() // the command set may have changed while the hub was down
+	h.startPalette() // the command set may have changed while the hub was down
+	if f := fs.take("palette-start", "fail", ""); f != nil {
+		<-h.paletteTried
+		ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode})
+		h.paletteStop()
+		return nil, errors.New("lab fault palette-start: the start fails after the first palette write")
+	}
 	if err := h.agentFaceStart(ctx, socket); err != nil {
+		h.paletteStop() // an exit after the first palette write (docs/hub.md, "Stop and exit status")
 		return nil, err
 	}
 	ev.emit("hub_started", map[string]any{"client_id": h.clientID, "pid": os.Getpid()})

@@ -180,10 +180,29 @@ func (h *Hub) kickPalette() {
 	}
 }
 
+// The bounds of paletteStop (docs/hub.md, "Stop and exit status"): the wait for the palette loop,
+// and the config reload after the stop file. They are separate bounds: file and process work can
+// add to them.
+const (
+	paletteStopJoin   = 2 * time.Second
+	paletteStopReload = 3 * time.Second
+)
+
+// startPalette starts paletteLoop on a context of its own, so that paletteStop can end it, and
+// asks for a first write.
+func (h *Hub) startPalette() {
+	ctx, cancel := context.WithCancel(context.Background())
+	h.paletteCancel, h.paletteDone, h.paletteTried = cancel, make(chan struct{}), make(chan struct{})
+	go h.paletteLoop(ctx)
+	h.kickPalette()
+}
+
 // paletteLoop writes the palette file when its content changes, then reloads the Rex config.
-// A failed write or reload retries after a few seconds.
+// A failed write or reload retries after a few seconds. It returns when paletteStop cancels ctx.
 func (h *Hub) paletteLoop(ctx context.Context) {
+	defer close(h.paletteDone)
 	var retry <-chan time.Time
+	tried := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -191,12 +210,100 @@ func (h *Hub) paletteLoop(ctx context.Context) {
 		case <-h.paletteKick:
 		case <-retry:
 		}
+		if ctx.Err() != nil { // a select can take a ready kick when the cancel is ready too
+			return
+		}
 		retry = nil
-		if err := h.writePalette(ctx); err != nil {
+		err := h.writePalette(ctx)
+		if !tried {
+			tried = true
+			close(h.paletteTried)
+		}
+		if ctx.Err() != nil {
+			return // the stop owns the file now
+		}
+		if err != nil {
 			log.Printf("palette: %v", err)
 			retry = time.After(5 * time.Second)
 		}
 	}
+}
+
+// paletteStop runs once, on each orderly exit after startPalette: it ends paletteLoop and then
+// replaces the file with paletteHeader alone, which declares no entry, and reloads the Rex config.
+// So no hub or plugin entry stays in the palette after the hub ends; the boot entries of setup
+// (lazyrex_boot.lua) stay. It writes only a file that still holds what this hub put there. A crash
+// cannot run it: the next start writes the file again (writePalette).
+func (h *Hub) paletteStop() {
+	h.paletteOnce.Do(func() {
+		if h.paletteCancel == nil {
+			return
+		}
+		h.paletteCancel()
+		select {
+		case <-h.paletteDone:
+		case <-time.After(paletteStopJoin):
+			log.Print("palette: the palette write did not end; not rewritten at stop")
+			return
+		}
+		path := h.cfg.PaletteLua
+		if path == "" || h.paletteMine == "" {
+			return // this hub never wrote or found its file
+		}
+		if old, err := os.ReadFile(path); err != nil {
+			log.Printf("palette: %v; not rewritten at stop", err)
+			return
+		} else if string(old) != h.paletteMine {
+			log.Print("palette: another writer changed the file; not rewritten at stop")
+			return
+		}
+		ctx := context.Background() // the hub's context is already cancelled
+		if err := h.publishPalette(ctx, path, paletteHeader); err != nil {
+			log.Printf("palette: %v; not rewritten at stop", err)
+			return
+		}
+		rctx, cancel := context.WithTimeout(ctx, paletteStopReload)
+		defer cancel()
+		out, err := h.reloadRexConfig(rctx)
+		h.ev.emit("palette_written", map[string]any{"path": path, "commands": 0, "reload_ok": err == nil, "reload": out, "stop": true})
+		if err != nil {
+			log.Printf("palette: rex config reload at stop: %v: %s", err, out)
+			return
+		}
+		h.paletteLoaded = paletteHeader
+		if _, err := h.db.ExecContext(ctx, `INSERT INTO ui_state (key, value) VALUES ('palette_loaded', ?)
+			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, paletteHeader); err != nil {
+			log.Printf("palette: %v", err)
+		}
+	})
+}
+
+// publishPalette replaces the file at path with content: a temporary file in the same directory,
+// then a rename. A failure keeps the old file. A cancelled ctx publishes nothing: paletteStop owns
+// the file after its cancel.
+func (h *Hub) publishPalette(ctx context.Context, path, content string) error {
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if h.paletteHook != nil {
+		h.paletteHook()
+	}
+	if err := ctx.Err(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// reloadRexConfig runs `rex config reload`. A cancelled ctx kills rex; WaitDelay bounds the wait
+// for output pipes that a child of rex could still hold.
+func (h *Hub) reloadRexConfig(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "config", "reload")
+	cmd.Env = append(os.Environ(), "REX_SERVER="+h.cfg.Server)
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 func (h *Hub) writePalette(ctx context.Context) error {
@@ -224,26 +331,29 @@ func (h *Hub) writePalette(ctx context.Context) error {
 		// do not prove a reload (a crash between the rename and the reload).
 		h.db.QueryRowContext(ctx, `SELECT value FROM ui_state WHERE key = 'palette_loaded'`).Scan(&h.paletteLoaded)
 	}
-	if content == h.paletteLoaded {
+	// Skip only when the last reload had this content and the file still holds it: a stop file
+	// whose reload failed leaves palette_loaded at the full content.
+	old, err := os.ReadFile(path)
+	onDisk := err == nil && string(old) == content
+	if content == h.paletteLoaded && onDisk {
+		h.paletteMine = content
 		return nil
 	}
-	if old, err := os.ReadFile(path); err != nil || string(old) != content {
-		tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
-		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	if !onDisk {
+		if err := h.publishPalette(ctx, path, content); err != nil {
 			return err
 		}
-		if err := os.Rename(tmp, path); err != nil {
-			return err
-		}
+	}
+	h.paletteMine = content
+	if err := ctx.Err(); err != nil {
+		return err // paletteStop reloads after its own write
 	}
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, h.rexBinary, "-S", h.cfg.Server, "--autostart=false", "config", "reload")
-	cmd.Env = append(os.Environ(), "REX_SERVER="+h.cfg.Server)
-	out, err := cmd.CombinedOutput()
-	h.ev.emit("palette_written", map[string]any{"path": path, "commands": len(cmds), "reload_ok": err == nil, "reload": strings.TrimSpace(string(out))})
+	out, err := h.reloadRexConfig(cctx)
+	h.ev.emit("palette_written", map[string]any{"path": path, "commands": len(cmds), "reload_ok": err == nil, "reload": out})
 	if err != nil {
-		return fmt.Errorf("rex config reload: %v: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("rex config reload: %v: %s", err, out)
 	}
 	h.paletteLoaded = content
 	_, err = h.db.ExecContext(ctx, `INSERT INTO ui_state (key, value) VALUES ('palette_loaded', ?)
@@ -271,13 +381,18 @@ func luaString(s string) string {
 	return b.String()
 }
 
+// paletteHeader begins every palette file. Alone, it is the stop file (paletteStop): a module that
+// declares no entry.
+const paletteHeader = `-- Generated by the LazyRex hub. Do not edit: the hub replaces this file.
+-- Load it from init.lua with: pcall(require, "lazyrex_palette")
+`
+
 // paletteLua is the generated Lua file. Its content depends only on the commands, sorted, so an
 // unchanged command set gives the same bytes.
 func paletteLua(cmds map[string][]paletteCommand) string {
 	var b strings.Builder
-	b.WriteString(`-- Generated by the LazyRex hub. Do not edit: the hub replaces this file.
--- Load it from init.lua with: pcall(require, "lazyrex_palette")
-local function lazyrex_hub()
+	b.WriteString(paletteHeader)
+	b.WriteString(`local function lazyrex_hub()
   local list, err = rex.call("client.list", {})
   if err ~= nil then error(err, 0) end
   local hub
