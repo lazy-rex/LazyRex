@@ -17,6 +17,23 @@ import (
 
 var holdID = regexp.MustCompile(`^[a-z0-9._-]{1,128}$`)
 
+// attemptSettled is the one predicate (on plugin_op_attempts as a) that keeps the resolved and the
+// unresolved lists disjoint: an attempt is settled by its proof or by an operator resolution.
+const attemptSettled = `(a.resolved_by != '' OR a.proof != '')`
+
+// resolvedNote is the meaning of resolved_by, beside each record in every reply that shows one.
+const resolvedNote = "resolved by operator (attribution, not proof)"
+
+// resolvedRecord is a stored resolved_by as a JSON object, nil when there is none.
+func resolvedRecord(s string) map[string]any {
+	if s == "" {
+		return nil
+	}
+	var r map[string]any
+	json.Unmarshal([]byte(s), &r)
+	return r
+}
+
 // immediate runs fn in one BEGIN IMMEDIATE transaction: the write lock is taken at the start, so
 // a check and the write that it guards are one step (the atomic boundary of the hold).
 func (h *Hub) immediate(ctx context.Context, fn func(c *sql.Conn) error) (err error) {
@@ -122,11 +139,13 @@ func (h *Hub) holdAction(ctx context.Context, action string, args map[string]jso
 }
 
 // holdStatus is the reply of every hold action: {release_id, state, acquired_at, inflight,
-// unresolved}.
+// unresolved, resolved}.
 //   - inflight: every admitted write op in a non-final phase, queued ones included. The only
 //     exclusion: an agent add or update with no stored confirmation (a request).
 //   - unresolved: every attempt of an op with no proof and no operator resolution, when the op is
 //     final or the attempt has an outcome (an open attempt of an open op is inflight).
+//   - resolved: every attempt with an operator resolution, of every op, with no time limit.
+//     attemptSettled keeps it disjoint from unresolved.
 //
 // state: none (no row), draining (inflight), unresolved, or held.
 func (h *Hub) holdStatus(ctx context.Context) (any, error) {
@@ -153,7 +172,7 @@ func (h *Hub) holdStatus(ctx context.Context) (any, error) {
 	rows.Close()
 	unresolved := []map[string]any{}
 	rows, err = h.db.QueryContext(ctx, `SELECT a.op_id, a.attempt, a.call, a.at FROM plugin_op_attempts a JOIN plugin_ops o ON o.op_id = a.op_id
-		WHERE a.proof = '' AND a.resolved_by = '' AND (a.outcome != '' OR o.phase IN ('done', 'failed', 'conflict', 'unknown'))
+		WHERE NOT `+attemptSettled+` AND (a.outcome != '' OR o.phase IN ('done', 'failed', 'conflict', 'unknown'))
 		ORDER BY a.at, a.rowid`)
 	if err != nil {
 		return nil, err
@@ -169,6 +188,23 @@ func (h *Hub) holdStatus(ctx context.Context) (any, error) {
 			"since": time.UnixMilli(since).UTC().Format(time.RFC3339Nano)})
 	}
 	rows.Close()
+	resolved := []map[string]any{}
+	rows, err = h.db.QueryContext(ctx, `SELECT a.op_id, a.attempt, a.call, a.at, a.resolved_by FROM plugin_op_attempts a
+		WHERE `+attemptSettled+` AND a.resolved_by != '' ORDER BY a.at, a.rowid`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var op, attempt, call, by string
+		var since int64
+		if err := rows.Scan(&op, &attempt, &call, &since, &by); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		resolved = append(resolved, map[string]any{"op_id": op, "attempt": attempt, "call": call,
+			"since": time.UnixMilli(since).UTC().Format(time.RFC3339Nano), "resolved_by": resolvedRecord(by), "note": resolvedNote})
+	}
+	rows.Close()
 	state := "held"
 	switch {
 	case id == "":
@@ -178,7 +214,7 @@ func (h *Hub) holdStatus(ctx context.Context) (any, error) {
 	case len(unresolved) > 0:
 		state = "unresolved"
 	}
-	return map[string]any{"release_id": id, "state": state, "acquired_at": at, "inflight": inflight, "unresolved": unresolved}, nil
+	return map[string]any{"release_id": id, "state": state, "acquired_at": at, "inflight": inflight, "unresolved": unresolved, "resolved": resolved}, nil
 }
 
 // admitUnderHold inserts an admitted op with insert, in one BEGIN IMMEDIATE transaction with the
@@ -279,7 +315,5 @@ func (h *Hub) attemptResolve(ctx context.Context, args map[string]json.RawMessag
 		h.ev.emit("plugin_op_resolved", map[string]any{"op_id": op, "attempt": attempt, "outcome": outcome})
 		h.changed("plugins")
 	}
-	var r map[string]any
-	json.Unmarshal([]byte(record), &r)
-	return map[string]any{"op_id": op, "attempt": attempt, "resolved_by": r, "note": "resolved by operator (attribution, not proof)"}, nil
+	return map[string]any{"op_id": op, "attempt": attempt, "resolved_by": resolvedRecord(record), "note": resolvedNote}, nil
 }
