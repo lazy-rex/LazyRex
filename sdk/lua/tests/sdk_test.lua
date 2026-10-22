@@ -792,8 +792,9 @@ local function paged_hub(seen)
   return {['hub.sql.query'] = function(a)
     seen.calls[#seen.calls + 1] = {sql = a.sql, params = a.params}
     local from = 0
-    local wrapped = a.sql:match('^SELECT %* FROM %((.*)%) LIMIT %-1 OFFSET %?(%d+)$')
+    local wrapped = a.sql:match('^SELECT %* FROM %((.*)\n%) LIMIT %-1 OFFSET %?(%d+)$')
     if wrapped then from = a.params[tonumber(a.sql:match('%?(%d+)$'))] end
+    if not wrapped and a.sql:find('OFFSET', 1, true) then error('the fake does not know this page query: ' .. a.sql) end
     local rows = {}
     for i = from + 1, math.min(from + 10, 25) do rows[#rows + 1] = {i} end
     return {columns = {'n'}, rows = rows, complete = from + 10 >= 25}
@@ -819,7 +820,17 @@ end)]], {hub = paged_hub(seen)})
   expect(r.error, show(r)).to_be(nil)
   expect(r.result).to_equal({count = 25, first = 1, last = 25, all = 25})
   expect(#seen.calls).to_be(3)
-  expect(seen.calls[2].sql).to_be('SELECT * FROM (SELECT n FROM t WHERE k = ?) LIMIT -1 OFFSET ?2')
+  expect(seen.calls[2].sql).to_be('SELECT * FROM (SELECT n FROM t WHERE k = ?\n) LIMIT -1 OFFSET ?2')
   expect(seen.calls[2].params).to_equal({'x', 10})
   expect(seen.calls[3].params).to_equal({'x', 20})
+end)
+
+test('db.each: a line comment at the end of the SQL does not comment out the closing parenthesis', function()
+  local seen = {calls = {}}
+  local s = plugin([[
+app.action('p.each', {}, function() return {count = app.db.each('SELECT n FROM t -- all of them', function() end)} end)]], {hub = paged_hub(seen)})
+  local r = s:agent('p.each', {})
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result.count).to_be(25)
+  expect(seen.calls[2].sql).to_be('SELECT * FROM (SELECT n FROM t -- all of them\n) LIMIT -1 OFFSET ?1')
 end)

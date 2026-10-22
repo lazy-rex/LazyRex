@@ -284,8 +284,10 @@ function db.first(sql, ...)
 end
 -- db.each(sql, ..., fn) calls fn(row) for every row of a result of any size, and answers the row
 -- count. It reads all pages first, in one transaction (one snapshot), then calls fn: a write in fn
--- cannot move the pages. The next page is the same query with OFFSET = the rows read so far. Give
--- ORDER BY for a defined order.
+-- cannot move the pages. The next page is the same query with OFFSET = the rows read so far: each
+-- page runs the query again, so a big result costs pages x rows. The newline before ")" keeps a
+-- line comment at the end of sql from commenting it out; trailing ";" and blanks are removed. Give
+-- ORDER BY for a defined order: the order of a subquery is SQLite behavior, not a guarantee.
 function db.each(sql, ...)
   local n = select('#', ...)
   local fn = n > 0 and select(n, ...) or nil
@@ -304,7 +306,7 @@ function db.each(sql, ...)
       local p = {}
       for i, v in ipairs(list) do p[i] = v end
       p[#list + 1] = #out
-      r = sql_call('hub.sql.query', {sql = 'SELECT * FROM (' .. base .. ') LIMIT -1 OFFSET ?' .. (#list + 1), params = p})
+      r = sql_call('hub.sql.query', {sql = 'SELECT * FROM (' .. base .. '\n) LIMIT -1 OFFSET ?' .. (#list + 1), params = p})
       for _, row in ipairs(rows_of(r)) do out[#out + 1] = row end
     end
     return out

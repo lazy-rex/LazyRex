@@ -55,8 +55,8 @@ selects an item in the panel to toggle it.
   A result too big for one reply (about 1 MB) fails with `too_large`; it never returns part of the
   rows.
 - **`app.db.each(sql, ..., fn)`** calls `fn(row)` for every row of a result of any size (migrations,
-  scans). It reads all pages in one transaction first, then calls `fn`. Give `ORDER BY` for a defined
-  order.
+  scans). It reads all pages in one transaction first, then calls `fn`. Each page runs the query again
+  (OFFSET paging), so a big result costs pages x rows. Give `ORDER BY` for a defined order.
 - **One action, one transaction.** Everything that an action or a panel handler does in the
   database commits when the handler returns, and is undone when it raises an error. A handler sees
   its own writes. Nothing that another handler does can come between its reads and its writes.

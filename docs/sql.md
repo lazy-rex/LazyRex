@@ -101,7 +101,7 @@ is not part of the transaction. The SDK guide says so.
   `invalid_input`.
 - Paging (advanced): a query reply holds whole rows up to the reply limit, then `complete: false`.
   `app.db.query` then fails with `too_large`; `app.db.each` reads the next pages as
-  `SELECT * FROM (<sql>) LIMIT -1 OFFSET ?<n+1>` in one transaction (observed on hub/sql-r2 c840c92, lab:
+  `SELECT * FROM (<sql>\n) LIMIT -1 OFFSET ?<n+1>` (trailing `;` removed) in one transaction (observed on hub/sql-r2 c840c92, lab:
   60 rows of 20 KB; the first reply held 51). A first row over the
   limit: `too_large {row: 0, bytes}`. A zero-row reply whose column names alone exceed the limit:
   `too_large`.
