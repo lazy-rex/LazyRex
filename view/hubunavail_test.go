@@ -84,6 +84,12 @@ func TestDiscoveryFailuresAreNotACount(t *testing.T) {
 		{"no result", map[string]any{"results": []any{}}, nil, unavailable + resolveEmpty + ": 0 results"},
 		{"unknown status", resolveResult("pending"), nil, unavailable + resolveEmpty + `: status "pending"`},
 		{"resolved without a client", map[string]any{"results": []any{map[string]any{"status": "resolved"}}}, nil, unavailable + resolveEmpty + ": a target without a client ID"},
+		// codex-24's review of d5b4f4f: an incomplete reply is not a count of 0.
+		{"ambiguous without candidates", resolveResult("ambiguous"), nil, unavailable + resolveEmpty + ": ambiguous without candidates"},
+		{"a candidate without a client ID", map[string]any{"results": []any{map[string]any{"status": "ambiguous", "candidates": []any{map[string]string{"client_id": "hub"}, map[string]string{}}}}}, nil, unavailable + resolveEmpty + ": a candidate without a client ID"},
+		{"not_found with candidates", resolveResult("not_found", "hub"), nil, unavailable + resolveEmpty + ": not_found with candidates"},
+		{"an empty connection state", resolveResult("resolved", "hub"), map[string]string{"hub": ""}, unavailable + "Cannot inspect the hub client hub: the reply has no connection state"},
+		{"an inspection without the client", resolveResult("ambiguous", "hub", "hub2"), map[string]string{"hub2": "no client"}, unavailable + "Cannot inspect the hub client hub2: the reply has no connection state"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := &protocolFixture{resolveAnswer: c.resolve, inspect: c.inspect}

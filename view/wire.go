@@ -217,8 +217,19 @@ func (w *wire) resolve(ctx context.Context) (string, error) {
 		}
 		candidates = []candidate{r.Target}
 	case "ambiguous":
+		if len(r.Candidates) == 0 {
+			return "", fmt.Errorf("Unexpected target.resolve reply: ambiguous without candidates")
+		}
+		for _, c := range r.Candidates {
+			if c.ClientID == "" {
+				return "", fmt.Errorf("Unexpected target.resolve reply: a candidate without a client ID")
+			}
+		}
 		candidates = r.Candidates
 	case "not_found": // Rex sends no candidates (lab, 2026-10-22)
+		if len(r.Candidates) > 0 {
+			return "", fmt.Errorf("Unexpected target.resolve reply: not_found with candidates")
+		}
 	default:
 		return "", fmt.Errorf("Unexpected target.resolve reply: status %q", r.Status)
 	}
@@ -231,6 +242,11 @@ func (w *wire) resolve(ctx context.Context) (string, error) {
 		}
 		if err := w.call(ctx, "client.inspect", map[string]any{"client_id": c.ClientID}, &ins); err != nil {
 			return "", fmt.Errorf("Cannot inspect the hub client %s: %w", c.ClientID, err)
+		}
+		// Any state but connected (for example lost) is a client that is not a hub now. No state
+		// is an incomplete answer, not a lost client.
+		if ins.Client.State == "" {
+			return "", fmt.Errorf("Cannot inspect the hub client %s: the reply has no connection state", c.ClientID)
 		}
 		if ins.Client.State == "connected" {
 			live = append(live, c.ClientID)

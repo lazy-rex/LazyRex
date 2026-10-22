@@ -101,7 +101,7 @@ It needs exactly one connected hub. The status text depends on the result:
 
 - No connected hub: "No LazyRex hub is connected. To start one, use LazyRex: Start Hub in the palette; if the entry is missing, run lazyrex-hub setup again. This pane retries the connection automatically."
 - More than one: "N LazyRex hubs are connected. This pane needs exactly one."
-- Any other failure: "Hub unavailable: " and the error. A failed `client.inspect` and an unexpected `target.resolve` reply are errors, not a count.
+- Any other failure: "Hub unavailable: " and the error. A failed `client.inspect`, an inspection without a connection state, and an unexpected or incomplete `target.resolve` reply (no result, an unknown status, a resolved target or a candidate without a client ID, `ambiguous` without candidates, `not_found` with candidates) are errors, not a count. A client in any other state (for example `lost`) is not a hub.
 
 The footer notice is one row, so the first sentence is short: in a 38-column pane it shows whole.
 The renderer maps control characters in the status text to "?" (`paneSafe`, a copy of the hub's).

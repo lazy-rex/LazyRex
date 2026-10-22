@@ -40,7 +40,7 @@ type protocolFixture struct {
 	reads              int
 	// Hub discovery (hubunavail_test.go): a target.resolve answer in place of the default (a
 	// *wireError is an error answer), and client.inspect answers by client ID ("fail" is an error
-	// answer; otherwise the connection state).
+	// answer, "no client" a reply without the client; otherwise the connection state).
 	resolveAnswer any
 	inspect       map[string]string
 }
@@ -101,6 +101,9 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 				problem = &wireError{Code: "not_found", Message: "No client " + id}
 			}
 			result = map[string]any{"client": map[string]string{"connection_state": state}}
+			if state == "no client" {
+				result = map[string]any{}
+			}
 		case "client.perform":
 			var action string
 			var args map[string]any
