@@ -58,7 +58,9 @@ end)
 -- reporter process's start time, identity.go). The newer reports first: it becomes current. The
 -- older reports after it: it is stale, records no identity, and its hook still exits 0. The pane
 -- script holds the older hook's input on a FIFO until ps shows that hook's reporter child, then
--- runs the newer hook. All of it fits in the hook's own 3 s limit (hook.go hookDeadline).
+-- runs the newer hook. The older hook must get its input within its own 3 s limit (hook.go
+-- hookDeadline); the script polls ps 20 times, and if it does not see the reporter it records the
+-- setup failure and sends no report.
 test('a stale hook report: the older reporter loses, records nothing, and exits 0', function()
   local d = H.args.lab .. '/twohooks'
   local marker = tostring(os.time())
@@ -75,7 +77,8 @@ while [ $n -lt 20 ]; do
   [ -n "$r" ] && break
   sleep 0.05; n=$((n + 1))
 done
-if [ -z "$r" ]; then echo setup-expired > "$d/setup"; else echo "$r" > "$d/old.reporter"; fi
+if [ -z "$r" ]; then echo 'no reporter child of the older hook in 20 ps polls' > "$d/setup"; exec sleep 600; fi
+echo "$r" > "$d/old.reporter"
 sleep 0.1
 printf '{"hook_event_name":"SessionStart","session_id":"new-%s","source":"startup"}' "$m" | "$1" hook codex
 echo $? > "$d/new.exit"
@@ -100,8 +103,10 @@ exec sleep 600
     local v = f:read('*a'); f:close()
     return (v:gsub('%s+$', ''))
   end
-  wait('both hooks exited', function() return read('old.exit') and read('new.exit') and true or nil end, 20)
-  expect(read('setup'), 'the older reporter was seen before the newer hook ran').to_be(nil)
+  wait('both hooks exited, or the setup failed', function()
+    return read('setup') or (read('old.exit') and read('new.exit')) or nil
+  end, 20)
+  expect(read('setup'), 'the setup failure').to_be(nil)
   expect(read('old.reporter') ~= nil, 'the older reporter pid').to_be(true)
   expect(read('new.exit'), 'the newer hook exit').to_be('0')
   expect(read('old.exit'), 'the older hook exit').to_be('0')
