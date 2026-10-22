@@ -416,6 +416,9 @@ func releaseMain(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return usage()
 	}
+	if args[0] == "set-hash" {
+		return releaseSetHash(args[1:], stdout, stderr)
+	}
 	step, ok := relStepFor(args[0])
 	if !ok {
 		fmt.Fprintf(stderr, "release: unknown step %q\n", args[0])
