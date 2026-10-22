@@ -210,25 +210,26 @@ func (h *Hub) opResolveTarget(ctx context.Context, op *pluginOp) (opResolved, er
 		return opResolved{}, err
 	}
 	url := h.pops.cmd.url(r)
+	git := h.pops.cmd.runner()
 	return withTmp(tmpRoot, func(tmp string) (opResolved, error) {
 		switch {
 		case to != "" && to != "latest":
-			t, err := resolveTag(ctx, tmp, url, to)
+			t, err := resolveTag(ctx, git, tmp, url, to)
 			if err != nil {
 				return opResolved{}, err
 			}
 			return opResolved{Source: opNewSource(source, to, t.Branch), RefKind: "tag", Commit: t.Commit, FetchRef: t.FetchRef}, nil
 		case r.Ref == "latest":
-			rel, err := resolveLatest(ctx, tmp, url)
+			rel, err := resolveLatest(ctx, git, tmp, url)
 			if err != nil {
 				return opResolved{}, err
 			}
 			return opResolved{Source: source, RefKind: "latest", Tag: rel.Tag, Commit: rel.Commit, FetchRef: rel.FetchRef}, nil
 		}
-		if err := checkRef(ctx, tmp, r.Ref); err != nil {
+		if err := checkRef(ctx, git, tmp, r.Ref); err != nil {
 			return opResolved{}, err
 		}
-		res, err := resolveRef(ctx, tmp, url, r.Ref)
+		res, err := resolveRef(ctx, git, tmp, url, r.Ref)
 		if err != nil {
 			return opResolved{}, err
 		}
