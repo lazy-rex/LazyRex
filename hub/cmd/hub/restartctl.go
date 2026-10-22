@@ -363,46 +363,40 @@ func (v *ctlView) stop(stdout io.Writer) int {
 		}
 		return code
 	}
-	deadline := time.Now().Add(ctlStopWait) // one bound for all of stop
+	seen := stopSeen{listed: true, listedAt: time.Now()} // statusText saw the hub, before the send
+	deadline := time.Now().Add(ctlStopWait)              // one bound for all of stop
 	out, sendErr := v.rexCmd(deadline, "-C", v.own.ID, "do", "hub.admin.shutdown")
 	if _, refused := cliOutcome(sendErr, []string{"refused"}); refused {
 		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", sendErr, strings.TrimSpace(string(out)))
 		return 1
 	}
 	wrapped := v.holder > 0 // a holder whose status file does not match still owns the state
-	// The last successful listing decides what stop says at the deadline: listed (the hub client
-	// was in it, at listedAt) or gone; lockHeld: gone, but the restart lock holder stays.
-	listed, listedAt, lockHeld := true, time.Now(), false // statusText saw the hub just now
-	// seenErr is the last look, when it failed.
-	var seenErr error
 	for ; ; time.Sleep(200 * time.Millisecond) {
 		// A look started this close to the deadline is cut by it, and its error says nothing about
 		// the hub: report from the last look instead.
 		if left := time.Until(deadline); left < ctlLookMin {
 			time.Sleep(left)
-			v.stopTimedOut(stdout, listed, seenErr == nil, lockHeld, listedAt, sendErr, out, seenErr)
+			v.stopTimedOut(stdout, seen, sendErr, out)
 			return 1
 		}
 		ids, err := v.hubIDs(deadline)
-		seenErr = err
+		seen.lastOK, seen.seenErr = err == nil, err
 		if err == nil {
-			listed = slices.Contains(ids, v.own.ID)
-			lockHeld = false
-			if listed {
-				listedAt = time.Now()
+			seen.listed = slices.Contains(ids, v.own.ID)
+			seen.lockHeld, seen.lockErr = false, nil
+			if seen.listed {
+				seen.listedAt = time.Now()
 			} else if wrapped {
-				if holder, _, _, err := readRestart(v.state); holder > 0 || err != nil {
-					lockHeld = true
-					seenErr = err
-				}
+				holder, _, _, err := readRestart(v.state)
+				seen.lockHeld, seen.lockErr = holder > 0, err
 			}
-			if !listed && !lockHeld {
+			if !seen.listed && !seen.lockHeld && seen.lockErr == nil {
 				fmt.Fprintln(stdout, "stopped")
 				return 0
 			}
 		}
 		if time.Now().After(deadline) {
-			v.stopTimedOut(stdout, listed, err == nil, lockHeld, listedAt, sendErr, out, seenErr)
+			v.stopTimedOut(stdout, seen, sendErr, out)
 			return 1
 		}
 	}
@@ -411,22 +405,33 @@ func (v *ctlView) stop(stdout io.Writer) int {
 // ctlLookMin is the least time left before the deadline in which stop starts a client listing.
 const ctlLookMin = 100 * time.Millisecond
 
-// stopTimedOut is what stop says at its deadline, from the last successful listing: listed (at
-// listedAt), and lastOK when that listing was also the last look.
-func (v *ctlView) stopTimedOut(stdout io.Writer, listed, lastOK, lockHeld bool, listedAt time.Time, sendErr error, out []byte, seenErr error) {
+// stopSeen is what stop last saw. The last successful listing sets listed (the hub client was in
+// it, at listedAt) and, when the client was gone, lockHeld or lockErr (restart.lock could not be
+// read). lastOK: the last look after the shutdown send was that successful listing; seenErr: the
+// last look failed.
+type stopSeen struct {
+	listed, lastOK, lockHeld bool
+	listedAt                 time.Time
+	lockErr, seenErr         error
+}
+
+// stopTimedOut is what stop says at its deadline.
+func (v *ctlView) stopTimedOut(stdout io.Writer, seen stopSeen, sendErr error, out []byte) {
 	fmt.Fprintf(stdout, "the hub did not stop within %g s; the shutdown request may still apply: run lazyrex-hub status\n", ctlStopWait.Seconds())
 	switch {
-	case listed && lastOK:
+	case seen.listed && seen.lastOK:
 		fmt.Fprintln(stdout, "the hub client is still connected")
-	case listed:
-		fmt.Fprintf(stdout, "the last successful check (%s ago) still listed the hub\n", time.Since(listedAt).Round(100*time.Millisecond))
-	case lockHeld:
+	case seen.listed:
+		fmt.Fprintf(stdout, "the last successful check (%s ago) still listed the hub\n", time.Since(seen.listedAt).Round(100*time.Millisecond))
+	case seen.lockHeld:
 		fmt.Fprintf(stdout, "the restart wrapper still holds %s\n", v.state)
+	case seen.lockErr != nil:
+		fmt.Fprintf(stdout, "the hub client is gone, but its restart lock cannot be read: %v\n", seen.lockErr)
 	}
-	if listed && sendErr != nil {
+	if seen.listed && sendErr != nil {
 		fmt.Fprintf(stdout, "hub.admin.shutdown: %v %s\n", sendErr, strings.TrimSpace(string(out)))
 	}
-	if seenErr != nil {
-		fmt.Fprintf(stdout, "the last failed look: %v\n", seenErr)
+	if seen.seenErr != nil {
+		fmt.Fprintf(stdout, "the last failed look: %v\n", seen.seenErr)
 	}
 }

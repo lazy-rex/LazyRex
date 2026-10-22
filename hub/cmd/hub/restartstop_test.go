@@ -133,3 +133,29 @@ func TestStopRefusedExitsAtOnce(t *testing.T) {
 		t.Errorf("refused: stop took %s, want an exit at once", d)
 	}
 }
+
+// A shutdown call that uses the whole bound leaves no listing after the send: stop reports the
+// status look from before the send, never a connected hub (review of 81e3451, codex-28).
+func TestStopHungShutdownHasNoFreshLook(t *testing.T) {
+	defer func(d time.Duration) { ctlStopWait = d }(ctlStopWait)
+	ctlStopWait = 300 * time.Millisecond
+	exit, out, _ := runStop(t, ctlFakeRex(t, "exec sleep 30", `echo '{"clients":[]}'`))
+	if exit != 1 || strings.Contains(out, "still connected") || !strings.Contains(out, "the last successful check") {
+		t.Errorf("the shutdown hangs: exit %d\n%s", exit, out)
+	}
+}
+
+// A restart.lock that cannot be read is not a held lock, and not a stopped hub.
+func TestStopUnreadableLock(t *testing.T) {
+	defer func(d time.Duration) { ctlStopWait = d }(ctlStopWait)
+	ctlStopWait = time.Second
+	state, _ := canonicalState(t.TempDir())
+	os.WriteFile(filepath.Join(state, "restart.lock"), nil, 0)
+	v := &ctlView{rex: ctlFakeRex(t, "exit 0", `echo '{"clients":[]}'`), state: state,
+		own: &hubClient{ID: "h1", PID: 1}, holder: 1}
+	var out bytes.Buffer
+	if code := v.stop(&out); code != 1 || strings.Contains(out.String(), "stopped") ||
+		strings.Contains(out.String(), "still holds") || !strings.Contains(out.String(), "restart lock cannot be read") {
+		t.Errorf("an unreadable lock: exit %d\n%s", code, out.String())
+	}
+}
