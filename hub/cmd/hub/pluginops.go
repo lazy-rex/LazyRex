@@ -357,10 +357,15 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 	op.ID = hex.EncodeToString(b)
 	ob, _ := json.Marshal(origin)
 	now := time.Now().UnixMilli()
-	// OR IGNORE: a second admission of the same key in a race finds the first one.
-	if _, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, entry_identity, created, updated)
+	// OR IGNORE: a second admission of the same key in a race finds the first one. The hold check
+	// and the insert are one BEGIN IMMEDIATE transaction (pluginhold.go): under a hold, no op is
+	// inserted.
+	if err := h.admitUnderHold(ctx, func(c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, entry_identity, created, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
-		op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, op.EntryIdentity, now, now); err != nil {
+			op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, op.EntryIdentity, now, now)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	if id, err = find(); err != nil {
