@@ -22,7 +22,14 @@ type wireError struct {
 	Message string `json:"message"`
 }
 
-func (e *wireError) Error() string { return e.Code + ": " + e.Message }
+// Error is "code: message". A hub refusal already starts its message with "code: " (the hub's
+// refuse), so that message is shown alone, not as "no_app: no_app: …".
+func (e *wireError) Error() string {
+	if strings.HasPrefix(e.Message, e.Code+": ") {
+		return e.Message
+	}
+	return e.Code + ": " + e.Message
+}
 
 type frame struct {
 	Type    string          `json:"type"`
