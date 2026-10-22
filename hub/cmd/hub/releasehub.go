@@ -295,8 +295,10 @@ func (r *releaser) holdOK(c *relCandidate) error {
 	if err != nil {
 		return err
 	}
+	// The lock bytes are not compared: a fetch can name a new cache dir for the same pin (case 1 of
+	// the kits). lockPinsHash below compares the lock without its cache dirs.
 	for role, h := range c.Files {
-		if files[role] != h {
+		if role != roleLock && files[role] != h {
 			return relFail("the %s file differs from its frozen hash (another writer?)", role)
 		}
 	}

@@ -58,7 +58,7 @@ type relWorld struct {
 	hubPID                                int
 	hubStartT                             string
 	client                                string
-	nextPID, nextInst, hubN               int
+	nextPID, nextInst, hubN, fetchN       int
 	runs                                  map[string]*fakeRun // by plugin name
 	replaceCalls, startCalls              int
 	replaceArgs                           []map[string]any
@@ -168,6 +168,34 @@ func (w *relWorld) lockPin(src string) relPin {
 	return relPin{l.Plugins[src].Commit, l.Plugins[src].Digest}
 }
 
+// newCacheDir gives a lock entry a new cache dir with the manifest of its old one, as a fetch can
+// (case 1 of the kits: the same pin in a new dir).
+func (w *relWorld) newCacheDir(e *lockEntry) {
+	var m struct {
+		SDK string `json:"sdk"`
+	}
+	b, _ := readManifestBytes(filepath.Join(w.state, "plugins", e.Dir, e.Subdir))
+	json.Unmarshal(b, &m)
+	w.fetchN++
+	e.Dir = fmt.Sprintf("github/%s/%s/%s.%016x", e.Owner, e.Repo, e.Commit, w.fetchN)
+	w.manifest(e, m.SDK)
+}
+
+// refetch is the fetch of a hub start: every lock entry gets a new cache dir.
+func (w *relWorld) refetch() {
+	lk := lockPath(w.cfg, "")
+	l, err := readLock(lk)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	for _, e := range l.Plugins {
+		w.newCacheDir(e)
+	}
+	if err := writeLock(lk, l); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
 // spawn starts a plugin instance at its lock pin.
 func (w *relWorld) spawn(name, src string) {
 	w.nextInst++
@@ -184,6 +212,7 @@ func (w *relWorld) startHub() {
 	w.hubN++
 	w.hubPID, w.hubStartT, w.client = w.nextPID, fmt.Sprintf("t%d", w.nextPID), fmt.Sprintf("client:hub-%d", w.hubN)
 	w.devRev = w.head
+	w.refetch()
 	os.WriteFile(filepath.Join(w.state, "dev", "hub"), []byte("dev hub of "+w.head), 0o700)
 	w.event(map[string]any{"event": "hub_started", "client_id": w.client, "pid": w.hubPID})
 	w.spawn("lazyrex", homeSrc)
@@ -311,7 +340,7 @@ func (w *relWorld) hubBinCmd(a []string) ([]byte, []byte, error) {
 		case local == relPin{bp.Commit, bp.Digest}:
 			outcome = "taken"
 			l.Plugins[e.Source].Commit, l.Plugins[e.Source].Digest = peer.Commit, peer.Digest
-			l.Plugins[e.Source].Dir = "github/lazy-rex/LazyRex/" + peer.Commit + ".0000000000000000"
+			w.newCacheDir(l.Plugins[e.Source])
 		default:
 			return []byte(fmt.Sprintf("conflict\t%s\tlocal %s\tpeer %s\n", e.Source, local.Commit, peer.Commit)), nil, exitErr(1)
 		}
@@ -565,6 +594,13 @@ func TestReleaseHubForwardRollback(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(w.run, relStampFile)); err == nil {
 		t.Error("the stamp is still there after the rollback")
 	}
+	// Forward again with the same candidate (forward, rollback, forward of the rehearsal). The hub
+	// starts fetched new cache dirs for the same pins; the hold compares pins, not lock bytes.
+	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	if w.head != commitH || w.runs["lazyrex"].commit != commitH {
+		t.Fatalf("second forward: head %s home runs %s", w.head[:6], w.runs["lazyrex"].commit[:6])
+	}
+	w.wantPins(pinH, pinH)
 }
 
 func mustCandidate(t *testing.T, w *relWorld) *relCandidate {
@@ -654,6 +690,7 @@ func TestReleaseHubSDKBoundary(t *testing.T) {
 	w.manifest(l.Plugins[otherSrc], "")
 	os.WriteFile(filepath.Join(w.run, relRehearsalFile), mustRead(filepath.Join(w.run, relRehearsalFile)), 0o600)
 	w.must("precheck", "stop", "backup", "checkout", "pull", "start", "replace", "verify")
+	l, _ = readLock(lockPath(w.cfg, "")) // the start fetched new cache dirs
 	w.manifest(l.Plugins[otherSrc], "0")
 	if err := w.step("rollback"); err == nil || !strings.Contains(err.Error(), "newest release first") {
 		t.Fatalf("rollback: %v", err)
