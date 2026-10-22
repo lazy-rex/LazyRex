@@ -271,7 +271,6 @@ func TestPluginOpResolveTargets(t *testing.T) {
 		op, err := resolveOp(t, h, fmt.Sprintf("res-%d", i), c.req)
 		var got opResolved
 		json.Unmarshal([]byte(op.Target), &got)
-		c.want.LockBase = "absent" // no lock file: every key is new
 		if err != nil || got != c.want || op.Phase != "fetching" || opsOf(t, h, op.ID).Target != op.Target {
 			t.Errorf("%d: %+v phase %s %v, want %+v", i, got, op.Phase, err, c.want)
 		}
