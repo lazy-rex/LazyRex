@@ -145,8 +145,8 @@ func TestExpectRunSubdirLab(t *testing.T) {
 
 // A guarded start admits once, at its final admission: a dependency that was registered at the
 // resolution and stops before the final admission (the start is held after the resolution) is
-// dependency_not_ready (a crashes, and its respawn is refused). b stays desired stopped, not waiting, with no intent. When a registers
-// again, no wake starts b.
+// dependency_not_ready (a crashes, and its respawn is refused). b stays desired stopped, not
+// waiting, with no intent. When a registers again, no wake starts b.
 func TestExpectRunDependencyStopsLab(t *testing.T) {
 	s := newStartLab(t, "a", "b")
 	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")

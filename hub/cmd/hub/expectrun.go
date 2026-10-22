@@ -80,9 +80,10 @@ func candidateChanged(name string, cand *pluginRun, x *expectRun, unchanged stri
 // after the resolution of the start path (checkStart): the candidate cand is the one that it
 // spawns. It admits once, in the order of a replace, and it never waits:
 //  1. cand must be x, else candidate_changed.
-//  2. In one h.mu section: the entry must still be the resolved one (else refused); each dependency must be registered, else dependency_not_ready; then the
-//     record becomes desired running, and the save must succeed. A refusal or a failed save leaves
-//     the desired state as it was, and no waiting state.
+//  2. In one h.mu section: the entry must still be the resolved one, else refused; each dependency
+//     must be registered, else dependency_not_ready; then the record becomes desired running, and
+//     the save must succeed. A refusal or a failed save leaves the desired state as it was, and
+//     no waiting state.
 //  3. A retained live instance whose run is x is kept. Else the recorded instance is retired.
 //  4. Spawn from cand. A dependency that stops after step 2 does not make this start wait (as in a
 //     replace): no later wake starts another candidate.
@@ -95,8 +96,8 @@ func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *e
 	h.mu.Lock()
 	if pl.entry != e {
 		// The entry was removed after the resolution. Nothing writes the kept record here, as in
-		// startOrWait. Today a removal is a hub.plugins.reload request, and the hub serves one request
-		// at a time, so this guards a later concurrent writer.
+		// startOrWait. Today a removal is a hub.plugins.reload request, and the hub serves one
+		// request at a time, so this guards a later concurrent writer.
 		h.mu.Unlock()
 		return refuse("refused", "plugin %s: its entry was removed during the start; nothing was retired or spawned", pl.Name)
 	}
