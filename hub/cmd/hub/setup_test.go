@@ -36,6 +36,7 @@ func setupTestEnv(t *testing.T, answers string, tty bool) (setupEnv, *strings.Bu
 		exe:      filepath.Join(bin, "lazyrex-hub"),
 		lookPath: func(n string) (string, error) { return filepath.Join(tools, n), nil },
 		endpoint: func(string) (string, error) { return setupLabServer, nil },
+		isReal:   func(string) bool { return false },
 		tags:     func(string) ([]string, error) { return []string{"v0.9.0", "v0.10.0", "v1.0.0-rc1", "nightly"}, nil },
 		in:       bufio.NewReader(strings.NewReader(answers)),
 		tty:      tty,

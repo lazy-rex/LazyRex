@@ -47,6 +47,7 @@ type setupEnv struct {
 	server   string                              // -server: a Rex server address; "" is the default server
 	endpoint func(server string) (string, error) // the server's own address, from Rex
 	tags     func(repo string) ([]string, error) // a lazy-rex repository's tag names
+	isReal   func(server string) bool            // isRealServer: the hub controls need -real-server
 	in       *bufio.Reader                       // the answers
 	tty      bool                                // in is a terminal
 	out      io.Writer
@@ -74,7 +75,7 @@ func setupMain(args []string) int {
 	_, terr := unix.IoctlGetTermios(int(os.Stdin.Fd()), ioctlGetTermios)
 	env := setupEnv{
 		home: home, getenv: os.Getenv, exe: exe, lookPath: exec.LookPath,
-		server: *server, endpoint: rexEndpoint, tags: lazyRexTags,
+		server: *server, endpoint: rexEndpoint, tags: lazyRexTags, isReal: isRealServer,
 		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now,
 	}
 	if *dir == "" {
@@ -272,33 +273,86 @@ func setupHubConfig(e setupEnv, dir, server string) (b []byte, skipped []string,
 	return append(b, '\n'), skipped, err
 }
 
+// hubControls is what the boot file's hub controls (Start Hub, Stop Hub, Hub Status) run with:
+// the hub.json that they read, and whether its server is the real Rex server. err: setup cannot
+// tell, so the boot file has no hub controls.
+type hubControls struct {
+	config string
+	server string
+	real   bool
+	err    string
+}
+
+// configServer is the server of an existing hub.json, or why setup cannot read it.
+func configServer(b []byte) (string, string) {
+	var c struct {
+		Server string `json:"server"`
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return "", "hub.json cannot be read: " + err.Error()
+	}
+	if c.Server == "" {
+		return "", "hub.json names no server"
+	}
+	return c.Server, ""
+}
+
 // setupBootLua is lazyrex_boot.lua: the palette entries that work without a running hub. Setup
-// owns the file and replaces it. Set Up opens a new window in the caller's session that runs
-// the same setup command (the binary, -dir, and -server if it was given), and keeps the pane open
-// after setup ends, so the user can read the report.
-func setupBootLua(exe, dir, server string) string {
+// owns the file and replaces it. Each entry opens a new window in the caller's session with one
+// pane that runs an argv (no shell), and keeps the pane open after the command ends, so the user
+// can read its output. Set Up runs the same setup command (the binary, -dir, and -server if it was
+// given). Start Hub runs the hub under the restart wrapper: that pane owns the wrapper. Stop Hub
+// and Hub Status run lazyrex-hub stop and status. Without ctl (ctl.err), only Set Up is written.
+func setupBootLua(exe, dir, server string, ctl hubControls) string {
 	argv := luaString(exe) + `, "setup", "-dir", ` + luaString(dir)
 	if server != "" {
 		argv += `, "-server", ` + luaString(server)
 	}
-	return `-- Written by lazyrex-hub setup. Setup replaces this file: do not edit it.
+	s := `-- Written by lazyrex-hub setup. Setup replaces this file: do not edit it.
 -- init.lua loads it with: pcall(require, "lazyrex_boot")
-local lazyrex_setup = { ` + argv + ` }
+local function lazyrex_pane(title, label, argv)
+  return function(ctx, _)
+    if not ctx.session_id then error("run " .. title .. " from a Rex window", 0) end
+    local r, err = rex.call("session.new_window", { session_id = ctx.session_id, focus = true,
+      layout = { block = { flavor = "com.superlogical.terminal.shell", label = label,
+        options = { command = argv, login = false, exit = { on_completion = false } } } } })
+    if err ~= nil then error(err, 0) end
+    return r
+  end
+end
 rex.action {
   name = "lazyrexboot_setup",
   title = "LazyRex: Set Up",
   category = "LazyRex",
   description = "Run lazyrex-hub setup in a new tab. It asks before it writes each file.",
-  run = function(ctx, _)
-    if not ctx.session_id then error("run LazyRex: Set Up from a Rex window", 0) end
-    local r, err = rex.call("session.new_window", { session_id = ctx.session_id, focus = true,
-      layout = { block = { flavor = "com.superlogical.terminal.shell", label = "LazyRex setup",
-        options = { command = lazyrex_setup, login = false, exit = { on_completion = false } } } } })
-    if err ~= nil then error(err, 0) end
-    return r
-  end,
+  run = lazyrex_pane("LazyRex: Set Up", "LazyRex setup", { ` + argv + ` }),
 }
 `
+	if ctl.err != "" {
+		return s
+	}
+	cfg := `"-config", ` + luaString(ctl.config)
+	if ctl.real {
+		cfg += `, "-real-server"`
+	}
+	for _, a := range []struct{ name, title, label, desc, argv string }{
+		{"lazyrexboot_start", "LazyRex: Start Hub", "LazyRex hub",
+			"Start the LazyRex hub in a new tab. Closing that tab stops the hub.", luaString(exe) + `, ` + cfg + `, "-restart"`},
+		{"lazyrexboot_stop", "LazyRex: Stop Hub", "LazyRex stop",
+			"Stop the LazyRex hub, and show the result in a new tab.", luaString(exe) + `, "stop", ` + cfg},
+		{"lazyrexboot_status", "LazyRex: Hub Status", "LazyRex status",
+			"Show whether the LazyRex hub runs, in a new tab.", luaString(exe) + `, "status", ` + cfg},
+	} {
+		s += `rex.action {
+  name = "` + a.name + `",
+  title = "` + a.title + `",
+  category = "LazyRex",
+  description = "` + a.desc + `",
+  run = lazyrex_pane("` + a.title + `", "` + a.label + `", { ` + a.argv + ` }),
+}
+`
+	}
+	return s
 }
 
 // createOnly proposes content for a file that setup creates but never changes.
@@ -355,6 +409,21 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		createOnly(hub, nil)
 	}
 	files = append(files, hub)
+	// The hub controls of the boot file read this hub.json. -real-server must match its server
+	// exactly, so it comes from the file that they read: the proposed one, or the existing one,
+	// which setup never changes (its server can differ from the one that setup found).
+	ctl := hubControls{config: hub.path}
+	switch {
+	case hub.block != "":
+		ctl.err = "hub.json is blocked: " + hub.block
+	case hub.exists:
+		ctl.server, ctl.err = configServer(hub.old)
+	default:
+		ctl.server = server
+	}
+	if ctl.err == "" {
+		ctl.real = e.isReal(ctl.server)
+	}
 
 	agents := e.agents()
 	prof := snapshotFile(filepath.Join(dir, "profiles.json"), 0o600)
@@ -370,7 +439,10 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	rexDir := filepath.Dir(e.rexConfigFile())
 	boot := snapshotFile(filepath.Join(rexDir, "lazyrex_boot.lua"), 0o644)
 	if boot.block == "" {
-		boot.next = []byte(setupBootLua(e.exe, dir, e.server))
+		boot.next = []byte(setupBootLua(e.exe, dir, e.server, ctl))
+		if ctl.err != "" {
+			boot.notes = append(boot.notes, "Start Hub, Stop Hub and Hub Status are left out: "+ctl.err)
+		}
 	}
 	init := snapshotFile(e.rexConfigFile(), 0o644)
 	if init.block == "" {
