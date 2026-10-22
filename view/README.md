@@ -320,7 +320,7 @@ A closed select shows its current value and `▾`. Left and Right cycle its opti
 Enter, Space, or a click opens a floating list. The list shows up to eight options.
 Lip Gloss composes the bordered list over the form. Opening it does not move form rows.
 The border contains two cells of horizontal padding and blank rows above and below the options.
-The highlight covers the padded inner width. It does not cover the border.
+The highlighted option has huh's `> ` selector and label in the highlight role; the current value has a `✓` in the selected role. The border uses the control role.
 The list width uses the wider of the field control and the widest option with its check-mark column.
 Padding and borders add six cells. The pane edge caps the result.
 Typing replaces the top blank row with `Filter: <text>`. Clearing the filter restores the blank row.
@@ -329,7 +329,7 @@ The list opens below the field when it fits. Otherwise, it opens above the field
 If neither side fits, the list uses the side with more room and reduces its option window to at least three rows.
 A pane too short for that minimum can make the list overlap its field. The canvas clips the list to the pane.
 The count line shows only options outside the window. The line disappears when all options fit. Narrow lists use arrows and counts.
-The check mark identifies the current value. The highlight identifies the candidate value.
+The check mark identifies the current value. The selector identifies the candidate value.
 Up, Down, Home, End, and the mouse wheel move the highlight.
 Pointer motion over an option also moves the highlight. Leaving the list keeps that highlight. Typing filters labels
 by a case-insensitive substring. Backspace edits the filter. Enter or a click picks

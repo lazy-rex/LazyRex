@@ -287,7 +287,7 @@ func (m *model) selectGeometry() (x, y, width, capacity int) {
 	}
 	width = fieldWidth
 	for _, option := range field.Options {
-		width = max(width, ansi.StringWidth(singleLine(option.Label))+2)
+		width = max(width, ansi.StringWidth(singleLine(option.Label))+4) // the selector and the check
 	}
 	width = min(width+2*selectPadding+2, m.width-x)
 	// Use all options to keep the origin stable while the filter changes.
@@ -381,12 +381,16 @@ func (m *model) selectRows(node string, field Field) []row {
 	width := outerWidth - 2
 	p := m.palette()
 	base := lipgloss.NewStyle().Background(p.surface).Foreground(p.text)
-	border := base.Foreground(p.border)
+	border := base.Foreground(p.control)
 	rows := []row{{Text: border.Render("╭" + strings.Repeat("─", width) + "╮")}}
+	// addStyled adds a row whose text is already styled and fits width-2*selectPadding cells.
+	addStyled := func(text, anchor string, c *control) {
+		pad := base.Render(strings.Repeat(" ", selectPadding))
+		fill := base.Render(strings.Repeat(" ", max(0, width-2*selectPadding-ansi.StringWidth(text))))
+		rows = append(rows, row{Text: border.Render("│") + pad + text + fill + pad + border.Render("│"), Anchor: anchor, Control: c})
+	}
 	add := func(text, anchor string, c *control, style lipgloss.Style) {
-		text = ansi.Truncate(singleLine(text), max(1, width-2*selectPadding), "…")
-		text = style.Width(width).Render(strings.Repeat(" ", selectPadding) + text + strings.Repeat(" ", selectPadding))
-		rows = append(rows, row{Text: border.Render("│") + text + border.Render("│"), Anchor: anchor, Control: c})
+		addStyled(style.Render(ansi.Truncate(singleLine(text), max(1, width-2*selectPadding), "…")), anchor, c)
 	}
 	info := func(text string) { add(text, "", nil, base.Foreground(p.muted)) }
 	filter := ""
@@ -403,15 +407,18 @@ func (m *model) selectRows(node string, field Field) []row {
 		o := opts[i]
 		id := fmt.Sprintf("%s%d", s.optionPrefix(), i)
 		c := &control{ID: id, Node: node, Field: field.ID, Kind: "select_option", Input: map[string]any{"value": o.Value}}
-		mark := "  "
-		if m.editors[editorID(node, field.ID)].Choice == o.Value {
-			mark = "✓ "
-		}
-		style := base
+		// The shape of huh's select: a selector on the highlighted option, and the check of its
+		// multi-select on the current value.
+		selector, label := base.Render("  "), base
 		if i == s.Highlight {
-			style = style.Background(p.accent).Foreground(p.surface)
+			selector, label = base.Foreground(p.highlight).Bold(true).Render("> "), base.Foreground(p.highlight).Bold(true)
 		}
-		add(mark+o.Label, id, c, style)
+		mark := base.Render("  ")
+		if m.editors[editorID(node, field.ID)].Choice == o.Value {
+			mark = base.Foreground(p.selected).Render("✓ ")
+		}
+		text := ansi.Truncate(singleLine(o.Label), max(1, width-2*selectPadding-4), "…")
+		addStyled(selector+mark+label.Render(text), id, c)
 	}
 	info("")
 	var hints []string

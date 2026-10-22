@@ -445,7 +445,7 @@ func TestSelectPaddingAndContentWidth(t *testing.T) {
 	}
 	widest := 0
 	for _, option := range m.selectField("stop", "worker").Options {
-		widest = max(widest, ansi.StringWidth(option.Label)+2)
+		widest = max(widest, ansi.StringWidth(option.Label)+4) // the selector and the check
 	}
 	if o.Width != max(fieldWidth, widest)+6 || o.X != m.leftMargin() {
 		t.Fatalf("Wrong content width or anchor: %+v", o)
@@ -483,15 +483,27 @@ func TestSelectPaddingAndContentWidth(t *testing.T) {
 		br, bg, bb, ba := b.RGBA()
 		return ar == br && ag == bg && ab == bb && aa == ba
 	}
+	// The highlighted option has huh's selector in the highlight role, on the overlay surface.
+	p := m.palette()
+	if cell := canvas.CellAt(1+selectPadding, 2); cell.Content != ">" || !sameColor(cell.Style.Fg, p.highlight) {
+		t.Fatalf("The highlighted option has no selector: %q", cell.Content)
+	}
 	for x := 1; x < o.Width-1; x++ {
-		if !sameColor(canvas.CellAt(x, 2).Style.Bg, m.palette().accent) {
-			t.Fatalf("Highlight misses inner cell %d", x)
+		if !sameColor(canvas.CellAt(x, 2).Style.Bg, p.surface) {
+			t.Fatalf("Inner cell %d of the highlighted option is not on the surface", x)
 		}
 	}
 	for _, x := range []int{0, o.Width - 1} {
-		if sameColor(canvas.CellAt(x, 2).Style.Bg, m.palette().accent) {
-			t.Fatal("Highlight paints the border")
+		if !sameColor(canvas.CellAt(x, 2).Style.Fg, p.control) {
+			t.Fatal("The border does not use the control role")
 		}
+	}
+	// The highlighted option is the current value here: its check has the selected role.
+	if cell := canvas.CellAt(1+selectPadding+2, 2); cell.Content != "✓" || !sameColor(cell.Style.Fg, p.selected) {
+		t.Fatalf("The current value has no check in the selected role: %q", cell.Content)
+	}
+	if cell := canvas.CellAt(1+selectPadding, 3); cell.Content != " " {
+		t.Fatalf("An option that is not highlighted has a selector: %q", cell.Content)
 	}
 	m.apply(selectSnapshot("old", strings.Repeat("界", 50)))
 	m.width = 24
