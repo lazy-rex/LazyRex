@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -44,11 +43,7 @@ func TestHomeLegacyViewRetiresLab(t *testing.T) {
 			for _, p := range l.stop() {
 				t.Error(p)
 			}
-			if !t.Failed() {
-				os.RemoveAll(l.dir)
-			} else {
-				t.Logf("lab kept: %s", l.dir)
-			}
+			endGoLab(t, l.dir, l.unproved)
 		}()
 	}
 	if err != nil {
@@ -59,13 +54,12 @@ func TestHomeLegacyViewRetiresLab(t *testing.T) {
 	}
 	stopHub := func() {
 		t.Helper()
-		l.hubW.signal(syscall.SIGTERM)
-		select {
-		case <-l.hubExit:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the hub did not stop in 10 s")
+		// The hub's keeper: SIGTERM, then the wait (labkeeper.go), as restartHub does.
+		l.snapshot()
+		if p := l.hub.stop(); len(p) > 0 {
+			l.unproved = append(l.unproved, p...)
+			t.Fatalf("the hub did not stop cleanly: %s", strings.Join(p, "; "))
 		}
-		l.hubExit = nil
 		l.restarts++
 		os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts)))
 	}
