@@ -434,6 +434,55 @@ Agents may run in any session (the maintainer, 2026-10-16). `hub.join` accepts a
 
 The config field `rex` is optional. Without it, the hub runs `rex` from `PATH`, which follows the installed Rex build.
 
+## Setup
+
+`lazyrex-hub setup [-dir DIR] [-print]` makes the first configuration of a user's hub (`hub/cmd/hub/setup.go`, `setupfile.go`, `setupjson.go`). The default DIR is `~/.lazyrex`.
+
+Prerequisites. Setup stops before it proposes a file if one of these is missing:
+
+- The renderer `lazyrex-view` beside the running `lazyrex-hub`. A release user installs the `lazyrex-view` of the same release. From a source checkout, `go build` makes it.
+- A running Rex server. Setup asks Rex for the default server's address (`rex --autostart=false server status --json`, field `endpoint`, without `REX_SERVER`). It never starts a server.
+- An installed binary. A `go run` build is refused, because the hooks run the binary that setup names.
+
+The files:
+
+| File | What setup does |
+| --- | --- |
+| `DIR/hub.json` | Creates it (mode 0600). Never changes an existing one. |
+| `DIR/profiles.json` | Creates it with a Claude and a Codex agent profile, each one only if the CLI is on `PATH`. Never changes an existing one. |
+| Claude Code: `$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude`) | Adds the `SessionStart` and `UserPromptSubmit` hooks of `hooks/README.md`. |
+| Codex: `$CODEX_HOME/hooks.json` (default `~/.codex`) | Adds the `SessionStart` hook of `hooks/README.md`. |
+| `<Claude config dir>/skills/lazyrex/SKILL.md`, `~/.agents/skills/lazyrex/SKILL.md` | Installs the LazyRex skill. Codex reads user skills from `~/.agents/skills` (`$CODEX_HOME/skills` is its deprecated location). |
+
+The new `hub.json` names:
+
+- the default Rex server;
+- the state `DIR/state`;
+- the renderer beside the binary;
+- the agent `user`;
+- the profiles file;
+- `lazyrex_palette.lua` beside the Rex config file (`REX_CONFIG`, else `$XDG_CONFIG_HOME/rex/init.lua`, else `~/.config/rex/init.lua`);
+- `transcript: true`.
+
+Its plugins are the home plugin (`github:lazy-rex/LazyRex/plugins/lazyrex`) and Messaging, Profiles, Templates, Tunnels and Worktrees. Each one uses its repository's highest `vX.Y.Z` tag, which setup reads with `git ls-remote` (the coordinator, 2026-10-22). A repository without such a tag is left out and reported. Setup never falls back to `main`. When the hub supports `@latest`, setup writes `@latest`. If setup cannot read the tags, `hub.json` is blocked.
+
+An agent is skipped when its CLI is not on `PATH` and its configuration directory does not exist. The hook command names the running binary. The path is in double quotes, as in `hooks/README.md`. A path with `"`, `$`, `` ` ``, `\`, `!` or a newline gets POSIX single quotes. Setup adds no hook to an event that already has the same command, the Python hook (`session-start.py`), or another `lazyrex-hub … hook <kind>`. It reports that event instead. The switch from the Python hook is a separate step.
+
+Consent. Setup first lists each file with its state: `new`, `change`, `unchanged`, `not written`, `blocked: <reason>`, or `skipped` for an agent. Then, for each file that it would write:
+
+1. Setup shows the complete diff: every line, with the prefix `  `, `- ` or `+ `.
+2. It asks `Write <file>? [y/N]`. Only `y` or `yes` writes. End of input is no, for this file and for each later file.
+3. It reads the file again. It refuses the write if the content, the existence, the permissions, or the resolved path (every symlink, also in parent directories) changed since the diff. This recheck is not an atomic compare-and-replace.
+4. Before it changes an existing file, it copies the file to a new `<file>.lazyrex-bak-<unix time>` with the same permissions. A second backup in the same second gets a suffix.
+
+A symlink is followed: setup writes the file that it resolves to, and the link stays a link. A symlink that does not resolve to a regular file is blocked. A hook file that is not valid JSON, or whose root, `hooks` or `hooks.<event>` has another JSON type, is blocked and not changed. The hook merge keeps the order of the user's keys and all other hooks. It writes with 2-space indentation; the backup keeps the original text.
+
+`-print` shows the list and every diff and writes nothing. Without a terminal on standard input, setup does the same and exits 2. Neither one creates a directory. At the end, setup reports each file as written (with its backup), declined, blocked, or failed. It exits 1 if a write failed, and 0 otherwise. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
+
+The skill in the binary is a copy of `skills/lazyrex/SKILL.md` at `hub/cmd/hub/setupfiles/SKILL.md`, because `go:embed` cannot reach outside the hub module. `TestSetupSkillCopy` fails when the two differ.
+
+Tests: `go test ./cmd/hub -run 'TestSetup|TestHighestTag|TestHookFile|TestFileDiff|TestAppendLines|TestShellWord'`. They run in a temporary HOME with a fake Rex endpoint and fake tags. No test writes a real user file.
+
 ## Stop and exit status
 
 The hub process stops in three ways. Each one has its own exit status:

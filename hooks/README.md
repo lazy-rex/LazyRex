@@ -20,7 +20,8 @@ It produces no model context. The command has a three-second deadline.
 ## Installation
 
 Build the binary (`hub/` module: `go build -o ~/.lazyrex/bin/lazyrex-hub ./cmd/hub`).
-Add the entries below to the existing lists. Preserve the other hooks.
+`lazyrex-hub setup` adds these entries after a yes for each file, with a backup (docs/hub.md, "Setup").
+To add them by hand, add the entries below to the existing lists. Preserve the other hooks.
 JSON does not expand `~`: replace `/ABSOLUTE/HOME` with the absolute path of your home directory.
 The path is quoted, so a home directory with a space works when the agent runs the command through a shell.
 Claude Code documents that it does. For Codex this is untested.
