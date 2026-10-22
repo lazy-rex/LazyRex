@@ -324,9 +324,12 @@ function H.operation(key, plugin) return hub('hub.test.operation', {plugin = plu
 
 -- inject commits ops (store.batch ops) before the plugin's next batch that matches match
 -- ({op_key=}, {op_prefix=} or {writes=key}). spec: {match, ops, replay, times}. Returns its ID.
+-- match {sql_commit_writes = table} fails the plugin's next hub.sql commit that changed that
+-- table: spec.fail (and fail_code); with after = true the commit happens, and the plugin gets the
+-- error (a lost reply).
 function H.inject(spec)
   local a = {plugin = spec.plugin or A.plugin, match = spec.match, ops = spec.ops, replay = spec.replay, times = spec.times,
-    fail = spec.fail, fail_code = spec.fail_code, skip = spec.skip, hold = spec.hold}
+    fail = spec.fail, fail_code = spec.fail_code, skip = spec.skip, hold = spec.hold, after = spec.after}
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
@@ -358,6 +361,34 @@ end
 -- write commits store ops in the plugin's namespace now, as another writer: {key, value} or
 -- {key, delete = true}, each with an optional if_rev (a stale one fails with the code conflict).
 function H.write(ops, plugin) return hub('hub.test.write', {plugin = plugin or A.plugin, ops = ops}) end
+
+-- sql_rows turns a hub.sql query reply into rows keyed by column name: NULL is nil, {int} is a
+-- decimal string, {blob} stays a {blob = base64} table.
+local function sql_rows(out)
+  local rows = {}
+  for i, r in ipairs(out.rows or {}) do
+    local row = {}
+    for j, c in ipairs(out.columns or {}) do
+      local v = r[j]
+      if type(v) == 'table' and v.null then v = nil elseif type(v) == 'table' and v.int then v = v.int end
+      row[c] = v
+    end
+    rows[i] = row
+  end
+  return rows
+end
+
+-- sql reads the plugin's SQL database (the committed state): rows keyed by column name. params is
+-- a list for ? or a table for :name; a NULL parameter is {null = true}.
+function H.sql(sql, params, plugin)
+  return sql_rows(hub('hub.test.sql', {plugin = plugin or A.plugin, sql = sql, params = params or {}}))
+end
+
+-- sql_write runs one statement on the plugin's SQL database now, as another writer would (for
+-- fixtures). It returns {changes, id}. The plugin's views render again.
+function H.sql_write(sql, params, plugin)
+  return hub('hub.test.sql', {plugin = plugin or A.plugin, sql = sql, params = params or {}, write = true})
+end
 
 -- put_operation saves an operation record {key, fingerprint, result}, as an older plugin saved it.
 function H.put_operation(op, plugin)

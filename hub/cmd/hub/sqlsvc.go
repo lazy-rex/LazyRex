@@ -31,16 +31,19 @@ type sqlService struct {
 	dir       string
 	current   func(plugin, client string) bool    // is client the plugin's registered instance?
 	committed func(plugin string, marks []string) // after a commit that changed tables ("*": the schema)
-	idle      time.Duration
-	total     time.Duration
-	queue     time.Duration
+	// beforeCommit is a test fault point (testmode.go): an error fails the commit; with after, the
+	// commit happens first and the caller still gets the error (a lost reply).
+	beforeCommit func(plugin string, marks []string) (err error, after bool)
+	idle         time.Duration
+	total        time.Duration
+	queue        time.Duration
 
 	mu  sync.Mutex
 	dbs map[string]*pluginSQL
 }
 
 func newSQLService(state string, current func(plugin, client string) bool) *sqlService {
-	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, idle: sqlTxIdle, total: sqlTxTotal,
+	return &sqlService{dir: filepath.Join(state, "sql"), current: current, committed: func(string, []string) {}, beforeCommit: func(string, []string) (error, bool) { return nil, false }, idle: sqlTxIdle, total: sqlTxTotal,
 		queue: sqlQueueMax, dbs: map[string]*pluginSQL{}}
 }
 
@@ -421,7 +424,8 @@ func (s *sqlService) stmt(ctx context.Context, p *pluginSQL, args map[string]any
 	return r, nil
 }
 
-// alone runs fn in a transaction of its own on the writer: all or nothing.
+// alone runs fn in a transaction of its own on the writer: all or nothing. It returns the marks only
+// when it committed, also with a fault after the commit.
 func (s *sqlService) alone(ctx context.Context, p *pluginSQL, fn func() (any, []string, error)) (any, []string, error) {
 	if err := p.w.hub(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return nil, nil, refuse("sql_error", "begin: %v", err)
@@ -431,9 +435,17 @@ func (s *sqlService) alone(ctx context.Context, p *pluginSQL, fn func() (any, []
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
 		return nil, nil, err
 	}
+	fault, after := s.beforeCommit(p.name, marks)
+	if fault != nil && !after {
+		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
+		return nil, nil, fault
+	}
 	if err := p.w.hub(ctx, "COMMIT"); err != nil {
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
 		return nil, nil, refuse("sql_error", "commit: %v", err)
+	}
+	if fault != nil {
+		return nil, marks, fault
 	}
 	return out, marks, nil
 }
@@ -461,7 +473,7 @@ func (s *sqlService) exec(ctx context.Context, p *pluginSQL, c sqlCall) (any, er
 			}
 			return execReply(r), r.marks(), nil
 		})
-		if err == nil && len(marks) > 0 {
+		if len(marks) > 0 { // alone returns marks only after a commit
 			s.committed(c.plugin, marks)
 		}
 		return out, err
@@ -563,7 +575,7 @@ func (s *sqlService) batch(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 			return out, nil
 		}
 		out, marks, err := s.alone(ctx, p, run)
-		if err == nil && len(marks) > 0 {
+		if len(marks) > 0 { // alone returns marks only after a commit
 			s.committed(c.plugin, marks)
 		}
 		return out, err
@@ -646,17 +658,25 @@ func (s *sqlService) commit(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 				return nil, refuse("sql_error", "save the reply: %v", err)
 			}
 		}
-		if err := p.w.hub(ctx, "COMMIT"); err != nil {
-			p.end(ctx, "tx_expired")
-			return nil, refuse("sql_error", "commit: %v; nothing was committed", err)
-		}
 		marks := make([]string, 0, len(tx.marks))
 		for m := range tx.marks {
 			marks = append(marks, m)
 		}
+		fault, after := s.beforeCommit(c.plugin, marks)
+		if fault != nil && !after {
+			p.end(ctx, "tx_expired")
+			return nil, fault
+		}
+		if err := p.w.hub(ctx, "COMMIT"); err != nil {
+			p.end(ctx, "tx_expired")
+			return nil, refuse("sql_error", "commit: %v; nothing was committed", err)
+		}
 		p.end(ctx, "")
 		if len(marks) > 0 {
 			s.committed(c.plugin, marks)
+		}
+		if fault != nil {
+			return nil, fault
 		}
 		return map[string]any{}, nil
 	})
@@ -709,4 +729,53 @@ func (s *sqlService) replay(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 	}
 	saved["found"] = true
 	return saved, nil
+}
+
+// test runs hub.test.sql: a statement on a plugin's file as another writer would (write: in its
+// own transaction on the writer, outside the instance check), or a read of the committed state.
+// It never meets a test fault.
+func (s *sqlService) test(ctx context.Context, plugin string, args map[string]any) (any, error) {
+	p, err := s.open(ctx, plugin)
+	if err != nil {
+		return nil, err
+	}
+	q, params, err := stmtArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if write, _ := args["write"].(bool); !write {
+		p.rmu.Lock()
+		defer p.rmu.Unlock()
+		r, err := p.r.run(ctx, q, params, true, sqlReplyBudget)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"columns": r.columns, "rows": rowsOrEmpty(r.rows), "complete": r.complete}, nil
+	}
+	if err := s.acquire(p); err != nil {
+		return nil, err
+	}
+	defer p.release()
+	p.mu.Lock()
+	open := p.tx != nil
+	p.mu.Unlock()
+	if open {
+		return nil, refuse("busy", "the plugin has an open transaction")
+	}
+	if err := p.w.hub(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, err
+	}
+	r, err := s.stmt(ctx, p, args, sqlReplyBudget)
+	if err != nil {
+		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
+		return nil, err
+	}
+	if err := p.w.hub(ctx, "COMMIT"); err != nil {
+		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK")
+		return nil, err
+	}
+	if m := r.marks(); len(m) > 0 {
+		s.committed(plugin, m)
+	}
+	return execReply(r), nil
 }
