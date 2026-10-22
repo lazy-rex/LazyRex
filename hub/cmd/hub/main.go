@@ -117,10 +117,11 @@ type Plugin struct {
 	// entry), retained (refused, and the recorded instance still lives; it may not register) or
 	// waiting (the check passed, and a dependency is not registered: waitLoop starts it again).
 	state     string
-	refusal   string     // the error of the refused start (state refused or retained)
-	waiting   []string   // the dependencies that are not registered (state waiting)
-	attempted bool       // a start attempt (startPlugin) ran in this hub process: recovery skips the record
-	lifecycle sync.Mutex // serializes replace, start and stop
+	refusal   string       // the error of the refused start (state refused or retained)
+	waiting   []string     // the dependencies that are not registered (state waiting)
+	attempted bool         // a start attempt (startPlugin) ran in this hub process: recovery skips the record
+	lifecycle sync.Mutex   // serializes replace, start and stop
+	writes    sync.RWMutex // the store fence: a store write holds it to read (fencedBatch)
 }
 
 // reportedState is the state that hub.plugins reports. h.mu must be held.
@@ -936,12 +937,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.store.op":
 		return h.db.storeOp(ctx, ns, args)
 	case "hub.store.batch":
-		if h.test != nil {
-			if err := h.testBeforeBatch(ctx, ns, args); err != nil {
-				return nil, err
-			}
-		}
-		out, err := h.db.storeBatch(ctx, ns, args, h.roster(), h.noticed(ns))
+		out, err := h.fencedBatch(ctx, pl, p.Requester.ClientID, args)
 		if err != nil {
 			return nil, err
 		}
@@ -1021,4 +1017,42 @@ func (h *Hub) tools() any {
 		}
 	}
 	return map[string]any{"tools": list}
+}
+
+// storeBatchHook is a test hook of fencedBatch. It runs at stage "check" (after the caller check in
+// dispatch, before the fence) and at stage "fenced" (under the fence, after the check again).
+var storeBatchHook func(stage string)
+
+// fencedBatch runs a hub.store.batch of the instance client under the store fence: it holds
+// pl.writes to read, and it checks again that client is the registered instance. A batch that
+// passed the caller check before a retirement is then refused (stale_instance), or the retirement
+// waits until it commits.
+func (h *Hub) fencedBatch(ctx context.Context, pl *Plugin, client string, args map[string]any) (*batchOutcome, error) {
+	if storeBatchHook != nil {
+		storeBatchHook("check")
+	}
+	pl.writes.RLock()
+	defer pl.writes.RUnlock()
+	h.mu.Lock()
+	current := client != "" && pl.ClientID == client
+	h.mu.Unlock()
+	if !current {
+		return nil, refuse("stale_instance", "plugin %s: the caller is no longer the registered instance; nothing was written", pl.Name)
+	}
+	if storeBatchHook != nil {
+		storeBatchHook("fenced")
+	}
+	if h.test != nil {
+		if err := h.testBeforeBatch(ctx, pl.Name, args); err != nil {
+			return nil, err
+		}
+	}
+	return h.db.storeBatch(ctx, pl.Name, args, h.roster(), h.noticed(pl.Name))
+}
+
+// fenceStoreWrites waits for the store writes that hold pl.writes. Call it after the client ID is
+// cleared, without h.mu: after it returns, no write of the old instance commits.
+func (h *Hub) fenceStoreWrites(pl *Plugin) {
+	pl.writes.Lock()
+	pl.writes.Unlock()
 }
