@@ -233,6 +233,9 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
 		return "", "", fmt.Errorf("plugin %s: not a GitHub source", e.Source)
 	}
 	r := e.githubRef()
+	if le.legacyLatest(r) {
+		return "", "", fmt.Errorf("plugin %s: %w", e.Source, legacyLatestError(cfgPath, e.Source, le))
+	}
 	if field := le.agree(r); field != "" {
 		return "", "", lockMismatch(cfgPath, e.Source, le, r, field)
 	}

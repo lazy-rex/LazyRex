@@ -126,3 +126,88 @@ func resolveLatest(ctx context.Context, dir, url string) (latestRelease, error) 
 	}
 	return latestRelease{}, errors.New("the repository has no version tag vX.Y.Z that points to a commit")
 }
+
+// legacyLatest reports whether e is a lock entry of the source ref latest from before @latest: a
+// branch or a tag named latest.
+func (e *lockEntry) legacyLatest(r githubRef) bool {
+	return r.Ref == "latest" && e.Ref == "latest" && (e.RefKind == "branch" || e.RefKind == "tag")
+}
+
+// legacyLatestError is the refusal of a legacy entry (section 6). Only plugin update converts it.
+func legacyLatestError(cfgPath, source string, e *lockEntry) error {
+	full := "refs/heads/latest"
+	if e.RefKind == "tag" {
+		full = "refs/tags/latest"
+	}
+	return fmt.Errorf("@latest now means the highest version tag vX.Y.Z. To convert this entry (it replaces the pinned %s commit %s), run: lazyrex-hub plugin update -config %s %s. To keep following the %s named latest, change the source to @%s",
+		e.RefKind, e.Commit, cfgPath, source, e.RefKind, full)
+}
+
+// selectLatest resolves the highest release of the latest entry e. Each skipped tag goes to note.
+func selectLatest(ctx context.Context, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, note func(string)) (latestRelease, error) {
+	rel, err := withTmp(tmpRoot, func(tmp string) (latestRelease, error) {
+		return resolveLatest(ctx, tmp, o.url(r))
+	})
+	if err != nil {
+		return rel, err
+	}
+	for _, why := range rel.Ignored {
+		note(fmt.Sprintf("ignored %s: %s", e.Source, why))
+	}
+	return rel, nil
+}
+
+// fetchRelease fetches the selected release by its tag ref, so a tag that moved after the
+// selection is refused.
+func fetchRelease(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, rel latestRelease) (*lockEntry, error) {
+	if o.afterResolve != nil {
+		o.afterResolve(e.Source)
+	}
+	return fetchAt(ctx, cfg, o, tmpRoot, r, rel.FetchRef, rel.Commit, "latest", rel.Tag, false)
+}
+
+// installLatest is the first install of a latest entry: it selects the highest release.
+func installLatest(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, note func(string)) (*lockEntry, error) {
+	rel, err := selectLatest(ctx, o, tmpRoot, e, r, note)
+	if err != nil {
+		return nil, err
+	}
+	return fetchRelease(ctx, cfg, o, tmpRoot, e, r, rel)
+}
+
+// updateLatest is plugin update of a latest entry (section 6): it selects the highest release
+// again. The same tag at the same commit, with a good cache entry, is unchanged; a higher tag is
+// updated. A tag that moved, and a highest tag lower than the locked one, are refused: a release
+// tag must not move, and update never downgrades. A legacy entry is converted, with its own
+// output line. An entry that cannot be trusted is replaced.
+func updateLatest(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, le *lockEntry, note func(string)) (*lockEntry, string, error) {
+	rel, err := selectLatest(ctx, o, tmpRoot, e, r, note)
+	if err != nil {
+		return nil, "", err
+	}
+	if le != nil && le.RefKind == "latest" && le.trust(r) == "" {
+		locked, _ := parseVersionTag(le.Tag)
+		sel, _ := parseVersionTag(rel.Tag)
+		switch c := compareVersions(sel, locked); {
+		case c < 0:
+			return nil, "", fmt.Errorf("the newest version tag is %s, lower than the locked %s", rel.Tag, le.Tag)
+		case c == 0 && rel.Commit != le.Commit:
+			return nil, "", fmt.Errorf("the tag %s moved from %s to %s; a release tag must not move: check the repository", rel.Tag, le.Commit, rel.Commit)
+		case c == 0:
+			if _, _, err := lockedDir(cfg.path, cfg.state, &pluginLock{Plugins: map[string]*lockEntry{e.Source: le}}, e); err == nil {
+				return le, "", nil
+			}
+		}
+	}
+	got, err := fetchRelease(ctx, cfg, o, tmpRoot, e, r, rel)
+	switch {
+	case err != nil:
+		return nil, "", err
+	case le == nil:
+		return got, "installed", nil
+	case le.legacyLatest(r):
+		note(fmt.Sprintf("converted %s: %s latest %s -> %s %s", e.Source, le.RefKind, le.Commit, rel.Tag, rel.Commit))
+		return got, "", nil
+	}
+	return got, "updated", nil
+}

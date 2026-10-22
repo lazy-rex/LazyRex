@@ -245,13 +245,14 @@ func runPluginCmd(ctx context.Context, cmd, cfgPath string, args []string, o plu
 			got  *lockEntry
 			verb string
 		)
+		note := func(line string) { lines = append(lines, line+"\n") }
 		switch {
 		case cmd == "update" && selected[e]:
-			got, verb, err = updateEntry(ctx, cfg, o, tmpRoot, e, r, le)
+			got, verb, err = updateEntry(ctx, cfg, o, tmpRoot, e, r, le, note)
 		case cmd == "update":
 			got = le // an unselected entry keeps its lock entry exactly; nil stays absent
 		default:
-			got, verb, err = syncEntry(ctx, cfg, o, tmpRoot, e, r, le)
+			got, verb, err = syncEntry(ctx, cfg, o, tmpRoot, e, r, le, note)
 		}
 		if err != nil {
 			return fail(fmt.Errorf("%s: %w", e.Source, err))
@@ -318,11 +319,18 @@ func writeLines(w io.Writer, lines []string) error {
 }
 
 // syncEntry gives the lock entry of the GitHub entry e after sync, and a verb for the output
-// ("" when the entry is unchanged).
-func syncEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, le *lockEntry) (*lockEntry, string, error) {
-	if le == nil {
+// ("" when the entry is unchanged). note takes a line for the output, before the verb line.
+func syncEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, le *lockEntry, note func(string)) (*lockEntry, string, error) {
+	switch {
+	case le == nil && r.Ref == "latest":
+		// The first install selects the highest release; a later sync keeps it (section 6).
+		got, err := installLatest(ctx, cfg, o, tmpRoot, e, r, note)
+		return got, "installed", err
+	case le == nil:
 		got, err := fetchNew(ctx, cfg, o, tmpRoot, e, r, nil)
 		return got, "installed", err
+	case le.legacyLatest(r):
+		return nil, "", legacyLatestError(cfg.path, e.Source, le)
 	}
 	if _, _, err := lockedDir(cfg.path, cfg.state, &pluginLock{Plugins: map[string]*lockEntry{e.Source: le}}, e); err == nil {
 		return le, "", nil
@@ -347,13 +355,21 @@ func syncEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRo
 		}
 		kind = k
 	}
-	got, err := fetchAt(ctx, cfg, o, tmpRoot, r, le.Commit, le.Commit, kind, true)
+	tag := "" // a repair keeps the tag of a latest entry, and drops a tag of another kind
+	if kind == "latest" {
+		tag = le.Tag
+	}
+	got, err := fetchAt(ctx, cfg, o, tmpRoot, r, le.Commit, le.Commit, kind, tag, true)
 	return got, "repaired", err
 }
 
 // updateEntry resolves the ref of e again and gives its new lock entry. An entry whose ref still
-// gives its locked commit, and whose cache entry is good, stays unchanged.
-func updateEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, le *lockEntry) (*lockEntry, string, error) {
+// gives its locked commit, and whose cache entry is good, stays unchanged. note takes a line for
+// the output, before the verb line.
+func updateEntry(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, e *configEntry, r githubRef, le *lockEntry, note func(string)) (*lockEntry, string, error) {
+	if r.Ref == "latest" {
+		return updateLatest(ctx, cfg, o, tmpRoot, e, r, le, note)
+	}
 	got, err := fetchNew(ctx, cfg, o, tmpRoot, e, r, func(res resolved) bool {
 		if le == nil || le.Commit != res.Commit || le.RefKind != res.Kind {
 			return false
@@ -387,11 +403,12 @@ func fetchNew(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoo
 	if o.afterResolve != nil {
 		o.afterResolve(e.Source)
 	}
-	return fetchAt(ctx, cfg, o, tmpRoot, r, res.FetchRef, res.Commit, res.Kind, res.Kind == "commit")
+	return fetchAt(ctx, cfg, o, tmpRoot, r, res.FetchRef, res.Commit, res.Kind, "", res.Kind == "commit")
 }
 
-// fetchAt fetches commit (by fetchRef) and gives its complete lock entry.
-func fetchAt(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, r githubRef, fetchRef, commit, kind string, byID bool) (*lockEntry, error) {
+// fetchAt fetches commit (by fetchRef) and gives its complete lock entry. tag is the tag of a
+// latest entry, else "".
+func fetchAt(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot string, r githubRef, fetchRef, commit, kind, tag string, byID bool) (*lockEntry, error) {
 	ft, err := withTmp(tmpRoot, func(tmp string) (*fetchedTree, error) {
 		return fetchCommit(ctx, cfg.state, tmp, o.url(r), r.Owner, r.Repo, r.Subdir, fetchRef, commit, byID)
 	})
@@ -399,7 +416,7 @@ func fetchAt(ctx context.Context, cfg *pluginCmdConfig, o pluginCmdOpts, tmpRoot
 		return nil, err
 	}
 	return &lockEntry{lockPin: lockPin{Name: ft.Manifest.Name, Owner: r.Owner, Repo: r.Repo, Subdir: r.Subdir, Ref: r.Ref, RefKind: kind,
-		Commit: commit, Digest: ft.Digest}, Dir: ft.Dir}, nil
+		Tag: tag, Commit: commit, Digest: ft.Digest}, Dir: ft.Dir}, nil
 }
 
 // withTmp runs f with a new temporary directory under tmpRoot and removes it after.

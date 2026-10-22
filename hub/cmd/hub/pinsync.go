@@ -567,9 +567,13 @@ func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []strin
 		if e.static != nil {
 			return false, fail(e.static)
 		}
-		if e.github {
-			keys = append(keys, e.Source)
+		if !e.github {
+			continue
 		}
+		if le := old.Plugins[e.Source]; le != nil && le.legacyLatest(e.githubRef()) {
+			return false, fail(fmt.Errorf("%s: %w", e.Source, legacyLatestError(cfg.path, e.Source, le)))
+		}
+		keys = append(keys, e.Source)
 	}
 	own, err := readPullID(cfg.lock)
 	if err != nil {
@@ -614,7 +618,7 @@ func pluginPull(ctx context.Context, cfgPath, docPath string, take, keep []strin
 			failed = append(failed, fmt.Errorf("%s: %w", e.Source, err))
 			continue
 		}
-		got, err := fetchAt(ctx, cfg, o, tmpRoot, r, p.Commit, p.Commit, kind, true)
+		got, err := fetchAt(ctx, cfg, o, tmpRoot, r, p.Commit, p.Commit, kind, p.Tag, true)
 		switch {
 		case err != nil:
 			failed = append(failed, fmt.Errorf("%s: %w", e.Source, err))
