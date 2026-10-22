@@ -738,7 +738,8 @@ Rules:
   - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
 - After `lockedDir`, the hub reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
-- A hub start takes no flock (section 6). The hub reads the lock with one read. The commands and
+- A hub start takes neither plugin command flock (section 6; it takes only the shared prune
+  flock, section 4). The hub reads the lock with one read. The commands and
   the plugin manager replace the file with a rename, so the hub reads the old lock or the new lock.
 - Tests: the commands are also Go functions (`pluginSync`, `pluginUpdate`) with `pluginCmdOpts`.
   Its `remote` option gives the fetch URL, so a test can use a local bare repository (`file://`)
