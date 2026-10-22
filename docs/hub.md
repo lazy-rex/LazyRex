@@ -500,10 +500,10 @@ Tests: `go test ./cmd/hub -run 'TestSetup|TestHighestTag|TestHookFile|TestFileDi
 
 Lab test: `SETUP_LAB=1 go test ./cmd/hub -run TestSetupLab`. The test proceeds as follows:
 
-1. It builds the binary. Then it sets HOME, PATH (a fake `claude`, and a fake `git` that prints tags) and `REX_CONFIG` to lab paths, before it starts its own lab server. So every lab pane, also the one that the boot entry opens, is isolated.
+1. It builds the binary. Then it clears the whole environment of the test process (as `env -i` does) and sets only: HOME, PATH (a fake `claude`, and a fake `git` that prints tags), `REX_CONFIG`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` under the lab HOME (no Codex directory: the skip case), and the XDG directories under the lab. The cleanup restores the environment. The lab server, every lab pane (also the one that the boot entry opens) and every test command start from that list.
 2. It checks that setup without `-server` finds no default server in the lab HOME, and writes nothing.
 3. A lab pane runs `setup -server <lab socket>`. Standard input is the pane's terminal; the output also goes to a file through `tee`.
-4. Before the first answer, the test checks the endpoint and the config paths in the output. Then it answers each prompt with `rex block send` (five yes, one no).
+4. Before the first answer, the test checks the endpoint and the full path and state of every proposed file in the output. Then it answers each prompt with `rex block send` (five yes, one no).
 5. It checks the report and the files, reloads the lab server's config, and finds the `lazyrexboot_setup` action.
 6. It runs that action. The new pane runs the same binary (checked with the block's `process`) and stops at the prompt for the declined file.
 

@@ -17,10 +17,13 @@ import (
 // with rex block send, and the lab server then loads the written Rex config and runs the boot
 // entry LazyRex: Set Up. Lab only: SETUP_LAB=1.
 //
-// Isolation: the test builds the binary first, then sets HOME and PATH for the lab server, so
-// every lab pane (also the one that the boot entry opens) has the lab HOME, a fake claude, and a
-// fake git that prints the tags. With HOME isolated, Rex's default server is a socket under the
-// lab HOME (checked first: no server answers there). Setup names the lab server with -server.
+// Isolation: the test builds the binary first. Then it clears the whole environment of this test
+// process and sets only the variables below (as env -i does), and restores the environment at the
+// cleanup. The lab server, every lab pane (also the one that the boot entry opens) and every
+// command of the test inherit only these: HOME, the agent and XDG directories under the lab, PATH
+// with a fake claude and a fake git that prints the tags, and the lab Rex config. With HOME
+// isolated, Rex's default server is a socket under the lab HOME (checked first: no server answers
+// there). Setup names the lab server with -server.
 func TestSetupLab(t *testing.T) {
 	if os.Getenv("SETUP_LAB") != "1" {
 		t.Skip("set SETUP_LAB=1 to run the setup lab test (it starts its own lab server)")
@@ -57,10 +60,26 @@ func TestSetupLab(t *testing.T) {
 	}
 	initLua := filepath.Join(rexcfg, "init.lua")
 	path := tools + ":" + filepath.Dir(rexBin) + ":/usr/bin:/bin"
-	t.Setenv("HOME", home)
-	t.Setenv("PATH", path)
-	t.Setenv("REX_CONFIG", initLua)
-	t.Setenv("LAB_CONFIG", initLua)
+	saved := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, kv := range saved {
+			k, v, _ := strings.Cut(kv, "=")
+			os.Setenv(k, v)
+		}
+	})
+	os.Clearenv()
+	for k, v := range map[string]string{
+		"HOME": home, "PATH": path, "USER": "lab", "LANG": "C.UTF-8",
+		"REX_CONFIG": initLua, "LAB_CONFIG": initLua,
+		// The agent directories: Claude Code under the lab HOME; no Codex directory (the skip case).
+		"CLAUDE_CONFIG_DIR": filepath.Join(home, ".claude"), "CODEX_HOME": filepath.Join(home, ".codex"),
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"), "XDG_DATA_HOME": filepath.Join(home, ".local", "share"),
+		"XDG_STATE_HOME": filepath.Join(home, ".local", "state"), "XDG_CACHE_HOME": filepath.Join(home, ".cache"),
+		"XDG_RUNTIME_DIR": filepath.Join(lab, "run"),
+	} {
+		os.Setenv(k, v)
+	}
 	dir := filepath.Join(home, ".lazyrex")
 
 	// The default server in the isolated HOME: no server answers, and setup writes nothing.
@@ -134,9 +153,18 @@ func TestSetupLab(t *testing.T) {
 		prompt := "Write " + a.file + "? [y/N] "
 		got := waitFor(prompt, func(s string) bool { return strings.Count(s, "[y/N] ") == i+1 && strings.HasSuffix(s, prompt) })
 		if i == 0 {
-			// Before any answer: the resolved endpoint and the config paths.
-			for _, want := range []string{`"server": "` + socket + `"`, `"palette_lua": "` + filepath.Join(rexcfg, "lazyrex_palette.lua") + `"`,
-				"skipped    Codex: no codex on PATH", "github:lazy-rex/Messaging@v0.2.0"} {
+			// Before any answer: the resolved endpoint, and the full path of every proposed file
+			// (the file list comes before the first diff).
+			want := []string{`"server": "` + socket + `"`, `"palette_lua": "` + filepath.Join(rexcfg, "lazyrex_palette.lua") + `"`,
+				"skipped    Codex: no codex on PATH and no " + filepath.Join(home, ".codex") + ".", "github:lazy-rex/Messaging@v0.2.0"}
+			for _, a := range answers {
+				state := "new       "
+				if a.file == initLua {
+					state = "change    " // the existing Rex config
+				}
+				want = append(want, state+" "+a.file+"\n")
+			}
+			for _, want := range want {
 				if !strings.Contains(got, want) {
 					t.Fatalf("before the first answer, no %q:\n%s", want, got)
 				}
