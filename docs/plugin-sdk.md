@@ -102,7 +102,8 @@ app.form('/forms/add', {
 })
 ```
 
-- `title`, `fields` and `intro` are values or functions of `ctx`. `fields` runs at each render, and
+- `title`, `fields` and `intro` are values or functions of `ctx`. `intro` is a text, or a list of
+  `{id, text}` widgets. `id` and `label` set the form node ID (default `form`) and its label. `fields` runs at each render, and
   again at the submit, in its transaction. Field kinds: `text`, `multiline`, `boolean`, `select`.
 - The SDK checks the values before `on_submit`: a required field must be filled in (a required
   boolean must be true), a select value must be one of its options, and an unknown field is refused.

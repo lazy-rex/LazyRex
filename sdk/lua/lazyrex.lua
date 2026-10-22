@@ -479,7 +479,8 @@ function M.plugin(name)
   --   title: text, or fn(ctx) -> text.
   --   fields: a list, or fn(ctx) -> list of {id, label, kind, value, required, options, ...}. The
   --     function runs at each render and again at the submit, in its transaction.
-  --   intro: text, or fn(ctx) -> text: a widget above the form.
+  --   intro: text, or fn(ctx) -> text: a widget above the form; or a list of {id, text} widgets.
+  --   id, label: the form node ID (default 'form') and its label.
   --   submit: {label, tool = <agent action> | user_only = <reason>, enabled = bool | fn(ctx)}.
   --   on_submit(ctx, values) -> result. nil closes the form; a table passes through ({form},
   --     {navigate}, {close_form}, {status = 'running'}, ...).
@@ -497,11 +498,15 @@ function M.plugin(name)
       local ok, err = pcall(function()
         out.title = tostring(eval(spec.title, ctx) or '')
         local intro = eval(spec.intro, ctx)
-        if intro ~= nil and intro ~= '' then nodes[#nodes + 1] = {id = 'intro', type = 'widget', text = tostring(intro)} end
+        if type(intro) == 'table' then
+          for _, w in ipairs(intro) do nodes[#nodes + 1] = {id = tostring(w.id), type = 'widget', text = tostring(w.text or '')} end
+        elseif intro ~= nil and intro ~= '' then
+          nodes[#nodes + 1] = {id = 'intro', type = 'widget', text = tostring(intro)}
+        end
         local submit = spec.submit or {}
         local action = {name = submit.name or 'submit', label = submit.label or 'Submit', enabled = eval(submit.enabled, ctx) ~= false}
         if submit.tool then action.tool = submit.tool else action.user_only = submit.user_only or 'navigation' end
-        nodes[#nodes + 1] = {id = 'form', type = 'form', fields = eval(spec.fields, ctx) or {}, submit_action = action}
+        nodes[#nodes + 1] = {id = spec.id or 'form', type = 'form', label = spec.label, fields = eval(spec.fields, ctx) or {}, submit_action = action}
       end)
       if not ok then nodes = {{id = 'error', type = 'error', text = normalize(err).message}} end
       if spec.cancel ~= false then
@@ -516,7 +521,7 @@ function M.plugin(name)
         local v = values[f.id]
         local label = f.label or f.id
         local empty = v == nil or v == '' or (f.kind == 'boolean' and v ~= true)
-        if f.required and empty then fail('invalid_input', 'Fill in ' .. label) end
+        if f.required and empty then fail('invalid_input', (f.kind == 'boolean' and 'Check ' or 'Fill in ') .. label) end
         if v ~= nil then
           local want = f.kind == 'boolean' and 'boolean' or 'string'
           if type(v) ~= want then fail('invalid_input', label .. ' must be ' .. want) end
@@ -535,7 +540,7 @@ function M.plugin(name)
       render = function(ctx) return render_form(ctx) end,
       ['view.action'] = function(ctx, a)
         local submit = spec.submit or {}
-        if a.node_id ~= 'form' or a.action ~= (submit.name or 'submit') then fail('invalid_input', 'Unknown form action') end
+        if a.node_id ~= (spec.id or 'form') or a.action ~= (submit.name or 'submit') then fail('invalid_input', 'Unknown form action') end
         if eval(submit.enabled, ctx) == false then fail('conflict', 'This form cannot be sent now. It shows the current state.') end
         local values = type(ctx.input.values) == 'table' and ctx.input.values or {}
         local result = spec.on_submit(ctx, checked(eval(spec.fields, ctx), values))

@@ -641,3 +641,20 @@ test('ctx.query decodes the route query; a malformed escape drops that pair', fu
   expect(rex.json.decode(title)).to_equal({a = '1+1', b = 'x y'})
   expect(s.sdk.route('/p', {b = 'é', a = 'x/y'})).to_be('/p?a=x%2Fy&b=%C3%A9')
 end)
+
+test('app.form options: the form node id and label, intro widgets, and a required checkbox', function()
+  local s = plugin([[
+app.form('/forms/ok', {title = 'OK', id = 'confirm', label = 'Confirm it',
+  intro = function(ctx) return {{id = 'what', text = 'What: ' .. (ctx.query.what or '?')}, {id = 'risk', text = 'A risk.'}} end,
+  fields = {{id = 'accept', label = 'I accept', kind = 'boolean', required = true, value = false}},
+  submit = {name = 'go', label = 'Go', user_only = 'navigation'},
+  on_submit = function(ctx, values) return {accepted = values.accept, close_form = true} end, store = false})]])
+  local tree = s:call('view.render', {route = '/forms/ok?what=x', user = 'user'}).result.tree
+  expect(tree.nodes[1]).to_equal({id = 'what', type = 'widget', text = 'What: x'})
+  expect(tree.nodes[2]).to_equal({id = 'risk', type = 'widget', text = 'A risk.'})
+  expect(tree.nodes[3].id).to_be('confirm')
+  expect(tree.nodes[3].label).to_be('Confirm it')
+  local function go(values) return s:call('view.action', {route = '/forms/ok?what=x', node_id = 'confirm', action = 'go', input = {values = values}, user = 'user', operation_key = 'g'}) end
+  expect(go({accept = false}).error.message).to_be('Check I accept')
+  expect(go({accept = true}).result).to_equal({accepted = true, close_form = true})
+end)
