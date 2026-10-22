@@ -441,7 +441,8 @@ func expectArg(args map[string]any, name string) (int64, bool, error) {
 
 // execReply is the reply of one exec statement.
 func execReply(r *stmtResult) map[string]any {
-	out := map[string]any{"changes": r.changes, "id": r.id}
+	id, _ := resultValue(r.id) // exact beyond 2^53, as a result cell (an int64 never fails)
+	out := map[string]any{"changes": r.changes, "id": id}
 	if len(r.columns) > 0 {
 		out["columns"], out["rows"] = r.columns, rowsOrEmpty(r.rows)
 	}
