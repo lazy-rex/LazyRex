@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -219,7 +221,8 @@ func (l *chunkLab) noRefusedParts() {
 }
 
 // The plugin testdata/holdparts renders about 150 KiB in parts and stops a render before its last
-// part: the pane keeps the old tree for the whole hold, and shows the new tree after the release.
+// part: the pane keeps the whole old tree (its first and its last node) for the hold, and shows the
+// whole new tree after the release.
 func TestReplyPartsHoldLab(t *testing.T) {
 	l := newChunkLab(t, "holdp", "view/testdata/holdparts")
 	// The plugin creates its tables after its registration.
@@ -233,7 +236,24 @@ func TestReplyPartsHoldLab(t *testing.T) {
 	l.sql("INSERT INTO hold VALUES (1, 1)", true)
 	l.sql("INSERT INTO held VALUES (0)", true)
 	pane := l.open("lazyrex_holdp_parts")
-	l.waitFor("the first tree (gen 1)", 30*time.Second, func() bool { return strings.Contains(l.screen(pane), "gen 1") })
+	// The tree is about 2000 rows. at scrolls the pane to its top (PgUp) or its bottom (PgDn) and
+	// returns the screen: the gen node is the first row of the tree, the last node the last row.
+	at := func(key string) string {
+		keys := []string{"block", "send-key", "-s", l.session, "-b", pane}
+		for range 150 {
+			keys = append(keys, key)
+		}
+		l.must(keys...)
+		return l.screen(pane)
+	}
+	// whole reports whether the pane shows the first and the last node of generation gen, and no
+	// node of another generation.
+	whole := func(gen string, other string) bool {
+		top, bottom := at("pageup"), at("pagedown")
+		return strings.Contains(top, "gen "+gen) && strings.Contains(bottom, "end "+gen) &&
+			!strings.Contains(top, "gen "+other) && !strings.Contains(bottom, "end "+other)
+	}
+	l.waitFor("the first tree (gen 1), first and last node", 30*time.Second, func() bool { return whole("1", "2") })
 
 	// The next render stops before its last part (at most 8 s: the hub's render timeout is 10 s).
 	l.sql("UPDATE hold SET gen = 2, release = 0", true)
@@ -241,19 +261,17 @@ func TestReplyPartsHoldLab(t *testing.T) {
 		rows := l.sql("SELECT n FROM held", false)
 		return len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] == float64(1)
 	})
-	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(200 * time.Millisecond) {
-		if sc := l.screen(pane); !strings.Contains(sc, "gen 1") || strings.Contains(sc, "gen 2") {
-			t.Fatalf("during the hold the pane does not show the old tree:\n%s", sc)
+	// For the hold, the pane shows the whole old tree: its first and its last node.
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); {
+		if !whole("1", "2") {
+			t.Fatalf("during the hold the pane does not show the whole old tree:\ntop:\n%s\nbottom:\n%s", at("pageup"), at("pagedown"))
 		}
 	}
-	t.Logf("during the hold:\n%s", l.screen(pane))
+	t.Logf("during the hold, top:\n%s", at("pageup"))
 
 	l.sql("UPDATE hold SET release = 1", true)
-	l.waitFor("the new tree (gen 2)", 30*time.Second, func() bool {
-		sc := l.screen(pane)
-		return strings.Contains(sc, "gen 2") && !strings.Contains(sc, "gen 1")
-	})
-	t.Logf("after the release:\n%s", l.screen(pane))
+	l.waitFor("the whole new tree (gen 2), first and last node", 30*time.Second, func() bool { return whole("2", "1") })
+	t.Logf("after the release, top:\n%s\nbottom:\n%s", at("pageup"), at("pagedown"))
 	l.noRefusedParts()
 }
 
@@ -273,15 +291,33 @@ func TestReplyPartsTimingLab(t *testing.T) {
 		}
 		return out
 	}
+	// partTimes returns the hub-side times (dispatch to reply sent, calllog.go) of the
+	// hub.reply.part calls that the hub log has after offset, and the new offset.
+	partRE := regexp.MustCompile(`hub\.reply\.part from .* in ([0-9.]+)ms`)
+	partTimes := func(offset int) ([]float64, int) {
+		b, _ := os.ReadFile(filepath.Join(l.lab, "hub.log"))
+		var out []float64
+		for _, m := range partRE.FindAllStringSubmatch(string(b[offset:]), -1) {
+			v, _ := strconv.ParseFloat(m[1], 64)
+			out = append(out, v)
+		}
+		return out, len(b)
+	}
+	// render is one measured view.render call: its time, and the times of its part calls.
+	type render struct {
+		call  float64
+		parts []float64
+	}
 	// measure opens one panel (a panel replaces the one before it in its split), then writes to its
 	// table 8 times. After each write it waits until the pane shows the new count and reads the
 	// time of that view.render call. The first write is a warm-up.
-	measure := func(entry, table, route string) []float64 {
+	measure := func(entry, table, route string) []render {
 		t.Helper()
 		pane := l.open(entry)
 		l.waitFor(route+" shows ticks 0", 30*time.Second, func() bool { return strings.Contains(l.screen(pane), "ticks 0") })
-		var ms []float64
+		var out []render
 		for n := 1; n <= 8; n++ {
+			_, offset := partTimes(0)
 			l.sql("INSERT INTO "+table+" VALUES (1)", true)
 			want := "ticks " + itoa(n)
 			l.waitFor(route+" shows "+want, 20*time.Second, func() bool { return strings.Contains(l.screen(pane), want) })
@@ -289,31 +325,51 @@ func TestReplyPartsTimingLab(t *testing.T) {
 			if c == nil {
 				t.Fatalf("no render count for %s", route)
 			}
+			parts, _ := partTimes(offset)
 			if n > 1 {
-				ms = append(ms, c["last_call_ms"].(float64))
+				out = append(out, render{call: c["last_call_ms"].(float64), parts: parts})
 			}
 		}
-		return ms
+		return out
 	}
-	// parts counts the hub.reply.part calls in the hub log.
-	parts := func() int {
-		b, _ := os.ReadFile(filepath.Join(l.lab, "hub.log"))
-		return strings.Count(string(b), "hub.reply.part from ")
+	big := measure("lazyrex_sp_big", "big_ticks", "/panels/big")
+	small := measure("lazyrex_sp_small", "small_ticks", "/panels/small")
+	median := func(rs []render, f func(render) float64) float64 {
+		v := make([]float64, len(rs))
+		for i, r := range rs {
+			v[i] = f(r)
+		}
+		sort.Float64s(v)
+		return v[len(v)/2]
 	}
-	p0 := parts()
-	tb := measure("lazyrex_sp_big", "big_ticks", "/panels/big")
-	p1 := parts()
-	ts := measure("lazyrex_sp_small", "small_ticks", "/panels/small")
-	p2 := parts()
-	if p1-p0 < 2*9 || p2 != p1 {
-		t.Fatalf("hub.reply.part calls: %d for the 9 renders of the 150 KiB panel (want 2 or more each), %d for the 40 KiB panel (want 0)", p1-p0, p2-p1)
+	sum := func(r render) float64 {
+		s := 0.0
+		for _, p := range r.parts {
+			s += p
+		}
+		return s
 	}
-	t.Logf("hub.reply.part calls: %d for 9 renders of the 150 KiB panel, 0 for the 40 KiB panel", p1-p0)
-	sort.Float64s(tb)
-	sort.Float64s(ts)
-	t.Logf("view.render call ms (median of 7): 150 KiB in parts %.1f, 40 KiB inline %.1f; all: %v %v", tb[3], ts[3], tb, ts)
-	if tb[3]-ts[3] > 50 {
-		t.Fatalf("parts add %.1f ms; the budget is 50 ms", tb[3]-ts[3])
+	for _, r := range big {
+		if len(r.parts) < 2 {
+			t.Fatalf("a render of the 150 KiB panel had %d hub.reply.part calls; want 2 or more", len(r.parts))
+		}
+	}
+	for _, r := range small {
+		if len(r.parts) != 0 {
+			t.Fatalf("a render of the 40 KiB panel had %d hub.reply.part calls; want 0", len(r.parts))
+		}
+	}
+	for i, r := range big {
+		t.Logf("150 KiB render %d: call %.1f ms; %d part calls (hub side) %v, sum %.1f ms; residual %.1f ms", i+1, r.call, len(r.parts), r.parts, sum(r), r.call-sum(r))
+	}
+	call := func(r render) float64 { return r.call }
+	residual := func(r render) float64 { return r.call - sum(r) }
+	tb, ts := median(big, call), median(small, call)
+	// The residual is the call time minus the hub-side time of the part calls: the handler, the
+	// encode and the slicing in the SDK, the transport of each part, and the hub's join.
+	t.Logf("view.render call ms (median of 7): 150 KiB in parts %.1f, 40 KiB inline %.1f. 150 KiB: part calls (hub side) median sum %.1f ms; residual (handler, encode, slice, transport, join) median %.1f ms", tb, ts, median(big, sum), median(big, residual))
+	if tb-ts > 50 {
+		t.Fatalf("parts add %.1f ms; the budget is 50 ms", tb-ts)
 	}
 	l.noRefusedParts()
 }
