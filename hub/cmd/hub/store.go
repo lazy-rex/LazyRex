@@ -61,7 +61,36 @@ func openDB(path string) (*DB, error) {
 			return nil, err
 		}
 	}
+	if err := retireSchema(db); err != nil {
+		return nil, err
+	}
 	return &DB{db}, nil
+}
+
+// retiredSchema holds the hub's one-time steps on hub.db. A step runs only while its check counts
+// more than 0, so it runs at most once on a database, and a new database skips it. A step goes
+// when no live hub.db needs it any more.
+var retiredSchema = []struct{ check, statement string }{
+	// ui_tabs.rev_known marked the tabs closed before tab revisions existed. The live hub.db had no
+	// such row, so the column goes.
+	{`SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'rev_known'`, `ALTER TABLE ui_tabs DROP COLUMN rev_known`},
+}
+
+// retireSchema runs the steps of retiredSchema that are still due.
+func retireSchema(db *sql.DB) error {
+	for _, s := range retiredSchema {
+		var n int
+		if err := db.QueryRow(s.check).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			continue
+		}
+		if _, err := db.Exec(s.statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // nextRev returns a fresh revision from the database-wide counter. Revisions never reset.

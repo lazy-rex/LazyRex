@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS ui_restores (nonce TEXT PRIMARY KEY, view_id TEXT NOT
 CREATE TABLE IF NOT EXISTS ui_tabs (plugin TEXT NOT NULL, tab TEXT NOT NULL, title TEXT NOT NULL, route TEXT NOT NULL,
   pos INTEGER NOT NULL, suppressed INTEGER NOT NULL DEFAULT 0, crashes INTEGER NOT NULL DEFAULT 0,
   session_id TEXT NOT NULL DEFAULT '', revision TEXT NOT NULL DEFAULT '', closed_revision TEXT NOT NULL DEFAULT '',
-  rev_known INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '', PRIMARY KEY (plugin, tab));
+  status TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '', PRIMARY KEY (plugin, tab));
 -- status: prepared (request not sent), sending (outcome unknown), open, exited (renderer ended; the worker closes it), closed
 CREATE TABLE IF NOT EXISTS views (view_id TEXT PRIMARY KEY, plugin TEXT NOT NULL, tab TEXT NOT NULL, route TEXT NOT NULL,
   status TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', window_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '',
@@ -1303,18 +1303,17 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 		suppressed bool
 		crashes    int
 		closedRev  string // the revision at the manual close
-		revKnown   bool   // written by a hub that records revisions
 		status     string
 	}
 	old := map[string]kept{}
-	rows, err := tx.QueryContext(ctx, `SELECT tab, suppressed, crashes, closed_revision, rev_known, status FROM ui_tabs WHERE plugin = ?`, plugin)
+	rows, err := tx.QueryContext(ctx, `SELECT tab, suppressed, crashes, closed_revision, status FROM ui_tabs WHERE plugin = ?`, plugin)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var k string
 		var o kept
-		if err = rows.Scan(&k, &o.suppressed, &o.crashes, &o.closedRev, &o.revKnown, &o.status); err != nil {
+		if err = rows.Scan(&k, &o.suppressed, &o.crashes, &o.closedRev, &o.status); err != nil {
 			break
 		}
 		old[k] = o
@@ -1333,15 +1332,13 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 	for _, t := range tabs {
 		o := old[t.Key]
 		statusChanged = statusChanged || o.status != t.Status
-		if o.suppressed && !o.revKnown {
-			o.closedRev = t.Revision // closed before revisions existed: this declaration is the baseline
-		} else if o.suppressed && t.Revision != "" && t.Revision != o.closedRev {
+		if o.suppressed && t.Revision != "" && t.Revision != o.closedRev {
 			// Something new since the user closed the tab (a new message): it opens again.
 			o.suppressed = false
 			h.ev.emit("tab_reopened", map[string]any{"plugin": plugin, "tab": t.Key, "revision": t.Revision})
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ui_tabs (plugin, tab, title, route, pos, suppressed, crashes, session_id, revision, closed_revision, rev_known, status, layout)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`, plugin, t.Key, t.Title, t.Route, t.Pos, o.suppressed, o.crashes, t.Session, t.Revision, o.closedRev, t.Status, t.Layout); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ui_tabs (plugin, tab, title, route, pos, suppressed, crashes, session_id, revision, closed_revision, status, layout)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, plugin, t.Key, t.Title, t.Route, t.Pos, o.suppressed, o.crashes, t.Session, t.Revision, o.closedRev, t.Status, t.Layout); err != nil {
 			return nil, err
 		}
 	}

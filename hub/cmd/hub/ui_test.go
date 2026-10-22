@@ -98,31 +98,6 @@ func testUIHub(t *testing.T) *Hub {
 	return &Hub{db: db, ev: ev, ui: &uiState{kick: make(chan struct{}, 1)}}
 }
 
-func TestPreRevisionCloseTakesTheFirstRevisionAsBaseline(t *testing.T) {
-	h := testUIHub(t)
-	ctx := context.Background()
-	// A tab the user closed before revisions existed.
-	h.db.ExecContext(ctx, `INSERT INTO ui_tabs (plugin, tab, title, route, pos, suppressed) VALUES ('messaging', 'thread/a', 'A', '/thread/a', 0, 1)`)
-	declare := func(rev string) bool {
-		t.Helper()
-		if _, err := h.uiTabs(ctx, "messaging", map[string]any{"tabs": []any{map[string]any{"key": "thread/a", "title": "A", "route": "/thread/a", "revision": rev}}}); err != nil {
-			t.Fatal(err)
-		}
-		var suppressed bool
-		h.db.QueryRowContext(ctx, `SELECT suppressed FROM ui_tabs WHERE plugin = 'messaging' AND tab = 'thread/a'`).Scan(&suppressed)
-		return suppressed
-	}
-	if !declare("m5") {
-		t.Fatal("the first revision is the baseline: the tab stays closed")
-	}
-	if !declare("m5") {
-		t.Fatal("same revision: still closed")
-	}
-	if declare("m6") {
-		t.Fatal("a new revision reopens it")
-	}
-}
-
 func TestEmptyThreadClosedReopensOnFirstMessage(t *testing.T) {
 	h := testUIHub(t)
 	ctx := context.Background()

@@ -13,9 +13,8 @@ package main
 //
 // Reopen: a tab entry may carry revision. A manual close records the tab's revision; a later
 // declaration with another revision opens the tab again, without focus (the maintainer: a new message
-// reopens a closed thread tab). A navigation always opens it. A tab closed before revisions existed
-// (ui_tabs.rev_known 0) takes the first declared revision as its baseline and stays closed: only a
-// later change reopens it. A tab closed with an empty revision (an empty thread) reopens on its
+// reopens a closed thread tab). A navigation always opens it.
+// A tab closed with an empty revision (an empty thread) reopens on its
 // first nonempty revision.
 
 import (
