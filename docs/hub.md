@@ -1763,6 +1763,13 @@ in state `blocked`, for a live binding. The hub keeps prompts in memory (`hub/cm
   `msg` (by its SHA-256), so a change after the 8 KiB cut also replaces the prompt.
 - A prompt closes when the state is not `blocked` (reason `state`), when the record is removed or
   its state is unknown (`removed`), or when the binding changes or the process exits (`gone`).
+- A pane has at most one open prompt: the prompt of its current owner. The owner is the current
+  identity of the pane, or the legacy agent of the pane when no identity took it over. A legacy
+  agent with an alias never has a prompt again: at the first identity report, its open prompt
+  closes (reason `alias`), and the identity opens the same prompt with a new `prompt_id` and a
+  higher `rev`. A superseded or detached identity has none: after a `/clear`, the old
+  conversation's prompt closes (`gone`) and the new one opens. Each close comes before the open,
+  in one pass, so a pane never has two prompts.
 - Each prompt has a `prompt_id` (64 random bits, hex) and a `generation` (a counter per agent).
 - A hub restart closes every prompt: ids and generations are not stored.
 - `msg` is cut to 8 KiB on a UTF-8 boundary, with `msg_truncated: true`.

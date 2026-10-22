@@ -61,12 +61,26 @@ func (h *Hub) syncPrompts() {
 	if h.prompts.open == nil {
 		h.prompts = promptBook{open: map[string]*prompt{}, gen: map[string]int64{}, last: map[string]closedPrompt{}, agentRev: map[string]int64{}}
 	}
-	agents := map[string]*Agent{}
+	// A pane has at most one open prompt: the prompt of its current owner (docs/hub.md). The owner
+	// is the pane's current identity, or its legacy agent when no identity took it over. A legacy
+	// agent with an alias (permanent) never has a prompt again: its open prompt closes with
+	// "alias". A superseded or detached identity has none: its prompt closes with "gone". Every
+	// close runs before any open, in this one pass.
+	agents, aliased := map[string]*Agent{}, map[string]bool{}
 	for _, a := range h.everyAgent() {
+		if _, ok := h.aliases[a.ID]; ok && a.IdState == "" {
+			aliased[a.ID] = true
+			continue
+		}
+		if a.IdState != "" && a.IdState != "current" {
+			continue
+		}
 		agents[a.ID] = a
 	}
 	for id, p := range h.prompts.open {
-		if agents[id] == nil {
+		if aliased[id] {
+			h.closePrompt(p, "alias")
+		} else if agents[id] == nil {
 			h.closePrompt(p, "gone")
 		}
 	}

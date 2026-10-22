@@ -41,6 +41,13 @@ func formCloseHub(t *testing.T, n int, fail string) *Hub {
 // error code fail).
 func answerRex(t *testing.T, fail string) *rex.Rex {
 	t.Helper()
+	return replyRex(t, func(string) (any, string) { return map[string]any{}, fail })
+}
+
+// replyRex is a fake Rex control socket that answers each request with reply(method): a payload,
+// or an error code.
+func replyRex(t *testing.T, reply func(method string) (any, string)) *rex.Rex {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "fr") // a unix socket path must be short
 	if err != nil {
 		t.Fatal(err)
@@ -62,16 +69,17 @@ func answerRex(t *testing.T, fail string) *rex.Rex {
 			if err != nil {
 				return
 			}
-			var f struct{ Type, ID string }
+			var f struct{ Type, ID, Method string }
 			json.Unmarshal(data, &f)
-			reply := map[string]any{"type": "welcome"}
+			frame := map[string]any{"type": "welcome"}
 			if f.Type == "request" {
-				reply = map[string]any{"type": "response", "id": f.ID, "payload": map[string]any{}}
+				payload, fail := reply(f.Method)
+				frame = map[string]any{"type": "response", "id": f.ID, "payload": payload}
 				if fail != "" {
-					reply = map[string]any{"type": "response", "id": f.ID, "error": map[string]any{"code": fail, "message": "test"}}
+					frame = map[string]any{"type": "response", "id": f.ID, "error": map[string]any{"code": fail, "message": "test"}}
 				}
 			}
-			b, _ := json.Marshal(reply)
+			b, _ := json.Marshal(frame)
 			if c.Write(ctx, websocket.MessageText, b) != nil {
 				return
 			}
