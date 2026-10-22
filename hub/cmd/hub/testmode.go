@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -32,7 +33,7 @@ import (
 // client.reply frame) adds less than 1 KiB; the Lua limit is 65536 bytes for the whole message.
 const testReplyLimit = 48 << 10
 
-var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
+var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.sql", "hub.test.chunk", "hub.test.notice", "hub.test.stats", "hub.test.rev",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
 	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
@@ -83,6 +84,12 @@ type injection struct {
 	Window  string
 	Caller  string
 	release chan struct{}
+
+	// SQLCommitWrites: match a hub.sql commit (a handler commit, an exec or a batch alone) that
+	// changed this table (lower case). Only Fail applies; with After the commit happens first and
+	// the caller gets the error, as after a lost reply. It never matches a store batch.
+	SQLCommitWrites string
+	After           bool
 }
 
 type renderOutcome struct {
@@ -197,6 +204,11 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 			return nil, err
 		}
 		return h.testStore(ctx, plugin, args)
+	case "hub.test.sql":
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		return h.sql.test(ctx, plugin, args)
 	case "hub.test.chunk":
 		return h.testChunk(ctx, args)
 	case "hub.test.write":
@@ -585,7 +597,7 @@ func (in *injection) remaining() any {
 }
 
 func (in *injection) matches(plugin string, args map[string]any) bool {
-	if in.Window != "" || in.Reads != "" || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
+	if in.Window != "" || in.Reads != "" || in.SQLCommitWrites != "" || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
 		return false
 	}
 	opKey := ""
@@ -636,14 +648,23 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	in.Writes, _ = match["writes"].(string)
 	in.Updates, _ = match["updates"].(string)
 	in.Reads, _ = match["reads"].(string)
+	in.SQLCommitWrites, _ = match["sql_commit_writes"].(string)
+	if _, ok := match["sql_commit_writes"]; ok && (in.SQLCommitWrites == "" || len(match) != 1) {
+		return nil, bad("invalid: match.sql_commit_writes must be a nonempty table name, alone in match")
+	}
+	in.SQLCommitWrites = strings.ToLower(in.SQLCommitWrites)
+	in.After, _ = args["after"].(bool)
+	if in.After && in.SQLCommitWrites == "" {
+		return nil, bad("invalid: after needs match {sql_commit_writes = table}")
+	}
 	if _, ok := match["reads"]; ok && (in.Reads == "" || len(match) != 1) {
 		return nil, bad("invalid: match.reads must be a nonempty record key, alone in match")
 	}
 	if _, ok := match["window"]; ok {
 		return h.testWindowInject(in, match, args)
 	}
-	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" && in.Reads == "" {
-		return nil, bad("invalid: match needs op_key, op_prefix, writes, updates, reads or window")
+	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" && in.Reads == "" && in.SQLCommitWrites == "" {
+		return nil, bad("invalid: match needs op_key, op_prefix, writes, updates, reads, sql_commit_writes or window")
 	}
 	if _, ok := args["hold"]; ok {
 		return nil, bad("invalid: hold needs match {window = key}")
@@ -670,6 +691,9 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 			return nil, bad("invalid: fail_code must be nonempty text, and it needs fail")
 		}
 		in.FailCode = code
+	}
+	if in.SQLCommitWrites != "" && (len(in.Ops) > 0 || in.Replay || in.Fail == "") {
+		return nil, bad("invalid: a sql_commit_writes injection needs fail, and has no ops or replay")
 	}
 	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
 		return nil, bad("invalid: an injection needs ops, replay or fail")
@@ -1257,4 +1281,36 @@ func procArgs(pid int) []string {
 		return nil
 	}
 	return argv
+}
+
+// testBeforeSQLCommit is the hub.sql commit fault point: the first live injection with
+// sql_commit_writes for a changed table fails the commit (or, with after, its reply).
+func (h *Hub) testBeforeSQLCommit(plugin string, marks []string) (error, bool) {
+	h.test.mu.Lock()
+	var in *injection
+	for _, c := range h.test.injections {
+		if c.SQLCommitWrites == "" || c.Plugin != plugin || c.Times >= 0 && c.Consumed >= c.Times {
+			continue
+		}
+		if !slices.Contains(marks, c.SQLCommitWrites) {
+			continue
+		}
+		if c.Skipped < c.Skip {
+			c.Skipped++
+			break
+		}
+		in = c
+		c.Consumed++
+		break
+	}
+	h.test.mu.Unlock()
+	if in == nil {
+		return nil, false
+	}
+	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": plugin, "after": in.After})
+	code := in.FailCode
+	if code == "" {
+		code = "injected_failure"
+	}
+	return refuse(code, "%s", in.Fail), in.After
 }

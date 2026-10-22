@@ -236,6 +236,15 @@ record, changes it and writes it back must use `if_rev`: without it, the write c
 commit that the plugin made in between. `put_operation{key, fingerprint, result}` saves an operation record (what
 `hub.store.op` returns), for example the result of an older plugin version.
 
+`sql(sql, params?)` reads the plugin's SQL database (`hub.test.sql`, the committed state) and
+returns rows keyed by column name: NULL is `nil`, a large integer is its decimal string, a BLOB
+stays `{blob = '<base64>'}`. `params` is a list for `?` or a table for `:name`; a NULL parameter is
+`{null = true}`. `sql_write(sql, params?)` runs one statement now, in its own transaction, as
+another writer would (for fixtures, for example rows that an older version wrote). It returns
+`{changes, id}` and renders the plugin's views again. It fails with `busy` while the plugin has an
+open transaction, and it never matches an injection. Both take an optional third argument, the
+plugin.
+
 ### Concurrent writes
 
 `inject{match, ops, replay, times}` commits `ops` (store batch ops, without `if_rev`) just before
@@ -248,6 +257,12 @@ matching batch with that message: it commits nothing, as a crash or a lost conne
 The error code is `injected_failure` (definite). `fail_code = '<code>'` sets another code, for
 example `unavailable` (transient). `fail_code` needs `fail` and must be nonempty.
 Injected commits never match an injection.
+
+`inject{match = {sql_commit_writes = <table>}, fail, fail_code?, after?}` fails the plugin's next
+`hub.sql` commit that changed that table: a handler commit, or an exec or batch without `tx`. The
+table name is not case sensitive. `fail` is required; `ops` and `replay` are refused. Without
+`after`, nothing is committed. With `after = true`, the commit happens, and the plugin gets the
+error anyway, as after a lost reply. `skip` and `times` work as for batches.
 
 `skip = n` lets the first `n` matching batches pass unchanged; the injection acts from the next
 one. For example, `{match = {updates = key}, skip = 1}` acts on the second change of a record.

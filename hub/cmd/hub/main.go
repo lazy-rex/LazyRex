@@ -472,6 +472,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	h.entriesMu.Unlock()
 	if cfg.Test {
 		h.test = newTestState()
+		h.sql.beforeCommit = h.testBeforeSQLCommit
 	}
 
 	var actions []map[string]any
