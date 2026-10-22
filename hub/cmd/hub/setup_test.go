@@ -258,3 +258,35 @@ func TestSetupSkillCopy(t *testing.T) {
 		t.Fatal("hub/cmd/hub/setupfiles/SKILL.md differs from skills/lazyrex/SKILL.md: copy it")
 	}
 }
+
+// A blocked file is a failure (exit 1), also when the other files are written; a decline is not
+// (codex-24's review of 0b51ce7).
+func TestSetupBlockedFails(t *testing.T) {
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 6), true)
+	e.tags = func(string) ([]string, error) { return nil, errors.New("git ls-remote lazy-rex/LazyRex: exit status 128") }
+	dir := filepath.Join(e.home, ".lazyrex")
+	if got := runSetup(e, dir, false); got != 1 {
+		t.Errorf("a blocked hub.json: exit %d\n%s", got, out)
+	}
+	if s := out.String(); !strings.Contains(s, "Blocked:  "+filepath.Join(dir, "hub.json")) || !strings.Contains(s, "Written:  "+filepath.Join(dir, "profiles.json")) {
+		t.Errorf("report:\n%s", s)
+	}
+
+	e, out = setupTestEnv(t, strings.Repeat("y\n", 6), true)
+	os.MkdirAll(filepath.Join(e.home, ".codex"), 0o755)
+	os.WriteFile(filepath.Join(e.home, ".codex", "hooks.json"), []byte("{bad"), 0o644)
+	if got := runSetup(e, filepath.Join(e.home, ".lazyrex"), false); got != 1 || readFile(filepath.Join(e.home, ".codex", "hooks.json")) != "{bad" {
+		t.Errorf("a malformed hook file: exit %d\n%s", got, out)
+	}
+
+	e, out = setupTestEnv(t, "", false)
+	e.tags = func(string) ([]string, error) { return nil, errors.New("offline") }
+	if got := runSetup(e, filepath.Join(e.home, ".lazyrex"), true); got != 1 {
+		t.Errorf("-print with a blocked file: exit %d\n%s", got, out)
+	}
+
+	e, out = setupTestEnv(t, strings.Repeat("n\n", 6), true)
+	if got := runSetup(e, filepath.Join(e.home, ".lazyrex"), false); got != 0 {
+		t.Errorf("only declines: exit %d\n%s", got, out)
+	}
+}

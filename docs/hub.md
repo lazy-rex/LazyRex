@@ -477,7 +477,18 @@ Consent. Setup first lists each file with its state: `new`, `change`, `unchanged
 
 A symlink is followed: setup writes the file that it resolves to, and the link stays a link. A symlink that does not resolve to a regular file is blocked. A hook file that is not valid JSON, or whose root, `hooks` or `hooks.<event>` has another JSON type, is blocked and not changed. The hook merge keeps the order of the user's keys and all other hooks. It writes with 2-space indentation; the backup keeps the original text.
 
-`-print` shows the list and every diff and writes nothing. Without a terminal on standard input, setup does the same and exits 2. Neither one creates a directory. At the end, setup reports each file as written (with its backup), declined, blocked, or failed. It exits 1 if a write failed, and 0 otherwise. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
+`-print` shows the list and every diff and writes nothing. Without a terminal on standard input, setup does the same and exits 2. Neither one creates a directory. At the end, setup reports each file as written (with its backup), declined, blocked, or failed. The other files are still proposed and written after a blocked or failed one.
+
+Exit status:
+
+| Case | Exit status |
+| --- | --- |
+| Every file was written, unchanged, or declined | 0 |
+| A file is blocked, or a write failed (also with `-print`, for a blocked file) | 1 |
+| A prerequisite is missing | 1 |
+| Standard input is not a terminal (without `-print`) | 2 |
+
+A decline is the user's choice, not an error. Setup does not install Rex's own skill and hooks: it prints `rex skill setup` as the next step.
 
 The skill in the binary is a copy of `skills/lazyrex/SKILL.md` at `hub/cmd/hub/setupfiles/SKILL.md`, because `go:embed` cannot reach outside the hub module. `TestSetupSkillCopy` fails when the two differ.
 

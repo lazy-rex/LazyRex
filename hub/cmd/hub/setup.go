@@ -365,6 +365,11 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		}
 		if print {
 			say("-print: setup wrote nothing.")
+			for _, f := range files {
+				if f.block != "" {
+					return 1 // a blocked file is an error, as in a run that writes
+				}
+			}
 			return 0
 		}
 		say("Standard input is not a terminal: setup wrote nothing. Run setup in a terminal to answer for each file.")
@@ -421,7 +426,8 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		say("Nothing to write.")
 	}
 	say("\nNext: run `rex skill setup` to install Rex's own skill and hooks. Setup does not run it.")
-	if len(failed) > 0 {
+	// A blocked file or a failed write is an error; a declined file is the user's choice.
+	if len(failed) > 0 || len(blocked) > 0 {
 		return 1
 	}
 	return 0
