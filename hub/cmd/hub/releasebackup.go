@@ -159,9 +159,6 @@ func (r *releaser) writeBackup(stamp string) (string, error) {
 			return "", relFail("the backup of %s: %v", f.src, err)
 		}
 	}
-	if r.spec.Kind != "hub" {
-		return b, r.writeSums(b)
-	}
 	if err := backupDB(filepath.Join(r.cfg.state, "hub.db"), filepath.Join(b, bakDB)); err != nil {
 		return "", relFail("%v", err)
 	}
@@ -175,13 +172,10 @@ func (r *releaser) writeBackup(stamp string) (string, error) {
 	return b, r.writeSums(b)
 }
 
-// backupNames are the files that a backup of this kind holds.
+// backupNames are the files that a backup holds. A plugin release backs up hub.db and the sql
+// listing too: P at TO can change its records and its own database (plan c4 v2, Q1).
 func (r *releaser) backupNames() []string {
-	names := []string{bakConfig, bakManaged, bakLock, bakBase()}
-	if r.spec.Kind == "hub" {
-		names = append(names, bakDB, bakSQLList)
-	}
-	return names
+	return []string{bakConfig, bakManaged, bakLock, bakBase(), bakDB, bakSQLList}
 }
 
 // writeSums writes <backup>/SHA256SUMS, the sha256 of each backup file, after every file is
@@ -229,10 +223,8 @@ func (r *releaser) checkBackup(b string) error {
 			return relFail("the backup %s: %s differs from %s", b, n, bakSums)
 		}
 	}
-	if r.spec.Kind == "hub" {
-		if err := checkIntegrity(filepath.Join(b, bakDB)); err != nil {
-			return relFail("the backup %s: %v", b, err)
-		}
+	if err := checkIntegrity(filepath.Join(b, bakDB)); err != nil {
+		return relFail("the backup %s: %v", b, err)
 	}
 	return nil
 }

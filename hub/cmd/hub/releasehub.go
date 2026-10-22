@@ -516,12 +516,16 @@ func hubBackup(r *releaser) error {
 		r.say("the backup %s exists and is intact", r.backupPath(s))
 		return nil
 	}
-	panes, err := r.devPanes()
-	if err != nil {
-		return err
-	}
-	if len(panes) != 0 {
-		return relFail("a %s pane runs; run step stop first", devPaneLabel)
+	// A hub release backs up with the hub stopped; a plugin release with the hub running (hub.db by
+	// the SQLite online backup).
+	if r.spec.Kind == "hub" {
+		panes, err := r.devPanes()
+		if err != nil {
+			return err
+		}
+		if len(panes) != 0 {
+			return relFail("a %s pane runs; run step stop first", devPaneLabel)
+		}
 	}
 	if err := r.holdOK(c); err != nil {
 		return err
@@ -1149,14 +1153,4 @@ func openFreeze(name string, args []string, stdout, stderr io.Writer) (*releaser
 		return nil, relFailed
 	}
 	return openStep(name, []string{"-run", *dir}, stdout, stderr)
-}
-
-// relKind wraps a step so that it runs only for its release kind.
-func relKind(kind string, run func(*releaser) error) func(*releaser) error {
-	return func(r *releaser) error {
-		if r.spec.Kind != kind {
-			return relFail("step %s is for a %s release; this run is a %s release", r.step, kind, r.spec.Kind)
-		}
-		return run(r)
-	}
 }

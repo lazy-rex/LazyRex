@@ -64,7 +64,15 @@ type relWorld struct {
 	replaceCalls, startCalls              int
 	replaceArgs                           []map[string]any
 	loseReply                             bool // the next replace runs, and its reply is lost
-	out                                   *bytes.Buffer
+	// A plugin release (newPluginWorld).
+	sdkDir      string      // the -sdk directory of the hub (argv)
+	toManifest  string      // the manifest of P at TO
+	reach       string      // "", "off" (TO not on the branch), "bad" (git fails), or a tag commit
+	perform     []string    // the answers of the next client.perform calls: refused, other, timeout, gone, ok
+	performN    int         // client.perform calls
+	buildRec    []string    // the build record of the dev hub
+	performHook func(n int) // runs at each client.perform, after its answer is chosen
+	out         *bytes.Buffer
 }
 
 func (w *relWorld) home() string { return homeSrc }
@@ -204,7 +212,7 @@ func (w *relWorld) spawn(name, src string) {
 	id := fmt.Sprintf("inst-%d", w.nextInst)
 	w.runs[name] = &fakeRun{commit: p.Commit, digest: p.Digest, instance: id, desired: "running", registered: true}
 	w.event(map[string]any{"event": "plugin_spawned", "plugin": name, "instance_id": id})
-	w.event(map[string]any{"event": "plugin_registered", "plugin": name, "instance_id": id})
+	w.event(map[string]any{"event": "plugin_registered", "plugin": name, "instance_id": id, "client_id": "client:" + id})
 }
 
 // startHub starts a hub built from HEAD: it writes hub_started and starts every plugin at its pin.
@@ -227,8 +235,12 @@ func (w *relWorld) exec(r *releaser) func(c relCmd) ([]byte, []byte, error) {
 	return func(c relCmd) ([]byte, []byte, error) {
 		a := c.Argv
 		switch {
+		case a[0] == "git" && (strings.HasSuffix(a[2], "reach.git") || a[3] == "init"):
+			return w.reachGit(a[3:])
 		case a[0] == "git":
 			return w.git(a[3:])
+		case a[0] == filepath.Join(w.state, "dev", "hub"):
+			return w.hubBinCmd(a[1:])
 		case a[0] == "go":
 			return w.goCmd(a[1:])
 		case a[0] == r.hubBin():
@@ -362,6 +374,8 @@ func (w *relWorld) rex(a []string) ([]byte, []byte, error) {
 		var arg map[string]any
 		json.Unmarshal([]byte(a[3]), &arg)
 		switch a[2] {
+		case "client.perform":
+			return w.clientPerform(arg)
 		case "session.list":
 			return []byte(`{"sessions":[{"session_id":"session:1"}]}`), nil, nil
 		case "session.list_blocks":
@@ -500,6 +514,23 @@ func (w *relWorld) open(step string) *releaser {
 			return digestH, nil
 		}
 		return "", errors.New("unknown source " + src)
+	}
+	r.argvOf = func(pid int) []string {
+		if pid != w.hubPID {
+			return nil
+		}
+		argv := []string{filepath.Join(w.state, "dev", "hub"), "-config", w.cfg}
+		if w.sdkDir != "" {
+			argv = append(argv, "-sdk", w.sdkDir)
+		}
+		return argv
+	}
+	r.buildRecord = func(p string) ([]string, error) { return w.buildRec, nil }
+	r.syncManifest = func(src string) (string, []byte, error) {
+		if strings.HasSuffix(src, "@"+pluginTo) {
+			return pluginToDigest, []byte(w.toManifest), nil
+		}
+		return "", nil, errors.New("unknown source " + src)
 	}
 	r.tool = filepath.Join(w.dir, "tool")
 	return r

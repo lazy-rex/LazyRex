@@ -60,6 +60,13 @@ func newRelFixture(t *testing.T, kind string) *relFixture {
 	f := &relFixture{dir: dir, cfg: filepath.Join(dir, "hub.json"), run: filepath.Join(dir, "run")}
 	state := filepath.Join(dir, "state")
 	os.MkdirAll(state, 0o700)
+	// Every backup holds hub.db (plan c4 Q1).
+	if db, err := sql.Open("sqlite", "file:"+filepath.Join(state, "hub.db")); err != nil {
+		t.Fatal(err)
+	} else {
+		db.Exec("CREATE TABLE t (k TEXT)")
+		db.Close()
+	}
 	cfg := map[string]any{"server": "unix:///nowhere/rex.sock", "state": state, "agents": []any{map[string]string{"id": "user"}},
 		"plugins": []any{map[string]string{"source": relSrc}, map[string]string{"source": relOther}}}
 	b, _ := json.Marshal(cfg)
@@ -459,19 +466,12 @@ func TestReleaseFailedMutationKeepsExpectation(t *testing.T) {
 }
 
 // Review R2: a backup is checked against the sha256 of each file, written after the files. A
-// changed, missing or unlisted file fails the check, also for the hub.db copy and the listing.
+// changed, missing or unlisted file fails the check, also for the hub.db copy and the listing. Both
+// kinds back up hub.db (plan c4 Q1).
 func TestReleaseBackupSums(t *testing.T) {
 	for _, kind := range []string{"plugin", "hub"} {
 		f := newRelFixture(t, kind)
-		if kind == "hub" {
-			db, _ := sql.Open("sqlite", "file:"+filepath.Join(f.r.cfg.state, "hub.db"))
-			db.Exec("CREATE TABLE t (k TEXT)")
-			db.Close()
-		}
-		names := []string{bakConfig, bakManaged, bakLock, bakBase()}
-		if kind == "hub" {
-			names = append(names, bakDB, bakSQLList)
-		}
+		names := []string{bakConfig, bakManaged, bakLock, bakBase(), bakDB, bakSQLList}
 		for i, n := range names {
 			b, err := f.r.writeBackup(fmt.Sprintf("s%d", i))
 			if err != nil {

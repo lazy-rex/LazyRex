@@ -155,6 +155,10 @@ type releaser struct {
 	sleep      func(d time.Duration)
 	tool       string                              // the tool binary for the rehearsal gate; "": this executable
 	syncDigest func(source string) (string, error) // the digest of a commit-form source
+	// syncManifest is the digest and the manifest of a commit-form source (a plugin freeze).
+	syncManifest func(source string) (string, []byte, error)
+	buildRecord  func(path string) ([]string, error) // the build record of a Go binary
+	argvOf       func(pid int) []string              // the argv of a process
 	// testStop allows RELEASE_TEST_STOP outside a proved lab (unit tests only).
 	testStop string
 	// rehearseLab and rehearseTier are the -lab and -tier flags of rehearse.
@@ -504,35 +508,41 @@ type relStep struct {
 // relStepFor returns the step of a subcommand name. The steps are a switch, not a package map:
 // release code keeps no package state (see the top of this file).
 func relStepFor(name string) (relStep, bool) {
-	hub := func(run func(*releaser) error) (relStep, bool) {
-		return relStep{open: openStep, run: relKind("hub", run)}, true
+	// step: the hub step and the plugin step (nil: not a step of a plugin release).
+	step := func(hub, plugin func(*releaser) error) (relStep, bool) {
+		return relStep{open: openStep, run: relKinds(hub, plugin)}, true
 	}
-	gated := func(run func(*releaser) error) (relStep, bool) { return hub(noPendingCreate(run)) }
+	gated := func(hub, plugin func(*releaser) error) (relStep, bool) {
+		if plugin != nil {
+			plugin = noPendingCreate(plugin)
+		}
+		return step(noPendingCreate(hub), plugin)
+	}
 	switch name {
 	case "freeze":
-		return relStep{open: openFreeze, run: relKind("hub", hubFreeze)}, true
+		return relStep{open: openFreeze, run: relKinds(hubFreeze, relPluginFreeze)}, true
 	case "precheck":
-		return gated(hubPrecheck)
+		return gated(hubPrecheck, relPluginPrecheck)
 	case "stop":
-		return gated(hubStop)
+		return gated(hubStop, nil)
 	case "backup":
-		return gated(hubBackup)
+		return gated(hubBackup, hubBackup)
 	case "checkout":
-		return gated(hubCheckout)
+		return gated(hubCheckout, nil)
 	case "pull":
-		return gated(hubPull)
+		return gated(hubPull, relPluginPull)
 	case "start":
-		return hub(hubStart)
+		return step(hubStart, nil)
 	case "replace":
-		return gated(hubReplace)
+		return gated(hubReplace, relPluginReplace)
 	case "verify":
-		return gated(hubVerify)
+		return gated(hubVerify, relPluginVerify)
 	case "rollback":
-		return hub(hubRollback)
+		return step(hubRollback, relPluginRollback)
 	case "resume":
-		return hub(hubResume)
+		return step(hubResume, nil)
 	case "rehearse":
-		return relStep{open: openRehearse, run: relKind("hub", hubRehearse)}, true
+		return relStep{open: openRehearse, run: relKinds(hubRehearse, nil)}, true
 	}
 	return relStep{}, false
 }

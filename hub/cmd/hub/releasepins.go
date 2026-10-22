@@ -41,6 +41,15 @@ type relCandidate struct {
 	OldExpectRun bool     `json:"old_expect_run"` // OLD's hub.admin.replace takes expect_run
 	OldSDK       bool     `json:"old_sdk"`        // OLD can run SDK plugins (dev.sh passes -sdk, sdk/lua exists)
 	Inherited    []string `json:"inherited"`      // dependencies that OLD or H brings, for example python3
+	// Plugin release only: the hub that runs FROM and TO (it does not change), and the manifests.
+	HubCommit string   `json:"hub_commit,omitempty"` // vcs.revision of <state>/dev/hub (vcs.modified=false)
+	HubSHA256 string   `json:"hub_sha256,omitempty"` // sha256 of <state>/dev/hub
+	HubBuild  []string `json:"hub_build,omitempty"`  // the build record of <state>/dev/hub (buildSettings)
+	SDKDir    string   `json:"sdk_dir,omitempty"`    // the -sdk directory of the running hub, "" without one
+	SDKDigest string   `json:"sdk_digest,omitempty"` // dirDigest of SDKDir
+	FromSDK   string   `json:"from_sdk,omitempty"`   // the manifest sdk field at FROM
+	ToSDK     string   `json:"to_sdk,omitempty"`     // the manifest sdk field at TO
+	Reasons   []string `json:"reasons,omitempty"`    // the full-tier reasons of the manifests
 }
 
 const (
