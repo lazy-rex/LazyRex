@@ -230,7 +230,8 @@ func TestPluginOpStartAuthorization(t *testing.T) {
 	}
 	h.opsRun(context.Background())
 	calls := c.list()
-	want := `hub.admin.start {"expect_run":{"commit":"` + run("a").Commit + `","digest":"` + run("a").Digest + `","source":"` + src + `"},"plugin":"g"}`
+	eID, _ := json.Marshal(entryIdentity(e))
+	want := `hub.admin.start {"expect_entry":` + string(eID) + `,"expect_run":{"commit":"` + run("a").Commit + `","digest":"` + run("a").Digest + `","source":"` + src + `"},"plugin":"g"}`
 	if len(calls) != 1 || calls[0] != want {
 		t.Errorf("calls %v, want %s", calls, want)
 	}
@@ -304,7 +305,9 @@ func TestPluginOpQueuedOps(t *testing.T) {
 	h, c, dir := opsTestHub(t, "")
 	writeManaged(t, dir, opsLocal(t, t.TempDir(), "x", "y"))
 	opsLoadEntries(t, h)
-	h.plugins["x"], h.plugins["y"] = &Plugin{Name: "x"}, &Plugin{Name: "y"}
+	h.plugins["x"] = &Plugin{Name: "x", entry: opsEntry(t, h, "managed:x")}
+	h.plugins["y"] = &Plugin{Name: "y", entry: opsEntry(t, h, "managed:y")}
+	yID, _ := json.Marshal(entryIdentity(opsEntry(t, h, "managed:y")))
 	set := opsMust(t, h, "s", opRequest{Op: "settings", Entry: "managed:x", Input: json.RawMessage(`{"args":{"k":"v"}}`)})
 	rem := opsMust(t, h, "r", opRequest{Op: "remove", Entry: "managed:y"})
 	h.opsRun(context.Background())
@@ -317,7 +320,7 @@ func TestPluginOpQueuedOps(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].managed != "x" || list[0].Args["k"] != "v" {
 		t.Fatalf("file %s: %v", opsFile(t, h.cfg.managedPath), err)
 	}
-	if got := strings.Join(c.list(), "; "); got != `reload; hub.admin.stop {"plugin":"y"}; reload` {
+	if got := strings.Join(c.list(), "; "); got != `reload; hub.admin.stop {"expect_entry":`+string(yID)+`,"plugin":"y"}; reload` {
 		t.Errorf("calls %s", got)
 	}
 }
@@ -443,12 +446,22 @@ func TestPluginOpNoSecondCall(t *testing.T) {
 	pd := t.TempDir()
 	writeManaged(t, dir, opsLocal(t, pd, "x", "y"))
 	opsLoadEntries(t, h)
-	h.plugins["x"] = &Plugin{Name: "x"}
-	h.plugins["y"] = &Plugin{Name: "y"}
+	x := &Plugin{Name: "x", entry: opsEntry(t, h, "managed:x")}
+	h.plugins["x"] = x
+	h.plugins["y"] = &Plugin{Name: "y", entry: opsEntry(t, h, "managed:y")}
+	xID, _ := json.Marshal(entryIdentity(x.entry))
+	yID, _ := json.Marshal(entryIdentity(opsEntry(t, h, "managed:y")))
 	stop := opsMust(t, h, "stop", opRequest{Op: "stop", Entry: "managed:x"})
 	h.pops.fault = func(p string) bool { return p == "plugin-op-after-stop" }
 	h.opsRun(context.Background())
-	h.db.Exec(`INSERT INTO plugins (name, desired) VALUES ('x', 'stopped')`)
+	// The stop happened (the fake does not stop): the record of managed:x is saved stopped.
+	if err := h.loadPluginRow(context.Background(), x); err != nil {
+		t.Fatal(err)
+	}
+	x.Desired = "stopped"
+	if err := h.savePlugin(context.Background(), x); err != nil {
+		t.Fatal(err)
+	}
 	h.pops.fault = nil
 	h.opsRun(context.Background())
 	if op := opsOf(t, h, stop); op.Phase != "done" || !strings.Contains(op.Result, "observed") {
@@ -462,7 +475,7 @@ func TestPluginOpNoSecondCall(t *testing.T) {
 	if op := opsOf(t, h, start); op.Phase != "unknown" || !strings.Contains(op.Error, "unresolved_intent") {
 		t.Errorf("start: %+v", op)
 	}
-	if got := strings.Join(c.list(), "; "); got != `hub.admin.stop {"plugin":"x"}; hub.admin.start {"expect_run":{"source":"`+filepath.Join(pd, "y")+`"},"plugin":"y"}` {
+	if got := strings.Join(c.list(), "; "); got != `hub.admin.stop {"expect_entry":`+string(xID)+`,"plugin":"x"}; hub.admin.start {"expect_entry":`+string(yID)+`,"expect_run":{"source":"`+filepath.Join(pd, "y")+`"},"plugin":"y"}` {
 		t.Errorf("calls %s", got)
 	}
 }
