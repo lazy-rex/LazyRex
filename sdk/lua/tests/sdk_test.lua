@@ -447,3 +447,14 @@ app.action('p.mine', {}, function(ctx) runs = runs + 1; return {runs = runs, key
   expect(entry.args.additionalProperties, 'the hub sends {user, operation_key, args}').to_be(true)
   expect(s.registered.exports, 'not exported').to_be(nil)
 end)
+
+test('a select of an item that is disabled now is refused before its handler runs', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)'}
+app.panel('P', function()
+  return {app.ui.list('l', {{id = 'a', label = 'A', enabled = false, on_select = function() app.db.exec('INSERT INTO todos (text) VALUES (?)', 'x') end}})}
+end)]])
+  local r = s:select('/panels/p', 'l', 'a')
+  expect(r.error and r.error.code, show(r)).to_be('conflict')
+  expect(#s.sql.rows('todos')).to_be(0)
+end)

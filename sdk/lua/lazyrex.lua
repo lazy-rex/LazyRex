@@ -565,6 +565,7 @@ function M.plugin(name)
         local nodes = panel.fn(ctx)
         local n = find_node(nodes, tostring(a.node_id), ctx.input.item_id ~= nil and tostring(ctx.input.item_id) or nil)
         if not n or not n.on_select then fail('not_found', 'This item is gone. The panel shows the current items.') end
+        if n.enabled == false then fail('conflict', 'This action is not available now. The panel shows the current state.') end
         return n.on_select(ctx) or {}
       end)
     end
