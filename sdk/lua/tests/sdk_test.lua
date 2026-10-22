@@ -789,10 +789,10 @@ app.action('p.read', {}, function() local r = app.db.first('SELECT b FROM t'); r
 end)
 
 -- A fake hub.sql.query that holds 25 rows and answers at most 10 in one reply, as the hub cuts a
--- reply at its size limit (docs/sql.md section 4, paging). seen.calls logs {sql, params}.
+-- reply at its size limit (docs/sql.md section 4, paging). seen.calls logs {sql, params, render}.
 local function paged_hub(seen)
   return {['hub.sql.query'] = function(a)
-    seen.calls[#seen.calls + 1] = {sql = a.sql, params = a.params}
+    seen.calls[#seen.calls + 1] = {sql = a.sql, params = a.params, render = a.render}
     local from = 0
     local wrapped = a.sql:match('^SELECT %* FROM %((.*)\n%) LIMIT %-1 OFFSET %?(%d+)$')
     if wrapped then from = a.params[tonumber(a.sql:match('%?(%d+)$'))] end
@@ -1068,4 +1068,39 @@ test('boot.lua sets table.concat to the SDK concat before it runs the main file'
   chunk()
   expect(env.ran).to_be('/plugin/main.lua')
   expect(env.concat_at_main == sdk.concat, 'the main file sees the SDK concat').to_be(true)
+end)
+
+test('every read of a render carries its render ID: db.first, the db.each pages and each part of a form', function()
+  -- The hub attributes a hub.sql read to a view render by args.render, and re-renders a view only
+  -- when a commit changes a table that its last render read (hub lead and claude-22, 2026-10-22).
+  local seen = {calls = {}}
+  local s = plugin([[
+app.panel('Reads', function()
+  local items = {}
+  local first = app.db.first('SELECT n FROM t')
+  app.db.each('SELECT n FROM t', function(row) items[#items + 1] = {id = row.n, label = tostring(row.n)} end)
+  return {app.ui.list('reads', items, {empty = tostring(first.n)})}
+end, {id = 'reads'})
+local function n(part) return part .. ' ' .. app.db.first('SELECT n FROM t WHERE part = ?', part).n end
+app.form('/forms/reads', {
+  title = function() return n('title') end,
+  fields = function() return {{id = 'text', label = n('fields'), kind = 'text', value = ''}} end,
+  intro = function() return n('intro') end,
+  after = function() return {{id = 'after', text = n('after')}} end,
+  instead = function() n('instead'); return nil end,
+  on_submit = function() end})]], {hub = paged_hub(seen)})
+  local r = s:render('/panels/reads', 'render-7')
+  expect(r.error, show(r)).to_be(nil)
+  expect(#seen.calls, 'db.first, then the 3 pages of db.each').to_be(4)
+  for i, c in ipairs(seen.calls) do expect(c.render, 'panel read ' .. i).to_be('render-7') end
+  expect(seen.calls[3].sql:find('OFFSET', 1, true) ~= nil, 'a later page').to_be(true)
+  seen.calls = {}
+  r = s:render('/forms/reads', 'render-8')
+  expect(r.error, show(r)).to_be(nil)
+  local parts = {}
+  for _, c in ipairs(seen.calls) do
+    expect(c.render, 'form read ' .. tostring(c.params[1])).to_be('render-8')
+    parts[c.params[1]] = true
+  end
+  for _, p in ipairs({'title', 'fields', 'intro', 'after', 'instead'}) do expect(parts[p], p).to_be(true) end
 end)
