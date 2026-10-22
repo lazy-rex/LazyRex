@@ -313,3 +313,23 @@ func TestPluginOpRenameReadBackBounded(t *testing.T) {
 		})
 	}
 }
+
+// The op's pin is already in the lock (another writer put exactly that pin there): the graph check
+// still runs before the op goes on. Here the added plugin depends on a plugin that no entry gives,
+// so the op is conflict. (codex-27, TestReviewerExistingPinChecksGraph.)
+func TestPluginOpLockWrittenChecksGraph(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(map[string]string{"lazyrex.json": manifestJSON("notes", "tasks"), "main.lua": "return 1\n"})
+	r.git("tag", "v1.0.0")
+	h := fetchTestHub(t, r)
+	op := fetchedAdd(t, h, "wg", "github:acme/notes@v1.0.0")
+	var pin lockEntry
+	json.Unmarshal([]byte(op.Pin), &pin)
+	writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": &pin}})
+	if err := h.opLock(context.Background(), op); err != nil || op.Phase != "conflict" || !strings.Contains(op.Error, "the new lock refuses managed:notes") {
+		t.Fatalf("op %+v %v", op, err)
+	}
+	if !strings.Contains(op.Error, "the lock has the operation's pin") || len(lockProofs(t, h, op.ID)) != 0 {
+		t.Fatalf("the text or a write: %q", op.Error)
+	}
+}
