@@ -1,7 +1,7 @@
 #!/bin/sh
-# Probe (rex-protocol.md, "A create can complete after its client dies"): does Rex complete a
-# session.new_block after the client that sent it is gone? The B8 attempt proof depends on the
-# answer: an absent block never proves that a create did not happen.
+# Probe (rex-protocol.md, "A create can succeed when its client dies before the reply"): can a
+# session.new_block succeed when the client that sent it dies before the reply? If it can, a lost
+# reply never proves that a create did not happen (the B8 attempt proof).
 #
 # Lab only. Run: lab/probes/late-create.sh unix:///tmp/rexlab-<team>-<you>/rex.sock
 # It makes its own session, kills only the rex CLI processes that it started, and destroys the
