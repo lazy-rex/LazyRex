@@ -49,7 +49,8 @@ first.
   - `failed` (a failed file without `-keep`, by `lazyrex-hub test`, why `failed: <file>: ...`; or
     a failed Go lab test of the hub): the sweep removes it 24 hours after the marker's `at`, and
     only when the probe proves it absent. A passed file removes its lab at once.
-  - `unproved` (the cleanup is not proved): only `-clean` removes it.
+  - `unproved` (the cleanup is not proved): only `-clean` removes it. An unproved cleanup is
+    `unproved` on every path, also for a failed file or a failed Go lab test.
   - A marker without a kind (an older binary): by `lazyrex-hub test -keep` is `keep`; by
     `lazyrex-hub test` is `unproved`; any other, and a kind that the binary does not know, is
     protected as `unproved`.

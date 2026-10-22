@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -335,17 +336,17 @@ func TestProbeUncertain(t *testing.T) {
 func TestEndLab(t *testing.T) {
 	root := labTestRoot(t)
 	clean := fakeLab(t, root, "lrt-940", 0)
-	if kept, probs := endLab(clean, false, false, "f.lua", nil); kept || len(probs) != 0 || exists(clean) {
+	if kept, probs := endLab(clean, false, false, labEvidenceBy, "f.lua", nil); kept || len(probs) != 0 || exists(clean) {
 		t.Errorf("a proved cleanup: kept %v, problems %v, exists %v", kept, probs, exists(clean))
 	}
 	keep := fakeLab(t, root, "lrt-941", 0)
-	if kept, probs := endLab(keep, true, false, "f.lua: 1 passed", nil); !kept || len(probs) != 0 || !strings.Contains(marker(t, keep), "-keep") {
+	if kept, probs := endLab(keep, true, false, labEvidenceBy, "f.lua: 1 passed", nil); !kept || len(probs) != 0 || !strings.Contains(marker(t, keep), "-keep") {
 		t.Errorf("-keep: kept %v, problems %v, marker %s", kept, probs, marker(t, keep))
 	}
 	for _, k := range []bool{false, true} {
 		dir := fakeLab(t, root, "lrt-942"+strconv.FormatBool(k), 0)
 		surv := "cleanup: process survived the lab server: pid 4242"
-		kept, probs := endLab(dir, k, false, "f.lua", []string{surv})
+		kept, probs := endLab(dir, k, false, labEvidenceBy, "f.lua", []string{surv})
 		if !kept || !exists(dir) || len(probs) != 1 || !strings.Contains(probs[0], dir) || !strings.Contains(probs[0], "pid 4242") {
 			t.Errorf("a survivor (keep %v): kept %v, problems %v", k, kept, probs)
 		}
@@ -355,7 +356,7 @@ func TestEndLab(t *testing.T) {
 	}
 	named := fakeLab(t, root, "lrt-943", 0)
 	namedProcess(t, filepath.Join(named, "x"))
-	if kept, probs := endLab(named, false, false, "f.lua", nil); !kept || !exists(named) || len(probs) != 1 || !strings.Contains(probs[0], "live") {
+	if kept, probs := endLab(named, false, false, labEvidenceBy, "f.lua", nil); !kept || !exists(named) || len(probs) != 1 || !strings.Contains(probs[0], "live") {
 		t.Errorf("a process names the lab: kept %v, problems %v", kept, probs)
 	}
 }
@@ -441,7 +442,7 @@ func TestProbeNoSocketRunningServerPid(t *testing.T) {
 func TestRemoveIfEndedKeepsEvidence(t *testing.T) {
 	root := labTestRoot(t)
 	ev := fakeLab(t, root, "lrt-980", 0)
-	if kept, probs := endLab(ev, false, false, "failed cleanup", []string{"cleanup: process survived"}); !kept || len(probs) == 0 {
+	if kept, probs := endLab(ev, false, false, labEvidenceBy, "failed cleanup", []string{"cleanup: process survived"}); !kept || len(probs) == 0 {
 		t.Fatal("endLab did not keep the evidence")
 	}
 	removeIfEnded(t, ev)
@@ -473,22 +474,22 @@ func writeKeep(t *testing.T, dir string, m map[string]string, at time.Time) {
 func TestEndLabFailedFile(t *testing.T) {
 	root := labTestRoot(t)
 	failed := fakeLab(t, root, "lrt-990", 0)
-	kept, probs := endLab(failed, false, true, "tests/a.lua: 1 passed, 1 failed, 0 problems", nil)
+	kept, probs := endLab(failed, false, true, labEvidenceBy, "tests/a.lua: 1 passed, 1 failed, 0 problems", nil)
 	k, err := readLabKeep(failed)
 	if !kept || len(probs) != 0 || err != nil || k.Kind != labKindFailed || k.By != labEvidenceBy || !strings.HasPrefix(k.Why, "failed: tests/a.lua") {
 		t.Errorf("a failed file: kept %v, problems %v, marker %+v %v", kept, probs, k, err)
 	}
 	withKeep := fakeLab(t, root, "lrt-991", 0)
-	endLab(withKeep, true, true, "tests/a.lua", nil)
+	endLab(withKeep, true, true, labEvidenceBy, "tests/a.lua", nil)
 	if k, _ := readLabKeep(withKeep); k.Kind != labKindKeep {
 		t.Errorf("-keep on a failed file: %+v", k)
 	}
 	passed := fakeLab(t, root, "lrt-992", 0)
-	if kept, _ := endLab(passed, false, false, "tests/a.lua", nil); kept || exists(passed) {
+	if kept, _ := endLab(passed, false, false, labEvidenceBy, "tests/a.lua", nil); kept || exists(passed) {
 		t.Error("a passed file kept its lab")
 	}
 	both := fakeLab(t, root, "lrt-993", 0)
-	endLab(both, false, true, "tests/a.lua", []string{"cleanup: process survived"})
+	endLab(both, false, true, labEvidenceBy, "tests/a.lua", []string{"cleanup: process survived"})
 	if k, _ := readLabKeep(both); k.Kind != labKindUnproved {
 		t.Errorf("a failed file with an unproved cleanup: %+v", k)
 	}
@@ -540,5 +541,53 @@ func TestSweepFailedLabs(t *testing.T) {
 		if got := m.class(); got != want {
 			t.Errorf("class of %+v: %s, want %s", m, got, want)
 		}
+	}
+}
+
+// fakeEnder is a Go lab test for endGoLab: its name, whether it failed, and what it reported.
+type fakeEnder struct {
+	failed     bool
+	errs, logs []string
+}
+
+func (f *fakeEnder) Name() string      { return "TestFake" }
+func (f *fakeEnder) Failed() bool      { return f.failed }
+func (f *fakeEnder) Error(args ...any) { f.errs = append(f.errs, fmt.Sprint(args...)) }
+func (f *fakeEnder) Logf(format string, args ...any) {
+	f.logs = append(f.logs, fmt.Sprintf(format, args...))
+}
+
+// codex-21's regression: a failed Go lab test whose stop did not prove the cleanup keeps its lab as
+// kind unproved ("unproved wins"). The survivor then ends, the probe says absent, and the sweep 25
+// hours later keeps the lab. A failed Go lab test with a proved cleanup is kind failed, and that
+// sweep removes it.
+func TestEndGoLabUnprovedWins(t *testing.T) {
+	root := labTestRoot(t)
+	ev := fakeLab(t, root, "lrt-1010", 0)
+	surv := namedProcess(t, filepath.Join(ev, "x"))
+	f := &fakeEnder{failed: true}
+	endGoLab(f, ev, []string{fmt.Sprintf("cleanup: process %d survived", surv.Process.Pid)})
+	if k, err := readLabKeep(ev); err != nil || k.Kind != labKindUnproved || k.By != "go test TestFake" {
+		t.Fatalf("a failed Go lab test with an unproved cleanup: marker %+v %v", k, err)
+	}
+	if len(f.errs) == 0 {
+		t.Error("endGoLab did not report the unproved cleanup")
+	}
+	surv.Process.Kill()
+	surv.Wait()
+	failed := fakeLab(t, root, "lrt-1011", 0)
+	endGoLab(&fakeEnder{failed: true}, failed, nil)
+	if k, _ := readLabKeep(failed); k.Kind != labKindFailed {
+		t.Fatalf("a failed Go lab test with a proved cleanup: marker %+v", k)
+	}
+	old(t, ev)
+	old(t, failed)
+	var lines []string
+	sweepLabs(root, time.Now().Add(25*time.Hour), func(s string) { lines = append(lines, s) })
+	if !exists(ev) {
+		t.Errorf("the sweep removed the unproved cleanup evidence of a Go lab test; log %v", lines)
+	}
+	if exists(failed) {
+		t.Errorf("the sweep kept a failed Go lab test's lab older than 24 hours; log %v", lines)
 	}
 }

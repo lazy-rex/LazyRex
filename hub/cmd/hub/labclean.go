@@ -389,8 +389,9 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 	}
 }
 
-// endLab ends the lab dir of one test file after its stop. unproved lists why the stop could not
-// prove the cleanup (a survivor, the guard). In order:
+// endLab ends the lab dir of one test file or Go lab test after its stop. It is the one decision of
+// the kind for every path that writes a KEEP marker. by names the writer of a failed or unproved
+// marker. unproved lists why the stop could not prove the cleanup (a survivor, the guard). In order:
 //   - a cleanup that is not proved (unproved, or a probe after the stop that is not absent): the lab
 //     stays with a KEEP marker of kind unproved, and a problem with its path. The evidence stays.
 //   - -keep: the lab stays with kind keep, also when the file failed.
@@ -398,7 +399,7 @@ func sweepLabs(root string, now time.Time, logf func(string)) {
 //   - else the lab is removed.
 //
 // It returns whether the lab stays, and the problems for the run's result.
-func endLab(dir string, keep, failed bool, why string, unproved []string) (bool, []string) {
+func endLab(dir string, keep, failed bool, by, why string, unproved []string) (bool, []string) {
 	reason := strings.Join(unproved, "; ")
 	if reason == "" {
 		procs, err := labProcs()
@@ -408,13 +409,13 @@ func endLab(dir string, keep, failed bool, why string, unproved []string) (bool,
 			reason = st.String() + ": " + w
 		}
 	}
-	kind, by := labKindKeep, "lazyrex-hub test -keep"
+	kind, writer := labKindKeep, "lazyrex-hub test -keep"
 	switch {
 	case reason != "":
-		kind, by, why = labKindUnproved, labEvidenceBy, "cleanup not proved: "+reason
+		kind, writer, why = labKindUnproved, by, "cleanup not proved: "+reason
 	case keep:
 	case failed:
-		kind, by, why = labKindFailed, labEvidenceBy, "failed: "+why
+		kind, writer, why = labKindFailed, by, "failed: "+why
 	default:
 		if err := removeLab(dir); err != nil {
 			return false, []string{err.Error()}
@@ -425,7 +426,7 @@ func endLab(dir string, keep, failed bool, why string, unproved []string) (bool,
 	if reason != "" {
 		probs = append(probs, fmt.Sprintf("lab kept: %s: the cleanup is not proved (%s)", dir, reason))
 	}
-	if err := markLabKept(dir, kind, by, why); err != nil {
+	if err := markLabKept(dir, kind, writer, why); err != nil {
 		probs = append(probs, "lab KEEP marker: "+err.Error())
 	}
 	return true, probs

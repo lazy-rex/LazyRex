@@ -20,12 +20,12 @@ func TestEndLabRemovalFails(t *testing.T) {
 	}
 	os.Chmod(parent, 0o500)
 	t.Cleanup(func() { os.Chmod(parent, 0o700) })
-	if kept, probs := endLab(locked, false, false, "f.lua", nil); kept || len(probs) == 0 {
+	if kept, probs := endLab(locked, false, false, labEvidenceBy, "f.lua", nil); kept || len(probs) == 0 {
 		t.Errorf("a failed removal of a passed file: kept %v, problems %v", kept, probs)
 	}
 	keep := filepath.Join(root, fmt.Sprintf("lrt-%d", 2))
 	os.MkdirAll(filepath.Join(keep, "state"), 0o700)
-	if kept, probs := endLab(keep, true, false, "f.lua", nil); !kept || len(probs) != 0 {
+	if kept, probs := endLab(keep, true, false, labEvidenceBy, "f.lua", nil); !kept || len(probs) != 0 {
 		t.Errorf("-keep: kept %v, problems %v", kept, probs)
 	}
 	if _, err := os.Lstat(keep); err != nil {

@@ -643,7 +643,7 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 			res.problems = append(res.problems, l.stop()...)
 			why := fmt.Sprintf("%s: %d passed, %d failed, %d problems", res.name, res.passed, res.failed, len(res.problems))
 			var probs []string
-			res.labKept, probs = endLab(l.dir, o.keep, !res.ok(), why, l.unproved)
+			res.labKept, probs = endLab(l.dir, o.keep, !res.ok(), labEvidenceBy, why, l.unproved)
 			res.problems = append(res.problems, probs...)
 		}()
 	}

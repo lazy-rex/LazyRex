@@ -87,6 +87,26 @@ func (s *startLab) writeSource(dir, manifest, name string) {
 	}
 }
 
+// labEnder is the part of a test that endGoLab uses.
+type labEnder interface {
+	Name() string
+	Failed() bool
+	Error(args ...any)
+	Logf(format string, args ...any)
+}
+
+// endGoLab ends the lab dir of a Go lab test after its stop, with endLab: an unproved cleanup is kind
+// unproved whatever t.Failed() says, a failed test is kind failed, and a passed test removes the lab.
+func endGoLab(t labEnder, dir string, unproved []string) {
+	kept, probs := endLab(dir, false, t.Failed(), "go test "+t.Name(), "the test failed", unproved)
+	for _, p := range probs {
+		t.Error(p)
+	}
+	if kept {
+		t.Logf("lab kept: %s (remove it after the review: lazyrex-hub test -clean %s)", dir, dir)
+	}
+}
+
 // newStartLab starts a lab and writes a hub config whose plugins are the given source dirs, in
 // order, relative to the config. It does not start the hub.
 func newStartLab(t *testing.T, sources ...string) *startLab {
@@ -110,14 +130,7 @@ func newStartLab(t *testing.T, sources ...string) *startLab {
 		for _, p := range l.stop() {
 			t.Error(p)
 		}
-		if !t.Failed() {
-			if err := removeLab(l.dir); err != nil {
-				t.Error(err)
-			}
-		} else {
-			markLabKept(l.dir, labKindFailed, "go test "+t.Name(), "failed: the test failed")
-			t.Logf("lab kept: %s (remove it after the review: lazyrex-hub test -clean %s)", l.dir, l.dir)
-		}
+		endGoLab(t, l.dir, l.unproved)
 	})
 	if err != nil {
 		t.Fatal(err)
