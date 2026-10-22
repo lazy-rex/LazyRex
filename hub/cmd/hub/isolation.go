@@ -232,6 +232,11 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 		if err := checkArgs("test.files "+file+" args", f.Args); err != nil {
 			return err
 		}
+		for _, name := range f.Prompts.names {
+			if !names[name] {
+				return fmt.Errorf("test.files %s prompts: %q is not the plugin, lazyrex or a test.plugins entry", file, name)
+			}
+		}
 	}
 	for name, roots := range m.Test.WatchRoots {
 		if !names[name] {

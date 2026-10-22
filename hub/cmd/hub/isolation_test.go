@@ -202,3 +202,36 @@ func TestTestFileArgs(t *testing.T) {
 		t.Errorf("with the file: %s", got)
 	}
 }
+
+// test.files prompts replaces test.prompts for one file: a list, or false for no grant. A file
+// without the entry keeps test.prompts.
+func TestTestFilePrompts(t *testing.T) {
+	dir, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"prompts":["p"],"files":{"none.lua":{"prompts":false},"list.lua":{"prompts":["lazyrex"]},"args.lua":{"args":{"p":{"a":"1"}}}}}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := loadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := &testOpts{m: m}
+	for file, want := range map[string]string{"none.lua": "[]", "list.lua": "[lazyrex]", "args.lua": "[p]", "other.lua": "[p]"} {
+		o.filePrompts = m.Test.Files[file].Prompts
+		if got := fmt.Sprint(o.promptGrant()); got != want {
+			t.Errorf("%s: grant %s, want %s", file, got, want)
+		}
+	}
+	for raw, want := range map[string]string{
+		`{"x.lua":{"prompts":true}}`:      "a list of plugin names, or false",
+		`{"x.lua":{"prompts":"p"}}`:       "a list of plugin names, or false",
+		`{"x.lua":{"prompts":["ghost"]}}`: `"ghost" is not the plugin`,
+	} {
+		dir, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"files":`+raw+`}}`)
+		if err == nil {
+			_, err = loadManifest(dir)
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", raw, err, want)
+		}
+	}
+}

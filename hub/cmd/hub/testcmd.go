@@ -40,6 +40,27 @@ import (
 // testFile is the entry of one file in test.files.
 type testFile struct {
 	Args map[string]map[string]string `json:"args"`
+	// Prompts replaces test.prompts for this file: a list of plugin names, or false for none.
+	Prompts filePrompts `json:"prompts"`
+}
+
+// filePrompts is test.files.<file>.prompts. set is false when the file has no prompts entry.
+type filePrompts struct {
+	set   bool
+	names []string
+}
+
+func (f *filePrompts) UnmarshalJSON(b []byte) error {
+	if string(b) == "false" {
+		*f = filePrompts{set: true}
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal(b, &names); err != nil {
+		return fmt.Errorf("prompts is a list of plugin names, or false")
+	}
+	*f = filePrompts{set: true, names: names}
+	return nil
 }
 
 type manifest struct {
@@ -190,7 +211,8 @@ func (m *manifest) checkPluginGraph(home *testDep) error {
 }
 
 type testOpts struct {
-	fileArgs map[string]map[string]string // test.files args of the file that runs now
+	fileArgs                              map[string]map[string]string // test.files args of the file that runs now
+	filePrompts                           filePrompts                  // test.files prompts of the file that runs now (promptGrant)
 	dir, lazyrex, self, rexBin, run, file string
 	home                                  *testDep // the home plugin; nil when it is the plugin under test
 	keep, verbose                         bool
@@ -671,6 +693,15 @@ func (l *lab) stop() []string {
 	return problems
 }
 
+// promptGrant names the plugins with the prompts grant: test.files prompts of the file that runs
+// now, else test.prompts.
+func (o *testOpts) promptGrant() []string {
+	if o.filePrompts.set {
+		return o.filePrompts.names
+	}
+	return o.m.Test.Prompts
+}
+
 func (o *testOpts) hubConfig(l *lab) (string, error) {
 	// Local source entries only (docs/plugin-sources.md, section 9): the lab needs no lock. The hub
 	// reads each manifest itself.
@@ -682,7 +713,7 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	}
 	plugins := []plug{}
 	add := func(dir, name string) {
-		plugins = append(plugins, plug{Source: dir, Args: l.args[name], WatchRoots: l.watchRoots[name], Prompts: contains(o.m.Test.Prompts, name)})
+		plugins = append(plugins, plug{Source: dir, Args: l.args[name], WatchRoots: l.watchRoots[name], Prompts: contains(o.promptGrant(), name)})
 	}
 	if o.home != nil { // the home plugin: every real hub config loads it
 		add(o.home.dir, "lazyrex")
@@ -797,9 +828,11 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 // runFile runs one test file in its own lab and hub.
 func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileResult {
 	res := &fileResult{name: strings.TrimPrefix(file, o.dir+"/"), parity: parity}
-	o.fileArgs = nil
+	o.fileArgs, o.filePrompts = nil, filePrompts{}
 	if !parity {
-		o.fileArgs = o.m.Test.Files[filepath.Base(file)].Args
+		f := o.m.Test.Files[filepath.Base(file)]
+		o.fileArgs = f.Args
+		o.filePrompts = f.Prompts
 	}
 	l, err := o.startLab(ctx)
 	if l != nil {
