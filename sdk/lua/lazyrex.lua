@@ -266,15 +266,52 @@ function db.exec(sql, ...)
   if r.columns then out.rows = rows_of(r) end
   return out
 end
--- db.query(sql, ...) answers a list of rows keyed by column name, and true when more rows exist
--- than one reply holds (paging; docs/sql.md section 4).
+-- db.query(sql, ...) answers every row, as a list of rows keyed by column name. A result that does
+-- not fit in one reply fails with too_large: a partial result is never answered (docs/sql.md
+-- section 4, paging). Use db.each, or LIMIT, for a big result.
 function db.query(sql, ...)
   if type(sql) ~= 'string' then fail('invalid_input', 'db.query needs SQL text') end
   local r = sql_call('hub.sql.query', {sql = sql, params = params(select('#', ...), ...)})
-  return rows_of(r), r.complete == false
+  if r.complete == false then
+    fail('too_large', 'The result of db.query does not fit in one reply (' .. #(r.rows or {}) .. ' rows came back). Use app.db.each, or LIMIT.')
+  end
+  return rows_of(r)
 end
--- db.first(sql, ...) answers the first row, or nil.
-function db.first(sql, ...) return (db.query(sql, ...))[1] end
+-- db.first(sql, ...) answers the first row, or nil. It reads one reply only.
+function db.first(sql, ...)
+  if type(sql) ~= 'string' then fail('invalid_input', 'db.first needs SQL text') end
+  return rows_of(sql_call('hub.sql.query', {sql = sql, params = params(select('#', ...), ...)}))[1]
+end
+-- db.each(sql, ..., fn) calls fn(row) for every row of a result of any size, and answers the row
+-- count. It reads all pages first, in one transaction (one snapshot), then calls fn: a write in fn
+-- cannot move the pages. The next page is the same query with OFFSET = the rows read so far. Give
+-- ORDER BY for a defined order.
+function db.each(sql, ...)
+  local n = select('#', ...)
+  local fn = n > 0 and select(n, ...) or nil
+  if type(sql) ~= 'string' then fail('invalid_input', 'db.each needs SQL text') end
+  if type(fn) ~= 'function' then fail('invalid_input', 'db.each needs a function as its last argument') end
+  local list = params(n - 1, ...)
+  -- A render reads with no transaction (the hub tracks its reads); there the pages are not one snapshot.
+  local f = frame()
+  local within = (f and f.render) and function(g) return g() end or db.transaction
+  local rows = within(function()
+    local r = sql_call('hub.sql.query', {sql = sql, params = list})
+    local out = rows_of(r)
+    local base = (sql:gsub('[%s;]+$', ''))
+    while r.complete == false do
+      if #(r.rows or {}) == 0 then fail('too_large', 'db.each: a reply came back with no rows') end
+      local p = {}
+      for i, v in ipairs(list) do p[i] = v end
+      p[#list + 1] = #out
+      r = sql_call('hub.sql.query', {sql = 'SELECT * FROM (' .. base .. ') LIMIT -1 OFFSET ?' .. (#list + 1), params = p})
+      for _, row in ipairs(rows_of(r)) do out[#out + 1] = row end
+    end
+    return out
+  end)
+  for _, row in ipairs(rows) do fn(row) end
+  return #rows
+end
 -- db.batch(statements) runs {sql, ...values} statements in one transaction, all or nothing. In a
 -- handler transaction it runs inside it.
 function db.batch(statements)

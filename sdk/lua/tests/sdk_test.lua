@@ -189,7 +189,7 @@ test('NULL, int and blob values in rows; nil parameters encode as tags', functio
   local s = plugin([[
 app.action('p.read', {}, function()
   local rows = app.db.query('SELECT a, b, c FROM t', 1, nil, 'x', nil)
-  return {b_is_nil = rows[1].b == nil, a = rows[1].a, c = rows[1].c, big = rows[2].a, bytes = rows[2].b, more = select(2, app.db.query('SELECT a FROM t'))}
+  return {b_is_nil = rows[1].b == nil, a = rows[1].a, c = rows[1].c, big = rows[2].a, bytes = rows[2].b}
 end)]], {hub = {['hub.sql.query'] = function(a)
     got = got or a
     return {columns = {'a', 'b', 'c'}, rows = {{1, {null = true}, 3}, {{int = '9223372036854775807'}, {blob = 'AAEC/w=='}, {null = true}}}, complete = true}
@@ -200,7 +200,6 @@ end)]], {hub = {['hub.sql.query'] = function(a)
   expect(r.result.c, 'a later column stays').to_be(3)
   expect(r.result.big).to_be('9223372036854775807')
   expect(r.result.bytes).to_be('\0\1\2\255')
-  expect(r.result.more).to_be(false)
   expect(got.params).to_equal({1, {null = true}, 'x', {null = true}})
 end)
 
@@ -785,4 +784,42 @@ app.action('p.read', {}, function() local r = app.db.first('SELECT b FROM t'); r
   local items = {}
   for i = 1, 5000 do items[i] = i end
   expect(sdk.fingerprint(items) ~= sdk.fingerprint({1}), 'a fingerprint of 5000 items').to_be(true)
+end)
+
+-- A fake hub.sql.query that holds 25 rows and answers at most 10 in one reply, as the hub cuts a
+-- reply at its size limit (docs/sql.md section 4, paging). seen.calls logs {sql, params}.
+local function paged_hub(seen)
+  return {['hub.sql.query'] = function(a)
+    seen.calls[#seen.calls + 1] = {sql = a.sql, params = a.params}
+    local from = 0
+    local wrapped = a.sql:match('^SELECT %* FROM %((.*)%) LIMIT %-1 OFFSET %?(%d+)$')
+    if wrapped then from = a.params[tonumber(a.sql:match('%?(%d+)$'))] end
+    local rows = {}
+    for i = from + 1, math.min(from + 10, 25) do rows[#rows + 1] = {i} end
+    return {columns = {'n'}, rows = rows, complete = from + 10 >= 25}
+  end}
+end
+
+test('db.query fails with too_large when the result does not fit in one reply; db.each reads every row', function()
+  local seen = {calls = {}}
+  local s = plugin([[
+app.action('p.query', {}, function() return {n = #app.db.query('SELECT n FROM t WHERE k = ?', 'x')} end)
+app.action('p.first', {}, function() return {n = app.db.first('SELECT n FROM t WHERE k = ?', 'x').n} end)
+app.action('p.each', {}, function()
+  local got = {}
+  local count = app.db.each('SELECT n FROM t WHERE k = ?;', 'x', function(row) got[#got + 1] = row.n end)
+  return {count = count, first = got[1], last = got[#got], all = #got}
+end)]], {hub = paged_hub(seen)})
+  local r = s:agent('p.query', {})
+  expect(r.error and r.error.code, show(r)).to_be('too_large')
+  expect(r.error.message:find('app.db.each', 1, true) ~= nil, r.error.message).to_be(true)
+  expect(s:agent('p.first', {}).result, 'first needs one row only').to_equal({n = 1})
+  seen.calls = {}
+  r = s:agent('p.each', {})
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result).to_equal({count = 25, first = 1, last = 25, all = 25})
+  expect(#seen.calls).to_be(3)
+  expect(seen.calls[2].sql).to_be('SELECT * FROM (SELECT n FROM t WHERE k = ?) LIMIT -1 OFFSET ?2')
+  expect(seen.calls[2].params).to_equal({'x', 10})
+  expect(seen.calls[3].params).to_equal({'x', 20})
 end)

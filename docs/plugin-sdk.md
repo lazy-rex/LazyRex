@@ -52,6 +52,11 @@ selects an item in the panel to toggle it.
 - **`app.db.exec(sql, ...)`** runs one statement. It returns `{changes, id}` (`id`: the new row).
 - **`app.db.query(sql, ...)`** returns a list of rows. A row is a table keyed by column name. A NULL
   value is `nil`. Use `?` in the SQL and give the values after it; never build SQL from text.
+  A result too big for one reply (about 1 MB) fails with `too_large`; it never returns part of the
+  rows.
+- **`app.db.each(sql, ..., fn)`** calls `fn(row)` for every row of a result of any size (migrations,
+  scans). It reads all pages in one transaction first, then calls `fn`. Give `ORDER BY` for a defined
+  order.
 - **One action, one transaction.** Everything that an action or a panel handler does in the
   database commits when the handler returns, and is undone when it raises an error. A handler sees
   its own writes. Nothing that another handler does can come between its reads and its writes.
@@ -164,7 +169,7 @@ errors and the transaction rules above.
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
 | `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or `hub.changed`, `view.seen`), a timer, start code. Each run is one transaction. Start code runs before the registration; `{after_register = true}` runs it after `hub.register`. |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
-| `app.db.first(sql, ...)` | The first row, or nil. `app.db.query` also answers `more` (true when a reply did not hold every row). |
+| `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
 | `app.notice(agent, pending)` | Wake an agent at the commit. |
 | `app.refresh()` | Render the open views again, for state outside SQL. |
 | `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
