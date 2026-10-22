@@ -5,14 +5,11 @@ package main
 // reaches its identity through identity_aliases.
 //
 // An identity is "<kind>:<conversation id>". Reports come from agent hooks (SessionStart,
-// UserPromptSubmit) and from the MCP shim (Codex tools/call _meta.threadId). Ordering rules:
-//   - Hook reports are ordered by the start time of the reporting process: each hook run is a new
-//     process. A report from a process that started before the reporter of the pane's current
-//     identity is stale. This is hook launch order; it equals event order only if the agent CLI
-//     awaits each hook before the next event (unverified for Claude 2.1.302 and Codex 0.163.0).
-//   - An "mcp" report has no order proof (the shim lives long). It never revives a superseded
-//     identity.
-// All reports run one at a time (identMu).
+// UserPromptSubmit; sources hookSources). Ordering: reports are ordered by the start time of the
+// reporting process: each hook run is a new process. A report from a process that started before
+// the reporter of the pane's current identity is stale. This is hook launch order; it equals event
+// order only if the agent CLI awaits each hook before the next event (unverified for Claude
+// 2.1.302 and Codex 0.163.0). All reports run one at a time (identMu).
 
 import (
 	"context"
@@ -50,8 +47,6 @@ CREATE TABLE IF NOT EXISTS identity_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, 
 `
 
 var conversationID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-
-var identitySources = map[string]bool{"startup": true, "resume": true, "clear": true, "compact": true, "fork": true, "prompt": true, "mcp": true}
 
 // agentEnvUnset are conversation, nesting and per-process variables that an agent pane must not
 // inherit from another agent (a pane inherits the Rex server's environment; a server started from
@@ -108,8 +103,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	if !conversationID.MatchString(conv) {
 		return nil, bad("invalid: conversation_id must be 1-128 characters: letters, digits, '.', '_', '-'")
 	}
-	if !identitySources[source] {
-		return nil, bad("invalid: source must be one of startup, resume, clear, compact, fork, prompt, mcp")
+	if !hookSources[source] {
+		return nil, bad("invalid: source must be one of startup, resume, clear, compact, fork, prompt")
 	}
 	reporter := p.Requester.Principal.PID
 	rstart := startTime(reporter)
@@ -126,13 +121,12 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	}
 	cstart := startTime(child)
 	name, nameErr := h.paneName(ctx, sess, block)
-	hook := source != "mcp"
 	id := kind + ":" + conv
 
 	h.identMu.Lock()
 	defer h.identMu.Unlock()
-	// The agent bound to the pane, for the result. Its join binding may name an older process
-	// (the shim rejoins after the hook runs): the pane row below decides the process generation.
+	// The agent bound to the pane, for the result. Its join binding may name an older process: the
+	// pane row below decides the process generation.
 	agentID := ""
 	h.mu.Lock()
 	for _, a := range h.agents {
@@ -185,14 +179,11 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 		h.identityLog(ctx, h.db, id, block, "stale_report", map[string]any{"source": source, "reason": why, "current": row.current})
 		return nil, bad("stale: %s", why)
 	}
-	if hook && row.reporterStart != "" && startBefore(rstart, row.reporterStart) {
+	if row.reporterStart != "" && startBefore(rstart, row.reporterStart) {
 		return stale("an older hook process than the one that reported " + row.current)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	rs := row.reporterStart
-	if hook {
-		rs = rstart
-	}
+	rs := rstart
 	// The generation's exec facts come only from this report's Rex answer (the same child pid). The
 	// first complete values stay for the generation: a later answer has a null exec path after an update.
 	path, invoked := "", ""
@@ -238,9 +229,6 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 			h.identityChanged(ctx)
 		}
 		return result("unchanged", pred), nil
-	}
-	if !hook && known && state == "superseded" {
-		return stale(id + " was superseded; only a hook report can make it current again")
 	}
 	// A transition: id becomes the pane's current conversation.
 	if row.current != "" {

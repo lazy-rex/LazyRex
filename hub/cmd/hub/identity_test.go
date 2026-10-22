@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +94,15 @@ func TestIdentitySyncNoDeliveryForOtherConversation(t *testing.T) {
 	}
 	if c2.StatusRecord != "rec" {
 		t.Fatalf("status record = %q, want the pane's rec", c2.StatusRecord)
+	}
+}
+
+// Identity reports come from the agent hooks only: the MCP shim, the one sender of source "mcp",
+// is gone. The hub refuses that source before it looks for the pane.
+func TestIdentityReportRefusesSourceMCP(t *testing.T) {
+	h, _ := workerTestHub(t)
+	_, err := h.identityReport(context.Background(), perform{}, map[string]any{"kind": "codex", "conversation_id": "thread-1", "source": "mcp"})
+	if err == nil || !strings.Contains(err.Error(), "invalid: source must be one of startup, resume, clear, compact, fork, prompt") {
+		t.Fatalf("source mcp: %v", err)
 	}
 }
