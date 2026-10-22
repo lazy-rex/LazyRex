@@ -472,3 +472,21 @@ func TestPluginOpStopObservationReadsTargetBlock(t *testing.T) {
 		})
 	}
 }
+
+// A replace refuses "stopped" on two paths: before its retire (the record is stopped; nothing was
+// done) and after it (retire found the block gone and marked the record stopped: an effect). The
+// code alone cannot tell them apart, so after sent_at it proves nothing (codex-27, 2d20d80).
+func TestReplaceStoppedAfterSentIsUnresolved(t *testing.T) {
+	h, _, _ := opsTestHub(t, "")
+	opsAttemptRow(t, h, "r1", "replace")
+	if err := h.bindAttempt(context.Background(), "r1", "replace", "a-1-x", "block:1", "session:home"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.attemptSent(context.Background(), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	refusal := refuse("stopped", "plugin a: the block of instance a-1-x was closed; the plugin is stopped")
+	if proof, err := h.returnProof(context.Background(), "replace", "r1", refusal); err != nil || proof != "" {
+		t.Fatalf("the proof %q, %v; want unresolved", proof, err)
+	}
+}
