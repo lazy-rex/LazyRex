@@ -370,9 +370,10 @@ unchanged`.
 1. `<state>/plugins/.lock`: all commands on one state, for any config or lock file.
 2. `<lockfile>.lck`.
 
-A second command fails at once: `another plugin command runs (pid N)`. The hub process takes
-neither flock (section 11). A rename replaces the lock, and cache entries are immutable, so a hub
-start reads the old lock or the new lock, never a mix.
+A second command fails at once: `another plugin command runs (pid N)`. No hub code in this design
+takes a flock. (The plugin manager design adds a hub writer that takes both flocks; then N can be
+the hub's pid.) A rename replaces the lock, and cache entries are immutable, so a hub start reads
+the old lock or the new lock, never a mix.
 
 ## 6a. Pin sync
 
@@ -732,9 +733,8 @@ Rules:
   - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
 - After `lockedDir`, the hub reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
-- The hub takes no flock of the lock file (section 6). It reads the lock with one read. The
-  commands replace the file with a rename, so the hub reads the old lock or the new lock. The only
-  flock of the hub process is the shared prune lock (section 4).
+- No hub code takes a flock (section 6). The hub reads the lock with one read. The commands
+  replace the file with a rename, so the hub reads the old lock or the new lock.
 - Tests: the commands are also Go functions (`pluginSync`, `pluginUpdate`) with `pluginCmdOpts`.
   Its `remote` option gives the fetch URL, so a test can use a local bare repository (`file://`)
   in place of GitHub. Its `afterResolve` hook runs between the resolution and the fetch (a test of
