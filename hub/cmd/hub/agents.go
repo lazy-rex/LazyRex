@@ -365,6 +365,10 @@ func (h *Hub) kickNotices() {
 // Rex has no atomic "write if idle", so the agent can become busy between check and write.
 // It runs on kicks, not on a timer. A timer is armed only to retry: after a failed write, and after
 // a status read that gave an unknown state (a backoff per agent, 5 s to 1 min; noticeStatus).
+// noticeRenudgeAfter: a written nudge with no read and no new revision for this time is written
+// once more (the coordinator, 2026-10-22).
+const noticeRenudgeAfter = 30 * time.Minute
+
 func (h *Hub) noticeLoop(ctx context.Context) {
 	var retry <-chan time.Time
 	// tries: agents whose status read gave no state, with the time of the next read (backoff from
@@ -394,10 +398,28 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 			retry = time.After(time.Second)
 			continue
 		}
+		renudge := h.renudgeAfter
+		if renudge == 0 {
+			renudge = noticeRenudgeAfter
+		}
 		for _, n := range pending {
 			h.mu.Lock()
 			a, pl := h.noticeTarget(n.agent), h.plugins[n.ns]
-			waiting := a != nil && pl != nil && pl.entry != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns] // a kept record gets no notices
+			// wants reports whether a nudge is due now (one repeat after renudge), and arms the wake
+			// of a later repeat. A kept record gets no notices.
+			repeat := false
+			wants := func() bool {
+				if a == nil || pl == nil || pl.entry == nil || pl.run.Notice == "" {
+					return false
+				}
+				due, rep, wake := noticeDue(n, noticeConv{a.BlockID, a.ChildPID, a.ChildStart}, a.delivered[n.ns], time.Now(), renudge)
+				if !wake.IsZero() {
+					arm(time.Until(wake))
+				}
+				repeat = rep
+				return due
+			}
+			waiting := wants()
 			if a != nil && a.State != "" {
 				delete(tries, n.agent) // a known state ends the backoff
 			}
@@ -424,12 +446,14 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				// run, and with it the notice. The notice then waits for the next run.
 				h.mu.Lock()
 				a, pl = h.noticeTarget(n.agent), h.plugins[n.ns]
-				waiting = a != nil && pl != nil && pl.entry != nil && pl.run.Notice != "" && n.intentRev > a.delivered[n.ns]
+				waiting = wants()
 			}
 			due := waiting && a.ready()
 			sess, block, conn, notice := "", "", "", ""
+			var conv noticeConv
 			if due {
 				sess, block, conn, notice = h.bindingSession(a), a.BlockID, a.ClientID, pl.run.Notice // run changes at a spawn
+				conv = noticeConv{a.BlockID, a.ChildPID, a.ChildStart}
 			}
 			h.mu.Unlock()
 			if !due {
@@ -459,7 +483,17 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				a.delivered[n.ns] = n.intentRev
 			}
 			h.mu.Unlock()
-			h.ev.emit("notice_written", map[string]any{"agent": n.agent, "plugin": n.ns, "intent_rev": revString(n.intentRev)})
+			// The stored delivery outlives a hub restart and a reconnect; it names the conversation
+			// captured before the write. A failed store write leaves only the memory record: the
+			// nudge can come once more after a restart, never less often.
+			if err := h.db.recordNotice(ctx, n, conv, time.Now(), repeat); err != nil {
+				log.Printf("notice to %s: record: %v", n.agent, err)
+			}
+			fields := map[string]any{"agent": n.agent, "plugin": n.ns, "intent_rev": revString(n.intentRev)}
+			if repeat {
+				fields["repeat"] = true
+			}
+			h.ev.emit("notice_written", fields)
 		}
 		if !next.IsZero() {
 			retry = time.After(time.Until(next))

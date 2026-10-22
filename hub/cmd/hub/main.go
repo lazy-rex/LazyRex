@@ -59,7 +59,7 @@ type Config struct {
 	Lock string `json:"lock"`
 	// ManagedPlugins is the managed file of the plugin manager (docs/plugin-sources.md, section 13),
 	// relative to the config directory. Default: <state>/plugins.json.
-	ManagedPlugins string `json:"managed_plugins"`
+	ManagedPlugins string         `json:"managed_plugins"`
 	entries        []*configEntry // the config entries, then the managed entries
 	managedPath    string         // the resolved managed file
 	managedErr     error          // the managed file is malformed: no managed entry
@@ -78,7 +78,7 @@ type Agent struct {
 	ClientID               string           // the shim connection that joined last
 	Profile                string           // set for an agent that a spawn created
 	Kind, IdState          string           // an identity (identity.go): its kind and state; "" for a legacy agent
-	delivered              map[string]int64 // namespace -> highest intent revision written for this connection
+	delivered              map[string]int64 // namespace -> highest intent revision written for this connection (notice_deliveries keeps it across restarts)
 }
 
 // setRecord records a new program status record. h.mu must be held for an agent that the hub
@@ -144,6 +144,7 @@ type Hub struct {
 	ensureMu       sync.Mutex    // hub.session.ensure: one create at a time (sessions.go)
 	slots          slotState     // side slot locks (panels.go)
 	noticeKick     chan struct{} // wakes noticeLoop (kickNotices)
+	renudgeAfter   time.Duration // the one repeat of an unread nudge; 0: noticeRenudgeAfter (tests set it)
 	spawnKick      chan struct{} // wakes resolveSpawns (kickSpawns)
 	resumeKick     chan struct{} // wakes resumeLoop (kickResume)
 	waitKick       chan struct{} // wakes waitLoop (kickWaiting)
@@ -184,13 +185,13 @@ type Hub struct {
 	// entriesMu guards the fields that a resolution or a reload changes. Lock order: reloadMu, then
 	// a plugin's lifecycle, then entriesMu, then mu. No code takes a lifecycle lock while it holds
 	// entriesMu or mu. pl.entry changes only under entriesMu and then mu.
-	reloadMu     sync.Mutex // serializes hub.plugins.reload and hub start recovery
+	reloadMu sync.Mutex // serializes hub.plugins.reload and hub start recovery
 	// procRead is the process information read of the caller guards (callerInManagedPane). nil:
 	// procRead. A test sets its own Hub's reader; no test changes a package variable.
-	procRead func(pid int) (procRecord, error)
+	procRead     func(pid int) (procRecord, error)
 	entriesMu    sync.Mutex
 	entries      []*configEntry
-	managedErr   error // the managed file is malformed (h.entriesMu): hub.plugins reports it once
+	managedErr   error           // the managed file is malformed (h.entriesMu): hub.plugins reports it once
 	selfClosed   map[string]bool // blocks the hub closed itself; their removal is not a user stop
 	titleRenames map[string]bool // sessions with a pending identityRenamesSoon
 	ui           *uiState
