@@ -430,6 +430,30 @@ func hasSource(entries []*configEntry, src string) bool {
 // check"). Any refused entry, local or GitHub, fails the command: a lock that refuses an entry at
 // the next start is not written. The text is the first refusal in config order.
 func checkNewGraph(cfg *pluginCmdConfig, next *pluginLock) error {
+	src := graphSources(cfg, next)
+	for _, s := range src {
+		if s.Err != nil {
+			return s.Err
+		}
+	}
+	return nil
+}
+
+// graphRefusals are the refusals of the graph check of checkNewGraph, by entry (the plugin
+// manager compares them before and after a change).
+func graphRefusals(cfg *pluginCmdConfig, next *pluginLock) map[*configEntry]error {
+	out := map[*configEntry]error{}
+	for i, s := range graphSources(cfg, next) {
+		if s.Err != nil {
+			out[cfg.entries[i]] = s.Err
+		}
+	}
+	return out
+}
+
+// graphSources runs the graph check on cfg.entries with the lock next: one result for each entry,
+// in order.
+func graphSources(cfg *pluginCmdConfig, next *pluginLock) []*sourceEntry {
 	src := make([]*sourceEntry, len(cfg.entries))
 	for i, e := range cfg.entries {
 		s := &sourceEntry{Index: e.index, Source: e.Source}
@@ -454,12 +478,7 @@ func checkNewGraph(cfg *pluginCmdConfig, next *pluginLock) error {
 		s.Name, s.Depends = m.Name, m.Depends
 	}
 	checkGraph(src)
-	for _, s := range src {
-		if s.Err != nil {
-			return s.Err
-		}
-	}
-	return nil
+	return src
 }
 
 // selectEntries gives the entries that the update arguments select (the approved update rule).
