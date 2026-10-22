@@ -682,3 +682,71 @@ app.form('/forms/near', {title = 'Near', intro = string.rep('x', 48000), fields 
   local r = s:call('view.render', {route = '/forms/near', user = 'user'})
   expect(r.error, 'a view under the limit renders').to_be(nil)
 end)
+
+local FORM_PARTS = [[
+app.db.migrate {'CREATE TABLE picks (id INTEGER PRIMARY KEY, what TEXT NOT NULL)'}
+local function pick(what) return function() app.db.exec('INSERT INTO picks (what) VALUES (?)', what); return {form = app.route('/forms/parts', {page = what})} end end
+app.form('/forms/parts', {title = 'Parts',
+  intro = function(ctx) return {
+    app.ui.text('note', 'Page ' .. (ctx.query.page or '1')),
+    app.ui.widget('more', 'More profiles', pick('more'), {label = 'More', user_only = 'navigation'}),
+  } end,
+  after = function(ctx) return {app.ui.list('dirs', {
+    {id = 'w1', label = 'Worktree 1', on_select = pick('w1'), tool = 'p.pick'},
+    {id = 'w2', label = 'Worktree 2', on_select = pick('w2'), tool = 'p.pick', enabled = false},
+  })} end,
+  instead = function(ctx)
+    if ctx.query.pending then return {nodes = {app.ui.widget('again', 'Pending', pick('again'), {label = 'Check again'})}, status = {state = 'working', msg = 'Starting'}} end
+  end,
+  fields = function(ctx) return {
+    {id = 'set', label = 'Set', kind = 'select', value = 'k1', options = {{value = 'k1', label = 'k1'}}, check = false},
+    {id = 'mode', label = 'Mode', kind = 'select', value = 'a', options = {{value = 'a', label = 'A'}}},
+  } end,
+  submit = {label = 'Go', user_only = 'navigation', enabled = function(ctx) return ctx.query.rev ~= 'old' end,
+    refusal = function(ctx) return 'Rev ' .. ctx.query.rev .. ' is old. Open the form again.' end},
+  on_submit = function(ctx, values) return {set = values.set, close_form = true} end, store = false})
+app.action('p.pick', {}, function() return {} end)]]
+
+local function form_click(s, route, node_id, item_id, key)
+  return s:call('view.action', {route = route, node_id = node_id, action = 'select', input = {item_id = item_id}, user = 'user', operation_key = key or 'c1', view_id = 'v1'})
+end
+
+test('app.form: nodes with actions in intro and after; a click runs on_select in its transaction', function()
+  local s = plugin(FORM_PARTS)
+  local tree = s:call('view.render', {route = '/forms/parts', user = 'user'}).result.tree
+  local ids = {}
+  for _, n in ipairs(tree.nodes) do ids[#ids + 1] = n.id end
+  expect(table.concat(ids, ' ')).to_be('note more form dirs cancel')
+  expect(tree.nodes[2].action).to_equal({name = 'select', label = 'More', enabled = true, user_only = 'navigation'})
+  expect(tree.nodes[4].items[1].action.tool).to_be('p.pick')
+  expect(tree.nodes[4].items[2].action.enabled).to_be(false)
+  expect(form_click(s, '/forms/parts', 'more').result).to_equal({form = '/forms/parts?page=more'})
+  expect(form_click(s, '/forms/parts', 'dirs', 'w1', 'c2').result).to_equal({form = '/forms/parts?page=w1'})
+  expect(form_click(s, '/forms/parts', 'dirs', 'w2', 'c3').error.code, 'a disabled item').to_be('conflict')
+  expect(form_click(s, '/forms/parts', 'dirs', 'w9', 'c4').error.code, 'an item that is gone').to_be('not_found')
+  expect(form_click(s, '/forms/parts', 'note', nil, 'c5').error.code, 'a widget with no action').to_be('not_found')
+  local picks = {}
+  for _, r in ipairs(s.sql.rows('picks')) do picks[#picks + 1] = r.what end
+  expect(table.concat(picks, ' ')).to_be('more w1')
+end)
+
+test('app.form: instead replaces the form with another state; a submit then fails with conflict', function()
+  local s = plugin(FORM_PARTS)
+  local tree = s:call('view.render', {route = '/forms/parts?pending=1', user = 'user'}).result.tree
+  local ids = {}
+  for _, n in ipairs(tree.nodes) do ids[#ids + 1] = n.id end
+  expect(table.concat(ids, ' ')).to_be('note more again dirs cancel')
+  expect(tree.status).to_equal({state = 'working', msg = 'Starting'})
+  expect(form_click(s, '/forms/parts?pending=1', 'again').result).to_equal({form = '/forms/parts?page=again'})
+  local r = s:call('view.action', {route = '/forms/parts?pending=1', node_id = 'form', action = 'submit', input = {values = {set = 'k1', mode = 'a'}}, user = 'user', operation_key = 's1'})
+  expect(r.error.code).to_be('conflict')
+end)
+
+test('app.form: submit.refusal gives the stale-submit message; check = false takes a select value that the render fixed', function()
+  local s = plugin(FORM_PARTS)
+  local function go(route, values) return s:call('view.action', {route = route, node_id = 'form', action = 'submit', input = {values = values}, user = 'user', operation_key = 's'}) end
+  expect(go('/forms/parts?rev=old', {set = 'k1', mode = 'a'}).error).to_equal({code = 'conflict', message = 'Rev old is old. Open the form again.'})
+  expect(go('/forms/parts', {set = 'k-shown-before', mode = 'a'}).result).to_equal({set = 'k-shown-before', close_form = true})
+  expect(go('/forms/parts', {set = 'k1', mode = 'z'}).error.message, 'a checked select').to_be('Mode: choose one of the options')
+  expect(go('/forms/parts', {set = 5, mode = 'a'}).error.message, 'the type is still checked').to_be('Set must be string')
+end)

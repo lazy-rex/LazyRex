@@ -481,86 +481,6 @@ function M.plugin(name)
   -- app.command(spec): an extra hub.register command (a palette entry).
   function app.command(spec) commands[#commands + 1] = spec end
 
-  -- app.form(route, spec): a form view (form v1: text, multiline, boolean and select fields). spec:
-  --   title: text, or fn(ctx) -> text.
-  --   fields: a list, or fn(ctx) -> list of {id, label, kind, value, required, options, ...}. The
-  --     function runs at each render and again at the submit, in its transaction.
-  --   intro: text, or fn(ctx) -> text: a widget above the form; or a list of {id, text} widgets.
-  --   id, label: the form node ID (default 'form') and its label.
-  --   submit: {label, tool = <agent action> | user_only = <reason>, enabled = bool | fn(ctx)}.
-  --   on_submit(ctx, values) -> result. nil closes the form; a table passes through ({form},
-  --     {navigate}, {close_form}, {status = 'running'}, ...).
-  --   cancel: the Cancel label (default 'Cancel'); false: no Cancel.
-  --   command: a palette command that opens the form ({id, title, description, keywords}).
-  --   tx, store: as for app.action.
-  -- An app.fail in title, fields or intro shows the message in place of the form. The SDK checks
-  -- the values first: a required field must be filled in (a required boolean must be true), a
-  -- select value must be an option, and an unknown field is refused.
-  function app.form(route, spec)
-    local function eval(v, ctx) if type(v) == 'function' then return v(ctx) end return v end
-    local function render_form(ctx)
-      -- out.title, not a local: a closure must not reassign a captured local (see S at the top).
-      local nodes, out = {}, {title = ''}
-      local ok, err = pcall(function()
-        out.title = tostring(eval(spec.title, ctx) or '')
-        local intro = eval(spec.intro, ctx)
-        if type(intro) == 'table' then
-          for _, w in ipairs(intro) do nodes[#nodes + 1] = {id = tostring(w.id), type = 'widget', text = tostring(w.text or '')} end
-        elseif intro ~= nil and intro ~= '' then
-          nodes[#nodes + 1] = {id = 'intro', type = 'widget', text = tostring(intro)}
-        end
-        local submit = spec.submit or {}
-        local action = {name = submit.name or 'submit', label = submit.label or 'Submit', enabled = eval(submit.enabled, ctx) ~= false}
-        if submit.tool then action.tool = submit.tool else action.user_only = submit.user_only or 'navigation' end
-        nodes[#nodes + 1] = {id = spec.id or 'form', type = 'form', label = spec.label, fields = eval(spec.fields, ctx) or {}, submit_action = action}
-      end)
-      if not ok then nodes = {{id = 'error', type = 'error', text = normalize(err).message}} end
-      if spec.cancel ~= false then
-        nodes[#nodes + 1] = {id = 'cancel', type = 'widget', text = '', action = {name = '$cancel', label = spec.cancel or 'Cancel', enabled = true}}
-      end
-      return {title = out.title, nodes = nodes, status = {state = 'blocked', kind = 'question', msg = 'Waiting for input'}}
-    end
-    local function checked(fields, values)
-      local known, out = {}, {}
-      for _, f in ipairs(fields or {}) do
-        known[f.id] = true
-        local v = values[f.id]
-        local label = f.label or f.id
-        local empty = v == nil or v == '' or (f.kind == 'boolean' and v ~= true)
-        if f.required and empty then fail('invalid_input', (f.kind == 'boolean' and 'Check ' or 'Fill in ') .. label) end
-        if v ~= nil then
-          local want = f.kind == 'boolean' and 'boolean' or 'string'
-          if type(v) ~= want then fail('invalid_input', label .. ' must be ' .. want) end
-          if f.kind == 'select' and v ~= '' then
-            local found = false
-            for _, o in ipairs(f.options or {}) do if o.value == v then found = true end end
-            if not found then fail('invalid_input', label .. ': choose one of the options') end
-          end
-          out[f.id] = v
-        end
-      end
-      for id in pairs(values) do if not known[id] then fail('invalid_input', 'Unknown field ' .. tostring(id)) end end
-      return out
-    end
-    app.view(route, {
-      render = function(ctx) return render_form(ctx) end,
-      ['view.action'] = function(ctx, a)
-        local submit = spec.submit or {}
-        if a.node_id ~= (spec.id or 'form') or a.action ~= (submit.name or 'submit') then fail('invalid_input', 'Unknown form action') end
-        if eval(submit.enabled, ctx) == false then fail('conflict', 'This form cannot be sent now. It shows the current state.') end
-        local values = type(ctx.input.values) == 'table' and ctx.input.values or {}
-        local result = spec.on_submit(ctx, checked(eval(spec.fields, ctx), values))
-        if result == nil then return {close_form = true} end
-        return result
-      end,
-    }, {tx = spec.tx, store = spec.store})
-    if spec.command then
-      local c = copy(spec.command)
-      c.route = c.route or route
-      if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
-      commands[#commands + 1] = c
-    end
-  end
   -- app.start(fn, opts): runs once at start, after the registration and the migrations, in one
   -- transaction. opts.after_register = true runs it after the other start functions.
   function app.start(fn, opts) starts[#starts + 1] = {fn = fn, opts = opts or {}} end
@@ -607,12 +527,12 @@ function M.plugin(name)
   function app.ui.text(id, text) return {id = id, type = 'widget', text = text} end
   function app.ui.error(id, text) return {id = id, type = 'error', text = text} end
 
-  -- tree answers the view tree of a panel: functions are dropped, actions added. An empty list
-  -- becomes a widget: Rex Lua cannot send an empty JSON array.
-  local function tree(panel, nodes)
+  -- wire_nodes answers the wire form of app.ui nodes: functions are dropped, actions added. A node
+  -- with no type is a widget. An empty list becomes a widget: Rex Lua cannot send an empty JSON array.
+  local function wire_nodes(nodes)
     local out = {}
     for i, n in ipairs(nodes or {}) do
-      local node = {id = tostring(n.id), type = n.type, label = n.label, text = n.text, action = action_of(n)}
+      local node = {id = tostring(n.id), type = n.type or 'widget', label = n.label, text = n.text, action = action_of(n)}
       if n.type == 'list' then
         if #(n.items or {}) == 0 then
           node = {id = tostring(n.id), type = 'widget', label = n.label, text = n.empty or 'Nothing here yet.'}
@@ -625,6 +545,11 @@ function M.plugin(name)
       end
       out[i] = node
     end
+    return out
+  end
+  -- tree answers the view tree of a panel.
+  local function tree(panel, nodes)
+    local out = wire_nodes(nodes)
     if #out == 0 then out[1] = {id = 'empty', type = 'widget', text = 'Nothing here yet.'} end
     return {title = panel.title, nodes = out}
   end
@@ -642,6 +567,125 @@ function M.plugin(name)
       -- A route matches itself, itself with a query ('?a=b'), or a prefix route ('...*').
       local r = tostring(route)
       if v.route == r or r:sub(1, #v.route + 1) == v.route .. '?' or (v.prefix and r:sub(1, #v.prefix) == v.prefix) then return v end
+    end
+  end
+
+  -- app.form(route, spec): a form view (form v1: text, multiline, boolean and select fields). spec:
+  --   title: text, or fn(ctx) -> text.
+  --   fields: a list, or fn(ctx) -> list of {id, label, kind, value, required, options, ...}. The
+  --     function runs at each render and again at the submit, in its transaction. A select field
+  --     with check = false takes any text (for a value that the render fixed, such as a set key).
+  --   intro: text, or fn(ctx) -> text: a widget above the form; or a list of nodes ({id, text}
+  --     widgets, app.ui.widget and app.ui.list with on_select).
+  --   after: a list of nodes, or fn(ctx) -> list: nodes below the form, above Cancel.
+  --   instead: fn(ctx) -> nil, or {nodes, status}: another state of the route. Those nodes replace
+  --     the form (intro and after stay), and a submit fails with conflict.
+  --   id, label: the form node ID (default 'form') and its label.
+  --   submit: {label, tool = <agent action> | user_only = <reason>, enabled = bool | fn(ctx),
+  --     refusal = text | fn(ctx): the conflict message of a submit when enabled is false}.
+  --   on_submit(ctx, values) -> result. nil closes the form; a table passes through ({form},
+  --     {navigate}, {close_form}, {status = 'running'}, ...).
+  --   cancel: the Cancel label (default 'Cancel'); false: no Cancel.
+  --   command: a palette command that opens the form ({id, title, description, keywords}).
+  --   tx, store: as for app.action.
+  -- An app.fail in title, fields, intro, after or instead shows the message in place of the form.
+  -- The SDK checks the values first: a required field must be filled in (a required boolean must be
+  -- true), a select value must be an option, and an unknown field is refused. An on_select of a node
+  -- in intro, after or instead runs in the transaction of the click, after the SDK evaluates the
+  -- nodes again (as for a panel).
+  function app.form(route, spec)
+    local form_id = spec.id or 'form'
+    local function eval(v, ctx) if type(v) == 'function' then return v(ctx) end return v end
+    local function intro_of(ctx)
+      local intro = eval(spec.intro, ctx)
+      if type(intro) == 'table' then return intro end
+      if intro ~= nil and intro ~= '' then return {{id = 'intro', type = 'widget', text = tostring(intro)}} end
+      return {}
+    end
+    -- state answers the parts of the route for ctx: {intro, after, instead}.
+    local function state(ctx)
+      return {intro = intro_of(ctx), after = eval(spec.after, ctx) or {}, instead = spec.instead and spec.instead(ctx) or nil}
+    end
+    local function render_form(ctx)
+      -- out fields, not locals: a closure must not reassign a captured local (see S at the top).
+      local out = {title = '', nodes = {}, status = {state = 'blocked', kind = 'question', msg = 'Waiting for input'}}
+      local ok, err = pcall(function()
+        out.title = tostring(eval(spec.title, ctx) or '')
+        local st = state(ctx)
+        local nodes = {}
+        for _, n in ipairs(st.intro) do nodes[#nodes + 1] = n end
+        if st.instead then
+          for _, n in ipairs(st.instead.nodes or {}) do nodes[#nodes + 1] = n end
+          if st.instead.status then out.status = st.instead.status end
+        else
+          local submit = spec.submit or {}
+          local action = {name = submit.name or 'submit', label = submit.label or 'Submit', enabled = eval(submit.enabled, ctx) ~= false}
+          if submit.tool then action.tool = submit.tool else action.user_only = submit.user_only or 'navigation' end
+          nodes[#nodes + 1] = {id = form_id, type = 'form', label = spec.label, fields = eval(spec.fields, ctx) or {}, submit_action = action}
+        end
+        for _, n in ipairs(st.after) do nodes[#nodes + 1] = n end
+        out.nodes = wire_nodes(nodes)
+        for i, n in ipairs(nodes) do
+          if n.type == 'form' then out.nodes[i].fields, out.nodes[i].submit_action = n.fields, n.submit_action end
+        end
+      end)
+      local nodes = ok and out.nodes or {{id = 'error', type = 'error', text = normalize(err).message}}
+      if spec.cancel ~= false then
+        nodes[#nodes + 1] = {id = 'cancel', type = 'widget', text = '', action = {name = '$cancel', label = spec.cancel or 'Cancel', enabled = true}}
+      end
+      return {title = out.title, nodes = nodes, status = out.status}
+    end
+    local function checked(fields, values)
+      local known, out = {}, {}
+      for _, f in ipairs(fields or {}) do
+        known[f.id] = true
+        local v = values[f.id]
+        local label = f.label or f.id
+        local empty = v == nil or v == '' or (f.kind == 'boolean' and v ~= true)
+        if f.required and empty then fail('invalid_input', (f.kind == 'boolean' and 'Check ' or 'Fill in ') .. label) end
+        if v ~= nil then
+          local want = f.kind == 'boolean' and 'boolean' or 'string'
+          if type(v) ~= want then fail('invalid_input', label .. ' must be ' .. want) end
+          if f.kind == 'select' and v ~= '' and f.check ~= false then
+            local found = false
+            for _, o in ipairs(f.options or {}) do if o.value == v then found = true end end
+            if not found then fail('invalid_input', label .. ': choose one of the options') end
+          end
+          out[f.id] = v
+        end
+      end
+      for id in pairs(values) do if not known[id] then fail('invalid_input', 'Unknown field ' .. tostring(id)) end end
+      return out
+    end
+    app.view(route, {
+      render = function(ctx) return render_form(ctx) end,
+      ['view.action'] = function(ctx, a)
+        local submit = spec.submit or {}
+        local st = state(ctx)
+        if a.node_id == form_id and a.action == (submit.name or 'submit') then
+          local stale = 'This form cannot be sent now. It shows the current state.'
+          if st.instead then fail('conflict', stale) end
+          if eval(submit.enabled, ctx) == false then fail('conflict', tostring(eval(submit.refusal, ctx) or stale)) end
+          local values = type(ctx.input.values) == 'table' and ctx.input.values or {}
+          local result = spec.on_submit(ctx, checked(eval(spec.fields, ctx), values))
+          if result == nil then return {close_form = true} end
+          return result
+        end
+        local nodes = {}
+        for _, part_nodes in ipairs({st.intro, st.instead and st.instead.nodes or {}, st.after}) do
+          for _, n in ipairs(part_nodes) do nodes[#nodes + 1] = n end
+        end
+        local n = find_node(nodes, tostring(a.node_id), ctx.input.item_id ~= nil and tostring(ctx.input.item_id) or nil)
+        if not n or not n.on_select then fail('not_found', 'This action is gone. The form shows the current state.') end
+        if n.enabled == false then fail('conflict', 'This action is not available now. The form shows the current state.') end
+        return n.on_select(ctx) or {}
+      end,
+    }, {tx = spec.tx, store = spec.store})
+    if spec.command then
+      local c = copy(spec.command)
+      c.route = c.route or route
+      if c.action == nil and (spec.submit or {}).tool then c.action = spec.submit.tool end
+      commands[#commands + 1] = c
     end
   end
 

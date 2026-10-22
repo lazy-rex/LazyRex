@@ -119,11 +119,20 @@ app.form('/forms/add', {
   `app.fail('invalid_input', '...')` in `on_submit` shows another message.
 - `on_submit` returns nothing to close the form, or a result: `{form = route}`, `{navigate = ...}`,
   `{status = 'running'}` (never saved: the hub calls again until the end).
-- An `app.fail` in `title`, `fields` or `intro` shows its message in place of the form.
+- An `app.fail` in `title`, `fields`, `intro`, `after` or `instead` shows its message in place of the form.
 - The form has Cancel (`cancel = false` removes it; `cancel = 'Close'` relabels it) and the status
   "Waiting for input". `submit.tool` names the agent action that does the same (agent parity);
   without one, `submit.user_only` gives the reason. `submit.enabled = false` (or a function) refuses a
-  stale submit with `conflict`.
+  stale submit with `conflict`; `submit.refusal` (a text or a function) gives its message.
+- More nodes: `intro` (above the form) and `after` (below it) take lists of nodes, or functions of
+  `ctx`. A node can be `app.ui.widget` or `app.ui.list` with `on_select` (and `tool` or `user_only`),
+  as in a panel. A click runs `on_select(ctx)` in its transaction, after the SDK evaluates the nodes
+  again.
+- Another state of the route: `instead = function(ctx)` answers nil (show the form) or
+  `{nodes, status}`. Those nodes replace the form; `intro`, `after` and Cancel stay. A submit then
+  fails with `conflict`.
+- A value that the render fixed (form v1 has no hidden field): a select field with `check = false`
+  takes any text. `on_submit` compares it with the current state.
 - A route can carry values: `app.route('/forms/release', {profile = p})` builds
   `/forms/release?profile=p`, and the form gets them decoded as `ctx.query`. A form route matches
   itself with any query.
