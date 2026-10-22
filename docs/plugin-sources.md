@@ -143,7 +143,7 @@ Every other problem refuses that entry only (section 7).
 
 ## 2. Manifest
 
-Fields: `name`, `main`, `events`, `notice`, `depends`, `test`. The hub refuses unknown fields.
+Fields: `name`, `main`, `sdk`, `events`, `notice`, `depends`, `test`. The hub refuses unknown fields.
 The file is one JSON object; data after the object is refused. (Built: step 1.)
 
 - `name`: `[a-z0-9_-]+`, required.
@@ -153,6 +153,12 @@ The file is one JSON object; data after the object is refused. (Built: step 1.)
     source.
   - A parent directory can be a symlink (for example a release clone path).
     `EvalSymlinks(main)` must be inside `EvalSymlinks(source dir)`.
+- `sdk`: `"0"` or absent. With `"0"`, the hub starts the plugin through the SDK launcher:
+  `rex do <sdk dir>/boot.lua main=<absolute main> ...` (docs/plugin-sdk.md). The launcher puts the
+  plugin directory and the SDK directory in `package.path`, so `require('lazyrex')` and a sibling
+  `require` work. The hub gets the SDK directory from `-sdk` (dev.sh and `lazyrex-hub test` pass
+  `<checkout>/sdk/lua`). Without a directory that holds `boot.lua`, the plugin is refused. The arg
+  names `main` and `lazyrex_sdk` are reserved. Without `sdk`, a plugin starts as before.
 - `events`: `session` (default) or `all`.
 - `notice`: an optional string. It is behavior, so it belongs to the plugin. See section 10.
 - `depends`: an array of plugin names, for example `["profiles"]`. A name appears once. There is

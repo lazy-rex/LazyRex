@@ -24,6 +24,7 @@ var pluginName = regexp.MustCompile(`^[a-z0-9_-]+$`)
 type pluginManifest struct {
 	Name    string          `json:"name"`
 	Main    string          `json:"main"`
+	SDK     string          `json:"sdk"` // "0": the hub starts the plugin through the SDK launcher (sdk/lua/boot.lua)
 	Events  string          `json:"events"`
 	Notice  string          `json:"notice"`
 	Depends []string        `json:"depends"`
@@ -110,6 +111,9 @@ func (m *pluginManifest) check() error {
 	}
 	if m.Events != "" && m.Events != "session" && m.Events != "all" {
 		return errors.New("events must be session or all")
+	}
+	if m.SDK != "" && m.SDK != "0" {
+		return errors.New("sdk must be \"0\" (the SDK version) or absent")
 	}
 	if err := checkNotice(m.Notice); err != nil {
 		return err

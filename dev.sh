@@ -31,7 +31,7 @@ start_hub() {
   if [ -n "$HUB_PID" ] && kill -0 "$HUB_PID" 2>/dev/null; then kill "$HUB_PID"; wait "$HUB_PID" 2>/dev/null; fi
   mv "$DEV/hub.new" "$DEV/hub"
   REAL=; [ "${DEV_REAL:-}" = 1 ] && REAL=-real-server
-  env -u REX_SESSION -u REX_BLOCK REX_SERVER="$SERVER" "$DEV/hub" -config "$CFG" $REAL >> "$DEV/hub.log" 2>&1 &
+  env -u REX_SESSION -u REX_BLOCK REX_SERVER="$SERVER" "$DEV/hub" -config "$CFG" -sdk "$DIR/sdk/lua" $REAL >> "$DEV/hub.log" 2>&1 &
   HUB_PID=$!
   # Wait until the new hub reports itself, so later commands in this pass reach it.
   for _ in 1 2 3 4 5 6 7 8 9 10; do
