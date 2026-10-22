@@ -197,6 +197,8 @@ type Hub struct {
 	// unsentSpawns: spawn ID -> the not_created reason that markSending could not store (h.mu).
 	// resolveNext stores it later.
 	unsentSpawns map[string]string
+
+	changedQ changedQueue // hub.changed deliveries in flight (changed.go)
 }
 
 func isRealServer(s string) bool {

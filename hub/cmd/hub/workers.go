@@ -1572,26 +1572,21 @@ func (h *Hub) changed(what ...string) {
 			h.reapPromptSenders()
 		}
 	}
+	// The client IDs are read under h.mu: a registration can change them after the unlock.
+	type target struct{ client, name string }
 	h.mu.Lock()
-	var targets []*Plugin
+	var targets []target
 	for _, p := range h.plugins {
 		if p.ClientID != "" {
-			targets = append(targets, p)
+			targets = append(targets, target{p.ClientID, p.Name})
 		}
 	}
 	h.mu.Unlock()
 	for _, p := range targets {
 		for _, w := range what {
-			go func(client, name, w string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "hub.changed", "args": map[string]any{"what": w}, "timeout_ms": 3000}, nil)
-				if err != nil && !strings.Contains(err.Error(), "unknown action") && !strings.Contains(err.Error(), "not_found") {
-					log.Printf("hub.changed %s to %s: %v", w, name, err)
-				}
-			}(p.ClientID, p.Name, w)
+			h.deliverChanged(p.client, p.name, w) // coalesced (changed.go)
 		}
-		h.kickViews(p.Name, true)
+		h.kickViews(p.name, true)
 	}
 }
 
