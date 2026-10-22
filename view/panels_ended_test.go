@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/coder/websocket"
 )
 
 // resumePanel sends view.resume for id, as the hub does when a replacement ends without the slot.
@@ -145,8 +147,14 @@ func TestResumeAndReleaseInBothOrdersOnTheClient(t *testing.T) {
 		m.ready = true
 		call := func(action string) string {
 			t.Helper()
-			raw, _ := json.Marshal(map[string]any{"type": "client_perform_requested", "payload": map[string]any{"call_id": action, "action": action, "requester": map[string]string{"client_id": "hub"}, "args": map[string]string{"view_id": "v1", "attachment": "attachment", "replacement_id": "r1", "next_title": "Worktrees"}}})
-			c.event(raw)
+			// The request comes on the fixture's connection, as from Rex.
+			f.mu.Lock()
+			conn, attachment := f.conn, f.attachment
+			f.mu.Unlock()
+			raw, _ := json.Marshal(map[string]any{"type": "event", "payload": map[string]any{"type": "client_perform_requested", "payload": map[string]any{"call_id": action, "action": action, "requester": map[string]string{"client_id": "hub"}, "args": map[string]string{"view_id": "v1", "attachment": attachment, "replacement_id": "r1", "next_title": "Worktrees"}}}})
+			if conn == nil || conn.Write(context.Background(), websocket.MessageText, raw) != nil {
+				t.Fatalf("%s: no fixture connection", action)
+			}
 			var request replacementRequested
 			waitMessage(t, msgs, func(msg tea.Msg) bool { var ok bool; request, ok = msg.(replacementRequested); return ok })
 			if _, cmd := m.Update(request); cmd != nil {
