@@ -94,9 +94,9 @@ func TestReleaseSnapCheck(t *testing.T) {
 	}{
 		"no change":       {"", "", none, ""},
 		"lost row":        {"DELETE FROM drafts", "", none, "lost the row"},
-		"lost table":      {"DROP TABLE clock", "", none, "table clock is gone"},
-		"lost column":     {"ALTER TABLE drafts DROP COLUMN score", "", none, "column drafts.score is gone"},
-		"lower version":   {"PRAGMA user_version = 1", "", none, "went down"},
+		"lost table":      {"DROP TABLE clock", "", none, "the schema changed"},
+		"lost column":     {"ALTER TABLE drafts DROP COLUMN score", "", none, "the schema changed"},
+		"lower version":   {"PRAGMA user_version = 1", "", none, "user_version changed from 2 to 1"},
 		"changed value":   {"UPDATE drafts SET dir_rev = 2", "", none, "no changes entry allows it"},
 		"type change":     {"UPDATE drafts SET v = '1'", "", none, "no changes entry allows it"},
 		"update all":      {"UPDATE drafts SET dir = 'x'", "", entry(`{"changes":[{"table":"drafts","key":{"view_id":"v9"},"column":"dir","expect":"x"}]}`), "no changes entry allows it"},
@@ -201,9 +201,9 @@ func TestReleaseSnapKeyTables(t *testing.T) {
 	}
 }
 
-// TestReleaseSnapReviewFindings: the review of 360f6e3 (codex-26). A column or a user_version that
-// a passing check saw cannot go later; an index, trigger or view cannot go or change; a JSON null is
-// no key value; a user table named sqliteX is read.
+// TestReleaseSnapReviewFindings: the reviews of 360f6e3 and 6dce01c (codex-26). Any schema change
+// fails, also a lost UNIQUE or NOT NULL constraint; a JSON null is no key value; a user table named
+// sqliteX is read.
 func TestReleaseSnapReviewFindings(t *testing.T) {
 	keys := map[string][]string{"clock": {"one"}}
 	none := &relSetEntry{}
@@ -221,42 +221,51 @@ func TestReleaseSnapReviewFindings(t *testing.T) {
 			t.Fatalf("%s: got %v; want %q", sqlText, err, want)
 		}
 	}
-	t.Run("added column dropped", func(t *testing.T) {
-		p, h := snapDBs(t, snapSchema, "")
+	// The 4.2 scope (coordinator, 2026-10-22): no schema change of any kind passes.
+	for name, change := range map[string]string{
+		"new column":       "ALTER TABLE drafts ADD COLUMN extra TEXT DEFAULT 'd'",
+		"version up":       "PRAGMA user_version = 3",
+		"version down":     "PRAGMA user_version = 1",
+		"new table":        "CREATE TABLE extra (id TEXT PRIMARY KEY)",
+		"new index":        "CREATE INDEX drafts_rev ON drafts (dir_rev)",
+		"dropped index":    "DROP INDEX drafts_dir",
+		"changed index":    "DROP INDEX drafts_dir; CREATE INDEX drafts_dir ON drafts (dir_rev)",
+		"dropped trigger":  "DROP TRIGGER dt",
+		"dropped view":     "DROP VIEW dv",
+		"lost unique":      "DROP TABLE u; CREATE TABLE u (k TEXT PRIMARY KEY, v TEXT)",
+		"lost not null":    "DROP TABLE n; CREATE TABLE n (k TEXT PRIMARY KEY, v TEXT)",
+		"same, other case": "DROP TABLE n; CREATE TABLE n (k TEXT PRIMARY KEY, v TEXT not null)",
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, h := snapDBs(t, snapSchema+`CREATE INDEX drafts_dir ON drafts (dir);
+				CREATE VIEW dv AS SELECT view_id FROM drafts; CREATE TRIGGER dt AFTER INSERT ON drafts BEGIN SELECT 1; END;
+				CREATE TABLE u (k TEXT PRIMARY KEY, v TEXT UNIQUE); CREATE TABLE n (k TEXT PRIMARY KEY, v TEXT NOT NULL);`, "")
+			ref := mustSnap(t, p, h, keys)
+			want := "the schema changed"
+			if strings.HasPrefix(name, "version") {
+				want = "user_version changed"
+			}
+			run(t, p, h, ref, change, want)
+		})
+	}
+	t.Run("automatic index recorded", func(t *testing.T) {
+		p, h := snapDBs(t, snapSchema+"CREATE TABLE u (k TEXT PRIMARY KEY, v TEXT UNIQUE);", "")
 		ref := mustSnap(t, p, h, keys)
-		run(t, p, h, ref, "ALTER TABLE drafts ADD COLUMN extra TEXT DEFAULT 'd'", "")
-		run(t, p, h, ref, "UPDATE drafts SET extra = 'e'", "no changes entry")
-		p.Exec("UPDATE drafts SET extra = 'd'")
-		run(t, p, h, ref, "ALTER TABLE drafts DROP COLUMN extra", "column drafts.extra is gone")
+		var auto int
+		for _, r := range ref.Schema {
+			if r.SQL == nil && r.TblName == "u" {
+				auto++
+			}
+		}
+		if auto != 2 {
+			t.Fatalf("automatic indexes of u: %d; schema %v", auto, ref.Schema)
+		}
+		run(t, p, h, ref, "SELECT 1", "")
 	})
-	t.Run("version back", func(t *testing.T) {
-		p, h := snapDBs(t, snapSchema, "")
-		ref := mustSnap(t, p, h, keys)
-		run(t, p, h, ref, "PRAGMA user_version = 3", "")
-		run(t, p, h, ref, "PRAGMA user_version = 2", "went down from 3 to 2")
-	})
-	t.Run("index", func(t *testing.T) {
+	t.Run("statistics ignored", func(t *testing.T) {
 		p, h := snapDBs(t, snapSchema+"CREATE INDEX drafts_dir ON drafts (dir);", "")
 		ref := mustSnap(t, p, h, keys)
-		if ref.Objects["index drafts_dir"] == "" {
-			t.Fatalf("objects %v", ref.Objects)
-		}
-		run(t, p, h, ref, "DROP INDEX drafts_dir", "index drafts_dir is gone")
-		p.Exec("CREATE INDEX drafts_dir ON drafts (dir_rev)")
-		run(t, p, h, ref, "SELECT 1", "index drafts_dir changed")
-	})
-	t.Run("new index then dropped", func(t *testing.T) {
-		p, h := snapDBs(t, snapSchema, "")
-		ref := mustSnap(t, p, h, keys)
-		run(t, p, h, ref, "CREATE INDEX drafts_rev ON drafts (dir_rev)", "")
-		run(t, p, h, ref, "DROP INDEX drafts_rev", "index drafts_rev is gone")
-	})
-	t.Run("trigger and view", func(t *testing.T) {
-		p, h := snapDBs(t, snapSchema+"CREATE VIEW dv AS SELECT view_id FROM drafts; CREATE TRIGGER dt AFTER INSERT ON drafts BEGIN SELECT 1; END;", "")
-		ref := mustSnap(t, p, h, keys)
-		run(t, p, h, ref, "DROP TRIGGER dt", "trigger dt is gone")
-		p.Exec("CREATE TRIGGER dt AFTER INSERT ON drafts BEGIN SELECT 1; END;")
-		run(t, p, h, ref, "DROP VIEW dv", "view dv is gone")
+		run(t, p, h, ref, "ANALYZE", "")
 	})
 	t.Run("hub objects ignored", func(t *testing.T) {
 		p, h := snapDBs(t, snapSchema+"CREATE INDEX lazyrex_ops_k ON lazyrex_ops (key);", "")
@@ -282,4 +291,27 @@ func TestReleaseSnapReviewFindings(t *testing.T) {
 		}
 		run(t, p, h, ref, "DELETE FROM sqliteXdata", "lost the row")
 	})
+}
+
+// TestReleaseSnapExactText: the review of 6dce01c (codex-26). An exact changes expect compares the
+// text as written; HTML characters get no escapes on either side.
+func TestReleaseSnapExactText(t *testing.T) {
+	p, h := snapDBs(t, `CREATE TABLE x (k TEXT PRIMARY KEY, v TEXT); INSERT INTO x VALUES ('k', 'before');`, "")
+	ref := mustSnap(t, p, h, nil)
+	var e relSetEntry
+	if err := json.Unmarshal([]byte(`{"changes":[{"table":"x","key":{"k":"k"},"column":"v","expect":"a<b>&c"}]}`), &e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Exec(`UPDATE x SET v = 'a<b>&c'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkSnap(ref, mustSnap(t, p, h, nil), &e, sqlPredicate(p)); err != nil {
+		t.Fatalf("the exact text was refused: %v", err)
+	}
+	if _, err := p.Exec(`UPDATE x SET v = 'a<b>&d'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkSnap(ref, mustSnap(t, p, h, nil), &e, sqlPredicate(p)); err == nil || !strings.Contains(err.Error(), "not the expected") {
+		t.Fatalf("other text: got %v", err)
+	}
 }
