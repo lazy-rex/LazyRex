@@ -104,7 +104,15 @@ func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]s
 	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
 	call := changedCall
 	t.Cleanup(func() { changedCall = call })
-	t.Cleanup(func() { waitIdle(t, h) }) // runs first: no delivery outlives the fake
+	t.Cleanup(func() { waitIdle(t, h) }) // no delivery outlives the fake
+	t.Cleanup(func() {
+		// Runs first: a later h.changed (a goroutine of a start) finds no client to deliver to.
+		h.mu.Lock()
+		for _, pl := range h.plugins {
+			pl.ClientID = ""
+		}
+		h.mu.Unlock()
+	})
 	changedCall = func(context.Context, *Hub, string, string) error { return nil }
 	h.entriesMu.Lock()
 	h.resolveLocked()
