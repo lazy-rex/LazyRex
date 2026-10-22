@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 )
 
-// Session choice for plugins (the maintainer, 2026-10-17: a new thread asks for its session). The plugin
+// Session choice for plugins, for example a new thread that asks for its session. The plugin
 // keeps exact Rex session IDs. hub.session.list gives the open sessions; hub.session.ensure creates
 // a named session once per key; hub.identify gives the caller's own session (agent defaults).
 

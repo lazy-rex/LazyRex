@@ -1,12 +1,11 @@
 package main
 
-// Spawn windows (coordinator, 2026-10-17: approved for session templates; the Templates pair
-// builds it, the Profiles pair reviews it).
+// Spawn windows, for session templates.
 //
 // hub.spawn_window {key, session?, title?, layout} starts a whole tab of profiles with one Rex
 // request. layout is Rex's own tree: a node is {leaf: {profile, args?, cwd?, title?}} or
 // {split: {direction: horizontal|vertical, ratio, before, after}}, and ratio is the before share,
-// as in session.view. Observed on Rex 1203 (lab, tests/templates-layout-lab.mjs): one
+// as in session.view. Observed on Rex 1203 (lab): one
 // session.new_window creates the whole tree and returns block_ids in depth-first order; an
 // invalid leaf creates no block and no window.
 //

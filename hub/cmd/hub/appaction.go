@@ -1,7 +1,7 @@
 package main
 
 // hub.view.app_action {view_id, attachment, action}: a form or panel asks the Rex app to run one
-// app action for it (the maintainer, 2026-10-18: the native directory browser for Start Agent…).
+// app action for it, for example the app's directory browser for Start Agent….
 // Observed on the real app (docs/rex-protocol.md, "App action Insert Path…"): pane.insert_path
 // opens the app's directory browser where the user is and types the chosen path into the pane
 // that has focus in the app. So the hub runs it only when:
@@ -110,8 +110,8 @@ func (h *Hub) userApp(ctx context.Context, sess, block string) (string, error) {
 	}
 }
 
-// hub.app.select_session {view_id, session_id, window_id} (the maintainer, 2026-10-19: a template start
-// into a new session switches the app to it). A plugin asks for it from one of its own open
+// hub.app.select_session {view_id, session_id, window_id} switches the app to a session, for
+// example after a template start into a new session. A plugin asks for it from one of its own open
 // forms. The hub runs the app action session.select ("Go to Session", listed by the real app
 // on Rex Beta 0.1.0 (1203); its effect is untested) only when the user is in that form
 // (userApp). The target must be another session, and the window must be in it. The hub does not

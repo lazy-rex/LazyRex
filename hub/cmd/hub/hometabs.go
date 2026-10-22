@@ -1,11 +1,11 @@
 package main
 
-// Home-session tabs (the maintainer, 2026-10-17): a plugin tab may name the Rex session it belongs in
+// Home-session tabs: a plugin tab may name the Rex session it belongs in
 // (hub.ui.tabs entry session_id), for example a message thread's home session, where the thread
 // was created. The hub then opens, titles and closes that tab in that session, next to the user's
-// own tabs, and never reorders them. A tab without session_id stays in the plugin's app session.
+// own tabs, and never reorders them. A tab without session_id stays in the LazyRex session.
 //
-// A home session that is gone (the maintainer, 2026-10-17): when one of its tabs must show, the hub uses a
+// A home session that is gone: when one of its tabs must show, the hub uses a
 // live session with the home's name, or creates one with that name, and the tab lives there from
 // then on (ui_homes.moved_to). The hub learns each home's name while the session lives. A home
 // whose name it never learned sends its tabs to the app session. A closed tab in a gone home
