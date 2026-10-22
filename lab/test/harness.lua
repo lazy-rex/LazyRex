@@ -536,6 +536,31 @@ function User:command(id, from, plugin)
   return hub('hub.palette.run', {command = plugin .. '.' .. id, ctx = {client_id = self_id, session_id = session, block_id = block}})
 end
 
+-- panel runs a palette command (plugin.id) from a new pane, as the user does, and returns the
+-- view that the command opens (a panel, or a form). The pane is a sleep pane in a new window of
+-- opts.session (default: a new session). opts.plugin: the plugin (default the plugin under test).
+-- A command whose open waits for a confirm (status pending_confirmation) is an error.
+function User:panel(id, opts)
+  opts = opts or {}
+  local plugin = opts.plugin or A.plugin
+  local sess = opts.session or H.session('panel-' .. id)
+  local win, err = rex.call('session.new_window', {session_id = sess, window_label = 'panel-' .. id,
+    layout = {block = {flavor = 'com.superlogical.terminal.shell', options = {command = {'/bin/sleep', '100000'}, login = false}}}})
+  if err then error(err_of(err), 0) end
+  local out = self:command(id, {session = sess, block = win.block_ids[1]}, plugin)
+  if out.status ~= 'opened' and out.status ~= 'opening' then
+    error('command ' .. plugin .. '.' .. id .. ': the open is ' .. tostring(out.status), 0)
+  end
+  local info = wait('the view of command ' .. id, function()
+    for _, w in ipairs(H.views(plugin)) do
+      if w.view_id == out.view_id and w.attached then return w end
+    end
+    return nil
+  end, 15)
+  info.plugin = plugin
+  return view_of(info)
+end
+
 -- plugin_view calls the plugin's view.* action from this runner, which is not the hub: for refusals.
 function User:plugin_view(action, args, plugin)
   local st = hub('hub.test.status', {})

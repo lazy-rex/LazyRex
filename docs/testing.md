@@ -192,6 +192,7 @@ operations, effects and retries.
 | `user:open(tab)` | `hub.ui.navigate` to a tab, then waits for its view. |
 | `user:view(tab or route, plugin, session)` | An open view (for example a form that an effect opened). `session`: only a view in that session. |
 | `user:command(id, from)` | Runs a palette command, as the Rex palette does (`hub.palette.run`). `from` is a View: the palette opens in its pane, so the view is the source. |
+| `user:panel(id, opts)` | Runs a palette command from a new pane, as the user does, and returns the view that it opens (a panel or a form). The pane is in a new window of `opts.session` (default: a new session). `opts.plugin`: another plugin. |
 | `user:plugin_view(action, args)` | Calls the plugin's `view.*` from the runner, which is not the hub: for refusals. |
 | `v:render()` | Asks for a new render and returns the tree. Fails if that render failed, even when the hub kept an older tree. |
 | `v:get()` | The snapshot that the renderer gets (`hub.view.get`). The hub moves a tree's `status` here. |

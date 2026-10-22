@@ -92,3 +92,13 @@ test('a final operation answers its key again without calling the plugin', funct
   expect_error(function() home:action('count', 'count', {n = 2}, 'count-once') end, 'operation_conflict')
   expect(store('count').value).to_be(1)
 end)
+
+test('user:panel runs a command from a new pane and returns the view that it opens', function()
+  local form = user:panel('fix_form')
+  expect(form.route).to_be('/forms/fix')
+  form:render()
+  local s = session('panel-given')
+  local again = user:panel('fix_form', {session = s})
+  expect(again.session, 'the view is in the given session').to_be(s)
+  expect(again.id ~= form.id, 'a new view').to_be(true)
+end)
