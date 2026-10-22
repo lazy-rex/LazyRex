@@ -73,7 +73,8 @@ test('a profile file change shows after the view gets focus', function()
 end)
 
 -- navigation_notice is Lua state of the plugin, not hub data. The launch form sets it, and the
--- Agents… panel shows it. The open panel must show it without a render request.
+-- Agents… panel shows it. The plugin calls hub.ui.invalidate for the panel when the notice changes,
+-- so the open panel shows it without a render request and without a hub data change.
 test('a launch notice reaches the open Agents… panel', function()
   local p = view('agents')
   local id = fault({point = 'action', action = 'hub.navigate.worker', when = 'before', mode = 'fail'})

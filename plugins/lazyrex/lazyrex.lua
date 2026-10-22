@@ -30,6 +30,14 @@ local function hub(action, args)
   if type(response.result) ~= 'table' then fail('internal', 'Invalid hub result') end
   return response.result
 end
+-- set_notice changes the launch notice. The notice is Lua state that the Agents… panel shows, not hub
+-- data, so a change renders the open panel again (hub.ui.invalidate). A failure is ignored, as the
+-- SDK app.refresh does; the call raises nothing.
+local function set_notice(text)
+  if text == navigation_notice then return end
+  navigation_notice = text
+  rex.call('client.perform', {client_id = hub_id, action = 'hub.ui.invalidate', args = {routes = {'/panels/agents'}}, timeout_ms = 10000})
+end
 -- Every user action names its agent tool, or why it is user-only (docs/testing.md, "Agent parity").
 -- Navigation changes only what the user sees; agents start and stop workers with the hub tools.
 local function action(name, label, parity)
@@ -211,12 +219,12 @@ local function perform(args)
     if next(named_args) then request.args = named_args end
     if values.title ~= '' then request.title = values.title end
     local result = hub('hub.spawn', request)
-    navigation_notice = nil
     if result.status == 'open' and type(result.spawn_id) == 'string' then
       local shown = pcall(hub, 'hub.navigate.worker', {spawn_id = result.spawn_id})
-      if not shown then navigation_notice = 'The worker started. Select the worker in Agents… to show its tab.' end
+      set_notice(not shown and 'The worker started. Select the worker in Agents… to show its tab.' or nil)
       return closing(result)
     end
+    set_notice(nil)
     return result -- a failed launch keeps the form, with its values
   end
   if args.route == '/forms/stop' and args.node_id == 'stop' and args.action == 'stop' then
