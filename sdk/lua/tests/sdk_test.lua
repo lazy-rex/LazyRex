@@ -502,3 +502,10 @@ test('the same operation key from another view is an operation conflict, as in t
   expect(sel('view:2').error.code).to_be('operation_conflict')
   expect(s.sql.rows('todos')[1].done, 'the handler ran once').to_be(1)
 end)
+
+test('a Rex timeout code is unavailable (unknown outcome); a hub.sql timeout text stays timeout (rolled back)', function()
+  local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
+  local function code(text) local _, e = pcall(sdk.rex_error, text); return e.code end
+  expect(code('client.perform failed: no answer (status=504 code=timeout)')).to_be('unavailable')
+  expect(code('client.perform failed: timeout: rolled back (status=500 code=internal)')).to_be('timeout')
+end)

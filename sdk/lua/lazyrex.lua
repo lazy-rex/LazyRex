@@ -153,7 +153,11 @@ local function rex_error(err, default)
   local code = text:match('code=([%w_]+)%)$')
   local message = text:match('failed: (.-) %(status=%d+ code=[%w_]+%)$') or text
   local inner, rest = message:match('^([%l_]+): (.*)$')
-  if inner and (code == nil or code == 'internal' or code == 'failed' or code == inner) then code, message = inner, rest end
+  if inner and (code == nil or code == 'internal' or code == 'failed' or code == inner) then
+    code, message = inner, rest -- a hub code: hub.sql timeout means rolled back (handoff v1, C)
+  elseif code == 'timeout' then
+    code = nil -- a Rex timeout: the outcome is unknown
+  end
   if not code or code == 'disconnected' then fail('unavailable', text) end
   fail(code, message)
 end
