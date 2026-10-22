@@ -875,3 +875,31 @@ app.form('/forms/src', {title = function(ctx) return show_source(ctx) end, field
     view_id = 'v', context = {source_pwd = 'file:///a'}})
   expect(rex.json.decode(r.result.source).pwd, 'an action gets it too').to_be('file:///a')
 end)
+
+test('a same-key retry gets its saved reply before the SDK checks the values or items against the new state', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE opts (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'}
+app.action('p.seed', {}, function() app.db.exec('INSERT INTO opts (name) VALUES (?)', 'a'); return {} end, {store = false})
+app.action('p.clear', {}, function() app.db.exec('DELETE FROM opts WHERE name = ?', 'a'); return {} end, {store = false})
+local function options() local out = {}; for _, r in ipairs(app.db.query('SELECT id, name FROM opts')) do out[#out + 1] = {value = r.name, label = r.name} end; return out end
+app.form('/forms/pick', {title = 'Pick',
+  fields = function() return {{id = 'name', label = 'Name', kind = 'select', value = '', options = options()}} end,
+  on_submit = function(ctx, values) return {picked = values.name, close_form = true} end})
+app.panel('Picks', function()
+  local items = {}
+  for _, o in ipairs(options()) do items[#items + 1] = {id = o.value, label = o.label, on_select = function() return {chose = o.value} end} end
+  return {app.ui.list('picks', items)}
+end, {id = 'picks'})]])
+  s:agent('p.seed', {})
+  local function pick() return s:call('view.action', {route = '/forms/pick', node_id = 'form', action = 'submit', input = {values = {name = 'a'}}, user = 'user', operation_key = 'k1', view_id = 'v'}) end
+  local function choose() return s:call('view.action', {route = '/panels/picks', node_id = 'picks', action = 'select', input = {item_id = 'a'}, user = 'user', operation_key = 'k2', view_id = 'p'}) end
+  expect(pick().result).to_equal({picked = 'a', close_form = true})
+  expect(choose().result).to_equal({chose = 'a'})
+  s:agent('p.clear', {})
+  local r = pick()
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result, 'the form retry replays').to_equal({picked = 'a', close_form = true})
+  r = choose()
+  expect(r.error, show(r)).to_be(nil)
+  expect(r.result, 'the list retry replays').to_equal({chose = 'a'})
+end)
