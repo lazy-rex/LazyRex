@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -375,6 +376,37 @@ func TestSQLNoticesOutbox(t *testing.T) {
 	l.must("hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"a", "pending":false}]}`)
 	if got := fmt.Sprint(applied[1]); got != "[{3 a false}]" {
 		t.Fatalf("applied %s", got)
+	}
+}
+
+// A retry that applies the outbox wakes the notice loop. The commit's own wake comes after its
+// failed apply, when no notice exists yet; without a wake after the retry, the applied notice waits.
+func TestSQLNoticesRetryWakes(t *testing.T) {
+	l := newSQLLab(t)
+	var calls atomic.Int32
+	applied := make(chan struct{}, 1)
+	wakes := make(chan struct{}, 4)
+	l.s.admitNotices = func(string, []noticeOp) error { return nil }
+	l.s.applyNotices = func(string, []outboxRow) error {
+		if calls.Add(1) == 1 {
+			return errors.New("hub.db is busy")
+		}
+		applied <- struct{}{}
+		return nil
+	}
+	l.s.notified = func() { wakes <- struct{}{} }
+	tx := l.must("hub.sql.begin", `{}`)["tx"].(string)
+	l.must("hub.sql.commit", `{"tx":"`+tx+`", "notices":[{"agent":"a", "pending":true}]}`)
+	<-wakes // the commit's wake, after its failed apply
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry did not apply the notices")
+	}
+	select {
+	case <-wakes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the retry applied the notices and did not wake the notice loop")
 	}
 }
 
