@@ -250,7 +250,7 @@ func TestRemoteControlLines(t *testing.T) {
 		{"no list", `{}`, nil, []string{"Remote Control: unknown: hub.app.remote_control has no apps list"}},
 		{"bad JSON", `{`, nil, []string{"Remote Control: unknown: hub.app.remote_control:"}},
 		{"an unknown state", `{"apps":[` + app("c1", "", "maybe", "") + `]}`, nil, []string{`Remote Control: unknown: app c1: state "maybe"`}},
-		{"an older hub", ``, errors.New(`exit status 1: "lazyrex-hub" does not offer "hub.app.remote_control"`), []string{"Remote Control: unknown: exit status 1:"}},
+		{"a failed read", ``, errors.New("exit status 1: refused"), []string{"Remote Control: unknown: exit status 1: refused"}},
 		{"pane-safe", `{"apps":[` + app("c1", "Rex\u001b]0;x\u0007", "on", "session.select") + `]}`, nil, []string{"(app Rex?]0;x? c1)"}},
 	} {
 		got := remoteControlLines([]byte(c.raw), c.err)

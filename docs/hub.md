@@ -748,7 +748,7 @@ Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the
 - `Remote Control (app <label> <client>): last observed off at <time> (<action> refused). Turn it on in the Rex app: Settings, Rex Server, Remote Control. LazyRex needs it for Go to Session and Insert Path.`
 - `Remote Control (app <label> <client>): unknown: no retained app action observation for this app`
 - No connected app: `Remote Control: no Rex app is connected`.
-- Unknown is never silence: a failed read (also an older hub without the action), a reply without the `apps` list, or an unknown `state` prints `Remote Control: unknown: <why>`.
+- Unknown is never silence: a failed read, a reply without the `apps` list, or an unknown `state` prints `Remote Control: unknown: <why>`.
 
 Tests: `TestRemoteControlLines`.
 
