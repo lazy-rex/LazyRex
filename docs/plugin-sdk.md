@@ -114,6 +114,7 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   returned without error, so the SDK then sends no `refresh`. `'writes'` is the default; another
   value fails at load. Before a release that sets `'reads'`, your pair checks the render path. A hub
   without render tracking (before hub 4.2) ignores the option.
+  The lab test `tests/sdk-reads` checks the option with this SDK on the hub.
 - **A render only reads.** A panel, view or form render reads the committed state, with no
   transaction. A write (`db.exec`, `db.batch`, `db.transaction`, `app.notice`) in a render fails with `refused`.
   Write in an action or an `on_select` handler.
