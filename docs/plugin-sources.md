@@ -186,6 +186,9 @@ lazyrex-hub plugin sync`.
   `.` are stages, not entries.
 - There is no prune. A running plugin can `dofile` a sibling file later (Tunnels does), so the hub
   must not delete an entry that is in use.
+- A future prune command also removes `.stage-*` and `.tmp/*` entries older than one hour (a CLI
+  fetch ended by SIGKILL, or a manager fetch whose output did not finish). Until it exists, they
+  stay as unused disk state; no lock names them.
 - **The prune lock** (`prunelock.go`): the hub side of a future prune command. Each admitted start
   opens `<state>/plugins/prune.lock` and takes a shared flock on its own descriptor. It takes it
   before the resolution that reads the lock file (`checkStart`; `validateCandidate` in
