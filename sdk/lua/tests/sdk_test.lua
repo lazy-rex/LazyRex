@@ -470,3 +470,13 @@ app.view('/forms/long', {['view.action'] = function(ctx) app.db.exec('INSERT INT
   expect(s.sql.count('hub.sql.replay')).to_be(0)
   expect(#s.sql.rows('todos'), 'the exec ran alone').to_be(1)
 end)
+
+test('a full JSON Schema with a list of types accepts each of them', function()
+  local s = plugin([[
+app.action('p.any', {type = 'object', properties = {v = {type = {'string', 'integer'}}, n = {type = 'number'}}, required = {'v'}, additionalProperties = false},
+  function(ctx, args) return {v = args.v} end, {store = false})]])
+  expect(s:agent('p.any', {v = 'x'}).result).to_equal({v = 'x'})
+  expect(s:agent('p.any', {v = 3}).result).to_equal({v = 3})
+  expect(s:agent('p.any', {v = 3, n = 2}).result, 'an integer is a number').to_equal({v = 3})
+  expect(s:agent('p.any', {v = true}).error.message).to_be('Argument v must be string or integer')
+end)

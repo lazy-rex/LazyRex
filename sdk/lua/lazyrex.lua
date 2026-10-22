@@ -322,7 +322,7 @@ local function json_type(v)
   if t == 'table' then return next(v) ~= nil and v[1] ~= nil and 'array' or 'object' end
   return t
 end
--- check checks args against the parts of a JSON Schema that the SDK knows: type, required,
+-- check checks args against the parts of a JSON Schema that the SDK knows: type (a name or a list), required,
 -- additionalProperties = false, and the type, minLength, maxLength, minimum, maximum and enum of
 -- each property. The hub can check more.
 local function check(schema, args)
@@ -336,10 +336,16 @@ local function check(schema, args)
     if p == nil then
       if schema.additionalProperties == false then fail('invalid_input', 'Unknown argument ' .. tostring(name)) end
     else
-      local want, have = p.type, json_type(v)
-      -- An empty table is an object or an empty array: Lua cannot tell them apart.
-      local fits = want == nil or want == have or (want == 'number' and have == 'integer') or (want == 'array' and have == 'object' and next(v) == nil)
-      if not fits then fail('invalid_input', 'Argument ' .. name .. ' must be ' .. tostring(want)) end
+      -- type is one name or a list of names (JSON Schema). An empty table is an object or an empty
+      -- array: Lua cannot tell them apart. An unknown type name is not checked.
+      local have = json_type(v)
+      local wants = type(p.type) == 'table' and p.type or {p.type}
+      local fits = p.type == nil
+      for _, want in ipairs(wants) do
+        if want == have or (want == 'number' and have == 'integer') or (want == 'array' and have == 'object' and next(v) == nil)
+          or not (want == 'string' or want == 'integer' or want == 'number' or want == 'boolean' or want == 'object' or want == 'array') then fits = true end
+      end
+      if not fits then fail('invalid_input', 'Argument ' .. name .. ' must be ' .. table.concat(wants, ' or ')) end
       if type(v) == 'string' and p.minLength and #v < p.minLength then fail('invalid_input', 'Argument ' .. name .. ' is too short') end
       if type(v) == 'string' and p.maxLength and #v > p.maxLength then fail('invalid_input', 'Argument ' .. name .. ' is too long') end
       if type(v) == 'number' and p.minimum and v < p.minimum then fail('invalid_input', 'Argument ' .. name .. ' is too small') end
