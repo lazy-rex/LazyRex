@@ -194,7 +194,11 @@ docs/testing.md.
 
 ## Start a new plugin
 
-Copy `sdk/lua/examples/todo` and change the name in `lazyrex.json`, in `lazyrex.plugin(...)` and in
+The release archive has only the SDK runtime (`sdk/lua/boot.lua` and `sdk/lua/lazyrex.lua`), not the
+example. Take the example from the repository at the tag of your release (`lazyrex-hub version`
+prints it): `https://github.com/lazy-rex/LazyRex/tree/<tag>/sdk/lua/examples/todo`. While the
+repository is private: `gh repo clone lazy-rex/LazyRex -- --branch <tag> --depth 1`, then copy
+`sdk/lua/examples/todo` from it. In your copy, change the name in `lazyrex.json`, in `lazyrex.plugin(...)` and in
 the action names. (Proposed, not built: `lazyrex-hub plugin new` and `plugin dev`.)
 
 ## Forms
