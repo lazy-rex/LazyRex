@@ -107,10 +107,10 @@ type fetchResult struct {
 	StderrOpen    bool  // the copy into fetchCmd.Stderr did not end: do not read Stderr
 }
 
-// OK reports a fetch that the hub may publish: git exited 0, the watcher exited 0 by itself, and
-// Output (if any) read all of git's stdout without an error.
+// OK reports a fetch that the hub may publish: git exited 0, the watcher exited 0 by itself,
+// Output (if any) read all of git's stdout without an error, and the stderr copy ended.
 func (r fetchResult) OK() bool {
-	return !r.Stopped && r.OutputErr == nil && r.GitStatus == 0 && r.WatcherStatus.Exited() && r.WatcherStatus.ExitStatus() == 0
+	return !r.Stopped && !r.StderrOpen && r.OutputErr == nil && r.GitStatus == 0 && r.WatcherStatus.Exited() && r.WatcherStatus.ExitStatus() == 0
 }
 
 // runFetchChild runs fc.Argv (git and its arguments) through a watcher and a gate. record stores
