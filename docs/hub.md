@@ -560,9 +560,9 @@ Rex's own skill and hooks (the user, 2026-10-22). Rex installs them with `rex sk
 - No agent found: no question and no command.
 - `rex skill status --json` says that the skill and the hook of each agent are `current`: setup says `Rex's skill and hooks: installed for <agents>.` and asks nothing. A failed, malformed or incomplete status is not an installed claim.
 - Otherwise it asks `Install Rex's own skill and hooks for <agents> now (rex skill setup --agent ...)? [y/N]`. On `y` it runs the command and shows its output, then asks `rex skill status` again. Only a status that says `current` for each agent prints the installed line; a failed setup or an unconfirmed status is an error (exit 1).
-- On `N`, at the end of input, with `-print` and without a terminal, setup runs no rex skill command and prints the exact command.
+- On `N` and at the end of input, setup runs no `rex skill setup`; the read-only `rex skill status` call before the question can still run. With `-print` and without a terminal, setup runs neither command. In each of these cases, setup prints the exact command.
 
-Plugins. The hub refuses a plugin of hub.json that is not installed ("is not installed: run lazyrex-hub plugin sync"), so setup ends with the plugin sync (the coordinator, 2026-10-22). After the files, and only for a hub.json that exists and names a server (the one that the hub controls read):
+Plugins. The hub refuses a plugin of hub.json that is not installed ("is not installed: run lazyrex-hub plugin sync"), so setup offers the plugin sync (the coordinator, 2026-10-22). The sync comes after the files and before the Rex skill offer, and only for a hub.json that exists and names a server (the one that the hub controls read):
 
 - If `plugin status` finds every plugin installed, setup says `Plugins: installed.` and asks nothing.
 - Otherwise it asks `Install the plugins of <hub.json> now (lazyrex-hub plugin sync)? [y/N]`. On `y` it runs `plugin sync` (git, with network) and shows its lines, then `Plugins: installed.` A failed sync prints `Plugin sync failed: <error>`, and setup exits 1.
