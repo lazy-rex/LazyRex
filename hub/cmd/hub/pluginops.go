@@ -51,11 +51,13 @@ CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NU
 -- effect. sent_at: the handler committed it before its first effect; empty sent_at means that no
 -- effect began. intent_id: the spawn intent of a start or a replace. proof: how the outcome is
 -- known (separate from the outcome text). resolved_by: the operator that resolved the attempt.
+-- A file write (call write:managed) has its own attempt: intended is the hash of the bytes that it
+-- renames; bound_at is the insert, sent_at the moment just before the rename.
 CREATE TABLE IF NOT EXISTS plugin_op_attempts (attempt TEXT PRIMARY KEY, op_id TEXT NOT NULL, call TEXT NOT NULL,
   expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
   outcome TEXT NOT NULL DEFAULT '', bound_at TEXT NOT NULL DEFAULT '', target_instance TEXT NOT NULL DEFAULT '',
   target_block TEXT NOT NULL DEFAULT '', target_session TEXT NOT NULL DEFAULT '', intent_id TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
-  proof TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '');
+  proof TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '', intended TEXT NOT NULL DEFAULT '');
 -- The release hold: at most one row. A release tool holds it while no manager write may run.
 CREATE TABLE IF NOT EXISTS plugin_hold (one INTEGER PRIMARY KEY CHECK (one = 1), release_id TEXT NOT NULL,
   acquired_at TEXT NOT NULL);
@@ -791,6 +793,9 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	delete(h.pops.busy, op.ID)
 	path := h.cfg.managedPath
 	b, list, err := readManaged(path)
+	if err := h.settleFileAttempt(ctx, op, b); err != nil {
+		return err
+	}
 	if err != nil {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("managed plugin file %s: %v", path, err))
 	}
@@ -840,16 +845,29 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the new managed file is not valid: %v; nothing was written", err))
 	}
 	out := hashBytes(nb)
-	if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET output = ?, updated = ? WHERE op_id = ?`, out, time.Now().UnixMilli(), op.ID); err != nil {
+	attempt, err := h.beginFileAttempt(ctx, op, out)
+	if err != nil {
 		return err
 	}
 	op.Output = out
 	if h.opFault("plugin-op-before-rename") {
 		return errOpCrash
 	}
+	if _, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET sent_at = ? WHERE attempt = ?`, time.Now().UTC().Format(time.RFC3339Nano), attempt); err != nil {
+		return err // no rename without sent_at
+	}
 	if err := replaceFile(path, nb); err != nil {
 		var re *replacedError
 		if !errors.As(err, &re) {
+			// The writer returned, under both flocks: the file shows whether the rename happened.
+			now, _ := readManagedBytes(path)
+			proof, outcome := "not_applied: the writer returned, and the file is not its output", "not written: "+err.Error()
+			if now != nil && hashBytes(now) == out {
+				proof, outcome = "applied: the writer returned, and the file is its output", "written"
+			}
+			if e := h.finishFileAttempt(ctx, attempt, outcome, proof); e != nil {
+				return e
+			}
 			return err
 		}
 		log.Printf("plugin op %s: %v (the new file is in place)", op.ID, err)
@@ -857,7 +875,65 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	if h.opFault("plugin-op-after-rename") {
 		return errOpCrash
 	}
+	if err := h.finishFileAttempt(ctx, attempt, "written", "applied: the rename returned"); err != nil {
+		return err
+	}
 	return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "")
+}
+
+// beginFileAttempt stores the op's output hash and a new file attempt with that intended hash in
+// one transaction, before the rename.
+func (h *Hub) beginFileAttempt(ctx context.Context, op *pluginOp, out string) (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	attempt := hex.EncodeToString(b)
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET output = ?, updated = ? WHERE op_id = ?`, out, now.UnixMilli(), op.ID); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, intended) VALUES (?, ?, 'write:managed', ?, ?, ?)`,
+		attempt, op.ID, now.UnixMilli(), now.UTC().Format(time.RFC3339Nano), out); err != nil {
+		return "", err
+	}
+	return attempt, tx.Commit()
+}
+
+func (h *Hub) finishFileAttempt(ctx context.Context, attempt, outcome, proof string) error {
+	_, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ?, proof = ? WHERE attempt = ? AND outcome = ''`, outcome, proof, attempt)
+	return err
+}
+
+// settleFileAttempt ends the op's open file attempt, which a hub stop interrupted (the writer cannot
+// act any more), from the file b that the caller read under both flocks:
+//   - no sent_at: the rename never ran: not_applied;
+//   - the file hash is the intended hash: applied;
+//   - else unresolved: the rename may have run, and another writer changed the file later.
+//
+// The op's own recovery (opWrite) then decides its phase, as before.
+func (h *Hub) settleFileAttempt(ctx context.Context, op *pluginOp, b []byte) error {
+	var attempt, sent, intended string
+	err := h.db.QueryRowContext(ctx, `SELECT attempt, sent_at, intended FROM plugin_op_attempts WHERE op_id = ? AND call = 'write:managed' AND outcome = ''`, op.ID).
+		Scan(&attempt, &sent, &intended)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	switch {
+	case sent == "":
+		return h.finishFileAttempt(ctx, attempt, "not written: the hub stopped before the rename", "not_applied: no rename was sent")
+	case b != nil && hashBytes(b) == intended:
+		return h.finishFileAttempt(ctx, attempt, "written (observed after the hub restarted)", "applied: the file is the intended output")
+	}
+	return h.finishFileAttempt(ctx, attempt, "unknown: the file is not the intended output", "")
 }
 
 // opBusy keeps the phase while another plugin command holds the flocks. After opBusyNote the op
@@ -929,7 +1005,9 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 	}
 	phase, result, errText := op.nextPhase(op.Phase), opResultText(call, res), ""
 	proof := ""
-	if call != "reload" { // the reload's proof: a later commit (the file attempts)
+	if call == "reload" {
+		proof = reloadProof(callErr)
+	} else {
 		var err error
 		if proof, err = h.returnProof(ctx, call, attempt, callErr); err != nil {
 			return err
@@ -940,7 +1018,7 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		if isRefusal(callErr, "candidate_changed") || isRefusal(callErr, "entry_changed") {
 			phase = "conflict"
 		}
-		if call != "reload" && proof == "" {
+		if proof == "" {
 			phase = "unknown" // the call can have had its effect
 		}
 	}
@@ -950,6 +1028,18 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		}
 	}
 	return h.finishCall(ctx, op, attempt, phase, result, errText, proof)
+}
+
+// reloadProof is the proof of a reload's return: a success is applied; "invalid" (a malformed
+// file) changes no entry, so it is not_applied; any other error is unresolved.
+func reloadProof(callErr error) string {
+	switch {
+	case callErr == nil:
+		return "applied: the reload returned"
+	case isRefusal(callErr, "invalid"):
+		return "not_applied: the reload refused the file, and the managed entries are unchanged"
+	}
+	return ""
 }
 
 // afterSentNone are the refusals of each call that come after sent_at and before the call's own
@@ -1139,7 +1229,7 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 		now := canonicalEntry(cur)
 		h.entriesMu.Unlock()
 		if now == intended {
-			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "reload: the hub has the new entry (observed after the hub restarted)", "", "")
+			return h.finishCall(ctx, op, attempt, op.nextPhase(op.Phase), "reload: the hub has the new entry (observed after the hub restarted)", "", "applied: the hub's entries have the op's entry (the start-up load of the file)")
 		}
 		return h.finishCall(ctx, op, attempt, "unknown", "", fmt.Sprintf("the reload's outcome is unknown: the hub has %s", now), "")
 	}
