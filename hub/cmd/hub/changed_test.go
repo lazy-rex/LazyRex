@@ -188,3 +188,19 @@ func TestChangedRetryableCodes(t *testing.T) {
 		}
 	}
 }
+
+// A change that comes when a delivery loop has decided that nothing is pending is never lost: it
+// either belongs to that loop or starts a new one. The hook sends the change at exactly that point.
+func TestChangedIdleRaceKeepsChange(t *testing.T) {
+	f := newChangedFake(t)
+	h := changedTestHub(map[string]string{"a": "client-a"})
+	var once sync.Once
+	h.changedQ.idleHook = func(changedKey) {
+		once.Do(func() { h.changed("workers") })
+	}
+	h.changed("workers")
+	waitIdle(t, h)
+	if n := f.count(); n != 2 {
+		t.Fatalf("%d deliveries, want 2: the change at the idle point was lost", n)
+	}
+}

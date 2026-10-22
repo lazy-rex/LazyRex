@@ -31,6 +31,9 @@ type changedState struct{ pending bool }
 type changedQueue struct {
 	mu    sync.Mutex
 	pairs map[changedKey]*changedState // the pairs with a delivery in flight
+	// idleHook is a test hook: it runs when a delivery loop has decided that no change is pending,
+	// just before the loop ends.
+	idleHook func(changedKey)
 }
 
 // changedRetry are the waits before each retry of a refused delivery. Their sum (3.1 s) bounds
@@ -62,21 +65,24 @@ func (h *Hub) deliverChanged(client, name, what string) {
 }
 
 // changedLoop delivers until no change is pending, then removes the pair.
+// The decision "nothing is pending" and the removal of the pair happen under one lock: a change
+// after that lock finds no pair and starts a new loop; a change before it marks this loop pending.
 func (h *Hub) changedLoop(k changedKey, st *changedState, name string) {
-	defer func() {
-		q := &h.changedQ
-		q.mu.Lock()
-		delete(q.pairs, k)
-		q.mu.Unlock()
-	}()
 	for {
 		h.changedOnce(k, name)
 		q := &h.changedQ
 		q.mu.Lock()
 		again := st.pending
 		st.pending = false
+		if !again {
+			delete(q.pairs, k)
+		}
+		hook := q.idleHook
 		q.mu.Unlock()
 		if !again {
+			if hook != nil {
+				hook(k)
+			}
 			return
 		}
 	}
