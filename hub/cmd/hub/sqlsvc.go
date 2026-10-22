@@ -506,16 +506,7 @@ func (s *sqlService) stmt(ctx context.Context, p *pluginSQL, args map[string]any
 	if err != nil {
 		p.w.hub(context.WithoutCancel(ctx), "ROLLBACK TO lazyrex_stmt")
 		p.w.hub(context.WithoutCancel(ctx), "RELEASE lazyrex_stmt")
-		// Without this check, the next SAVEPOINT would begin a new transaction that its RELEASE
-		// commits (Codex review of 8510d50).
-		if !p.w.inTx(context.WithoutCancel(ctx)) {
-			p.lost = true
-			var se *storeError
-			if errors.As(err, &se) {
-				err = &storeError{msg: se.msg + "; SQLite rolled back the transaction", code: se.code}
-			}
-		}
-		return nil, err
+		return nil, p.checkLoss(ctx, err)
 	}
 	if err := p.w.hub(ctx, "RELEASE lazyrex_stmt"); err != nil {
 		return nil, refuse("sql_error", "release: %v", err)
@@ -606,7 +597,7 @@ func (s *sqlService) query(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 		return s.withWriter(p, c, token, func(*sqlTx) (any, error) {
 			r, err := p.w.run(ctx, q, params, true, sqlReplyBudget)
 			if err != nil {
-				return nil, err
+				return nil, p.checkLoss(ctx, err)
 			}
 			return reply(r)
 		})
@@ -905,4 +896,19 @@ func (s *sqlService) test(ctx context.Context, plugin string, args map[string]an
 		s.committed(plugin, m)
 	}
 	return execReply(r), nil
+}
+
+// checkLoss runs after a statement error in a handler transaction. An error that made SQLite end
+// the transaction marks it lost, and the next call gets tx_expired: without this check, the next
+// SAVEPOINT would begin a new transaction that its RELEASE commits (Codex review of 8510d50).
+func (p *pluginSQL) checkLoss(ctx context.Context, err error) error {
+	if p.w.inTx(context.WithoutCancel(ctx)) {
+		return err
+	}
+	p.lost = true
+	var se *storeError
+	if errors.As(err, &se) {
+		err = &storeError{msg: se.msg + "; SQLite rolled back the transaction", code: se.code}
+	}
+	return err
 }
