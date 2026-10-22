@@ -73,22 +73,20 @@ func storedTarget(t *testing.T, op *pluginOp) opResolved {
 	return r
 }
 
-// The resolve stores the lock base of the target's key with the target: "absent" for a new key,
-// else that key's pin.
+// The admission stores the lock base of the add's key: "absent" for a new key, else that key's
+// pin.
 func TestPluginOpLockBaseStored(t *testing.T) {
 	r, _ := fetchTestRepo(t)
 	h := fetchTestHub(t, r)
-	op := resolvedAdd(t, h, "b1", "github:acme/notes@v1.0.0")
-	if got := storedTarget(t, op).LockBase; got != "absent" {
-		t.Fatalf("a new key: base %q", got)
+	if got := resolvedAdd(t, h, "b1", "github:acme/notes@v1.0.0").LockBase; got != `{"github:acme/notes@v1.0.0":"absent"}` {
+		t.Fatalf("a new key: %s", got)
 	}
 	h2 := fetchTestHub(t, r)
 	le := otherLockEntry()
 	writeTestLock(t, h2, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": le}})
-	op2 := resolvedAdd(t, h2, "b2", "github:acme/notes@v1.0.0")
-	want, _ := json.Marshal(le.lockPin)
-	if got := storedTarget(t, op2).LockBase; got != string(want) {
-		t.Fatalf("a present key: base %s, want %s", got, want)
+	want, _ := json.Marshal(map[string]string{"github:acme/notes@v1.0.0": lockBase(&pluginLock{Plugins: map[string]*lockEntry{"k": le}}, "k")})
+	if got := resolvedAdd(t, h2, "b2", "github:acme/notes@v1.0.0").LockBase; got != string(want) {
+		t.Fatalf("a present key: %s, want %s", got, want)
 	}
 }
 
@@ -194,7 +192,7 @@ func TestPluginOpLockBase(t *testing.T) {
 		op := fetchedAdd(t, h, "x", "github:acme/notes@v1.0.0")
 		writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": otherLockEntry()}})
 		before, _ := os.ReadFile(opLockFile(h))
-		if err := h.opLock(context.Background(), op); err != nil || op.Phase != "conflict" || !strings.Contains(op.Error, "changed since the operation resolved it") {
+		if err := h.opLock(context.Background(), op); err != nil || op.Phase != "conflict" || !strings.Contains(op.Error, "the lock changed during the add") {
 			t.Fatalf("op %+v %v", op, err)
 		}
 		if after, _ := os.ReadFile(opLockFile(h)); string(after) != string(before) || len(lockProofs(t, h, op.ID)) != 0 {
@@ -331,5 +329,102 @@ func TestPluginOpLockWrittenChecksGraph(t *testing.T) {
 	}
 	if !strings.Contains(op.Error, "the lock has the operation's pin") || len(lockProofs(t, h, op.ID)) != 0 {
 		t.Fatalf("the text or a write: %q", op.Error)
+	}
+}
+
+// A CLI write of the add's key between admission and the resolve (T2): the lock base is the
+// admission snapshot, so the lock write is conflict, and T2 stays. (The hub lead's ruling
+// lead-c3dev 1; codex-27's CAS case.)
+func TestPluginOpLockBaseAtAdmission(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	h := fetchTestHub(t, r)
+	v, err := userAdmit(h, "t2", opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@v1.0.0"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2 := otherLockEntry()
+	writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": t2}})
+	op := opsOf(t, h, v["op_id"].(string))
+	op.Phase = "resolving"
+	if err := h.opResolve(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.opFetch(context.Background(), op); err != nil || op.Phase != "locking" {
+		t.Fatalf("fetch: %+v %v", op, err)
+	}
+	if err := h.opLock(context.Background(), op); err != nil || op.Phase != "conflict" || !strings.Contains(op.Error, "the lock changed during the add") {
+		t.Fatalf("op %+v %v", op, err)
+	}
+	if got := readTestLock(t, h).Plugins["github:acme/notes@v1.0.0"]; got == nil || *got != *t2 {
+		t.Fatalf("T2 was overwritten: %+v", got)
+	}
+}
+
+// An update to a tag snapshots both spellings of the new key at admission. The lock write uses the
+// snapshot of the key that the resolve selected: a CLI write of that key after admission is
+// conflict. Both resolution choices: @<tag>, and @refs/tags/<tag> when a branch has the same name.
+func TestPluginOpLockBaseBothSpellings(t *testing.T) {
+	for _, branch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("branch=%v", branch), func(t *testing.T) {
+			r, _ := fetchTestRepo(t)
+			r.commit(map[string]string{"main.lua": "return 2\n"})
+			r.git("tag", "v1.1.0")
+			key := "github:acme/notes@v1.1.0"
+			if branch {
+				r.git("branch", "v1.1.0")
+				key = "github:acme/notes@refs/tags/v1.1.0"
+			}
+			h := fetchTestHub(t, r)
+			writeManaged(t, h.cfg.State, `{"plugins":[{"id":"notes","source":"github:acme/notes@v1.0.0"}]}`)
+			opsLoadEntries(t, h)
+			v, err := userAdmit(h, "u", opRequest{Op: "update", Entry: "managed:notes", Input: rawJSON(map[string]any{"to": "v1.1.0"})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			op := opsOf(t, h, v["op_id"].(string))
+			var snap map[string]string
+			if err := json.Unmarshal([]byte(op.LockBase), &snap); err != nil || len(snap) != 2 || snap["github:acme/notes@v1.1.0"] != "absent" || snap["github:acme/notes@refs/tags/v1.1.0"] != "absent" {
+				t.Fatalf("the admission snapshot %q %v", op.LockBase, err)
+			}
+			cli := otherLockEntry()
+			writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{key: cli}})
+			op.Phase = "resolving"
+			if err := h.opResolve(context.Background(), op); err != nil {
+				t.Fatal(err)
+			}
+			if got := storedTarget(t, op).Source; got != key {
+				t.Fatalf("the resolve chose %s, want %s", got, key)
+			}
+			if err := h.opFetch(context.Background(), op); err != nil || op.Phase != "locking" {
+				t.Fatalf("fetch: %+v %v", op, err)
+			}
+			if err := h.opLock(context.Background(), op); err != nil || op.Phase != "conflict" || !strings.Contains(op.Error, "the lock changed during the update") {
+				t.Fatalf("op %+v %v", op, err)
+			}
+			if got := readTestLock(t, h).Plugins[key]; got == nil || *got != *cli {
+				t.Fatalf("the CLI write was overwritten: %+v", got)
+			}
+		})
+	}
+}
+
+// The admission snapshot is stored with the op: an idempotent replay of the request (the same key)
+// keeps the first snapshot, also when the lock changed since.
+func TestPluginOpLockBaseReplay(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	h := fetchTestHub(t, r)
+	req := opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/notes@v1.0.0"})}
+	v, err := userAdmit(h, "rp", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := opsOf(t, h, v["op_id"].(string)).LockBase
+	writeTestLock(t, h, &pluginLock{Plugins: map[string]*lockEntry{"github:acme/notes@v1.0.0": otherLockEntry()}})
+	v2, err := userAdmit(h, "rp", req)
+	if err != nil || v2["op_id"] != v["op_id"] {
+		t.Fatalf("the replay: %v %v", v2, err)
+	}
+	if got := opsOf(t, h, v["op_id"].(string)).LockBase; got != first || !strings.Contains(first, `"absent"`) {
+		t.Fatalf("the snapshot %q, first %q", got, first)
 	}
 }
