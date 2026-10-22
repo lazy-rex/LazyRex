@@ -50,7 +50,25 @@ func opsTestHub(t *testing.T, managed string) (*Hub, *opsCalls, string) {
 	t.Cleanup(func() { waitIdle(t, h) }) // runs first: no delivery outlives the fake
 	changedCall = func(context.Context, *Hub, string, string) error { return nil }
 	opAdmin = func(ctx context.Context, h *Hub, action string, args map[string]any) (any, error) {
-		b, _ := json.Marshal(args)
+		// The fake binds the attempt and commits sent_at as the handler does (adminattempt.go), and
+		// logs the call without the attempt ID, which is random.
+		logged := map[string]any{}
+		for k, v := range args {
+			logged[k] = v
+		}
+		if attempt, _ := args["attempt"].(string); attempt != "" {
+			delete(logged, "attempt")
+			name, _ := args["plugin"].(string)
+			var instance, block string
+			h.db.QueryRowContext(ctx, `SELECT instance_id, block_id FROM plugins WHERE name = ?`, name).Scan(&instance, &block)
+			if err := h.bindAttempt(ctx, attempt, strings.TrimPrefix(action, "hub.admin."), instance, block); err != nil {
+				return nil, err
+			}
+			if err := h.attemptSent(ctx, attempt); err != nil {
+				return nil, err
+			}
+		}
+		b, _ := json.Marshal(logged)
 		c.mu.Lock()
 		c.calls = append(c.calls, action+" "+string(b))
 		reply := c.reply
@@ -68,6 +86,16 @@ func opsTestHub(t *testing.T, managed string) (*Hub, *opsCalls, string) {
 		return map[string]any{"errors": map[string]string{}}, nil
 	}
 	return h, c, dir
+}
+
+// opsProof is the stored proof of the op's attempt of call.
+func opsProof(t *testing.T, h *Hub, id, call string) string {
+	t.Helper()
+	var proof string
+	if err := h.db.QueryRow(`SELECT proof FROM plugin_op_attempts WHERE op_id = ? AND call = ?`, id, call).Scan(&proof); err != nil {
+		t.Fatal(err)
+	}
+	return proof
 }
 
 // opsLoadEntries sets the hub's entries from the managed file; each managed entry's name is its id.
@@ -472,7 +500,7 @@ func TestPluginOpNoSecondCall(t *testing.T) {
 	h.opsRun(context.Background())
 	h.pops.fault = nil
 	h.opsRun(context.Background())
-	if op := opsOf(t, h, start); op.Phase != "unknown" || !strings.Contains(op.Error, "unresolved_intent") {
+	if op := opsOf(t, h, start); op.Phase != "unknown" || !strings.Contains(op.Error, "outcome is unknown") || opsProof(t, h, start, "start") != "" {
 		t.Errorf("start: %+v", op)
 	}
 	if got := strings.Join(c.list(), "; "); got != `hub.admin.stop {"expect_entry":`+string(xID)+`,"plugin":"x"}; hub.admin.start {"expect_entry":`+string(yID)+`,"expect_run":{"source":"`+filepath.Join(pd, "y")+`"},"plugin":"y"}` {
