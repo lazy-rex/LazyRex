@@ -347,10 +347,14 @@ func (h *rehearsal) setup() error {
 	h.l = &lab{dir: L, socket: filepath.Join(L, "rex.sock"), server: server, env: h.env, tracked: map[int]string{}}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := h.l.startServer(ctx, rexBin); err != nil {
+	self, err := os.Executable() // the server's keeper (labkeeper.go) is this binary
+	if err != nil {
 		return err
 	}
-	h.say("the lab server runs (pid %d)", h.l.srv.Process.Pid)
+	if err := h.l.startServer(ctx, self, rexBin); err != nil {
+		return err
+	}
+	h.say("the lab server runs (pid %d)", h.l.srv.pid)
 
 	// The lab cache: OLD syncs the lab copy. Plan v2, design v2 B: the lab lock equals the live lock
 	// by its pins (a sync can name new cache dirs), and the base byte for byte.

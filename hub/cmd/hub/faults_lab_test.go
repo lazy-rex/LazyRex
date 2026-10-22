@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -58,15 +57,10 @@ func TestHubWithoutTestModeHasNoFaults(t *testing.T) {
 	os.WriteFile(cfgPath, b, 0o600)
 	logf, _ := os.Create(filepath.Join(l.dir, "hub.log"))
 	defer logf.Close()
-	l.hub = exec.Command(bin, "-config", cfgPath)
-	l.hub.Env, l.hub.Dir, l.hub.Stdout, l.hub.Stderr = l.env, l.home(), logf, logf
-	l.hub.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := l.hub.Start(); err != nil {
+	if l.hub, err = startKept(bin, "hub", []string{bin, "-config", cfgPath}, l.env, l.home(), logf, logf); err != nil {
 		t.Fatal(err)
 	}
-	l.track(l.hub.Process.Pid)
-	l.hubW = watch(l.hub)
-	l.hubExit = l.hubW.done
+	l.trackKept(l.hub)
 	c := &helperConn{r: l.r}
 	var hub string
 	for i := 0; ; i++ {

@@ -343,17 +343,19 @@ func descendants(t *testing.T, pid int) map[int]string {
 }
 
 // A SIGKILL of lazyrex-hub test (for example an agent tool's time limit) leaves no process of its
-// lab: the lab guard stops the server, the hub and the runner groups, and the panes end with the
-// server. Before the guard the server, its panes, the hub and the runner ran on under parent 1
-// (2026-10-22). The test kills the run after the file's hub restart, while a testagent pane runs.
-func TestLabGuardKilledRun(t *testing.T) {
+// lab: each keeper (labkeeper.go) sees its control pipe end and stops its group (the server, the
+// hub, the runner), and the panes end with the server. Before that the server, its panes, the hub
+// and the runner ran on under parent 1 (2026-10-22). The test kills the run after the file's hub
+// restart, while a testagent pane runs. The runner's keeper is the test process's child, and its
+// command line names the file and the lab.
+func TestLabKeeperKilledRun(t *testing.T) {
 	bin, root := harnessBinary(t)
 	cmd := exec.Command(bin, "test", "-file", "restart_timeout.lua", "-timeout", "120s", filepath.Join(root, "tests", "harness-fail"))
 	cmd.Env = harnessEnv(t)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	// The lab of the file: its runner (a child of the test process) names the file and the lab.
+	// The lab of the file: the runner's keeper (a child of the test process) names the file and the lab.
 	var lab string
 	for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(300 * time.Millisecond) {
 		if lab == "" {

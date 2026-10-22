@@ -55,7 +55,7 @@ first.
     `lazyrex-hub test` is `unproved`; any other, and a kind that the binary does not know, is
     protected as `unproved`.
 - A lab whose cleanup is not proved stays too, also without `-keep`: a process survived the stop,
-  the guard did not end, or the probe after the stop is not "absent". Its `KEEP` marker has
+  a keeper did not stop cleanly, or the probe after the stop is not "absent". Its `KEEP` marker has
   `{"by": "lazyrex-hub test", "why": "cleanup not proved: <reason>", "kind": "unproved"}`, the file fails with a
   problem that names the lab, and the summary line names it:
   `FAIL tests/send.lua: 3 passed, 0 failed (lab kept: /tmp/lrt-123)`.
@@ -82,13 +82,19 @@ first.
   and for each uncertain lab, which it keeps. A failed process listing stops the sweep. (24 hours
   for the first release; then 1 hour.)
 - A killed run (SIGKILL) cannot clean up. Its lab directory waits for the sweep.
-- The lab guard: for each lab, the run also starts a guard process (the same binary) with a pipe
-  from the run on its stdin. The run tells the guard each process group of the lab: the server,
-  the hub and the runner. After its own stop of the lab, the run writes `release` and the guard
-  ends without a signal (a survivor of that stop fails the run, and gets no signal). When the pipe
-  ends without `release` (the run was killed), the guard sends SIGTERM to each group that still
-  runs, then SIGKILL after 10 s. The lab panes end with the server. So a killed run leaves no lab
-  process; only its directory waits for the sweep.
+- The lab keepers: the run starts each lab command (the lab server, the hub, the runner) under a
+  keeper, the same binary with `LAZYREX_LAB_KEEPER=1`. The keeper leads its own process group and
+  starts the command in it, without the keeper variables. The run controls it through two pipes:
+  `start` before the command exists, then `stop`; the keeper reports the command's pid, its exit
+  status, and the end of the stop. At `stop`, or when the control pipe ends (the run was killed),
+  the keeper sends SIGTERM to its group and waits up to 10 s for the group to empty. The keeper's
+  exit status: 0 is a clean stop; 125 means no `start` came, and nothing ran; 126 means the command
+  did not start; SIGKILL means members remained or the group listing failed, and the keeper killed
+  the whole group, itself included. The command's status comes only from the keeper's report. An
+  escalation, a keeper that does not end, or a report without the command's status makes the
+  cleanup not proved. The lab panes run in their own groups outside the keepers' groups: they end
+  with the server, and the run checks them as survivors. So a killed run leaves no lab process;
+  only its directory waits for the sweep.
 - Still give the tool call that runs `lazyrex-hub test` a time limit above `-timeout`, or run it in
   the background: a killed run gives no result.
 - The hub's own lab tests set `LAZYREX_LAB_SWEEP_ROOT` to a test directory: a test never sweeps the

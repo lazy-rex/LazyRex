@@ -307,8 +307,10 @@ func findRex(configured string) (string, error) {
 }
 
 func main() {
+	if os.Getenv(labKeeperEnv) == "1" {
+		labKeeper() // a lab keeper of lazyrex-hub test runs its role and exits (labkeeper.go)
+	}
 	fetchChildMain() // a fetch watcher or gate of the plugin manager runs its role and exits (fetchchild.go)
-	labGuardMain()   // a lab guard of lazyrex-hub test runs its role and exits (labguard.go)
 	// The restart wrapper's variables (restartenv.go): read and unset first, before any exec.
 	renv, renvErr := takeRestartEnv()
 	if renv.readyFD >= 0 {

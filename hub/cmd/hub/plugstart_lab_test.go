@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -164,15 +163,10 @@ func (s *startLab) start() {
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	s.l.hub = exec.Command(s.bin, append([]string{"-config", s.cfg, "-test"}, s.args...)...)
-	s.l.hub.Env, s.l.hub.Dir, s.l.hub.Stdout, s.l.hub.Stderr = s.l.env, s.l.home(), logf, logf
-	s.l.hub.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := s.l.hub.Start(); err != nil {
+	if s.l.hub, err = startKept(s.bin, "hub", append([]string{s.bin, "-config", s.cfg, "-test"}, s.args...), s.l.env, s.l.home(), logf, logf); err != nil {
 		s.t.Fatal(err)
 	}
-	s.l.track(s.l.hub.Process.Pid)
-	s.l.hubW = watch(s.l.hub)
-	s.l.hubExit = s.l.hubW.done
+	s.l.trackKept(s.l.hub)
 	s.wait("the hub client", func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -186,17 +180,15 @@ func (s *startLab) start() {
 	})
 }
 
-// stop stops the hub (SIGTERM). Its plugin processes stay in their blocks.
+// stop stops the hub through its keeper (SIGTERM to its group). Its plugin processes stay in their
+// blocks.
 func (s *startLab) stop() {
 	s.t.Helper()
 	s.l.snapshot()
-	s.l.hubW.signal(syscall.SIGTERM)
-	select {
-	case <-s.l.hubExit:
-	case <-time.After(10 * time.Second):
-		s.t.Fatal("the hub did not stop in 10 s")
+	if p := s.l.hub.stop(); len(p) > 0 {
+		s.l.unproved = append(s.l.unproved, p...)
+		s.t.Fatalf("the hub did not stop cleanly: %v", p)
 	}
-	s.l.hubExit = nil
 }
 
 func (s *startLab) wait(what string, ok func() bool) {

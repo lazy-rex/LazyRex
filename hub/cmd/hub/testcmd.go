@@ -427,20 +427,19 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 			return l, err
 		}
 	}
-	if err := o.startGuard(l); err != nil { // first: no lab process runs without the guard
-		return l, err
-	}
-	return l, l.startServer(ctx, o.rexBin)
+	return l, l.startServer(ctx, o.self, o.rexBin)
 }
 
 // waitRunner reads the runner's result lines until the runner exits, or until fctx ends. Every
 // wait after fctx ends has a limit. A hub restart (hub:restart()) runs in the parser with fctx:
 // a timeout or an interrupt stops its start of the new hub. waitRunner returns only after the
 // parser ends, so the lab cleanup never runs while a restart uses the lab or res.
-func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, stdout io.ReadCloser, res *fileResult, logf io.Writer) {
-	l.track(cmd.Process.Pid)
-	l.runner = cmd
-	w := watch(cmd)
+//
+// Each path retires the runner's keeper: an exit with a stop (its problems mean that the cleanup is
+// not proved), a timeout or an interrupt with SIGKILL to the runner's group.
+func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, k *kept, stdout io.ReadCloser, res *fileResult, logf io.Writer) {
+	l.trackKept(k)
+	l.runner = k
 	restart := o.restartHub
 	if o.restartFn != nil {
 		restart = o.restartFn
@@ -457,28 +456,33 @@ func (o *testOpts) waitRunner(ctx, fctx context.Context, l *lab, cmd *exec.Cmd, 
 		})
 		close(parsed)
 		stdout.Close()
-		exit <- <-w.done
+		<-k.done
+		exit <- k.status
 	}()
 	select {
 	case err := <-exit:
-		if err != nil {
+		if err != nil && err != errKeeperNoReport { // stop names an unknown status
 			res.problems = append(res.problems, "runner exited: "+err.Error())
 		}
+		p := k.stop()
+		res.problems = append(res.problems, p...)
+		l.unproved = append(l.unproved, p...)
 	case <-fctx.Done():
 		// The runner's children, so that the lab cleanup checks them. A restart that runs now ends
 		// soon (it stops at fctx; the stop of the old hub has a limit), and the runner waits for it.
 		mu.Lock()
 		l.snapshot()
 		mu.Unlock()
-		w.signal(syscall.SIGKILL)
+		p := k.kill() // res and l only after the parser ends: a restart in it writes both
 		// Close the output before the wait: another process can keep it open (for example a
-		// child after the runner exited; that group gets no signal). The file fails anyway, so
-		// lines after the timeout do not count.
+		// child in another group). The file fails anyway, so lines after the timeout do not count.
 		stdout.Close()
 		// The parser ends at the closed output, or after a restart that it runs now. A restart
 		// has limits after fctx ends: the stop of the old hub (10 s, then SIGKILL) and the
 		// start of the new hub (it stops at fctx).
 		<-parsed
+		res.problems = append(res.problems, p...)
+		l.unproved = append(l.unproved, p...)
 		select {
 		case <-exit:
 		case <-time.After(10 * time.Second):
@@ -552,24 +556,20 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 	if err != nil {
 		return err
 	}
-	l.hub = exec.Command(o.self, "-config", cfg, "-test", "-sdk", filepath.Join(o.lazyrex, "sdk", "lua"))
-	l.hub.Env, l.hub.Dir, l.hub.Stdout, l.hub.Stderr = l.env, l.home(), logf, logf
-	l.hub.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := l.hub.Start(); err != nil {
+	l.hub, err = startKept(o.self, "hub", []string{o.self, "-config", cfg, "-test", "-sdk", filepath.Join(o.lazyrex, "sdk", "lua")},
+		l.env, l.home(), logf, logf)
+	if err != nil {
 		return err
 	}
-	l.track(l.hub.Process.Pid)
-	l.hubW = watch(l.hub)
-	l.hubExit = l.hubW.done
+	l.trackKept(l.hub)
 	c := &helperConn{r: l.r}
 	deadline := time.Now().Add(20 * time.Second)
 	var last string
 	var registeredAt time.Time
 	for {
 		select {
-		case err := <-l.hubExit:
-			l.hubExit = nil
-			return fmt.Errorf("hub exited: %v (see %s)", err, filepath.Join(l.dir, "hub.log"))
+		case <-l.hub.done:
+			return fmt.Errorf("hub exited: %v (see %s)", l.hub.status, filepath.Join(l.dir, "hub.log"))
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(150 * time.Millisecond):
@@ -678,17 +678,20 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 	}
 	fctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
-	cmd := exec.Command(o.rexBin, args...)
-	cmd.Env, cmd.Dir = l.env, l.home()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, _ := cmd.StdoutPipe()
 	logf, _ := os.Create(filepath.Join(l.dir, "runner.log"))
-	cmd.Stderr = logf
-	if err := cmd.Start(); err != nil {
+	stdout, out, err := os.Pipe()
+	if err != nil {
 		res.problems = append(res.problems, "runner: "+err.Error())
 		return res
 	}
-	o.waitRunner(ctx, fctx, l, cmd, stdout, res, logf)
+	k, err := startKept(o.self, "runner", append([]string{o.rexBin}, args...), l.env, l.home(), out, logf)
+	out.Close() // the runner holds the write end; the result ends when it and its children close it
+	if err != nil {
+		stdout.Close()
+		res.problems = append(res.problems, "runner: "+err.Error())
+		return res
+	}
+	o.waitRunner(ctx, fctx, l, k, stdout, res, logf)
 	logf.Close()
 	if !res.ok() || o.verbose {
 		for _, name := range []string{"runner.log", "hub.log"} {
@@ -802,31 +805,29 @@ func tail(path string, res *fileResult, all bool) {
 }
 
 // restartHub stops the lab hub that this command started and starts it again with the same config,
-// lab server and state (hub:restart() in a test; the coordinator, 2026-10-19). mode term sends
-// SIGTERM to the hub's process group (a stop), kill sends SIGKILL (a crash). Only the hub's own
-// group gets a signal, through its waiter: a reaped hub gets none. The old hub's log is kept as
-// hub.<n>.log. Processes that the old hub left stay tracked, so the lab cleanup still checks them.
+// lab server and state (hub:restart() in a test; the coordinator, 2026-10-19). Mode term stops the
+// old hub's keeper (SIGTERM to its group, then the wait); mode kill sends SIGKILL to that group (a
+// crash). Either way the old keeper ends before the new hub starts, and a failed stop is a reason
+// that the cleanup is not proved. The old hub's log is kept as hub.<n>.log. Processes that the old
+// hub left stay tracked, so the lab cleanup still checks them.
 func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if l.hubW == nil || l.hubExit == nil {
+	if l.hub == nil || l.hub.retired {
 		return fmt.Errorf("the hub is not running")
 	}
-	sig := syscall.SIGTERM
-	if mode == "kill" {
-		sig = syscall.SIGKILL
-	}
 	l.snapshot()
-	l.hubW.signal(sig)
-	select {
-	case <-l.hubExit:
-	case <-time.After(10 * time.Second):
-		l.hubW.signal(syscall.SIGKILL)
-		<-l.hubExit
-		return fmt.Errorf("the hub did not stop in 10 s after %v; sent SIGKILL", sig)
+	var p []string
+	if mode == "kill" {
+		p = l.hub.kill()
+	} else {
+		p = l.hub.stop()
 	}
-	l.hubExit = nil
+	if len(p) > 0 {
+		l.unproved = append(l.unproved, p...)
+		return fmt.Errorf("the old hub: %s", strings.Join(p, "; "))
+	}
 	l.restarts++
 	if err := os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts))); err != nil {
 		return err
