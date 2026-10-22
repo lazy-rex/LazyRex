@@ -15,9 +15,10 @@ package main
 // short call to the hub, the agent face or a plugin, and none waits for progress that needs a
 // callback to itself. The Lua test polls.
 //
-// A `rex do` script receives at most 64 KiB in one control message (rex-protocol.md, "Rex Lua
-// runtime"). Each reply to the test is measured as encoded JSON and refused with too_large above
-// testReplyLimit. Nothing is truncated.
+// Each reply to the test is measured as encoded JSON and refused with too_large above
+// testReplyLimit, the harness's own bound. It is not a Rex limit: a `rex do` script sends at most
+// 64 KiB in one control message but receives more (rex-protocol.md, "Rex Lua runtime"). Nothing is
+// truncated.
 
 import (
 	"context"

@@ -8,9 +8,9 @@ package main
 // plugin's own calls to the hub wait in that queue (rex-protocol.md, "The hub has one request
 // queue"). So each handler reads or writes hub state and answers at once.
 //
-// Every reply stays under testReplyLimit encoded bytes: a `rex do` script receives at most 64 KiB in
-// one control message (rex-protocol.md, "Rex Lua runtime"). A value that does not fit comes back as
-// too_large, and the test reads it in chunks (hub.test.chunk). Nothing is truncated.
+// Every reply stays under testReplyLimit encoded bytes, the harness's own bound. A value that does
+// not fit comes back as too_large, and the test reads it in chunks (hub.test.chunk). Nothing is
+// truncated.
 
 import (
 	"context"
@@ -34,8 +34,9 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/internal/rexreal"
 )
 
-// testReplyLimit bounds the encoded result of a hub.test.* reply. The envelope (call_id, the
-// client.reply frame) adds less than 1 KiB; the Lua limit is 65536 bytes for the whole message.
+// testReplyLimit bounds the encoded result of a hub.test.* reply. It is the harness's bound, not a
+// Rex limit: a `rex do` script sends at most 65536 bytes in one control message but receives more
+// (rex-protocol.md, "Rex Lua runtime").
 const testReplyLimit = 48 << 10
 
 var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.sql", "hub.test.chunk", "hub.test.notice", "hub.test.notice_renudge", "hub.test.stats", "hub.test.rev",
