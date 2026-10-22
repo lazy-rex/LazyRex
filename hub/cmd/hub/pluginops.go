@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -241,6 +242,21 @@ func managedByID(list []*configEntry, id string) *configEntry {
 func hashBytes(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
+}
+
+// hashFile is hashBytes of the file at path, read as a stream, so its memory does not grow with
+// the file. A file that cannot be read gives "".
+func hashFile(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // homeRecordLocked reports whether name is the record of the configured home entry, with an entry
@@ -963,9 +979,8 @@ func (h *Hub) renameAttempt(ctx context.Context, op *pluginOp, call, path string
 		var re *replacedError
 		if !errors.As(err, &re) {
 			// The writer returned, under both flocks: the file shows whether the rename happened.
-			now, _ := os.ReadFile(path)
 			proof, outcome := "not_applied: the writer returned, and the file is not its output", "not written: "+err.Error()
-			if now != nil && hashBytes(now) == out {
+			if hashFile(path) == out {
 				proof, outcome = "applied: the writer returned, and the file is its output", "written"
 			}
 			if e := h.finishFileAttempt(ctx, attempt, outcome, proof); e != nil {
