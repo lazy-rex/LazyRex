@@ -102,14 +102,27 @@ func (h *Hub) addAdmission(op *pluginOp, req opRequest) (*pluginOp, error) {
 	if managedByID(list, in.ID) != nil {
 		return nil, refuse("conflict", "managed:%s exists; give another id", in.ID)
 	}
-	h.entriesMu.Lock()
-	others := append([]*configEntry{}, h.entries...)
-	h.entriesMu.Unlock()
-	for _, x := range append(list, others...) {
+	// list is this call's own parse; h.entries are shared, and a reload updates them in place
+	// under entriesMu, so the check and its text read them under that lock.
+	same := func(x *configEntry) error {
 		if sameRepo(x, e) {
-			return nil, refuse("conflict", "%s is the same repository as %s (%s); update that entry instead", in.Source, opEntryKey(x), x.Source)
+			return refuse("conflict", "%s is the same repository as %s (%s); update that entry instead", in.Source, opEntryKey(x), x.Source)
+		}
+		return nil
+	}
+	for _, x := range list {
+		if err := same(x); err != nil {
+			return nil, err
 		}
 	}
+	h.entriesMu.Lock()
+	for _, x := range h.entries {
+		if err := same(x); err != nil {
+			h.entriesMu.Unlock()
+			return nil, err
+		}
+	}
+	h.entriesMu.Unlock()
 	m := fileEntry(e)
 	b, _ := json.Marshal(opAddInput{Source: m.Source, ID: m.ID, Args: m.Args, WatchRoots: m.WatchRoots})
 	op.Entry, op.Input, op.Base, op.EntryIdentity = "managed:"+in.ID, string(b), "absent", entryIdentity(e)
