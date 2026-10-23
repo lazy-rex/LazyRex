@@ -167,7 +167,7 @@ func TestExpectRunArguments(t *testing.T) {
 func TestExpectRunRemovedEntry(t *testing.T) {
 	h := &Hub{}
 	pl := &Plugin{Name: "p", Desired: "stopped"} // pl.entry is nil: the entry was removed
-	err := h.startExpected(context.Background(), pl, false, &expectRun{Source: "src/p"}, &configEntry{}, &pluginRun{Source: "src/p"}, nil)
+	err := h.startExpected(context.Background(), pl, false, false, &expectRun{Source: "src/p"}, &configEntry{}, &pluginRun{Source: "src/p"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "refused: plugin p: its entry was removed during the start; nothing was retired or spawned") {
 		t.Fatalf("got %v", err)
 	}
