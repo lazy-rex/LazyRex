@@ -131,3 +131,7 @@ One line per item: what, its owner, and why it waits.
   child, so the intent stays unresolved. Owner: Hub Fixes. Waits: the fix (D-a: a `starting` state
   with a backoff timer, which must also attribute that exited child to its block) passes the
   lostexit series' line budget (lead-lostexit-r3).
+- `hub.agents` `session_id` does not follow a pane move: only an identity report writes
+  `identity_panes.session_id` (identity.go), so a moved agent pane shows its old session until its
+  next report. Owner: Hub Features. Waits: a Rex fact: does Rex send an event when a block moves to
+  another session?
