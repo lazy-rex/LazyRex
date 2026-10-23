@@ -959,7 +959,8 @@ func (h *Hub) failUnsentSpawns(ctx context.Context) error {
 var errSpawnMoved = errors.New("the spawn is no longer pending")
 
 // failSpawn stores a failure. It changes s, emits the event and reports the change only after the
-// update is stored.
+// update is stored. It fires "workers" only: a write fires "agents" only when it changes what
+// agentsList returns, and agentsList reads no spawns row.
 func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) error {
 	// The agent ID stays retired: join refuses an agent whose spawn failed.
 	res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status IN ('prepared', 'sending')`, why, s.ID)
