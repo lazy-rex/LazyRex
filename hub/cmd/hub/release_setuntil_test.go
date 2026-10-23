@@ -267,7 +267,8 @@ func TestReleaseSetLabProfiles(t *testing.T) {
 	}
 }
 
-// TestReleaseSetLabFileParses: the set file of the lab test parses, and it has an until item.
+// TestReleaseSetLabFileParses: the set file of the lab test parses, it has until items, and a
+// probe names the seed pane.
 func TestReleaseSetLabFileParses(t *testing.T) {
 	set, err := parseSet(setLabFile(t))
 	if err != nil {
@@ -281,8 +282,21 @@ func TestReleaseSetLabFileParses(t *testing.T) {
 			}
 		}
 	}
-	if n != 2 {
-		t.Fatalf("%d until items, want 2 (seed and probe)", n)
+	if n != 3 {
+		t.Fatalf("%d until items, want 3 (Messaging seed and probe, Templates seed)", n)
+	}
+	seedRefs := 0
+	for _, it := range set.Plugins[2].Probe {
+		raw := string(it.Args)
+		for _, x := range it.Expect {
+			raw += string(x.Value)
+		}
+		// setBytes escapes < and > (the tool fills the decoded strings).
+		raw = strings.NewReplacer(`\u003c`, "<", `\u003e`, ">").Replace(raw)
+		seedRefs += strings.Count(raw, relSeedSession) + strings.Count(raw, relSeedBlock)
+	}
+	if seedRefs != 4 {
+		t.Fatalf("the Templates probes name the seed pane %d times, want 4", seedRefs)
 	}
 }
 
@@ -382,6 +396,37 @@ func TestReleaseSetBatchPane(t *testing.T) {
 	} {
 		if _, err := batchPaneIDs(c.session, c.blocks); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%q %q: %v, want %q", c.session, c.blocks, err, c.want)
+		}
+	}
+}
+
+// The review of the Templates path (codex-26): <SESSION_ID> and <BLOCK_ID> are always the current
+// pane; <SEED_SESSION_ID> and <SEED_BLOCK_ID> are the pane of the plugin's seed action batch, and
+// an item that names them before that batch is refused.
+func TestReleaseSetSeedPlaceholders(t *testing.T) {
+	h := &rehearsal{lab: "/lab", set: &relSetState{}}
+	item := []byte(`{"session_id":"<SEED_SESSION_ID>","panes":{"<SEED_BLOCK_ID>":"skip"},"now":"<SESSION_ID>/<BLOCK_ID>"}`)
+	for _, raw := range [][]byte{item, []byte(`{"panes":{"<SEED_BLOCK_ID>":"skip"}}`)} {
+		if _, err := fillPlaceholders(raw, h.placeholders("templates", "session:seed", "block:seed")); err == nil || !strings.Contains(err.Error(), "no seed action batch") {
+			t.Fatalf("before the seed: %s: %v", raw, err)
+		}
+	}
+	h.set.recordSeed("templates", "session:seed", "block:seed")
+	got, err := fillPlaceholders(item, h.placeholders("templates", "session:probe", "block:probe"))
+	if want := `{"now":"session:probe/block:probe","panes":{"block:seed":"skip"},"session_id":"session:seed"}`; err != nil || string(got) != want {
+		t.Fatalf("a probe: %s %v, want %s", got, err, want)
+	}
+	expect := []relSetExpect{{Pointer: "/runs/0/session_id", Value: json.RawMessage(`"<SEED_SESSION_ID>"`)}}
+	if err := checkFilled([]byte(`{"runs":[{"session_id":"session:seed"}]}`), expect, h.placeholders("templates", "session:probe", "block:probe")); err != nil {
+		t.Fatalf("the seed session in an expect: %v", err)
+	}
+	// Another plugin, and a batch with no plugin (a chunking probe), have no seed values.
+	for _, plugin := range []string{"tunnels", ""} {
+		if _, err := fillPlaceholders(item, h.placeholders(plugin, "session:x", "block:x")); err == nil || !strings.Contains(err.Error(), "no seed action batch") {
+			t.Errorf("%q: %v", plugin, err)
+		}
+		if err := checkFilled([]byte(`{"runs":[{"session_id":"session:seed"}]}`), expect, h.placeholders(plugin, "session:x", "block:x")); err == nil {
+			t.Errorf("%q: an expect with a seed placeholder passed", plugin)
 		}
 	}
 }

@@ -23,6 +23,9 @@ const (
 	relPeerAgent = "relpeer"   // a second lab-only roster agent that never joins (<PEER>)
 	relLabInert  = "lab_inert" // the lab-only accessory profile (command true)
 	relLabAgent  = "lab_agent" // the lab-only agent profile (command true)
+
+	relSeedSession = "<SEED_SESSION_ID>" // the session of the plugin's seed action batch
+	relSeedBlock   = "<SEED_BLOCK_ID>"   // the block of the plugin's seed action batch
 )
 
 // relCallOut is the result of one call: the rex exit code and its output.
@@ -118,15 +121,29 @@ func fillPlaceholders(raw []byte, vals map[string]string) ([]byte, error) {
 	if err := e.Encode(filled); err != nil {
 		return nil, err
 	}
-	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
+	out := bytes.TrimSuffix(b.Bytes(), []byte("\n"))
+	// A seed placeholder without a value: the plugin has no recorded seed action batch.
+	for _, p := range []string{relSeedSession, relSeedBlock} {
+		if _, ok := vals[p]; !ok && bytes.Contains(out, []byte(p)) {
+			return nil, fmt.Errorf("%s has no value: no seed action batch of this plugin recorded it", p)
+		}
+	}
+	return out, nil
 }
 
-// agentBatch runs calls as the lab agent relSeedAgent from one new pane of the lab session: the
+// agentBatch runs calls as the lab agent relSeedAgent from the one pane of a new lab session: the
 // pane joins, runs each call with the rex CLI through the agent face, and ends. The tool writes the
 // args files only after it knows the pane's session and block (<SESSION_ID>, <BLOCK_ID>), and the
-// pane waits for them. After the batch the tool closes the pane and waits until the hub has no
-// live binding of the agent. The next batch rebinds the agent to its own pane before the join.
-func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, error) {
+// pane waits for them. The seed batch of plugin records them as <SEED_SESSION_ID> and
+// <SEED_BLOCK_ID> before it fills its args. After the batch the tool closes the pane, waits until
+// the hub has no live binding of the agent, and destroys the session. The next batch rebinds the
+// agent to its own pane before the join. A batch with no plugin (a chunking probe) has the name
+// phase.
+func (h *rehearsal) agentBatch(plugin, phase string, calls []relSetItem) ([]relCallOut, error) {
+	name := phase
+	if plugin != "" {
+		name = plugin + "-" + phase
+	}
 	var client string
 	if err := h.withLab(func(lr *releaser) error {
 		hub, err := lr.currentHub()
@@ -169,7 +186,10 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 			return nil, relFail("the agent pane %s: rebinding %s from %s: %v", name, relSeedAgent, bound, err)
 		}
 	}
-	vals := h.placeholders(session, block)
+	if plugin != "" && phase == "seed" {
+		h.set.recordSeed(plugin, session, block)
+	}
+	vals := h.placeholders(plugin, session, block)
 	for i, c := range calls {
 		args := c.Args
 		if len(args) == 0 {
@@ -215,9 +235,25 @@ func readCode(p string) int {
 	return n
 }
 
-// placeholders are the values of the lab placeholders of the set file.
-func (h *rehearsal) placeholders(session, block string) map[string]string {
-	return map[string]string{"<LAB>": h.lab, "<SELF>": relSeedAgent, "<PEER>": relPeerAgent, "<SESSION_ID>": session, "<BLOCK_ID>": block}
+// placeholders are the values of the lab placeholders of the set file for an item of plugin in the
+// pane session and block. The seed placeholders have a value only after the plugin's seed action
+// batch recorded them.
+func (h *rehearsal) placeholders(plugin, session, block string) map[string]string {
+	m := map[string]string{"<LAB>": h.lab, "<SELF>": relSeedAgent, "<PEER>": relPeerAgent, "<SESSION_ID>": session, "<BLOCK_ID>": block}
+	if v, ok := h.set.seeds[plugin]; ok && plugin != "" {
+		m[relSeedSession], m[relSeedBlock] = v[0], v[1]
+	}
+	return m
+}
+
+// recordSeed records the pane of plugin's seed action batch (<SEED_SESSION_ID>, <SEED_BLOCK_ID>).
+// The probes replay keyed seed actions, which must name the seed's session and block again, after
+// the tool destroyed that session.
+func (s *relSetState) recordSeed(plugin, session, block string) {
+	if s.seeds == nil {
+		s.seeds = map[string][2]string{}
+	}
+	s.seeds[plugin] = [2]string{session, block}
 }
 
 // closePane closes a lab pane and waits (15 s) until the lab hub.db has no binding of agent ("":

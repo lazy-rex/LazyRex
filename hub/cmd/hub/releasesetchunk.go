@@ -147,7 +147,7 @@ func (h *rehearsal) chunkProbe(when, digest string) error {
 	defer mark.f.Close()
 	key := "rehearsal-chunk-" + strings.ReplaceAll(when, " ", "-")
 	save := json.RawMessage(fmt.Sprintf(`{"kb":%d,"key":%q}`, relChunkKB, key))
-	outs, err := h.agentBatch("chunk-"+strings.ReplaceAll(when, " ", "-"), []relSetItem{
+	outs, err := h.agentBatch("", "chunk-"+strings.ReplaceAll(when, " ", "-"), []relSetItem{
 		{Kind: "action", Action: "sp.count"}, {Kind: "action", Action: "sp.save", Args: save},
 		{Kind: "action", Action: "sp.save", Args: save}, {Kind: "action", Action: "sp.count"}})
 	probeErr := err

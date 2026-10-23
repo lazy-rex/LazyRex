@@ -11,7 +11,7 @@ import (
 )
 
 // The release-set lab test: a hub release from the live hub commit to an H with tests/sdk-parts,
-// then a set of two real 4.2 plugin steps in live order (Tunnels, Messaging) with lab-made seeds.
+// then a set of three real 4.2 plugin steps in live order (Tunnels, Messaging, Templates) with lab-made seeds.
 // Lab only: RELEASE_LAB=1. It needs the network (GitHub), go and rex, and runs for many minutes.
 const (
 	setLabOld = "25f8c7db5b41d7024db050d434204e1444228404" // the live hub commit on 2026-10-22
@@ -23,10 +23,17 @@ var setLabPlugins = []struct {
 }{
 	{"tunnels", "github:lazy-rex/Tunnels", "b41fa4f64ca7b44566e2e5d595c276357b841555", "78658739c0b9e0b769c50e49d8e596e85c898a5d"},
 	{"messaging", "github:lazy-rex/Messaging", "66a31533fd6c047ef60e23eb59e47cdce532a9aa", "a2cc4483652c1be27580bfa0f147d45a80c351d3"},
+	{"templates", "github:lazy-rex/Templates", "59b40b539ea863ea87def91055f036346341f724", "3d93b3980786bf486432c09d23431a718d96ecf3"},
 }
+
+// setLabTemplates are the seed and probe items of the 4.2 Templates kit entry (owner review
+// pending): the seed saves a template of its own fresh pane and starts it to a blocked run; the
+// probes replay the keyed seed actions with the seed placeholders, and expect the seed session.
+const setLabTemplates = `{"seed":[{"action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","panes":{"<BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"kind":"action"},{"action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","key":"seed-start-1"},"kind":"action"},{"kind":"action","action":"templates.runs","args":{},"until":[{"pointer":"/runs/0/status","value":"blocked"}]},{"action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"kind":"action"}],"probe":[{"kind":"action","action":"templates.list","args":{},"expect":[{"pointer":"/templates/0/name","value":"lab-seed"},{"pointer":"/templates/0/tabs","value":1}]},{"kind":"action","action":"templates.get","args":{"template":"lab-seed"},"expect":[{"pointer":"/template/name","value":"lab-seed"},{"pointer":"/template/tabs/0/layout/launch/profile","value":"lab-inert-missing"}]},{"kind":"action","action":"templates.runs","args":{},"expect":[{"pointer":"/runs/0/id","value":"1"},{"pointer":"/runs/0/template","value":"lab-seed"},{"pointer":"/runs/0/status","value":"dismissed"},{"pointer":"/runs/0/tabs","value":1},{"pointer":"/runs/0/next_tab","value":1},{"pointer":"/runs/0/session_id","value":"<SEED_SESSION_ID>"}]},{"kind":"action","action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","panes":{"<SEED_BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"expect":[{"pointer":"/name","value":"lab-seed"}]},{"kind":"action","action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"expect":[{"pointer":"/run_id","value":"1"},{"pointer":"/status","value":"dismissed"}]},{"kind":"action","action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","key":"seed-start-1"},"expect":[{"pointer":"/run_id","value":"1"}]}]}`
 
 // setLabFile is the set file of the test: Tunnels with no seed and a list probe; Messaging with one
 // message to the seed agent itself, and action and sql probes, and an until item in the seed and the probes.
+// Templates with the items of its kit entry (setLabTemplates).
 func setLabFile(t *testing.T) []byte {
 	act := func(action string, args map[string]any, expect ...map[string]any) map[string]any {
 		it := map[string]any{"kind": "action", "action": action, "args": args}
@@ -47,6 +54,10 @@ func setLabFile(t *testing.T) []byte {
 	// the seed message, in the seed and in every probe run.
 	history := act("messaging.history", map[string]any{"thread": "<SELF>", "limit": 1}, val("/thread", "<SELF>"))
 	history["until"] = []any{val("/messages/0/body", "lab seed one")}
+	var tpl struct{ Seed, Probe []any }
+	if err := json.Unmarshal([]byte(setLabTemplates), &tpl); err != nil {
+		t.Fatal(err)
+	}
 	return setBytes(
 		entry(0, []any{}, []any{act("tunnels.list", map[string]any{}, empty("/forwards"), empty("/pending"), empty("/cleanups"))}, map[string]any{}),
 		entry(1, []any{act("messaging.send", send), history}, []any{
@@ -55,6 +66,7 @@ func setLabFile(t *testing.T) []byte {
 			act("messaging.send", send, val("/key", "lab-seed-send-1")),
 			map[string]any{"kind": "sql", "sql": "SELECT body, sender FROM messages ORDER BY seq", "rows": []any{[]any{"lab seed one", relSeedAgent}}},
 		}, map[string]any{"clock": []any{"one"}, "messages": []any{"id"}}),
+		entry(2, tpl.Seed, tpl.Probe, map[string]any{}),
 	)
 }
 
@@ -85,6 +97,11 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 	// The until item ran through the pane loop: the tool logged its attempts.
 	if n := strings.Count(string(mustReadFile(logp)), "(messaging.history): until attempt 1: exit 0"); n < 4 {
 		t.Errorf("the log has %d until attempts of messaging.history, want the seed and 3 probe runs or more", n)
+	}
+	// The Templates seed waited for its blocked run, and the probes replayed the seed actions with
+	// the seed placeholders (a replay with other args or a refused seed placeholder fails the run).
+	if !strings.Contains(string(mustReadFile(logp)), "(templates.runs): until attempt 1: exit 0") {
+		t.Errorf("the log has no until attempt of templates.runs")
 	}
 	var rec relRehearsal
 	if err := json.Unmarshal(mustReadFile(filepath.Join(run, relRehearsalFile)), &rec); err != nil {
@@ -140,12 +157,13 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 	got := strings.Join(phases, "|")
 	for _, want := range []string{"seed", "seeded", "probes on FROM", "tunnels fault failed-forward rollback", "tunnels fault failed-forward probes on FROM", "tunnels fault interrupted-replace rerun", "tunnels fault interrupted-replace rollback", "tunnels fault interrupted-replace probes on FROM", "tunnels backup", "tunnels replace", "tunnels verify", "tunnels rerun",
 		"tunnels probes on TO", "messaging rerun", "messaging probes on TO", "chunking probe", "messaging rollback",
+		"templates probes on TO", "templates rollback", "templates probes after the rollback",
 		"messaging probes after the rollback", "tunnels rollback", "tunnels probes after the rollback"} {
 		if !strings.Contains("|"+got+"|", "|"+want+"|") {
 			t.Errorf("record: no check point %q in %s", want, got)
 		}
 	}
-	if strings.Index(got, "messaging rollback") > strings.Index(got, "tunnels rollback") {
+	if strings.Index(got, "templates rollback") > strings.Index(got, "messaging rollback") || strings.Index(got, "messaging rollback") > strings.Index(got, "tunnels rollback") {
 		t.Errorf("record: the rollback is not newest first: %s", got)
 	}
 	if _, err := os.Stat(lab); err == nil {

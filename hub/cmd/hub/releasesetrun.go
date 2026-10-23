@@ -22,12 +22,13 @@ import (
 // relSetState is the set of one rehearsal and what it found.
 type relSetState struct {
 	file   *relSetFile
-	raw    []byte              // the set file bytes (set.json in the live run)
-	ref    map[string]*relSnap // the reference snapshot of each plugin
-	runs   map[string]string   // the lab plugin run of each plugin
-	checks []relSetCheck       // the record of every data check and probe
-	steps  []relSetStep        // each plugin step as its lab freeze saw it, in set order
-	faults []relSetFault       // the fault runs (evidence of recovery only)
+	raw    []byte               // the set file bytes (set.json in the live run)
+	ref    map[string]*relSnap  // the reference snapshot of each plugin
+	runs   map[string]string    // the lab plugin run of each plugin
+	checks []relSetCheck        // the record of every data check and probe
+	steps  []relSetStep         // each plugin step as its lab freeze saw it, in set order
+	faults []relSetFault        // the fault runs (evidence of recovery only)
+	seeds  map[string][2]string // <SEED_SESSION_ID> and <SEED_BLOCK_ID>: the pane of each plugin's seed action batch
 }
 
 // relSetCheck is one record line: a phase, a plugin and what passed there.
@@ -288,7 +289,7 @@ func (h *rehearsal) runItems(e *relSetEntry, items []relSetItem, phase string, c
 		}
 	}
 	if len(acts) > 0 {
-		outs, err := h.agentBatch(e.Plugin+"-"+phase, acts)
+		outs, err := h.agentBatch(e.Plugin, phase, acts)
 		if err != nil {
 			return err
 		}
@@ -524,7 +525,7 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if len(input) == 0 {
 		input = json.RawMessage("{}")
 	}
-	filled, err := fillPlaceholders(input, h.placeholders(session, block))
+	filled, err := fillPlaceholders(input, h.placeholders(e.Plugin, session, block))
 	if err != nil {
 		return relFail("the input of the view action %s: %v", it.Action, err)
 	}
@@ -535,7 +536,7 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 		return err
 	}
 	if check {
-		if err := checkFilled(result, it.Expect, h.placeholders(session, block)); err != nil {
+		if err := checkFilled(result, it.Expect, h.placeholders(e.Plugin, session, block)); err != nil {
 			return err
 		}
 	}

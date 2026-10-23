@@ -135,7 +135,16 @@ replaces them in the lab only. The reviewed bytes keep the placeholders.
 | `<LAB>` | The lab directory. |
 | `<SELF>` | `relseed`, the lab agent that runs the action items. |
 | `<PEER>` | `relpeer`, a second lab agent that never joins. |
-| `<SESSION_ID>`, `<BLOCK_ID>` | The session and block of the lab pane of the batch. Each batch gets a new lab session with one tab and one pane. The pane directory is the batch directory under `<LAB>`, and the pane reports it (OSC 7) before the first call. The tool destroys the session after the batch. |
+| `<SESSION_ID>`, `<BLOCK_ID>` | The session and block of the current pane: the pane of the agent batch for an action item, the view pane for a view item. |
+| `<SEED_SESSION_ID>`, `<SEED_BLOCK_ID>` | The session and block of the plugin's seed action batch. The seed batch records them before it fills its own args. An item that names them before that batch, or in a plugin with no seed action item, is refused. |
+
+Each agent batch runs in a new lab session with one tab and one pane. The pane directory is the
+batch directory under `<LAB>`, and the pane reports it (OSC 7) before the first call. The tool
+destroys the session after the batch.
+
+So a probe that replays a keyed seed action must name the seed pane with the seed placeholders.
+Then the args are the same as in the seed. The seed session no longer exists in the probe, so the
+replay must return the recorded result. A new operation on the seed session fails.
 
 If two member names become one name after the replacement, the tool refuses the item.
 
@@ -215,8 +224,10 @@ if one of these is not true:
 
 ## Proof limits
 
-- The lab test `TestReleaseRehearseLabSet` uses two plugins (Tunnels, then Messaging) with action
-  and sql items. It does not run a view item. The final 4.2 rehearsal on the Mac must prove the view
+- The lab test `TestReleaseRehearseLabSet` uses three plugins (Tunnels, Messaging, then Templates)
+  with action and sql items. Templates uses the items of its 4.2 kit entry: its probes replay keyed
+  seed actions with the seed placeholders, after the seed session is destroyed. The lab test does
+  not run a view item. The final 4.2 rehearsal on the Mac must prove the view
   path of Profiles.
 - The lab test proves lab-to-live equivalence by a second rehearsal in another lab directory (lab
   B). Each step of lab B must equal the step of the first record under the gate's own comparison,
