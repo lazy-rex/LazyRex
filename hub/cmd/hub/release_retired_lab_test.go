@@ -10,11 +10,12 @@ import (
 	"testing"
 )
 
-// The retired schema in a real rehearsal (lead-hubdrop): OLD is setLabOld, which has records, ops,
-// sql_returns, sql_notice_plugins and ui_tabs.rev_known; H is RELEASE_LAB_RETIRED_H, a pushed
+// The retired schema in a real rehearsal (lead-hubdrop). release freeze needs H on origin/main, so
+// this runs once a hub with retiredSchema drops is on main (2d). OLD is setLabOld, which has
+// records, ops, sql_returns, sql_notice_plugins and ui_tabs.rev_known; H is RELEASE_LAB_RETIRED_H, a pushed
 // commit whose hub drops them through retiredSchema. RELEASE_LAB_RETIRED_WANT is "pass", or a text
 // that the failed rehearsal must contain (a mutant H). An OLD binary, which has no export, must
-// read as absent.
+// read as absent (TestReleaseRetiredExportOldLab).
 func TestReleaseRehearseLabRetired(t *testing.T) {
 	h, want := os.Getenv("RELEASE_LAB_RETIRED_H"), os.Getenv("RELEASE_LAB_RETIRED_WANT")
 	if os.Getenv("RELEASE_LAB") != "1" || h == "" || want == "" {
@@ -60,8 +61,14 @@ func TestReleaseRehearseLabRetired(t *testing.T) {
 		}
 	}
 	t.Logf("retired schema of %s: %+v; tier reasons %q", h, r, rec.TierReasons)
+}
 
-	// A real older hub binary: OLD built from setLabOld has no export.
+// A real older hub binary: OLD built from setLabOld has no export, so it reads as absent (exit 2,
+// the unknown-flag line first). It runs without a rehearsal.
+func TestReleaseRetiredExportOldLab(t *testing.T) {
+	if os.Getenv("RELEASE_LAB") != "1" {
+		t.Skip("set RELEASE_LAB=1 to build the OLD hub of the set lab")
+	}
 	src := t.TempDir()
 	if out, err := exec.Command("sh", "-c", fmt.Sprintf("git -C ../../.. archive %s hub | tar -x -C %s", setLabOld, src)).CombinedOutput(); err != nil {
 		t.Fatalf("archive %s: %v\n%s", setLabOld, err, out)
