@@ -536,11 +536,23 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 		reserved := h.reservedTabs(ctx, plugin)
 		// A view in a session that is not its tab's target closes (closeMoved) before any group
 		// opens a view: its tab opens again in its target session once its pane is closed. The
-		// target can be another group, so a failed close blocks the tab in every group.
+		// target can be another group, so a failed close blocks the tab in every group. A view's
+		// group is its own session while another tab targets that session, so the check also
+		// compares the target of the view's own tab.
+		target := map[string]string{} // tab key -> its target session
+		for _, g := range groups {
+			for _, t := range g.tabs {
+				target[t.Key] = g.sess
+			}
+		}
+		moved := func(v *view, sess string) bool {
+			s, ok := target[v.Tab]
+			return v.Session != "" && (v.Session != sess || ok && v.Session != s)
+		}
 		movedTab := map[string]bool{} // tabs whose moved view's pane is not closed yet: no new view
 		for _, g := range groups {
 			for _, v := range g.views {
-				if v.Session != "" && v.Session != g.sess && !h.closeMoved(ctx, v) {
+				if moved(v, g.sess) && !h.closeMoved(ctx, v) {
 					movedTab[v.Tab] = true
 					h.retryLater() // a failed close needs no other event to go on
 				}
@@ -561,7 +573,7 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone.
 			byTab := map[string]*view{}
 			for _, v := range views {
-				if v.Session != "" && v.Session != sess {
+				if moved(v, sess) {
 					continue // a moved view: closed above
 				}
 				if r := reserved[v.Tab]; r != nil {
