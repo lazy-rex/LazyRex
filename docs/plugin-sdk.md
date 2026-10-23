@@ -86,8 +86,9 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   }
   ```
 
-  - A new database (`user_version` 0 and no table of the plugin) runs the base and the later
-    entries, in one transaction.
+  - A new database (`user_version` 0 and no schema object of the plugin: a table, index, view or
+    trigger; SQLite's `sqlite_*` objects and the hub's `lazyrex_*` objects do not count,
+    docs/sql.md) runs the base and the later entries, in one transaction.
   - A database at version N or above runs only the entries above its version.
   - A database at a version from 1 to N - 1, or at version 0 with tables, refuses to start, and
     nothing changes. The base never runs over a part of the old steps or over data.
