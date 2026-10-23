@@ -2,10 +2,12 @@ package main
 
 // Prompt pushes (docs/hub.md "Prompt pushes"). Each registration of a plugin with the prompts grant
 // has one sender. The sender sends the CURRENT prompt state of one dirty agent at a time, with that
-// agent's rev, and has at most one call outstanding. It takes the dirty agents in rev order, so a
-// plugin gets the close of a pane's old owner before the open of its new owner. A failed or
-// unanswered call leaves the agent dirty: the next call sends the state current then. So a lost
-// reply never hides a close, and no event history is kept.
+// agent's rev. The hub waits for at most one call at a time, but Rex can still deliver a call after
+// the hub stopped waiting (rex-protocol.md: concurrent requests are not delivered in order). So a
+// retry and the earlier call can both arrive, in either order, and the plugin's apply rule ignores
+// the one whose rev is not above the applied rev. The sender takes the dirty agents in rev order. A
+// failed or unanswered call leaves the agent dirty: the next call sends the state current then. So
+// a lost reply never hides a close, and no event history is kept.
 
 import (
 	"context"
@@ -133,10 +135,13 @@ func (h *Hub) promptSendLoop(s *promptSender) {
 				h.mu.Unlock()
 				return
 			}
-			// The pending agent whose last change is oldest (the lowest rev) goes first, so this
-			// consumer receives changes in rev order: a close of one owner before the open of the
-			// next (one prompt for each pane). A failed push keeps the agent pending and ends the
-			// pass, so no later change of this consumer passes it.
+			// The pending agent whose last change is oldest (the lowest rev) goes first. A failed
+			// push keeps the agent pending and ends the pass. The plugin's apply rule keeps each
+			// agent's own rev order, so an agent's final state is never stale. Across agents a late
+			// call can apply out of rev order: A1 times out, B2 goes first, and the late A1 applies
+			// before A3. An owner transfer stays safe: a superseded or aliased old owner cannot open
+			// another prompt, and the plugin keys prompts by agent, so an overlap shows two prompts
+			// for a short time and never loses one.
 			agent := ""
 			for a := range s.dirty {
 				if agent == "" || h.prompts.agentRev[a] < h.prompts.agentRev[agent] ||

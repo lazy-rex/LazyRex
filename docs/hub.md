@@ -1999,12 +1999,15 @@ Delivery (`hub/cmd/hub/promptpush.go`):
 
 - Each registration of the plugin (instance and client) has one sender with a set of dirty agents.
   A prompt change marks the agent dirty for every sender.
-- The sender sends one agent at a time, with the state current at the send. It has at most one call
-  outstanding (5 s, with `timeout_ms` 3000).
+- The sender sends one agent at a time, with the state current at the send. The hub waits for at
+  most one call at a time (5 s, with `timeout_ms` 3000). Rex can still deliver a call after the hub
+  stopped waiting, so a retry and the earlier call can both arrive, in either order (rex-protocol.md:
+  concurrent requests are not delivered in order). The plugin's apply rule ignores the one whose rev
+  is not above the applied rev.
 - A failed call, a timeout or a lost reply leaves the agent dirty. The next call sends the state
   current then, after 1 s, 5 s, then every 30 s. A change during the wait only marks its agent dirty.
 - So a lost reply never hides a close, and the hub keeps no event history. A plugin that never
-  answers costs one goroutine and one call at a time.
+  answers costs one goroutine, and the hub waits for one call at a time.
 - A new registration starts with every agent dirty that had a prompt in this hub run. The sender of
   the old registration ends after its outstanding call, and its result changes nothing.
 
