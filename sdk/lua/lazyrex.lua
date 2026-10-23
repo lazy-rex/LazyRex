@@ -678,7 +678,8 @@ local function part(s) s = tostring(s); return #s .. ':' .. s end
 -- does not raise: invalid JSON gives nil and an error text, and JSON null gives nil alone (hub lead
 -- lab, Rex 0.0.1792158932-g88fd41). So it checks the error text, not the value, and fails with
 -- internal: the plugin wrote the text. The message quotes at most 80 bytes, cut at a UTF-8 character
--- boundary, so the error reply stays valid UTF-8.
+-- boundary: the cut does not split a character. It does not check or repair text that is already
+-- invalid UTF-8.
 local function json_decode(text)
   if type(text) ~= 'string' then fail('internal', 'invalid JSON: app.json.decode takes text, not a ' .. type(text)) end
   local value, err = rex.json.decode(text)
