@@ -951,7 +951,7 @@ function App:close() return hub('hub.test.app.close', {name = self.name}) end
 -- restart_hub stops the hub and starts it again on the same lab server and state (hub:restart()
 -- in a test file). crash = true kills it (SIGKILL); else it stops (SIGTERM). `lazyrex-hub test` does
 -- the restart when it reads the request line; the runner waits until a new hub process is ready:
--- every plugin registered and the agent face lists its exports. Returns the new status.
+-- every plugin registered (or stopped) and the agent face lists its exports. Returns the new status.
 -- The request goes out before any hub request: the hub can hold a call (a window hold), and then
 -- Rex delivers it no other request until that call times out. The new hub is the connected
 -- lazyrex-hub client with another client ID (a Rex client ID is not reused).
@@ -966,7 +966,8 @@ function H.restart_hub(opts)
     local st = perform(id, 'hub.test.status', {})
     if type(st) ~= 'table' or type(st.pid) ~= 'number' then return nil end
     for _, p in pairs(st.plugins or {}) do
-      if not p.registered or #(p.face or {}) < #(p.exports or {}) then return nil end
+      -- A stopped plugin (desired stopped: a disable) stays stopped at a hub start; it is ready.
+      if p.state ~= 'stopped' and (not p.registered or #(p.face or {}) < #(p.exports or {})) then return nil end
     end
     return {id = id, status = st}
   end, 60)

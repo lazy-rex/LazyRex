@@ -464,7 +464,7 @@ session that only the runner made gives `session.view: conflict: stream is not a
 
 `hub:restart()` stops the hub (SIGTERM to its process group) and starts it again with the same
 config, lab server and state. `hub:restart({crash = true})` kills it (SIGKILL) instead, as a crash
-would. The call returns when a new hub process is ready: every plugin is registered and the agent
+would. The call returns when a new hub process is ready: every plugin is registered (a stopped plugin, desired stopped, counts as ready) and the agent
 face lists its exports. It returns the new `hub.test.status` (with `pid`).
 
 `hub.test.status` gives each plugin record `registered`, `client_id`, `exports`, `face`, `state`
