@@ -13,7 +13,8 @@
 //	  "LIVE p=<printed> | <Connecting… or tree> alt=<bool> <cols>x<rows> r=<redraws>" and the
 //	  last 10 key messages. With -box N, the live region has N more rows "B<nn>|" + 60 cells + "|":
 //	  a frame of several rows, each wider than 50 columns. With -trace, Bubble Tea logs each
-//	  write of its renderer to FILE (TEA_TRACE).
+//	  write of its renderer to FILE (TEA_TRACE). With -park, the view puts the (visible) cursor on
+//	  the first row of the live region, so the renderer starts each frame from there.
 //	teaprobe raw
 //	  Puts the terminal in raw mode and prints the bytes of each read in hex. Ctrl+C quits.
 //
@@ -40,6 +41,7 @@ type model struct {
 	alt, ready   bool
 	mode         string
 	box          int
+	park         bool
 	w, h, redraw int
 	printed      int
 	keys         []string
@@ -101,6 +103,9 @@ func (m *model) View() tea.View {
 	}
 	v := tea.NewView(s)
 	v.AltScreen = m.alt
+	if m.park && !m.alt {
+		v.Cursor = tea.NewCursor(0, 0) // the renderer leaves the cursor on the first frame row
+	}
 	return v
 }
 
@@ -155,6 +160,7 @@ func main() {
 	bytesFile := fs.String("bytes", "", "append the input bytes to this file in hex")
 	box := fs.Int("box", 0, "the number of wide rows in the live region")
 	trace := fs.String("trace", "", "the Bubble Tea trace file (TEA_TRACE)")
+	park := fs.Bool("park", false, "keep the cursor on the first row of the live region")
 	if len(os.Args) > 1 {
 		fs.Parse(os.Args[2:])
 	}
@@ -177,7 +183,7 @@ func main() {
 		defer term.Restore(os.Stdin.Fd(), old)
 		opts = append(opts, tea.WithInput(tee{os.Stdin, log}))
 	}
-	p := tea.NewProgram(&model{mode: *mode, box: *box}, opts...)
+	p := tea.NewProgram(&model{mode: *mode, box: *box, park: *park}, opts...)
 	go func() { time.Sleep(*delay); p.Send(firstTree{}) }()
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

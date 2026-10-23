@@ -310,9 +310,16 @@ func TestTeaProbeA2Width(t *testing.T) {
 // A4: a live frame of several rows, each wider than the narrow width, through width changes
 // (coord-tvglitch). Each step notes how many copies of each frame row the capture holds; the
 // trace file has each write of the renderer.
+// With -park, the cursor stays on the first frame row.
 func TestTeaProbeA4FrameWidth(t *testing.T) {
+	for _, park := range []bool{false, true} {
+		t.Run(fmt.Sprintf("park=%v", park), func(t *testing.T) { a4FrameWidth(t, park) })
+	}
+}
+
+func a4FrameWidth(t *testing.T, park bool) {
 	trace := filepath.Join(os.TempDir(), fmt.Sprintf("teaprobe-trace-%d.log", time.Now().UnixNano()))
-	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline", "-box", "6", "-trace", trace)
+	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline", "-box", "6", "-trace", trace, fmt.Sprintf("-park=%v", park))
 	l.note("trace: %s", trace)
 	l.waitScreen("the first tree", func(s string) bool { return strings.Contains(s, "| tree alt=false") })
 	l.keys("p", "p", "p")
