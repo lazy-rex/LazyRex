@@ -49,6 +49,7 @@ func newLabRenderer(t *testing.T, h *Hub, release string) *labRenderer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { c.Close() }) // first, so it runs after every cleanup that uses c
 	var welcome struct {
 		Client struct {
 			ID string `json:"id"`

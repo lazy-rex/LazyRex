@@ -27,6 +27,7 @@ func pairLabHub(t *testing.T) *Hub {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { r.Close() }) // first, so it runs after every cleanup that uses r
 	h, _ := workerTestHub(t)
 	go func() {
 		for ev := range r.Events {
