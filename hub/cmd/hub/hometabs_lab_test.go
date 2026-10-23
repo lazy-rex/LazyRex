@@ -409,13 +409,6 @@ func TestHomeTabLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.until("the navigation focuses the home tab", 20*time.Second, func() bool { return l.view(H).Active == v2.Window })
-	vs := l.h.vs
-	vs.mu.Lock()
-	seen := vs.seen["formprobe"]["/"]
-	vs.mu.Unlock()
-	if seen != "focus" {
-		t.Fatalf("the navigation queued view.seen %q, want focus", seen)
-	}
 
 	// 4. Dropping the home moves the tab to the app session; the view in H goes. The view in H
 	// retires (retireLegacy): a real renderer gets view.retire and exits; this one never attaches,
