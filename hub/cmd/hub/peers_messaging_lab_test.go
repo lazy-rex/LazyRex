@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -21,20 +20,6 @@ func messagingLab(t *testing.T, dir, root string, serverArgs ...string) *startLa
 	}
 	s.args = append(s.args, "-sdk", filepath.Join(root, "sdk", "lua"))
 	return s
-}
-
-// addAgent adds an agent to the lab hub's roster (config "agents"), for opsAgent.
-func (s *startLab) addAgent(id string) {
-	s.t.Helper()
-	var c map[string]any
-	b, _ := os.ReadFile(s.cfg)
-	json.Unmarshal(b, &c)
-	agents, _ := c["agents"].([]any)
-	c["agents"] = append(agents, map[string]any{"id": id, "name": id})
-	b, _ = json.MarshalIndent(c, "", " ")
-	if err := os.WriteFile(s.cfg, b, 0o600); err != nil {
-		s.t.Fatal(err)
-	}
 }
 
 // agentID is the agent ID that hub.agents.resolve gives for name on s's hub.
@@ -103,14 +88,12 @@ func TestPeerMessagingLab(t *testing.T) {
 	a, b := messagingLab(t, dir, root), messagingLab(t, dir, root, "--extra-listen", tcp, "--allow-anonymous")
 	a.setPeer("a", "b", tcp)
 	b.setPeer("b", "a", a.l.server)
-	a.addAgent("x")
-	b.addAgent("y")
 	a.start()
 	b.start()
 	a.registered("messaging")
 	b.registered("messaging")
 	x, y := a.opsAgent("x"), b.opsAgent("y")
-	xID, yID := a.agentID("x"), b.agentID("y")
+	xID, yID := a.agentID("claude:x"), b.agentID("claude:y") // opsAgent reports conversation x (y) as kind claude
 
 	sent, err := a.agentDo(x, "messaging.send", map[string]any{"to": yID + "@b", "body": "hello from a", "key": "fed-1"})
 	if err != nil {
