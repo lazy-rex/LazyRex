@@ -29,11 +29,18 @@ func fetchTestRepo(t *testing.T) (*testRepo, string) {
 // the cleanup makes them writable first.
 func fetchTestHub(t *testing.T, r *testRepo) *Hub {
 	t.Helper()
-	h, _, _ := opsTestHub(t, "")
+	h, _ := fetchTestHubCalls(t, r)
+	return h
+}
+
+// fetchTestHubCalls is fetchTestHub with the recorder of its lifecycle calls.
+func fetchTestHubCalls(t *testing.T, r *testRepo) (*Hub, *opsCalls) {
+	t.Helper()
+	h, c, _ := opsTestHub(t, "")
 	h.pops.cmd = pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
 	state := h.cfg.State
 	t.Cleanup(func() { removeTree(state) })
-	return h
+	return h, c
 }
 
 // resolvedAdd admits an add of src and runs its resolving phase.
