@@ -910,6 +910,16 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 			}()
 		}
 	}
+	// render is an argument of the dispatcher: a covered read's handler never sees it. hub.sql.query
+	// keeps it (the SQL service reads the render ID).
+	if _, ok := args["render"]; ok && coveredReads[p.Action] != nil {
+		delete(args, "render")
+		b, err := json.Marshal(args)
+		if err != nil {
+			return nil, err
+		}
+		p.Args = b
+	}
 	pid := p.Requester.Principal.PID
 	if strings.HasPrefix(p.Action, "hub.test.") {
 		if h.test == nil {

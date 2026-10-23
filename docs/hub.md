@@ -212,9 +212,11 @@ tracked read of its tables. Built: `coveredReads` and `renderHubRead` in renderr
   `hub.plugins.log` give `plugins` (every entry, op phase and load change sends it). A render must
   not read `hub.plugins.tags` or `hub.plugins.log` with `refresh = true`: the load's end sends
   `plugins` and renders the view again, so each render would start the next load. Only a view
-  action passes `refresh = true`.
-- The plugin sends the open render ID as `render` with a covered call (the SDK does it). The call
-  then does not untrack the render. When the call returns without error, the hub adds its change
+  action passes `refresh = true`. `hub.digest` is a pure read: it adds no change name.
+- The plugin sends the open render ID as `render` with a covered call (the SDK does it). `render`
+  is an argument of the dispatcher: the dispatcher removes it from the arguments of a covered
+  read, so the read's handler never sees it (`hub.sql.query` keeps it). The call then does not
+  untrack the render. When the call returns without error, the hub adds its change
   names to the render's read set. An error, a closed or unknown ID, or an ID of another plugin or
   instance untracks, as for a query. A `hub.workers` read in which a Rex read failed (a pane's
   process or its program status) also untracks the render: the hub knows that the list is
