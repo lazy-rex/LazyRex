@@ -199,6 +199,9 @@ func (h *Hub) agentAnswer(ctx context.Context, p perform) {
 	log.Printf("agent %s from pid %d -> %v", p.Action, p.Requester.Principal.PID, err)
 }
 
+// forwardTimeoutMS is the timeout_ms of a hub.forward. The hub waits it + performMargin (12 s).
+const forwardTimeoutMS = 10000
+
 func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
 	if agentHubActions[p.Action] {
 		return h.dispatch(ctx, p)
@@ -224,8 +227,15 @@ func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
 	}
 	h.beginForward(client, p.Requester.Principal.PID)
 	defer h.endForward(client, p.Requester.Principal.PID)
-	raw, err := h.performPlugin(ctx, client, "hub.forward",
-		map[string]any{"action": p.Action, "args": args, "requester_pid": p.Requester.Principal.PID}, 10000)
+	fctx, cancel := performCtx(ctx, forwardTimeoutMS)
+	defer cancel()
+	raw, err := h.performPlugin(fctx, client, "hub.forward",
+		map[string]any{"action": p.Action, "args": args, "requester_pid": p.Requester.Principal.PID}, forwardTimeoutMS)
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Rex can still deliver the forward, and the plugin can still run the action. Its
+		// on_behalf calls then need another open forward of this agent to this plugin client.
+		return nil, unknownOutcome(ctx, "the plugin", forwardTimeoutMS)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -233,9 +243,12 @@ func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
 }
 
 // A plugin that handles a forwarded agent call can act for that agent with on_behalf = the
-// forward's requester_pid (the coordinator, 2026-10-19). The hub accepts it only while that
-// forward to that plugin client is in flight, so a plugin cannot choose an agent by itself. This
-// serves synchronous work only: work that runs after the forward returns needs another proof.
+// forward's requester_pid (the coordinator, 2026-10-19). The hub accepts it only while any forward
+// from that agent to that plugin client is in flight, so a plugin cannot choose an agent by itself.
+// The count is for each agent and plugin client, not for each forward: a late delivery of a forward
+// that the hub stopped waiting for can act inside another open window of the same agent and
+// plugin. This serves synchronous work only: work that runs after the forward returns needs
+// another proof.
 func (h *Hub) beginForward(client string, pid int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -213,6 +213,106 @@ func TestCloseRequestAfterACut(t *testing.T) {
 	}
 }
 
+// forwardHub is a hub with plugin x (client c) that exports x.do, on a performRex whose hub.forward
+// for args.action "x.do" waits until release gets that call's tag (args.args.tag), then fails.
+func forwardHub(t *testing.T) (*Hub, map[string]chan struct{}) {
+	t.Helper()
+	h := releaseTestHub(t)
+	h.plugins = map[string]*Plugin{"x": {ClientID: "c", Exports: []string{"x.do"}}}
+	h.agentForward = map[string]string{"x.do": "c"}
+	release := map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{})}
+	wait := neverAnswer(t)
+	fr := newPerformRex(t, func(c performCall) (any, string) {
+		var a struct {
+			Args struct{ Tag string }
+		}
+		json.Unmarshal(c.Args, &a)
+		if ch := release[a.Args.Tag]; ch != nil {
+			select {
+			case <-ch:
+				return nil, "failed"
+			case <-time.After(time.Minute):
+			}
+		}
+		return wait()
+	})
+	h.rex = fr.dial(t)
+	return h, release
+}
+
+// forward runs agentDispatch for x.do from pid 7 with tag, in a goroutine.
+func forward(h *Hub, tag string) chan error {
+	var p perform
+	p.Action = "x.do"
+	p.Args = json.RawMessage(`{"tag":"` + tag + `"}`)
+	p.Requester.Principal.PID = 7
+	done := make(chan error, 1)
+	go func() { _, err := h.agentDispatch(context.Background(), p); done <- err }()
+	return done
+}
+
+func endOf(t *testing.T, what string, done chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not end within 5 s", what)
+		return nil
+	}
+}
+
+// Row 8: a hub.forward that the plugin never answers ends at the hub's wait with outcome_unknown
+// that may still apply. The on_behalf window is for each agent and plugin client: it stays open
+// while any forward of that agent to that client is in flight, and closes after the last one.
+// The test does not claim that a late delivery is refused.
+func TestForwardHasADeadline(t *testing.T) {
+	shortPerformWait(t, time.Second)
+
+	// A cut forward: the agent's error, and the window closes.
+	h, _ := forwardHub(t)
+	err := endOf(t, "the cut forward", forward(h, "never"))
+	if !isRefusal(err, "outcome_unknown") || !strings.Contains(err.Error(), "the plugin did not answer within 1 s; the request may still apply") {
+		t.Errorf("the cut forward: %v", err)
+	}
+	if h.forwarding("c", 7) {
+		t.Error("the window is still open after the cut forward ended")
+	}
+
+	// A is cut, then B starts: B opens the window again, and its end closes it.
+	h, release := forwardHub(t)
+	endOf(t, "A", forward(h, "never"))
+	b := forward(h, "b")
+	waitFor(t, "B in flight", 5*time.Second, func() bool { return h.forwarding("c", 7) })
+	close(release["b"])
+	endOf(t, "B", b)
+	if h.forwarding("c", 7) {
+		t.Error("the window is still open after B ended")
+	}
+
+	// A and B overlap: A's cut leaves the window open for B; B's end closes it.
+	h, release = forwardHub(t)
+	a := forward(h, "never")
+	time.Sleep(200 * time.Millisecond)
+	b = forward(h, "b")
+	waitFor(t, "two forwards in flight", 5*time.Second, func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.forwards["c"][7] == 2
+	})
+	if err := endOf(t, "A", a); !isRefusal(err, "outcome_unknown") {
+		t.Errorf("A: %v", err)
+	}
+	if !h.forwarding("c", 7) {
+		t.Error("A's cut closed the window while B is in flight")
+	}
+	close(release["b"])
+	endOf(t, "B", b)
+	if h.forwarding("c", 7) {
+		t.Error("the window is still open after the last forward ended")
+	}
+}
+
 // The error of an unknown outcome names the hub's wait only when the hub's own wait cut the call:
 // when the caller's context ended first, the duration would be wrong (review of cbcd96e).
 func TestUnknownOutcomeText(t *testing.T) {
