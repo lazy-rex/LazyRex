@@ -1397,6 +1397,10 @@ route, in the same place (hub/cmd/hub/reopen.go).
   store no args.
 - The effects run in this order: `navigate`, `reopen`, `form`, `close_form`. A
   failed reopen stops the later effects: the form stays open and shows the error.
+- A waiting reopen (the user's choice, or its pane) does not hold the plugin's later
+  operations. They run, and their effects run, while the reopen waits. This is the
+  one exception to the rule that the hub runs no new operation before the effects of
+  older operations finish (`runOps`).
 - The new view has a new `view_id`, a new pane and a new attachment. Drafts are
   keyed by user and thread, so the new view reads the same draft.
 - The new view gets the args as `args.open` in each render, and as `open` in its
