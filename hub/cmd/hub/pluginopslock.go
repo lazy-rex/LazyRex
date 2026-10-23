@@ -145,12 +145,14 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	}
 	defer release()
 	delete(h.pops.busy, op.ID)
-	b, err := os.ReadFile(lockFile)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock %s: %v; nothing was written", lockFile, err))
-	}
+	// The open attempt is settled first, also when the lock does not read (b is nil then): the op
+	// ends, so no later pass settles it.
+	b, rerr := os.ReadFile(lockFile)
 	if err := h.settleFileAttempt(ctx, op, "write:lock", b); err != nil {
 		return err
+	}
+	if rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock %s: %v; nothing was written", lockFile, rerr))
 	}
 	lock, err := readLock(lockFile)
 	if err != nil {
