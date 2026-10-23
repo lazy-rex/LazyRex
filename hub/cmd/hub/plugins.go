@@ -1124,7 +1124,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	if err != nil {
 		// The block exists; its child is not verified. The outcome is unknown, not a failed create:
 		// the intent stays sending, and resolveIntents adopts a live child by its instance argv.
-		log.Printf("plugin %s: cannot read the child of block %s after its create: %v", pl.Name, out.BlockID, err)
+		h.recordLogf(pl, "cannot read the child of block %s after its create: %v", out.BlockID, err)
 		return &spawnError{stage: "child", err: err}
 	}
 	h.mapFault(pl.Name, out.BlockID)
@@ -1150,13 +1150,13 @@ func (h *Hub) checkMapped(ctx context.Context, pl *Plugin, sess, block string) {
 	c, err := h.childProcIn(rctx, sess, block)
 	cancel()
 	if err != nil {
-		log.Printf("plugin %s: cannot read the child of block %s after recording it: %v", pl.Name, block, err)
+		h.recordLogf(pl, "cannot read the child of block %s after recording it: %v", block, err)
 		return
 	}
 	if c.pid != 0 || len(c.lastExit) == 0 || string(c.lastExit) == "null" {
 		return
 	}
-	log.Printf("plugin %s: the child exited before the block was recorded", pl.Name)
+	h.recordLogf(pl, "the child exited before the block was recorded")
 	go h.pluginExited(ctx, pl, block, c.lastExit)
 }
 
