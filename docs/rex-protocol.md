@@ -565,9 +565,18 @@ Client action descriptors:
 - A window that nobody named has the generated label `"Window " +` the last 8 characters of its window ID (for example `window:…cc5176a0a502` → `Window 76a0a502`). Seen on two windows of the real server (read-only `session.view`). `session.set_window_label` with an empty label restores it. No field marks a label as generated, so LazyRex compares against this form.
 - A session holds at most 64 windows. `session.new_window` then fails with `conflict: limit reached: the session already has its maximum of 64 windows; close one before opening another` (lab: a messaging app session with one tab per thread hit it).
 
+### Terminal block format (observed on Rex 0.0.1792158932-g88fd41, lab `/tmp/rexlab-plugins-claude50-c7`, 2026-10-22)
+
+- The terminal block's `format` method takes only `format`, `trim`, `unwrap` and the `extra_*` flags (`rex block inspect`, `api.methods.format.input_schema`). It has no line bound, byte bound or offset. Its output is `{content}`.
+- Its description says "the current terminal screen", but it returns the whole scrollback. A block that printed 2000 lines gave 2001 lines with `--trim`, from `line 0` to `DONE`.
+- A block that printed 50000 lines (about 2.2 MB) gave no text. Rex refused the reply: `control response exceeds 1048576 bytes (status=413 code=too_large)`. The refusal came in about 0.06 s, three times, through `rex block capture` and through `rex api call block.method`.
+- So Rex's reply limit bounds the transport at 1 MiB, and a client cannot ask for less. `hub.plugins.log` (hub.md) keeps the last 64 KiB of an accepted reply and reports a refusal as "the pane text is over Rex's 1 MiB reply limit". The hub's own connection was not probed: the hub takes the error code `too_large` from the error frame (unverified on that path).
+
 ### Request for superlogical
 
 Add the calling client to `block.method` requests sent to block plugins, in the same shape as `client.perform`'s `requester {client_id, principal}`, plus `origin` and the Rex `session_id`. Or let a method descriptor ask for it (for example `"caller": true`).
+
+Give the terminal block's `format` method a bound: for example `max_bytes`, or the last N lines. Today it returns the whole scrollback, and a long pane gives no text at all (see "Terminal block format").
 
 ## Command palette entries and forms (Rex 1203, 2026-10-17)
 

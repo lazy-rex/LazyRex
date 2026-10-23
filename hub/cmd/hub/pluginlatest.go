@@ -74,23 +74,51 @@ func resolveLatest(ctx context.Context, git gitRunner, dir, url string) (latestR
 	if err != nil {
 		return latestRelease{}, err
 	}
-	type candidate struct {
-		tag string
-		v   tagVersion
-	}
-	var cands []candidate
+	return verifyLatest(ctx, git, dir, url, listVersionTags(out))
+}
+
+// errNoRelease is the result of a repository with no release tag that points to a commit.
+var errNoRelease = errors.New("the repository has no version tag vX.Y.Z that points to a commit")
+
+// versionTagRef is a release tag of an ls-remote listing: its name, the ID that ls-remote gives
+// (the peeled ID of an annotated tag, else the tag's own ID) and its version. ls-remote gives no
+// object types, so the ID is not known to be a commit.
+type versionTagRef struct {
+	tag, object string
+	v           tagVersion
+}
+
+// listVersionTags parses the output of "git ls-remote --tags": the release tags, highest first.
+func listVersionTags(out []byte) []versionTagRef {
+	var cands []versionTagRef
+	peeled := map[string]string{}
 	for _, line := range strings.Split(string(out), "\n") {
-		_, name, ok := strings.Cut(line, "\t")
+		id, name, ok := strings.Cut(line, "\t")
 		tag, isTag := strings.CutPrefix(name, "refs/tags/")
 		if !ok || !isTag {
 			continue
 		}
+		if t, ok := strings.CutSuffix(tag, "^{}"); ok {
+			peeled[t] = id
+			continue
+		}
 		if v, ok := parseVersionTag(tag); ok {
-			cands = append(cands, candidate{tag, v})
+			cands = append(cands, versionTagRef{tag: tag, object: id, v: v})
 		}
 	}
-	slices.SortFunc(cands, func(a, b candidate) int { return compareVersions(b.v, a.v) })
+	for i, c := range cands {
+		if id := peeled[c.tag]; id != "" {
+			cands[i].object = id
+		}
+	}
+	slices.SortFunc(cands, func(a, b versionTagRef) int { return compareVersions(b.v, a.v) })
+	return cands
+}
 
+// verifyLatest selects the first candidate (highest first) that points to a commit: each one is
+// fetched into a bare repository in dir and peeled fully with ^{}. A tree or a blob is skipped
+// and named; every git failure and every other type fails.
+func verifyLatest(ctx context.Context, git gitRunner, dir, url string, cands []versionTagRef) (latestRelease, error) {
 	gitDir := filepath.Join(dir, "git")
 	if len(cands) > 0 {
 		if _, err := git(ctx, dir, nil, "init", "-q", "--bare", gitDir); err != nil {
@@ -124,7 +152,7 @@ func resolveLatest(ctx context.Context, git gitRunner, dir, url string) (latestR
 			return latestRelease{}, fmt.Errorf("%s points to the object type %q", ref, typ)
 		}
 	}
-	return latestRelease{}, errors.New("the repository has no version tag vX.Y.Z that points to a commit")
+	return latestRelease{}, errNoRelease
 }
 
 // legacyLatest reports whether e is a lock entry of the source ref latest from before @latest: a
