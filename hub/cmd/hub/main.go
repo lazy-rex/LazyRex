@@ -386,11 +386,16 @@ func main() {
 	cfg.Real = *realServer
 	cfg.Test = *testMode
 	// The SDK and the view are resolved once, here (findSDK, resolveView): a later switch of a link
-	// in either path changes nothing for this hub, its plugin respawns or its renderers.
-	if cfg.SDK, err = findSDK(*sdkDir); err != nil {
-		log.Fatal(err)
+	// in either path changes nothing for this hub, its plugin respawns or its renderers. A restart
+	// wrapper's child uses the paths that its wrapper resolved (restartenv.go), so every child of
+	// one wrapper process has them, also a crash restart after a link switch.
+	if renvErr == nil && renv.expectState != "" {
+		cfg.SDK, cfg.View = renv.sdk, renv.view
+		err = checkPinnedPaths(cfg.SDK, cfg.View)
+	} else if cfg.SDK, err = findSDK(*sdkDir); err == nil {
+		cfg.View, err = resolveView(cfg.View)
 	}
-	if cfg.View, err = resolveView(cfg.View); err != nil {
+	if err != nil {
 		log.Fatal(err)
 	}
 	if !cfg.Test && len(cfg.TestRoots) > 0 {
@@ -1227,6 +1232,22 @@ func findSDK(flagValue string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// checkPinnedPaths checks the paths that a restart wrapper gave its child: a directory of a version
+// that is gone stops the start. The child never resolves them again.
+func checkPinnedPaths(sdk, view string) error {
+	if sdk != "" {
+		if _, err := os.Stat(filepath.Join(sdk, "boot.lua")); err != nil {
+			return fmt.Errorf("the restart wrapper's SDK %s: %v", sdk, err)
+		}
+	}
+	if view != "" {
+		if _, err := os.Stat(view); err != nil {
+			return fmt.Errorf("the restart wrapper's view %s: %v", view, err)
+		}
+	}
+	return nil
 }
 
 // resolveView returns the configured renderer path (absolute after loadConfig) with every symlink

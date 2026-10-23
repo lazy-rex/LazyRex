@@ -67,6 +67,8 @@ type wrapper struct {
 	attempt  int
 	lastExit string
 	exec     int       // the generation: 0 at a first start, +1 at each exec
+	sdk      string    // the SDK directory that main resolved at this process's start; every child gets it
+	view     string    // the view that main resolved at this process's start; every child gets it
 	last     *lastExec // the last exec attempt, until the next one begins
 }
 
@@ -99,6 +101,7 @@ func restartMain(ctx context.Context, cfg Config, args []string) int {
 		return 1
 	}
 	w.refusals = func(ctx context.Context, pid int) []string { return hubRefusals(cfg, w.state)(ctx, pid) }
+	w.sdk, w.view = cfg.SDK, cfg.View // resolved by main at this process's start (findSDK, resolveView)
 	return w.main(cfg.State)
 }
 
@@ -430,7 +433,8 @@ func (w *wrapper) runChild() childEnd {
 	// Its own process group: Ctrl-C or a closed pane signals only the wrapper, which stops the child.
 	// Otherwise a SIGHUP death of the child would count as a failure and look like a restart.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = append(os.Environ(), "LAZYREX_READY_FD=3", "LAZYREX_EXPECT_STATE="+w.state, "LAZYREX_EXEC="+strconv.Itoa(w.exec))
+	cmd.Env = append(os.Environ(), "LAZYREX_READY_FD=3", "LAZYREX_EXPECT_STATE="+w.state, "LAZYREX_EXEC="+strconv.Itoa(w.exec),
+		"LAZYREX_SDK="+w.sdk, "LAZYREX_VIEW="+w.view)
 	err = cmd.Start()
 	wr.Close()
 	ow.Close()

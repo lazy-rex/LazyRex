@@ -10,6 +10,10 @@ package main
 //     another state (or a state that does not exist) exits 3 before any side effect of start.
 //   - LAZYREX_EXEC: the wrapper's exec count (restartexec.go). hub.info reports it, and
 //     hub.admin.relaunch compares its expect_exec with it.
+//   - LAZYREX_SDK and LAZYREX_VIEW: the SDK directory and the view that the wrapper resolved at its
+//     start ("" for none). A child uses them exactly, so every child of one wrapper process, also a
+//     crash restart after an install switched its links, has the same paths. Both are required
+//     with LAZYREX_EXPECT_STATE, and either one without it is an error.
 
 import (
 	"fmt"
@@ -26,7 +30,8 @@ const exitStateMismatch = 3
 type restartEnv struct {
 	readyFD     int // -1: no readiness pipe
 	expectState string
-	exec        int // the wrapper's exec count; 0 without a wrapper
+	exec        int    // the wrapper's exec count; 0 without a wrapper
+	sdk, view   string // the wrapper's resolved paths; used only with expectState
 }
 
 // takeRestartEnv reads and unsets the wrapper's variables. It sets FD_CLOEXEC on the ready fd, so
@@ -35,9 +40,18 @@ func takeRestartEnv() (restartEnv, error) {
 	e := restartEnv{readyFD: -1, expectState: os.Getenv("LAZYREX_EXPECT_STATE")}
 	s, ok := os.LookupEnv("LAZYREX_READY_FD")
 	execText, hasExec := os.LookupEnv("LAZYREX_EXEC")
-	os.Unsetenv("LAZYREX_READY_FD")
-	os.Unsetenv("LAZYREX_EXPECT_STATE")
-	os.Unsetenv("LAZYREX_EXEC")
+	sdk, hasSDK := os.LookupEnv("LAZYREX_SDK")
+	view, hasView := os.LookupEnv("LAZYREX_VIEW")
+	for _, v := range []string{"LAZYREX_READY_FD", "LAZYREX_EXPECT_STATE", "LAZYREX_EXEC", "LAZYREX_SDK", "LAZYREX_VIEW"} {
+		os.Unsetenv(v)
+	}
+	switch {
+	case e.expectState != "" && (!hasSDK || !hasView):
+		return e, fmt.Errorf("a restart wrapper's child needs LAZYREX_SDK and LAZYREX_VIEW")
+	case e.expectState == "" && (hasSDK || hasView):
+		return e, fmt.Errorf("LAZYREX_SDK and LAZYREX_VIEW come only from a restart wrapper, with LAZYREX_EXPECT_STATE")
+	}
+	e.sdk, e.view = sdk, view
 	if hasExec {
 		n, err := strconv.Atoi(execText)
 		if err != nil || n < 0 {

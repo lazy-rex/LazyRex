@@ -14,18 +14,20 @@ import (
 	"testing"
 )
 
-// main reads and unsets the three variables, so no process that the hub starts inherits them. A
+// main reads and unsets the wrapper's variables, so no process that the hub starts inherits them. A
 // ready fd that is not a number above 2 is an error, and so is an exec count that is not a number
-// of 0 or more.
+// of 0 or more, a wrapper's child without the paths, or a path variable without a wrapper.
 func TestTakeRestartEnv(t *testing.T) {
 	t.Setenv("LAZYREX_READY_FD", "7")
 	t.Setenv("LAZYREX_EXPECT_STATE", "/s")
 	t.Setenv("LAZYREX_EXEC", "3")
+	t.Setenv("LAZYREX_SDK", "/v1/sdk/lua")
+	t.Setenv("LAZYREX_VIEW", "") // none
 	e, err := takeRestartEnv()
-	if err != nil || e.readyFD != 7 || e.expectState != "/s" || e.exec != 3 {
+	if err != nil || e.readyFD != 7 || e.expectState != "/s" || e.exec != 3 || e.sdk != "/v1/sdk/lua" || e.view != "" {
 		t.Fatalf("%+v, %v", e, err)
 	}
-	for _, v := range []string{"LAZYREX_READY_FD", "LAZYREX_EXPECT_STATE", "LAZYREX_EXEC"} {
+	for _, v := range []string{"LAZYREX_READY_FD", "LAZYREX_EXPECT_STATE", "LAZYREX_EXEC", "LAZYREX_SDK", "LAZYREX_VIEW"} {
 		if _, ok := os.LookupEnv(v); ok {
 			t.Errorf("%s is still set", v)
 		}
@@ -44,6 +46,19 @@ func TestTakeRestartEnv(t *testing.T) {
 		if _, err := takeRestartEnv(); err == nil {
 			t.Errorf("LAZYREX_EXEC=%q: no error", bad)
 		}
+	}
+	// The paths: a wrapper's child without one of them, or one of them without a wrapper, fails.
+	t.Setenv("LAZYREX_EXPECT_STATE", "/s")
+	t.Setenv("LAZYREX_SDK", "")
+	if _, err := takeRestartEnv(); err == nil || !strings.Contains(err.Error(), "needs LAZYREX_SDK and LAZYREX_VIEW") {
+		t.Errorf("a wrapper's child without LAZYREX_VIEW: %v", err)
+	}
+	t.Setenv("LAZYREX_VIEW", "/v1/view")
+	if _, err := takeRestartEnv(); err == nil || !strings.Contains(err.Error(), "only from a restart wrapper") {
+		t.Errorf("LAZYREX_VIEW without a wrapper: %v", err)
+	}
+	if _, ok := os.LookupEnv("LAZYREX_VIEW"); ok {
+		t.Error("a refused LAZYREX_VIEW is still set")
 	}
 }
 
@@ -142,7 +157,7 @@ func TestHubExpectStateMismatchExits3(t *testing.T) {
 			"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
 		os.WriteFile(cfg, b, 0o600)
 		cmd := exec.Command(bin, "-config", cfg)
-		cmd.Env = append(os.Environ(), "LAZYREX_EXPECT_STATE="+canon)
+		cmd.Env = append(os.Environ(), "LAZYREX_EXPECT_STATE="+canon, "LAZYREX_SDK=", "LAZYREX_VIEW=")
 		out, _ := cmd.CombinedOutput()
 		if code := cmd.ProcessState.ExitCode(); code != exitStateMismatch {
 			t.Errorf("state %s: exit %d, want %d\n%s", state, code, exitStateMismatch, out)
@@ -228,7 +243,7 @@ func TestHubRefusesToStartBesideAWrapper(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(state, "hub.lock")); !os.IsNotExist(err) {
 		t.Errorf("the refused hub made hub.lock: %v", err)
 	}
-	if out, _ := run("LAZYREX_EXPECT_STATE=" + state); strings.Contains(out, "restart wrapper owns") {
+	if out, _ := run("LAZYREX_EXPECT_STATE="+state, "LAZYREX_SDK=", "LAZYREX_VIEW="); strings.Contains(out, "restart wrapper owns") {
 		t.Errorf("the wrapper's own child: refused\n%s", out)
 	}
 }

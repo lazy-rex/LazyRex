@@ -9,7 +9,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // lazyrex-hub restart with the real binary, a real wrapper and its own lab server (docs/hub.md,
@@ -22,10 +24,11 @@ import (
 //     version runs again at exec 1 in a new hub process: exit 1 with the exec error.
 //  5. lazyrex-hub stop: stopped, and the wrapper exits 0.
 //
-// H1: each copy has its own sdk/lua and view, and the config names the view through a link. The
-// hub resolves both once at its start: after both links switch, the running hub still reports the
-// old copy's paths; the new hub reports the new copy's paths, and so does the old version after the
-// failed exec.
+// H1: each copy has its own sdk/lua and view; the wrapper gets -sdk through a link, and the config
+// names the view through a link. The wrapper resolves both once at its start: after the links
+// switch, the running hub still reports the old copy's paths, and so does the hub that the wrapper
+// starts after a crash of its child (the old binary too). The new hub reports the new copy's
+// paths, and so does the old version after the failed exec.
 func TestRestartCommandLab(t *testing.T) {
 	if os.Getenv("SHUTDOWN_LAB") != "1" {
 		t.Skip("set SHUTDOWN_LAB=1 to run the restart command lab test (it starts its own lab server)")
@@ -56,9 +59,10 @@ func TestRestartCommandLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	link, viewLink := filepath.Join(tmp, "current"), filepath.Join(tmp, "view")
+	link, viewLink, sdkLink := filepath.Join(tmp, "current"), filepath.Join(tmp, "view"), filepath.Join(tmp, "sdk")
 	os.Symlink(v1, link)
 	os.Symlink(filepath.Join(filepath.Dir(v1), "view.sh"), viewLink)
+	os.Symlink(filepath.Join(filepath.Dir(v1), "sdk", "lua"), sdkLink)
 	lab, err := os.MkdirTemp("/tmp", "rexlab-restartcmd-")
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +77,7 @@ func TestRestartCommandLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	wlog := filepath.Join(tmp, "wrapper.log")
-	wrapper, exit := startRestartWrapper(t, link, cfg, wlog)
+	wrapper, exit := startRestartWrapper(t, link, cfg, wlog, "-sdk", sdkLink)
 	waitLogLine(t, wlog, " ready\n")
 	ctl := func(args ...string) (int, string) {
 		out, err := exec.Command(v1, append(args, "-config", cfg)...).CombinedOutput()
@@ -128,7 +132,32 @@ func TestRestartCommandLab(t *testing.T) {
 	os.Symlink(v2, link)
 	os.Remove(viewLink)
 	os.Symlink(filepath.Join(filepath.Dir(v2), "view.sh"), viewLink)
+	os.Remove(sdkLink)
+	os.Symlink(filepath.Join(filepath.Dir(v2), "sdk", "lua"), sdkLink)
 	wantPaths("after the link switch, before the restart", v1real)
+
+	// A crash of the hub (not of the wrapper) after the switch: the wrapper starts its own binary
+	// (v1) again, and the new hub keeps the wrapper's paths.
+	if err := syscall.Kill(old, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	crashed := old
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		_, out := ctl("status")
+		if m := regexp.MustCompile(`^running: hub pid (\d+)`).FindStringSubmatch(out); m != nil {
+			if n, _ := strconv.Atoi(m[1]); n != crashed {
+				old = n
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no new hub after the crash:\n%s\n--- wrapper:\n%s", out, readFile(wlog))
+		}
+	}
+	if !strings.HasPrefix(exe(old), filepath.Join(v1real, "lazyrex-hub")) {
+		t.Errorf("after the crash: hub pid %d runs %q, want %s", old, exe(old), v1real)
+	}
+	wantPaths("after the crash, before the restart", v1real)
 	code, out := ctl("restart", "-expect-exec", "0")
 	want := fmt.Sprintf("restart wrapper pid %d", wrapper.Process.Pid)
 	if code != 0 || !strings.Contains(out, "restarted: hub pid") || !strings.Contains(out, "exec 1") || !strings.Contains(out, want) {

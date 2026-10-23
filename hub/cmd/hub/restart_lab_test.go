@@ -157,13 +157,13 @@ func TestRestartWrapperLab(t *testing.T) {
 	}
 }
 
-func startRestartWrapper(t *testing.T, bin, cfg, logPath string) (*exec.Cmd, chan int) {
+func startRestartWrapper(t *testing.T, bin, cfg, logPath string, extra ...string) (*exec.Cmd, chan int) {
 	t.Helper()
 	logf, err := os.Create(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "-config", cfg, "-restart")
+	cmd := exec.Command(bin, append([]string{"-config", cfg, "-restart"}, extra...)...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
