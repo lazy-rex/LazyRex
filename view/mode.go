@@ -270,7 +270,13 @@ func (m *model) inlineHelp() string {
 func (m *model) inlineView() tea.View {
 	if m.quitting || m.altPending {
 		m.visibleRows = nil
-		return tea.NewView("")
+		v := tea.NewView("")
+		// The wait before alt-on keeps focus reporting and the title, so they do not flicker.
+		v.ReportFocus = m.altPending
+		if m.altPending {
+			v.WindowTitle = singleLine(m.snapshot.Tree.Title)
+		}
+		return v
 	}
 	m.visibleRows = m.liveRows()
 	lines := make([]string, len(m.visibleRows))

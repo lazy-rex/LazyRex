@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -334,5 +336,36 @@ func TestFocusWindowFollowsTheFocus(t *testing.T) {
 			t.Fatalf("Shift+Tab to %d: focus %q, want %q", i, m.focus, controls[i].ID)
 		}
 		check(fmt.Sprintf("Shift+Tab %d", i))
+	}
+}
+
+// TestAltClearBytes runs a real tea.Program (Bubble Tea v2.1.0) on a test output: an error tree is
+// drawn inline while neutral, then a list tree decides alt. In this run's bytes the inline rows are
+// erased before CSI ?1049h. This proves the order of the tested run only: the clear is best effort
+// (altClearDelay, view/README.md "Known limit").
+func TestAltClearBytes(t *testing.T) {
+	out := newProtoOut(nil)
+	m := newModel(&viewClient{ViewID: "v1", Route: "/thread/42", Requests: make(chan mutation, 16)})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithInput(nil), tea.WithOutput(out), tea.WithWindowSize(80, 20), tea.WithoutSignals())
+	go func() {
+		p.Send(treeOf(tvError("e", "NEUTRAL-ERROR", false)))
+		time.Sleep(200 * time.Millisecond)
+		p.Send(treeOf(tvList))
+		time.Sleep(300 * time.Millisecond)
+		p.Quit()
+	}()
+	if _, err := p.Run(); ctx.Err() != nil {
+		t.Fatalf("the program did not end: %v", err)
+	}
+	raw := out.String()
+	t.Logf("raw output %q", raw)
+	text, on := strings.LastIndex(raw, "NEUTRAL-ERROR"), strings.Index(raw, "\x1b[?1049h")
+	if text < 0 || on < text {
+		t.Fatalf("the error text is at %d and the alt screen starts at %d", text, on)
+	}
+	if between := raw[text:on]; !strings.Contains(between, "\x1b[J") && !strings.Contains(between, "\x1b[2K") && !strings.Contains(between, "\x1b[K") {
+		t.Fatalf("no erase between the inline error and alt-on: %q", between)
 	}
 }
