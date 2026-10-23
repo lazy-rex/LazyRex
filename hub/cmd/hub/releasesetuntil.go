@@ -25,6 +25,7 @@ func batchScript(dir, server, hubClient string, calls []relSetItem) string {
 	}
 	lines := []string{"#!/bin/sh",
 		"cd " + shQuote(dir),
+		`printf '\033]7;file://localhost%s\033\\' "$PWD"`, // the pane reports its directory (OSC 7)
 		"while [ ! -e go ]; do sleep 0.1; done",
 		fmt.Sprintf(`%s hub.join --args '{"agent":"%s"}' > join.out 2>&1; echo $? > join.code`, rexDo("60s", hubClient), relSeedAgent)}
 	for i, c := range calls {
@@ -49,19 +50,21 @@ func batchScript(dir, server, hubClient string, calls []relSetItem) string {
 }
 
 // untilDecide decides after attempt n of an until item, whose first attempt started at start: an
-// error when the reply came after the window; "next" when the reply meets the until expects, else "again <seconds>" while the window has time for another call
-// (after the 1 s pause), else an error with the last reply. A nonzero exit fails at once: an error
-// reply is not a state to wait for.
+// error when the reply came after the window; "next" when the reply meets the until expects;
+// else "again <seconds>" while the window has time for another call (after the 1 s pause); else
+// an error with the last reply. A nonzero exit is a reply that does not meet the expects.
 func untilDecide(it relSetItem, n, code int, out []byte, vals map[string]string, start, now time.Time) (string, error) {
 	reply := strings.TrimSpace(string(out))
-	if code != 0 {
-		return "", fmt.Errorf("attempt %d exited %d: %s", n, code, reply)
-	}
 	// A reply after the window does not count, even when it meets the expects.
 	if now.Sub(start) > relUntilWindow {
 		return "", fmt.Errorf("attempt %d ended %s after the first attempt started, after the window of %s; the last reply (exit %d): %s", n, now.Sub(start).Round(time.Millisecond), relUntilWindow, code, reply)
 	}
-	miss := checkFilled(out, it.Until, vals)
+	// An error reply is not met: the plugin can answer unavailable while it starts, and a replay
+	// with the same key is safe.
+	miss := fmt.Errorf("exit %d", code)
+	if code == 0 {
+		miss = checkFilled(out, it.Until, vals)
+	}
 	if miss == nil {
 		return "next", nil
 	}

@@ -38,9 +38,12 @@ func TestReleaseSetUntilDecide(t *testing.T) {
 	if _, err := untilDecide(it, 1, 0, []byte(`{"status":"done"}`), nil, start, start.Add(61*time.Second)); err == nil || !strings.Contains(err.Error(), "after the window") {
 		t.Fatalf("a met reply after 61 s: %v", err)
 	}
-	// An error reply fails at once, with its exit code and reply.
-	if _, err := untilDecide(it, 2, 1, []byte("Error: conflict"), nil, start, start); err == nil || !strings.Contains(err.Error(), "attempt 2 exited 1: Error: conflict") {
-		t.Fatalf("nonzero exit: %v", err)
+	// An error reply is not met: it repeats while the window has time, then fails with its exit code.
+	if v, err := untilDecide(it, 2, 1, []byte("Error: unavailable"), nil, start, start); err != nil || v != "again 59" {
+		t.Fatalf("nonzero exit: %q %v", v, err)
+	}
+	if _, err := untilDecide(it, 9, 1, []byte("Error: unavailable"), nil, start, start.Add(59*time.Second)); err == nil || !strings.Contains(err.Error(), "(exit 1): Error: unavailable") {
+		t.Fatalf("nonzero exit at the end: %v", err)
 	}
 	// Placeholders in until values are filled.
 	it.Until = []relSetExpect{{Pointer: "/by", Value: json.RawMessage(`"<SELF>"`)}}
@@ -74,6 +77,8 @@ case "$act" in
   x.slow2) n=$(cat slow2.n 2>/dev/null || echo 0); n=$((n+1)); echo $n > slow2.n
     if [ $n -ge 2 ]; then sleep 5; echo '{"status":"done"}'; else echo '{"status":"running"}'; fi ;;
   x.fail) echo 'Error: conflict'; exit 1 ;;
+  x.flaky) n=$(cat flaky.n 2>/dev/null || echo 0); n=$((n+1)); echo $n > flaky.n
+    if [ $n -ge 2 ]; then echo '{"status":"done"}'; else echo 'Error: unavailable'; exit 1; fi ;;
   x.after) echo '{"ok":true}' ;;
 esac
 `
@@ -161,11 +166,17 @@ func TestReleaseSetUntilBatch(t *testing.T) {
 		t.Fatal("the item after a failed until item ran")
 	}
 
-	// An error reply: no repeat.
+	// An error reply, then a met reply (a plugin that answers unavailable while it starts).
 	relUntilWindow = 20 * time.Second
-	dir, _, err, said = runBatch(t, []relSetItem{untilItem("x.fail")})
-	if err == nil || !strings.Contains(err.Error(), "attempt 1 exited 1: Error: conflict") || len(said) != 1 {
-		t.Fatalf("error reply: %v, %d attempts", err, len(said))
+	_, outs, err, said = runBatch(t, []relSetItem{untilItem("x.flaky")})
+	if err != nil || len(said) != 2 || strings.TrimSpace(string(outs[0].Out)) != `{"status":"done"}` || outs[0].Code != 0 {
+		t.Fatalf("flaky: %v, %d attempts, %+v", err, len(said), outs)
+	}
+	// Error replies only: the window ends with the last exit code and reply.
+	relUntilWindow = 3 * time.Second
+	_, _, err, said = runBatch(t, []relSetItem{untilItem("x.fail")})
+	if err == nil || !strings.Contains(err.Error(), "(exit 1): Error: conflict") || len(said) < 2 {
+		t.Fatalf("error replies: %v, %d attempts", err, len(said))
 	}
 }
 

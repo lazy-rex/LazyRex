@@ -100,8 +100,11 @@ have it. The runner repeats the call until the reply meets every `until` entry:
 - One window of 60 s covers all attempts of the item, the calls and the 1 s pause between them. It
   starts when the pane starts the first attempt. A call does not get its own 60 s: each call gets
   only the time that is left.
-- A nonzero exit fails the item at once: an error reply is not a state to wait for. To wait for a
-  state, put `until` on a read-only status action, and put the next write after it.
+- A nonzero exit is a reply that does not meet `until`. The runner repeats the call while the
+  window has time. For example, a plugin can answer `unavailable` for a short time after it
+  starts. A replay with the same key is safe. When the window ends, the error gives the last exit
+  code and reply.
+- To wait for a state, put `until` on a read-only status action, and put the next write after it.
 - A reply that comes after the window fails the item, even when it meets `until`.
 - When the window ends while an attempt runs, the item fails at once. The pane stops after that
   call. The error gives the last completed reply and its exit code, or says that no attempt
@@ -132,7 +135,7 @@ replaces them in the lab only. The reviewed bytes keep the placeholders.
 | `<LAB>` | The lab directory. |
 | `<SELF>` | `relseed`, the lab agent that runs the action items. |
 | `<PEER>` | `relpeer`, a second lab agent that never joins. |
-| `<SESSION_ID>`, `<BLOCK_ID>` | The session and block of the lab pane of the batch. |
+| `<SESSION_ID>`, `<BLOCK_ID>` | The session and block of the lab pane of the batch. Each batch gets a new lab session with one tab and one pane. The pane directory is the batch directory under `<LAB>`, and the pane reports it (OSC 7) before the first call. The tool destroys the session after the batch. |
 
 If two member names become one name after the replacement, the tool refuses the item.
 

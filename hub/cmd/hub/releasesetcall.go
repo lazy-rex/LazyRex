@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -135,11 +136,6 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	}); err != nil {
 		return nil, err
 	}
-	sb, err := os.ReadFile(filepath.Join(h.run, "session"))
-	if err != nil {
-		return nil, err
-	}
-	session := strings.TrimSpace(string(sb))
 	dir := filepath.Join(h.lab, "calls", name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -150,23 +146,8 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	if err := os.WriteFile(script, []byte(batchScript(dir, h.l.server, client, calls)), 0o700); err != nil {
 		return nil, err
 	}
-	arg, _ := json.Marshal(map[string]any{"session_id": session, "flavor": "com.superlogical.terminal.shell",
-		"label": relAgentLabel + "-" + name, "options": map[string]any{"command": []string{"/bin/sh", script}, "login": false, "exit": map[string]bool{"on_completion": false}}})
-	var block string
-	if err := h.withLab(func(lr *releaser) error {
-		out, err := lr.rex("api", "call", "session.new_block", string(arg))
-		if err != nil {
-			return err
-		}
-		var nb struct {
-			BlockID string `json:"block_id"`
-		}
-		if json.Unmarshal(out, &nb) != nil || nb.BlockID == "" {
-			return relFail("session.new_block gave no block_id: %s", out)
-		}
-		block = nb.BlockID
-		return nil
-	}); err != nil {
+	session, block, err := h.batchSession(name, dir, script)
+	if err != nil {
 		return nil, relFail("the agent pane %s: %v", name, err)
 	}
 	// A closed pane does not free the agent name: a join from a new block is refused while the
@@ -214,6 +195,9 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	}
 	if err := h.closePane(session, block, relSeedAgent); err != nil {
 		return nil, err
+	}
+	if err := h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil); err != nil {
+		return nil, relFail("the agent pane %s: session.destroy %s: %v", name, session, err)
 	}
 	return outs, nil
 }
@@ -360,4 +344,42 @@ func jsonPointer(v any, p string) (any, error) {
 		}
 	}
 	return v, nil
+}
+
+// batchSession makes the lab session of one agent batch: one window with one pane, which runs the
+// batch script in dir. A plugin that reads the caller's session (Templates saves each pane of it)
+// sees only this pane. batchSession returns after the pane reported its directory (OSC 7), which
+// is in the lab.
+func (h *rehearsal) batchSession(name, dir, script string) (string, string, error) {
+	ctx := context.Background()
+	var s struct {
+		ID string `json:"session_id"`
+	}
+	if err := h.l.r.Call(ctx, "session.create", map[string]any{"label": relAgentLabel + "-" + name, "initial_windows": []any{map[string]any{"window_label": name,
+		"layout": map[string]any{"block": map[string]any{"flavor": "com.superlogical.terminal.shell",
+			"options": map[string]any{"command": []string{"/bin/sh", script}, "cwd": dir, "login": false, "exit": map[string]bool{"on_completion": false}}}}}}}, &s); err != nil {
+		return "", "", fmt.Errorf("session.create: %v", err)
+	}
+	var out struct {
+		Blocks []struct {
+			BlockID string `json:"block_id"`
+		} `json:"blocks"`
+	}
+	if err := h.l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": s.ID}, &out); err != nil || len(out.Blocks) != 1 {
+		return s.ID, "", fmt.Errorf("the batch session %s has the blocks %v (%v), not one", s.ID, out.Blocks, err)
+	}
+	block := out.Blocks[0].BlockID
+	var last string
+	for i := 0; i < 75; i++ {
+		var pwd struct {
+			Pwd string `json:"pwd"`
+		}
+		err := h.l.r.BlockCall(ctx, "com.superlogical.terminal.pwd", s.ID, block, nil, &pwd)
+		last = fmt.Sprintf("%q (%v)", pwd.Pwd, err)
+		if err == nil && strings.Contains(pwd.Pwd, filepath.Base(h.lab)) {
+			return s.ID, block, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return s.ID, block, fmt.Errorf("the batch pane %s did not report a lab directory in 15 s: terminal.pwd %s", block, last)
 }
