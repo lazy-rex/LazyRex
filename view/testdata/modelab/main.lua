@@ -20,6 +20,7 @@ local function hub(action, args)
 end
 
 local page_size = 40
+local draft_revision = 1 -- the stage 2 composer's draft_revision
 
 -- page returns up to 40 rows of msgs before the row of the ID before (all rows when before is nil),
 -- oldest first, and whether older rows exist.
@@ -103,7 +104,14 @@ rex.on('client_perform_requested', function(ctx, ev)
     if ev.action == 'view.send' then
       hub('hub.sql.exec', {sql = 'INSERT INTO clicked (name) VALUES (?)', params = {'send'}})
       hub('hub.sql.exec', {sql = 'INSERT INTO sent (text) VALUES (?)', params = {ev.args.text or ''}})
-      return {}
+      draft_revision = draft_revision + 1
+      return {draft_revision = tostring(draft_revision), message_id = 'sent-' .. draft_revision}
+    end
+    -- A draft save keeps nothing; its reply carries the saved text and a new revision, as the
+    -- renderer requires (model.go: a reply with other text is a conflict).
+    if ev.action == 'view.draft.save' then
+      draft_revision = draft_revision + 1
+      return {text = ev.args.text, draft_revision = tostring(draft_revision)}
     end
     if ev.action == 'view.history' then
       local messages, more = page(ev.args.before)
