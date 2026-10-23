@@ -18,7 +18,7 @@ import (
 // failure. No ID is used twice.
 func TestRenderIDLifetime(t *testing.T) {
 	h := testUIHub(t)
-	for _, m := range []string{pairSchema, `ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`} {
+	for _, m := range []string{`ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`} {
 		if _, err := h.db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			t.Fatal(err)
 		}
@@ -213,7 +213,7 @@ func TestRenderReadRules(t *testing.T) {
 // that equal the test tree, so a render sends no view.changed.
 func renderHub(t *testing.T) *Hub {
 	h := testUIHub(t)
-	for _, m := range []string{pairSchema, `ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`} {
+	for _, m := range []string{`ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`} {
 		if _, err := h.db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			t.Fatal(err)
 		}

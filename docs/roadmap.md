@@ -100,17 +100,6 @@ Ordered by value to LazyRex.
 - **Renderer: keys right after a focus change are lost (lab, Rex 1203, 2026-10-17, cause unknown).** In a
   thread view, the first two letters sent with `send-key` right after the Tab that moves focus to
   the composer did not appear. A 500 ms wait avoided it. Independent reproduction remains unverified.
-- **Hub: a late `view.close_request` can close the composer after a navigation cancelled the close
-  (source reading, 2026-10-22, not reproduced; timeout audit row 15).** The case: the user closes the
-  transcript, so the hub sets `close_pending` and sends `view.close_request` to the composer
-  attachment. The renderer does not take its queue at once. The user navigates to the tab, and
-  `resetTranscripts` clears `close_pending`; the composer attachment stays the same. Rex then delivers
-  the request. The renderer checks only the view and the attachment, so it accepts, sets
-  `closePending` and closes through `closeView`, the Ctrl+Q path, which does not check
-  `close_pending`. The composer closes although the close was cancelled. No probe has run, so the
-  runtime case is not verified. It ends with the transcript sweep (claude-43), which removes
-  `requestClose` and `close_pending` with the transcript and composer pair. If the sweep keeps
-  `view.close_request`, the fix comes back to the hub lead.
 
 ## Cleanup and test debt
 

@@ -266,3 +266,13 @@ func saveDrafts(client *viewClient, saves []draftSave) {
 		}
 	}
 }
+
+// transcriptMessage converts a view message for the formatter (view/transcript). The header shows
+// the compact local time, as the renderer does.
+func transcriptMessage(m Message) transcript.Message {
+	author := m.Author
+	if m.Own {
+		author = "You"
+	}
+	return transcript.Message{ID: m.ID, Author: author, Text: m.Text, At: shortTime(m.At), Own: m.Own, FYI: m.FYI}
+}

@@ -197,9 +197,6 @@ func (m *model) bodyRows() []row {
 			// No button: Ctrl+O opens the menu in a side pane (the footer says so).
 		case "history":
 			// No Older messages button: a plugin offers older history from its menu.
-			if m.composerOnly {
-				continue // the transcript pane above prints the messages
-			}
 			if len(n.Messages) == 0 {
 				add(lipgloss.NewStyle().Foreground(p.muted).Render("No messages yet. Start the conversation below."), n.ID+":empty", nil)
 			}
@@ -516,9 +513,6 @@ func (m *model) screenRows() []row {
 	}
 	if width < 65 {
 		help = "Tab · Ctrl+T select · Ctrl+Q quit"
-	}
-	if m.composerOnly {
-		help = "Tab next · Ctrl+T select · Ctrl+Q quit" // the transcript pane above holds the history
 	}
 	if m.isPanel() {
 		help = "Tab next · Esc close · Ctrl+Q close"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"image/color"
+	"math"
 	"strings"
 	"testing"
 
@@ -248,4 +249,15 @@ func TestControlContrast(t *testing.T) {
 			t.Errorf("dark=%t the secondary button stands out more than the primary button", dark)
 		}
 	}
+}
+
+// relativeLuminance is the WCAG relative luminance of sRGB components in [0, 1].
+func relativeLuminance(r, g, b float64) float64 {
+	lin := func(c float64) float64 {
+		if c <= 0.04045 {
+			return c / 12.92
+		}
+		return math.Pow((c+0.055)/1.055, 2.4)
+	}
+	return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b)
 }

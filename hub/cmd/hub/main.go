@@ -48,9 +48,6 @@ type Config struct {
 	// TestHoldRecovery holds plugin recovery at hub start until hub.test.recover, so a lab test can
 	// call actions before recovery reaches a record. Only -test accepts it.
 	TestHoldRecovery bool `json:"test_hold_recovery"`
-	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
-	// pane (pair.go). Off: those tabs open as one view, as before.
-	Transcript bool `json:"transcript"`
 	// UISlot is where forms and panels open, for an experiment (the user, 2026-10-22): "split" (the
 	// window's right split, the default) or "layer" (a floating layer in the same window). It goes
 	// away when the user decides.
@@ -752,9 +749,6 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			return
 		}
 		go h.tabReplPaneExited(ctx, blockID) // a reopen's new renderer before its adoption
-		if h.transcriptChildExited(ctx, blockID) {
-			return
-		}
 		h.mu.Lock()
 		var exited *Plugin
 		for _, p := range h.plugins {

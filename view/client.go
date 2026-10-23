@@ -55,7 +55,6 @@ type viewClient struct {
 	changed                                chan struct{}
 	lost                                   bool
 	available                              bool
-	Role                                   string // "transcript" for the printer of a pair; "" for the composer
 	// The seen gate (thread view v1.2 item 3): seenClosed until the renderer decides its mode;
 	// seenAlt sends as before; seenThread sends only while seenOK (the current tree's newest ID
 	// is printed). outFailed is the output boundary's latch: after a fault no seen goes out.
@@ -155,10 +154,10 @@ func (v *viewClient) focus(focused bool, reason string) {
 }
 
 // markSeen sends hub.view.seen when the view has focus and the gate is open. A closed gate keeps
-// the reason for later. The pair's transcript printer has no gate.
+// the reason for later.
 func (v *viewClient) markSeen(ctx context.Context) {
 	v.mu.Lock()
-	open := v.Role == "transcript" || v.seenGate == seenAlt || v.seenGate == seenThread && v.seenOK
+	open := v.seenGate == seenAlt || v.seenGate == seenThread && v.seenOK
 	failed := v.outFailed != nil && v.outFailed()
 	if !open || failed {
 		v.mu.Unlock()
@@ -223,7 +222,7 @@ func (v *viewClient) event(raw json.RawMessage) {
 			return
 		}
 		v.mu.Lock()
-		valid := (p.Action == "view.changed" || p.Action == "view.reload" || p.Action == "view.retire" || p.Action == "view.close_request" || p.Action == "view.release" || p.Action == "view.resume") && p.Requester.ClientID == v.hub && p.Args.ViewID == v.ViewID && p.Args.Attachment == v.attachment
+		valid := (p.Action == "view.changed" || p.Action == "view.reload" || p.Action == "view.retire" || p.Action == "view.release" || p.Action == "view.resume") && p.Requester.ClientID == v.hub && p.Args.ViewID == v.ViewID && p.Args.Attachment == v.attachment
 		w := v.w
 		v.mu.Unlock()
 		if w == nil {
@@ -249,7 +248,7 @@ func (v *viewClient) event(raw json.RawMessage) {
 		reply := map[string]any{"call_id": p.CallID}
 		if valid {
 			reply["result"] = map[string]any{"received": true}
-			if p.Action == "view.retire" || p.Action == "view.close_request" {
+			if p.Action == "view.retire" {
 				reply["result"] = map[string]any{"status": "accepted"}
 			}
 			if p.Action == "view.changed" {
@@ -267,8 +266,6 @@ func (v *viewClient) event(raw json.RawMessage) {
 					v.emit(reloadRequested{})
 				case "view.retire":
 					v.emit(retireRequested{})
-				case "view.close_request":
-					v.emit(closeRequested{})
 				}
 			}
 		}()
@@ -341,7 +338,7 @@ func (v *viewClient) connect(ctx context.Context) error {
 		v.mu.Lock()
 		v.w = w
 		v.mu.Unlock()
-		if err = w.call(ctx, "client.keymap", map[string]any{"actions": []any{map[string]any{"name": "view.changed", "kind": "client", "title": "Refresh view"}, map[string]any{"name": "view.reload", "kind": "client", "title": "Reload renderer"}, map[string]any{"name": "view.retire", "kind": "client", "title": "Retire migrated view"}, map[string]any{"name": "view.close_request", "kind": "client", "title": "Close the pair"}, map[string]any{"name": "view.release", "kind": "client", "title": "Replace panel"}, map[string]any{"name": "view.resume", "kind": "client", "title": "Resume panel"}}}, nil); err != nil {
+		if err = w.call(ctx, "client.keymap", map[string]any{"actions": []any{map[string]any{"name": "view.changed", "kind": "client", "title": "Refresh view"}, map[string]any{"name": "view.reload", "kind": "client", "title": "Reload renderer"}, map[string]any{"name": "view.retire", "kind": "client", "title": "Retire migrated view"}, map[string]any{"name": "view.release", "kind": "client", "title": "Replace panel"}, map[string]any{"name": "view.resume", "kind": "client", "title": "Resume panel"}}}, nil); err != nil {
 			w.conn.CloseNow()
 			return err
 		}
@@ -366,9 +363,6 @@ func (v *viewClient) connect(ctx context.Context) error {
 	replacementID := v.replacementID
 	v.mu.Unlock()
 	attachArgs := map[string]any{"view_id": v.ViewID, "schema_version": 1}
-	if v.Role != "" {
-		attachArgs["role"] = v.Role
-	}
 	if replacementID != "" {
 		attachArgs["replacement_id"] = replacementID
 	}

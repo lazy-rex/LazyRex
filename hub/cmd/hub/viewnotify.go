@@ -13,8 +13,7 @@ import (
 // request sent to it. One request per render filled its queue: 20 renders while the renderer
 // was busy were 20 requests (timeout audit, row 10, 2026-10-22).
 //
-// The hub keeps at most one view.changed request outstanding for each view, role (composer or
-// printer) and attachment. A notification during that request marks the sender pending: when the
+// The hub keeps at most one view.changed request outstanding for each view and attachment. A notification during that request marks the sender pending: when the
 // request ends, one more request tells the latest revision, however many notifications came. A
 // notification counts even with an unchanged revision: an operation completion asks for one with
 // an unchanged tree (vs.notify; Codex review of c2e9a78).
@@ -24,16 +23,11 @@ import (
 // records its attachment (requestClose). A success, or a new notification after a failure, starts
 // a fresh count.
 //
-// A view close (forgetView), a new attachment of the role, a render pass that no longer finds the
+// A view close (forgetView), a new attachment of the view, a render pass that no longer finds the
 // attachment, and the hub stop cancel the notifier: its outstanding call returns at once and it
 // sends nothing more. Rex can still deliver a queued request later; its reply has no receiver.
 
-const (
-	roleComposer = "composer"
-	rolePrinter  = "printer"
-)
-
-type notifyKey struct{ view, role, attachment string }
+type notifyKey struct{ view, attachment string }
 
 // viewNotifier is the delivery of one key. h.vs.mu guards want, pending and attempts.
 type viewNotifier struct {
@@ -52,10 +46,10 @@ var viewChangedRetry = 300 * time.Millisecond
 // viewChangedAttempts is the number of attempts for one revision.
 const viewChangedAttempts = 3
 
-// tellViewChanged tells the renderer of the role that the view has a new revision. It starts the
+// tellViewChanged tells the view's renderer that the view has a new revision. It starts the
 // sender of the key, or raises the revision of the running one.
-func (h *Hub) tellViewChanged(plugin, role, client, viewID, attachment string, rev int64) {
-	k := notifyKey{viewID, role, attachment}
+func (h *Hub) tellViewChanged(plugin, client, viewID, attachment string, rev int64) {
+	k := notifyKey{viewID, attachment}
 	vs := h.vs
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -66,9 +60,9 @@ func (h *Hub) tellViewChanged(plugin, role, client, viewID, attachment string, r
 		n.pending = true
 		return
 	}
-	// A new attachment of the role replaces the old one: its request no longer waits for the old.
+	// A new attachment of the view replaces the old one: its request no longer waits for the old.
 	for old, n := range vs.senders {
-		if old.view == viewID && old.role == role {
+		if old.view == viewID {
 			vs.retireLocked(old, n)
 		}
 	}
@@ -103,19 +97,15 @@ func (vs *viewSvc) retireNotifiers(viewID string) {
 }
 
 // pruneNotifiers cancels the notifiers of the plugin whose attachment the render pass did not
-// find: composers lists the view's attachment, printers the printer's.
-func (vs *viewSvc) pruneNotifiers(plugin string, composers map[string]string, printers map[string][2]string) {
+// find: attached lists each view's attachment.
+func (vs *viewSvc) pruneNotifiers(plugin string, attached map[string]string) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 	for k, n := range vs.senders {
 		if n.plugin != plugin {
 			continue
 		}
-		current := composers[k.view]
-		if k.role == rolePrinter {
-			current = printers[k.view][1]
-		}
-		if current != k.attachment {
+		if attached[k.view] != k.attachment {
 			vs.retireLocked(k, n)
 		}
 	}
@@ -138,13 +128,9 @@ func (h *Hub) notifySender(k notifyKey, n *viewNotifier) {
 		vs.retireLocked(k, n)
 		vs.mu.Unlock()
 	}
-	current := h.composerAttachment
-	if k.role == rolePrinter {
-		current = h.transcriptAttachment
-	}
 	for {
 		// The attachment is read outside h.vs.mu: the database has one connection.
-		moved := current(n.ctx, k.view) != k.attachment
+		moved := h.composerAttachment(n.ctx, k.view) != k.attachment
 		vs.mu.Lock()
 		if moved || n.ctx.Err() != nil {
 			stopLocked()

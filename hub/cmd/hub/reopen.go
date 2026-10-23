@@ -101,9 +101,8 @@ func reopenViewID(repl string) string {
 
 // tabRowContext is the context of a kind tab row: what the new view row needs.
 type tabRowContext struct {
-	Tab    string `json:"tab"`
-	Layout string `json:"layout,omitempty"`
-	Open   string `json:"open,omitempty"`
+	Tab  string `json:"tab"`
+	Open string `json:"open,omitempty"`
 }
 
 // reopenStep runs the reopen effect of operation key, whose acting view is viewID. done: the row
@@ -160,9 +159,9 @@ func (h *Hub) admitReopen(ctx context.Context, id, plugin string, fc formContext
 	if fc.SourceViewID == "" {
 		return nil, refuse("conflict", "the source view is closed")
 	}
-	var srcPlugin, tabKey, route, status, sess, block, layout string
-	err := h.db.QueryRowContext(ctx, `SELECT plugin, tab, route, status, session_id, block_id, layout FROM views WHERE view_id = ?`, fc.SourceViewID).
-		Scan(&srcPlugin, &tabKey, &route, &status, &sess, &block, &layout)
+	var srcPlugin, tabKey, route, status, sess, block string
+	err := h.db.QueryRowContext(ctx, `SELECT plugin, tab, route, status, session_id, block_id FROM views WHERE view_id = ?`, fc.SourceViewID).
+		Scan(&srcPlugin, &tabKey, &route, &status, &sess, &block)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && status != "open") {
 		return nil, refuse("conflict", "the source view is closed")
 	}
@@ -192,7 +191,7 @@ func (h *Hub) admitReopen(ctx context.Context, id, plugin string, fc formContext
 	// The new pane takes the focus only if the old pane had it.
 	active, focused, _, ferr := h.slotFocus(ctx, sess, window)
 	focus := ferr == nil && active && focused == block
-	b, _ := json.Marshal(tabRowContext{Tab: tabKey, Layout: layout, Open: e.open})
+	b, _ := json.Marshal(tabRowContext{Tab: tabKey, Open: e.open})
 	r := &slotRow{ID: id, Session: sess, Window: window, Old: fc.SourceViewID, New: reopenViewID(id), Plugin: plugin, Route: route,
 		Context: string(b), Focus: focus, State: "releasing", Title: "Reopening", Kind: "tab"}
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title, created, kind)
@@ -257,8 +256,8 @@ func (h *Hub) spawnTabPane(ctx context.Context, r *slotRow) error {
 	if _, err := h.db.ExecContext(ctx, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, r.SplitAt, r.ID); err != nil {
 		return err
 	}
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, layout, attach_state, open_args)
-		VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never', ?)`, r.New, r.Plugin, tc.Tab, r.Route, r.Session, tc.Layout, tc.Open); err != nil {
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, attach_state, open_args)
+		VALUES (?, ?, ?, ?, 'sending', ?, 'never', ?)`, r.New, r.Plugin, tc.Tab, r.Route, r.Session, tc.Open); err != nil {
 		return err
 	}
 	h.markOwn(r.New)
@@ -298,7 +297,7 @@ func (h *Hub) spawnTabPane(ctx context.Context, r *slotRow) error {
 func (h *Hub) adoptTabPane(ctx context.Context, r *slotRow, b rexBlock) error {
 	var tc tabRowContext
 	json.Unmarshal([]byte(r.Context), &tc)
-	v := &view{ID: r.New, Plugin: r.Plugin, Tab: tc.Tab, Route: r.Route, Layout: tc.Layout}
+	v := &view{ID: r.New, Plugin: r.Plugin, Tab: tc.Tab, Route: r.Route}
 	if err := h.adoptView(ctx, v, r.Session, b); err != nil {
 		return nil // the pane exists; a later look adopts it
 	}

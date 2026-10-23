@@ -1,6 +1,6 @@
 # Transcript formatter
 
-The transcript pane's message formatter. No hub or terminal calls. No pane width.
+The message formatter of thread mode (view/print.go). No hub or terminal calls. No pane width.
 
 `Format(message, previous, dark)` returns one message with a final newline.
 It adds a blank line before the header when `previous` is not nil.
