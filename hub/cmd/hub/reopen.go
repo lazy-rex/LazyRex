@@ -332,15 +332,21 @@ func (h *Hub) resolveTabPane(ctx context.Context, r *slotRow) bool {
 		if info.Label != "lazyrex-view:"+r.New {
 			continue
 		}
+		c, err := h.childIn(ctx, r.Session, b)
 		if r.State == "expired" {
-			// A late pane: its views row was abandoned at the expiry, so it is closed here, never adopted.
+			// A late pane: its views row was abandoned at the expiry, so it is closed here, never
+			// adopted. Only a pane whose child's argv proves it the row's is closed: a close on the label
+			// alone could close a pane that is not the hub's (lead ruling, lead-ux-fix1b). A childless
+			// late pane stays for the user.
+			if err != nil || c == 0 || !argvHas(c, r.New) {
+				continue
+			}
 			if err := h.closeBlock(ctx, r.Session, b); err == nil {
 				h.setSlotState(ctx, r, "late_closed")
 				return true
 			}
 			return false
 		}
-		c, err := h.childIn(ctx, r.Session, b)
 		switch {
 		case err != nil:
 			h.watchTabRow(r.ID, 5*time.Second)

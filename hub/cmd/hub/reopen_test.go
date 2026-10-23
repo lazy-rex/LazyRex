@@ -352,6 +352,7 @@ func TestReopenExpiry(t *testing.T) {
 	// The late pane.
 	x.mu.Lock()
 	x.blocks = append(x.blocks, rexBlock{BlockID: "b-late", Label: "lazyrex-view:" + nv, WindowID: "w"})
+	x.children["b-late"] = x.child // the new view's renderer: argv proves the pane
 	x.mu.Unlock()
 	h.slotSweep(ctx)
 	if s := reopenState(h, id); s != "late_closed" || !slices.Contains(x.closed, "b-late") {
@@ -706,6 +707,10 @@ func TestReopenForeignLabeledPaneExpires(t *testing.T) {
 	if s := reopenState(h, id); s != "expired" {
 		t.Fatalf("row %s", s)
 	}
+	h.slotSweep(ctx) // an expired row closes only its own late pane
+	if slices.Contains(x.closed, "b-new") {
+		t.Fatalf("the hub closed a pane that runs another program: %v", x.closed)
+	}
 }
 
 // codex-25's probe 3: the first block.close of the old pane fails. A timer tries again (no other
@@ -838,5 +843,132 @@ func TestReopenWaitingEffectStaysPending(t *testing.T) {
 	s, _, reopen := effectState(h)
 	if st, _, _ := viewStatus(h, "form"); s != "pending" || reopen != 0 || st != "open" {
 		t.Fatalf("effect %s, effect_reopen %d, form %s", s, reopen, st)
+	}
+}
+
+// Lead ruling lead-ux-fix1 (1): after a lost split answer, the pane closes before the hub read its
+// label. The close cannot be attributed: the row expires at the bound, the old view resumes, and
+// nothing is suppressed.
+func TestReopenUnreadCloseExpires(t *testing.T) {
+	h, x, fr, id := lostPaneHub(t)
+	ctx := context.Background()
+	x.mu.Lock()
+	x.blocks = x.blocks[:1] // b-new closed before any label read
+	x.mu.Unlock()
+	h.tabReplCreated("s", "b-new")
+	h.tabReplWait("b-new")
+	if h.uiBlockClosed(ctx, "b-new", false) {
+		t.Fatal("an unread close was attributed")
+	}
+	mustExec(t, h, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, time.Now().Add(-reopenBound-time.Second).UTC().Format(time.RFC3339Nano), id)
+	h.slotSweep(ctx)
+	var sup int
+	h.db.QueryRow(`SELECT suppressed FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&sup)
+	old, _, _ := viewStatus(h, "old")
+	if s := reopenState(h, id); s != "expired" || sup != 0 || old != "open" {
+		t.Fatalf("row %s, suppressed %d, old view %s", s, sup, old)
+	}
+	waitFor(t, "view.resume", 5*time.Second, func() bool { return slices.Contains(fr.actions(), "view.resume") })
+}
+
+// A late pane of an expired row is closed only when its child's argv proves it the row's; a
+// childless late pane is left (a close on the label alone is not allowed, lead-ux-fix1b).
+func TestReopenLatePaneNeedsProof(t *testing.T) {
+	h, x, _, id := lostPaneHub(t)
+	ctx := context.Background()
+	x.mu.Lock()
+	x.blocks = x.blocks[:1]
+	x.mu.Unlock()
+	mustExec(t, h, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, time.Now().Add(-reopenBound-time.Second).UTC().Format(time.RFC3339Nano), id)
+	h.slotSweep(ctx)
+	if s := reopenState(h, id); s != "expired" {
+		t.Fatalf("row %s", s)
+	}
+	x.mu.Lock()
+	x.blocks = append(x.blocks, rexBlock{BlockID: "b-late", Label: "lazyrex-view:" + reopenViewID(id), WindowID: "w"})
+	x.children["b-late"] = 0
+	x.mu.Unlock()
+	h.slotSweep(ctx)
+	if s := reopenState(h, id); s != "expired" || slices.Contains(x.closed, "b-late") {
+		t.Fatalf("a childless late pane: row %s, closed %v", s, x.closed)
+	}
+	x.mu.Lock()
+	x.children["b-late"] = x.child // the renderer of the new view (argv proof)
+	x.mu.Unlock()
+	h.slotSweep(ctx)
+	if s := reopenState(h, id); s != "late_closed" || !slices.Contains(x.closed, "b-late") {
+		t.Fatalf("a proven late pane: row %s, closed %v", s, x.closed)
+	}
+}
+
+// sessionEvent is a Rex session event frame for handleEvent (main.go), as the hub reads it.
+func sessionEvent(typ, block string, extra map[string]any) json.RawMessage {
+	p := map[string]any{"block_id": block}
+	for k, v := range extra {
+		p[k] = v
+	}
+	b, _ := json.Marshal(map[string]any{"payload": map[string]any{"type": "session_event",
+		"payload": map[string]any{"session_id": "s", "event": map[string]any{"type": typ, "payload": p}}}})
+	return b
+}
+
+// The event loop's wiring (handleEvent): block_created notes the unadopted pane, and its
+// block_closed is the user's close of the tab.
+func TestReopenEventLoopClose(t *testing.T) {
+	h, x, _, id := lostPaneHub(t)
+	ctx := context.Background()
+	h.handleEvent(ctx, sessionEvent("block_created", "b-new", nil))
+	h.tabReplWait("b-new")
+	x.mu.Lock()
+	x.blocks = x.blocks[:1]
+	x.mu.Unlock()
+	h.handleEvent(ctx, sessionEvent("block_closed", "b-new", nil))
+	waitFor(t, "the row ends user_closed", 5*time.Second, func() bool { return reopenState(h, id) == "user_closed" })
+	var sup int
+	h.db.QueryRow(`SELECT suppressed FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&sup)
+	if sup != 1 {
+		t.Fatalf("suppressed %d", sup)
+	}
+}
+
+// The event loop's wiring: a child_exited block event of the unadopted pane adopts it and counts
+// one renderer exit; the row goes on.
+func TestReopenEventLoopExit(t *testing.T) {
+	h, x, _, id := lostPaneHub(t)
+	ctx := context.Background()
+	x.mu.Lock()
+	x.children["b-new"] = 0
+	x.mu.Unlock()
+	h.handleEvent(ctx, sessionEvent("block_event", "b-new", map[string]any{"name": "child_exited", "payload": map[string]any{"exit_code": 1}}))
+	waitFor(t, "the row goes on", 5*time.Second, func() bool { return reopenState(h, id) == "done" })
+	var crashes int
+	h.db.QueryRow(`SELECT crashes FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&crashes)
+	if st, _, _ := viewStatus(h, reopenViewID(id)); crashes != 1 || st != "exited" {
+		t.Fatalf("crashes %d, new view %s", crashes, st)
+	}
+}
+
+// A pane with the row's label that runs another program, first seen after the expiry: the hub
+// leaves it on every sweep.
+func TestReopenForeignPaneAfterExpiry(t *testing.T) {
+	h, x, _, id := lostPaneHub(t)
+	ctx := context.Background()
+	x.mu.Lock()
+	x.blocks = x.blocks[:1]
+	x.mu.Unlock()
+	mustExec(t, h, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, time.Now().Add(-reopenBound-time.Second).UTC().Format(time.RFC3339Nano), id)
+	h.slotSweep(ctx)
+	if s := reopenState(h, id); s != "expired" {
+		t.Fatalf("row %s", s)
+	}
+	x.mu.Lock()
+	x.blocks = append(x.blocks, rexBlock{BlockID: "b-foreign", Label: "lazyrex-view:" + reopenViewID(id), WindowID: "w"})
+	x.children["b-foreign"] = os.Getpid()
+	x.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		h.slotSweep(ctx)
+	}
+	if s := reopenState(h, id); s != "expired" || slices.Contains(x.closed, "b-foreign") {
+		t.Fatalf("row %s, closed %v", s, x.closed)
 	}
 }

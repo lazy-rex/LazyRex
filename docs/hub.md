@@ -1436,17 +1436,23 @@ A pane with the label is the row's when its child's argv carries the new `view_i
 labeled pane with another program is not the row's. A labeled pane with no child
 30 seconds after the pane request is the row's: its renderer exited before the hub saw
 it. The hub then adopts the pane and runs the crash path once, and the row goes on.
+This is the one adoption by label alone in the reopen path. Elsewhere a label is only a
+discovery hint (architecture.md). It is safe here because the label holds the new
+`view_id`, which only this hub derives from its own replacement row; a pane with no
+child has no program to mistake; and the crash path is bounded (3 exits). A pane with
+the label that runs any other program is never adopted or closed: the row expires.
 
 If no pane appears within 30 seconds of the pane request, and a complete
 `session.list_blocks` does not contain the label, the row expires. The new views
-row closes, the old view resumes, and the hub closes a pane that appears later. An
+row closes, and the old view resumes. The hub closes a pane that appears later only
+when its child's argv proves it the row's; it leaves any other pane with the label. An
 incomplete inventory proves nothing. A renderer sees `expired` as `cancelled`.
 
 While the row is active, it owns its tab. The reconcile pass opens no other view for
 the tab, does not change its layout, and closes neither view. It can restore a
 detached old pane. A user close of either pane (the pane's close or Ctrl+Q) closes
 the tab as any user close does, and ends the row. This includes the new pane before
-the hub adopted it: `block_created` carries no label (Rex 0.0.1792158932, lab), so while
+the hub adopted it: `block_created` carries only `block_id` (Rex 0.0.1792158932-g88fd41, macOS lab, 2026-10-22), so while
 a row waits for its pane, the hub reads the label of each new block in the session once
 and records the row's pane. A close or a child exit of that block is then the row's. A
 pane that the user closes before the hub reads its label cannot be told from another
