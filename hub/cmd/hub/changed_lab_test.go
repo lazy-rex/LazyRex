@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,23 +10,16 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// A lab test of hub.changed coalescing through a real Rex server. Run with
-//   CHANGED_LAB_SOCKET=/tmp/rexlab-<name>/rex.sock go test -run TestChangedBurstLab ./cmd/hub
+// A lab test of hub.changed coalescing through a real Rex server (rexLab: HARNESS_LAB=1).
 
 // A slow plugin client and a burst of 50 changes of one kind: the plugin gets the first delivery
 // and one more, not 50 (which filled Rex's 16-request queue of the client before the fix).
 func TestChangedBurstLab(t *testing.T) {
-	socket := os.Getenv("CHANGED_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set CHANGED_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") && !strings.HasPrefix(real, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatalf("refuse a non-lab socket: %s %v", real, err)
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	dial := func() (*rex.Rex, string) {
-		r, err := rex.Dial(ctx, socket)
+		r, err := rex.Dial(ctx, l.socket)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,7 +60,7 @@ func TestChangedBurstLab(t *testing.T) {
 	}
 	hubRex, _ := dial()
 	h := changedTestHub(map[string]string{"lab": pluginID})
-	h.rex = hubRex
+	h.rex, h.cfg.Server = hubRex, l.server
 	for i := 0; i < 50; i++ {
 		h.changed("agents")
 	}
