@@ -96,8 +96,41 @@ The terminal owns the printed lines. The renderer never rewrites them.
 - One print runs at a time. Later batches wait in order.
 - A print commits its IDs after its write returns. A failed write commits nothing.
 - A message is late when a printed message comes after it in the page.
-  The renderer prints it at the bottom, with "(late)" after the header.
+  The renderer prints it at the bottom, with "(late)" after the author.
 - The first print waits for the terminal's theme reply, or for the theme timeout (300 ms).
+
+### The history fetch (thread mode)
+
+The renderer gets older pages through `hub.view.history` (view/fetch.go).
+The model owns all fetch state. One page call runs at a time.
+
+The open runs once for each process:
+
+- When the first history page has `has_more` and holds fewer than 500 messages, the renderer fetches older pages until it holds 500 or more, or until `has_more` is false.
+- The renderer prints the newest 500 as one batch. In full mode (`Thread Settings… > Show full history`), it fetches every page and prints all messages.
+- A count line comes first: "N earlier messages. Thread Settings… > Show full history", where N is `total` minus the printed count. Without `total`, the line is "Earlier messages exist. …". A thread of 500 or fewer messages has no count line.
+- During the open, the notice row shows "Loading history…".
+
+The excluded set (lead-tv-excl):
+
+- The excluded set holds every message ID that the open saw but did not print. Full mode has no excluded IDs.
+- The set belongs to the process. A reattach does not clear it, and it is separate from the printed ledger.
+- A later frame never prints an excluded ID.
+- A new ID that is neither printed nor excluded prints at the bottom. It is late when a printed message comes after it.
+
+The gap fill:
+
+- A gap is a page with `has_more` that holds no printed, queued or excluded ID (for example, after a reattach that missed many messages).
+- The renderer fetches older pages until a page holds a printed ID. It then prints the messages after the last printed ID in page order (the anchor), oldest first, not late. The fill never prints a fetched message before the anchor.
+- When no page holds a printed ID, the fill prints the messages of the current pages only.
+
+Page rules:
+
+- A new current page during a fetch joins the fetch when its oldest ID is in the fetched run. Any other page, or a new attachment, restarts the fetch from that page.
+- The opening exclusions stay across a restart. A result of an old fetch or an old attachment is dropped.
+- A failed page, or a page with `has_more` and no new message, is asked again after 2 s.
+- A reattach, a reload, a close, an output failure or a lost connection stops the fetch and its page call.
+- Seen stays closed while a fetch runs.
 
 ### The seen gate
 

@@ -103,7 +103,9 @@ type model struct {
 }
 
 func newModel(client *viewClient) *model {
-	return &model{client: client, operations: map[string]bool{}, editors: map[string]*editor{}, recovery: map[string]string{}, endedReplacements: map[string]bool{}, width: 80, height: 24, status: "Connecting to the hub…"}
+	m := &model{client: client, operations: map[string]bool{}, editors: map[string]*editor{}, recovery: map[string]string{}, endedReplacements: map[string]bool{}, width: 80, height: 24, status: "Connecting to the hub…"}
+	m.print.pages = client.history
+	return m
 }
 
 // Init subscribes to color scheme changes (DEC mode 2031) and asks for the current scheme (DSR 996).
@@ -704,14 +706,17 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.client.focus(false, "")
 		return m, nil
 	case retireRequested:
+		m.cancelFetch()
 		m.retirePending = true
 		return m, nil
 	case closeRequested:
 		if !m.isPanel() && !m.isForm() {
+			m.cancelFetch()
 			m.closePending = true
 		}
 		return m, nil
 	case reloadRequested:
+		m.cancelFetch()
 		m.reloadPending = true
 		return m, nil
 	case tea.BackgroundColorMsg:
@@ -740,6 +745,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, decided
 	case printDone:
 		return m, m.printFinished(msg)
+	case historyPageMsg:
+		return m, m.pageDone(msg)
+	case retryPage:
+		return m, m.retry(msg)
 	case outputFailed:
 		return m, m.failOutput()
 	case altClear:
@@ -748,6 +757,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectionMsg:
 		m.ready = msg.Ready
 		m.status = msg.Text
+		if !m.ready {
+			m.cancelFetch() // the new attachment's first tree fetches again
+		}
 		var cmds []tea.Cmd
 		if m.ready {
 			for _, n := range m.snapshot.Tree.Nodes {

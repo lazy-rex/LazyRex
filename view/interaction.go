@@ -124,6 +124,9 @@ func (m *model) wheel(msg tea.MouseWheelMsg) tea.Cmd {
 func (m *model) notice() string {
 	switch m.status {
 	case "Connected", "Draft saved", "Sent", "Done", "":
+		if f := m.print.fetch; f != nil && f.kind == fetchOpen {
+			return loadingHistory
+		}
 		return ""
 	}
 	return m.status

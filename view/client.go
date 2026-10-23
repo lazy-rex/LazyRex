@@ -109,6 +109,13 @@ func (v *viewClient) allowSeen(reason string, gen uint64) {
 	}
 }
 
+// currentGen is the current attachment generation.
+func (v *viewClient) currentGen() uint64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.gen
+}
+
 // blockSeen closes a thread view's gate: the current tree has no newest ID, or it is not printed.
 func (v *viewClient) blockSeen() {
 	v.mu.Lock()

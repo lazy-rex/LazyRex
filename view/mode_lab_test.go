@@ -344,3 +344,56 @@ func must[T any](v T, err error) T {
 	}
 	return v
 }
+
+// TestOpenWindowLab (v1.2 item 2, lead-tv-excl): the plugin holds 520 messages and its tree holds
+// the newest 40, with has_more and total; view.history serves pages of 40. A real pane in thread
+// mode fetches the pages back and prints the count line once, first, then PR-0021..PR-0520 once
+// each, in order. PR-0001..PR-0020 are not printed. The check reads the whole capture (with the
+// scrollback).
+func TestOpenWindowLab(t *testing.T) {
+	l := newModeLab(t)
+	var values []string
+	for i := 1; i <= 520; i++ {
+		values = append(values, fmt.Sprintf("('p%d', 'codex', 'PR-%04d')", i, i))
+	}
+	l.sql("INSERT INTO msgs VALUES "+strings.Join(values, ", "), true)
+	l.sql("UPDATE stage SET n = 4", true)
+	pane := l.open("lazyrex_modelab_mode")
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last screen:\n%s", last)
+		}
+	})
+	l.waitFor("PR-0520 printed and the live region drawn", 60*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "PR-0520") && strings.Contains(last, "LAB-NOTICE")
+	})
+	t.Logf("the capture holds %d lines", strings.Count(last, "\n")+1)
+	head := "20 earlier messages. Thread Settings… > Show full history"
+	if c := strings.Count(last, "earlier messages"); c != 1 || !strings.Contains(last, head) {
+		t.Fatalf("the count line is on the pane %d times, or its text differs:\n%s", c, last)
+	}
+	at := strings.Index(last, head)
+	for i := 1; i <= 520; i++ {
+		text := fmt.Sprintf("PR-%04d", i)
+		c := strings.Count(last, text)
+		if i <= 20 {
+			if c != 0 {
+				t.Fatalf("%s is outside the window but is on the pane %d times", text, c)
+			}
+			continue
+		}
+		if c != 1 {
+			t.Fatalf("%s is on the pane %d times:\n%s", text, c, last)
+		}
+		j := strings.Index(last, text)
+		if j < at {
+			t.Fatalf("%s is above the message or the count line before it:\n%s", text, last)
+		}
+		at = j
+	}
+	if strings.Contains(last, "(late)") {
+		t.Fatalf("a message is marked late:\n%s", last)
+	}
+}

@@ -34,11 +34,21 @@ type printer struct {
 	out             interface{ Failed() bool }
 	failed          bool // the output failed: no print, no commit, no seen
 	themeTimer      bool // the theme timeout runs for the first print
+	// The history fetch (fetch.go). opened is set once per process, at the end of the open.
+	// excluded holds the IDs that the open saw and did not print; openSeen collects them while
+	// the open runs. pages fetches one page (viewClient.history).
+	opened   bool
+	fetch    *fetch
+	seq      int
+	excluded map[string]bool
+	openSeen map[string]bool
+	pages    func(context.Context, string) (historyPage, error)
 }
 
 type printBatch struct {
 	messages []Message
 	late     map[string]bool
+	head     string // the count line, printed above the batch's messages
 }
 
 // printDone comes from a print's Sequence after the write of its lines returned.
@@ -60,30 +70,48 @@ func (m *model) printTree() tea.Cmd {
 	if m.mode != viewThread || p.failed {
 		return nil
 	}
-	var history *Node
-	for i := range m.snapshot.Tree.Nodes {
-		if m.snapshot.Tree.Nodes[i].Type == "history" {
-			history = &m.snapshot.Tree.Nodes[i]
-			break
-		}
+	if p.printed == nil {
+		p.printed, p.queued, p.excluded, p.openSeen = map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	}
+	history := m.historyNode()
 	if history == nil || len(history.Messages) == 0 {
 		// No newest ID: no seen while this tree is current, also when a pending print completes.
 		p.newest = ""
-		m.client.blockSeen()
+		m.updateSeen("")
+		if history != nil && !p.opened && p.fetch == nil {
+			return m.finishOpen(nil, history.HasMore) // an empty thread opens with nothing
+		}
 		return nil
-	}
-	if p.printed == nil {
-		p.printed, p.queued = map[string]bool{}, map[string]bool{}
 	}
 	page := history.Messages
 	p.newest = page[len(page)-1].ID
-	if p.printed[p.newest] {
-		m.client.allowSeen("", m.snapshot.gen)
-	} else {
-		m.client.blockSeen()
+	if p.fetch != nil && m.followFetch(page) {
+		m.updateSeen("")
+		return nil // the fetch's end prints this tree
 	}
-	var batch printBatch
+	if !p.opened {
+		if history.HasMore && (m.full() || len(page) < openWindow) {
+			return m.startFetch(fetchOpen, page)
+		}
+		for _, x := range page {
+			p.openSeen[x.ID] = true
+		}
+		return tea.Batch(m.finishOpen(page, history.HasMore), m.printTree())
+	}
+	// A gap: the page holds no ID that the process knows. An excluded ID is known: it is older than
+	// the printed window, and the page continues from it.
+	if history.HasMore {
+		known := false
+		for _, x := range page {
+			known = known || p.printed[x.ID] || p.queued[x.ID] || p.excluded[x.ID]
+		}
+		if !known {
+			return m.startFetch(fetchGap, page)
+		}
+	}
+	m.updateSeen("")
+	var batch []Message
+	late := map[string]bool{}
 	printedAfter := false
 	for i := len(page) - 1; i >= 0; i-- {
 		msg := page[i]
@@ -91,26 +119,15 @@ func (m *model) printTree() tea.Cmd {
 			printedAfter = true
 			continue
 		}
-		if p.queued[msg.ID] {
+		if p.queued[msg.ID] || p.excluded[msg.ID] {
 			continue
 		}
-		p.queued[msg.ID] = true
-		batch.messages = append(batch.messages, msg)
+		batch = append([]Message{msg}, batch...)
 		if printedAfter {
-			if batch.late == nil {
-				batch.late = map[string]bool{}
-			}
-			batch.late[msg.ID] = true
+			late[msg.ID] = true
 		}
 	}
-	if len(batch.messages) == 0 {
-		return nil
-	}
-	for i, j := 0, len(batch.messages)-1; i < j; i, j = i+1, j-1 {
-		batch.messages[i], batch.messages[j] = batch.messages[j], batch.messages[i]
-	}
-	p.waiting = append(p.waiting, batch)
-	return m.nextPrint()
+	return m.queue(batch, late, "")
 }
 
 // nextPrint starts the oldest waiting batch when no print runs and the theme is known. The text
@@ -132,6 +149,9 @@ func (m *model) nextPrint() tea.Cmd {
 	p.waiting = p.waiting[1:]
 	p.active = true
 	var parts []string
+	if b.head != "" {
+		parts = append(parts, b.head+"\n") // the renderer's own text, one line
+	}
 	ids := make([]string, len(b.messages))
 	for i, msg := range b.messages {
 		ids[i] = msg.ID
@@ -166,7 +186,7 @@ func (m *model) printFinished(d printDone) tea.Cmd {
 		newest = newest || id == p.newest
 	}
 	if newest {
-		m.client.allowSeen("content", m.snapshot.gen)
+		m.updateSeen("content")
 	}
 	return m.nextPrint()
 }
@@ -201,6 +221,7 @@ func (m *model) beginFailure() ([]draftSave, bool) {
 	}
 	p.failed = true
 	p.waiting = nil
+	m.cancelFetch()
 	m.client.closeSeen()
 	return m.failureDrafts(), true
 }

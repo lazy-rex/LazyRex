@@ -83,14 +83,24 @@ type probeState struct {
 	mode     viewMode
 	waiting  int
 	reasonOK bool
+	fetching bool
+	opened   bool
+	excluded int
+	notice   string
+	composer string // the composer's text and draft revision
+	revision string
 }
 
 func (p probeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case probe:
-		s := probeState{printed: map[string]bool{}, failed: p.print.failed, mode: p.mode, waiting: len(p.print.waiting)}
+		s := probeState{printed: map[string]bool{}, failed: p.print.failed, mode: p.mode, waiting: len(p.print.waiting),
+			fetching: p.print.fetch != nil, opened: p.print.opened, excluded: len(p.print.excluded), notice: p.notice()}
 		for id := range p.print.printed {
 			s.printed[id] = true
+		}
+		if e := p.editors["composer"]; e != nil {
+			s.composer, s.revision = e.text(), e.Revision
 		}
 		p.client.mu.Lock()
 		s.seenOK, s.gate = p.client.seenOK, p.client.seenGate
@@ -143,6 +153,12 @@ func (r *printRun) holdNextPrint() chan struct{} {
 
 func startPrint(t *testing.T, term *testTerm) *printRun {
 	t.Helper()
+	return startPrintWith(t, term, nil)
+}
+
+// startPrintWith is startPrint with a setup of the model before the program starts.
+func startPrintWith(t *testing.T, term *testTerm, setup func(*model)) *printRun {
+	t.Helper()
 	out := newPaneOut(term)
 	client := &viewClient{ViewID: "v1", Plugin: "messaging", Route: "/thread/42", Requests: make(chan mutation, 16), seen: make(chan struct{}, 1)}
 	client.outFailed = out.Failed
@@ -150,6 +166,9 @@ func startPrint(t *testing.T, term *testTerm) *printRun {
 	m := newModel(client)
 	m.ready = true
 	m.print.out = out
+	if setup != nil {
+		setup(m)
+	}
 	r := &printRun{t: t, m: m, out: out, term: term, done: make(chan struct{}), hold: &printHold{}}
 	pm := probeModel{model: m, term: term, texts: map[string]string{}, receipts: &r.receipts, hold: r.hold}
 	for i := 1; i <= 9; i++ {

@@ -3,8 +3,9 @@
 -- SQL row stage(n): 0 is a read-only thread (a history node and a notice), 1 is an error tree with
 -- 12 widget actions, more than a 10-row pane holds, 2 is a thread with 2 widget actions and a
 -- composer with a saved draft (so Send is enabled), 3 is a thread whose history holds the rows of
--- msgs(id, author, text) in insert order. An action records its name in clicked(name); a send
--- records 'send'.
+-- msgs(id, author, text) in insert order, 4 is a thread whose history holds the newest 40 rows of
+-- msgs with has_more and total; view.history serves the older rows in pages of 40. An action
+-- records its name in clicked(name); a send records 'send'.
 -- A command opens only a /forms/ or /panels/ route (hub forms.go). The renderer decides its mode
 -- from the tree, never from the route, so stage 0 is a thread frame on this form route.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
@@ -16,6 +17,28 @@ local function hub(action, args)
     error({code = 'hub_failed', message = type(err) == 'table' and (err.message or '') or tostring(err)})
   end
   return res.result
+end
+
+local page_size = 40
+
+-- page returns up to 40 rows of msgs before the row of the ID before (all rows when before is nil),
+-- oldest first, and whether older rows exist.
+local function page(before, render)
+  local where, params = '', {}
+  if before then
+    where, params = 'WHERE rowid < (SELECT rowid FROM msgs WHERE id = ?)', {before}
+  end
+  local rows = hub('hub.sql.query', {sql = 'SELECT rowid, id, author, text FROM msgs ' .. where .. ' ORDER BY rowid DESC LIMIT ' .. page_size,
+    params = params, render = render}).rows
+  local messages = {}
+  for i = #rows, 1, -1 do
+    messages[#messages + 1] = {id = rows[i][2], author = rows[i][3], text = rows[i][4]}
+  end
+  local more = false
+  if #rows > 0 then
+    more = #hub('hub.sql.query', {sql = 'SELECT 1 FROM msgs WHERE rowid < ? LIMIT 1', params = {rows[#rows][1]}, render = render}).rows > 0
+  end
+  return messages, more
 end
 
 local function render(args)
@@ -34,6 +57,14 @@ local function render(args)
     return {tree = {title = 'Mode lab', nodes = {
       {id = 'notice', type = 'widget', text = 'LAB-NOTICE'},
       {id = 'history', type = 'history', page_size = 500, messages = messages},
+    }}}
+  end
+  if row[1] == 4 then
+    local messages, more = page(nil, args.render)
+    local total = hub('hub.sql.query', {sql = 'SELECT count(*) FROM msgs', params = {}, render = args.render}).rows[1][1]
+    return {tree = {title = 'Mode lab', nodes = {
+      {id = 'notice', type = 'widget', text = 'LAB-NOTICE'},
+      {id = 'history', type = 'history', page_size = page_size, messages = messages, has_more = more, total = total},
     }}}
   end
   if row[1] == 2 then
@@ -59,6 +90,7 @@ rex.call('client.keymap', {actions = {
   {name = 'view.action', kind = 'client', title = 'Action', args = obj},
   {name = 'view.send', kind = 'client', title = 'Send', args = obj},
   {name = 'view.draft.save', kind = 'client', title = 'Save draft', args = obj},
+  {name = 'view.history', kind = 'client', title = 'History', args = obj},
 }})
 rex.on('client_perform_requested', function(ctx, ev)
   local ok, result = pcall(function()
@@ -71,6 +103,10 @@ rex.on('client_perform_requested', function(ctx, ev)
     if ev.action == 'view.send' then
       hub('hub.sql.exec', {sql = 'INSERT INTO clicked (name) VALUES (?)', params = {'send'}})
       return {}
+    end
+    if ev.action == 'view.history' then
+      local messages, more = page(ev.args.before)
+      return {messages = messages, has_more = more}
     end
     if ev.action:sub(1, 5) == 'view.' then return {} end
     error({code = 'unknown_action', message = ev.action})
