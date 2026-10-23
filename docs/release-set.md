@@ -74,7 +74,10 @@ There are three kinds of item:
   must not be a `hub.*` action. The item has only `kind`, `action`, `args`, `expect` and `until`.
 - `view`: the user path. A lab pane in `pane_dir` (must start with `<LAB>/`) runs the palette
   `command`. A lab renderer attaches the view at `route` and sends the node action `action` on
-  `node_id`, with `input` and `operation_key`. Each `operation_key` must be unique in the file. The
+  `node_id`, with `input` and `operation_key`. The lab renderer is the test renderer of the tool
+  (`testview`), not the renderer of the candidate. Each hub start (`dev.sh`) builds the candidate
+  renderer at the config `view` path, so the tool writes its wrapper there again before each
+  view item. Each `operation_key` must be unique in the file. The
   tool replays each view operation with the same key. The replay must give no data change.
 - `sql` (probe only): a read-only SELECT on the lab plugin database, with `params`. `rows` must be
   exactly equal. Use `[]` for no row.

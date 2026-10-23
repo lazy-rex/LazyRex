@@ -405,13 +405,23 @@ func (h *rehearsal) sqlItem(e *relSetEntry, it relSetItem) error {
 
 // labViewWrapper writes the lab renderer: <lab>/view runs this tool's test renderer (testview) on
 // the lab server. A lab transform: the lab has no user, and the tool drives views through it.
-func labViewWrapper(lab, tool, server string) (relRewrite, error) {
-	p := filepath.Join(lab, "view")
-	script := fmt.Sprintf("#!/bin/sh\nREX_SERVER=%s exec %s testview \"$@\"\n", shQuote(server), shQuote(tool))
-	if err := os.WriteFile(p, []byte(script), 0o700); err != nil {
+func labViewWrapper(lab, tool string) (relRewrite, error) {
+	if err := writeLabView(lab, tool); err != nil {
 		return relRewrite{}, err
 	}
-	return relRewrite{Key: "lab.view", Lab: p + " (testview of the tool, lab only)"}, nil
+	return relRewrite{Key: "lab.view", Lab: filepath.Join(lab, "view") + " (testview of the tool, lab only)"}, nil
+}
+
+// writeLabView writes <lab>/view with a rename, as dev.sh installs a renderer. Each hub start
+// (dev.sh) builds the real renderer over that path, so each view item writes the wrapper again.
+func writeLabView(lab, tool string) error {
+	p := filepath.Join(lab, "view")
+	server := "unix://" + filepath.Join(lab, "rex.sock")
+	script := fmt.Sprintf("#!/bin/sh\nREX_SERVER=%s exec %s testview \"$@\"\n", shQuote(server), shQuote(tool))
+	if err := os.WriteFile(p+".new", []byte(script), 0o700); err != nil {
+		return err
+	}
+	return os.Rename(p+".new", p)
 }
 
 // viewItem runs one view item as the user (plan r3.1, 2b): a source pane in pane_dir, the palette
@@ -429,6 +439,10 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	key := it.OperationKey
 	if phase != "seed" {
 		key += "-" + phase
+	}
+	// The hub start built the real renderer over <lab>/view; the hub execs that path for this view.
+	if err := writeLabView(h.lab, h.tool); err != nil {
+		return relFail("the lab renderer: %v", err)
 	}
 	var hubClient string
 	if err := h.withLab(func(lr *releaser) error {
@@ -478,15 +492,15 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if json.Unmarshal(raw, &opened) != nil || opened.ViewID == "" {
 		return relFail("hub.palette.run %s gave no view: %s", it.Command, raw)
 	}
-	tv := ""
+	tv, rerr := "", error(nil)
 	for i := 0; i < 100 && tv == ""; i++ {
-		tv, _ = c.resolveClient(ctx, "lazyrex-testview:"+opened.ViewID)
+		tv, rerr = c.resolveClient(ctx, "lazyrex-testview:"+opened.ViewID)
 		if tv == "" {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
 	if tv == "" {
-		return relFail("no lab renderer attached the view %s", opened.ViewID)
+		return relFail("no lab renderer attached the view %s: %v", opened.ViewID, rerr)
 	}
 	defer func() {
 		if _, cerr := c.perform(ctx, tv, "testview.close", map[string]any{}); cerr != nil && err == nil {
@@ -755,7 +769,7 @@ func (h *rehearsal) setLabFiles(lab, cfgPath string) ([]relRewrite, error) {
 		}
 	}
 	if views {
-		rw, err := labViewWrapper(lab, h.tool, "unix://"+filepath.Join(lab, "rex.sock"))
+		rw, err := labViewWrapper(lab, h.tool)
 		if err != nil {
 			return nil, err
 		}
