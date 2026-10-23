@@ -192,6 +192,43 @@ func TestReplacementStaysInline(t *testing.T) {
 	}
 }
 
+// TestComposerGrowsWithItsText (lead-comp2): in a thread view the composer input shows one row for
+// each line of its text, up to composerMaxRows, and then scrolls with the cursor line on screen.
+// The live region bound min(threadLiveRows, height - 2) also caps it, so the frame stays at most
+// the pane height minus 1. The input is the content width minus the box (pane width - 10).
+func TestComposerGrowsWithItsText(t *testing.T) {
+	lines := func(n int) string {
+		var s []string
+		for i := 1; i <= n; i++ {
+			s = append(s, fmt.Sprintf("LINE-%d", i))
+		}
+		return strings.Join(s, "\n")
+	}
+	for _, tc := range []struct{ width, height, text, shown int }{
+		{80, 24, 1, 1}, {80, 24, 3, 3}, {80, 24, 6, 6}, {80, 24, 9, 6},
+		{48, 23, 9, 6}, // the iOS pane with the keyboard open (coord ios-measure-1)
+		{80, 9, 9, 3},  // bound min(10, 7): 7 rows less the space row, the borders and the footer
+	} {
+		m := modeModel(tc.height)
+		m.apply(treeOf(tvHistory, tvComposer))
+		m.Update(tea.WindowSizeMsg{Width: tc.width, Height: tc.height})
+		m.editors["composer"].Area.SetValue(lines(tc.text))
+		v := ansi.Strip(m.View().Content)
+		if n := strings.Count(v, "LINE-"); n != tc.shown {
+			t.Errorf("%dx%d, %d lines: %d input rows on screen, want %d:\n%s", tc.width, tc.height, tc.text, n, tc.shown, v)
+		}
+		if !strings.Contains(v, fmt.Sprintf("LINE-%d ", tc.text)) {
+			t.Errorf("%dx%d, %d lines: the cursor line is not on screen:\n%s", tc.width, tc.height, tc.text, v)
+		}
+		if n := len(strings.Split(v, "\n")); n > tc.height-1 {
+			t.Errorf("%dx%d: %d frame rows, want at most %d", tc.width, tc.height, n, tc.height-1)
+		}
+		if w := m.editors["composer"].Area.Width(); w != tc.width-10 {
+			t.Errorf("%dx%d: input width %d, want %d", tc.width, tc.height, w, tc.width-10)
+		}
+	}
+}
+
 // TestThreadLiveRegionIsBounded: beside a history node, the composer and the other nodes get at
 // most threadLiveRows rows; the status line comes after them. No history row is drawn.
 func TestThreadLiveRegionIsBounded(t *testing.T) {
@@ -419,7 +456,7 @@ func TestQuitFrameKeepsTheScreen(t *testing.T) {
 // TestShortThreadPaneKeepsEditorAndSend (v1.2 item 1f): in a 6-row pane at 80 and 40 columns, a
 // thread tree with two actions and a composer with a draft is at most 5 rows. Tab and Shift+Tab
 // reach every control and wrap, the focused control is on screen, and the editor row and Send stay
-// together (at 40 columns the footer has a second, decorative hint row). A resize keeps the focus.
+// together. A resize keeps the focus.
 func TestShortThreadPaneKeepsEditorAndSend(t *testing.T) {
 	for _, width := range []int{80, 40} {
 		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
@@ -541,7 +578,7 @@ func TestReviewNarrowShortComposer(t *testing.T) {
 }
 
 // TestNarrowComposerTargets: at 40 columns in alt mode, the editor row, the top border and Send keep
-// their targets, and the second hint row has none. A click on the editor row focuses the editor.
+// their targets, and the bottom border has none. A click on the editor row focuses the editor.
 func TestNarrowComposerTargets(t *testing.T) {
 	m := modeModel(30)
 	m.apply(treeOf(tvAction("w1"), tvComposer))
@@ -562,7 +599,7 @@ func TestNarrowComposerTargets(t *testing.T) {
 		t.Fatalf("no row with %q", text)
 		return "", 0
 	}
-	for text, want := range map[string]string{"╭": "edit:composer", "DRAFT-TEXT": "edit:composer", "Send": "composer:send", "Shift+Enter ↵": "", "╰": ""} {
+	for text, want := range map[string]string{"╭": "edit:composer", "DRAFT-TEXT": "edit:composer", "Send": "composer:send", "╰": ""} {
 		if id, _ := target(text); id != want {
 			t.Errorf("the row with %q has target %q, want %q", text, id, want)
 		}

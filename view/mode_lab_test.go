@@ -98,7 +98,7 @@ func TestFocusWindowLab(t *testing.T) {
 // TestShortPaneLab (v1.2 item 1f): a real 6-row pane in thread mode gets a tree with a history
 // node, 2 actions and a composer with a draft. The focused control is in the last 5 rows (the
 // frame ends in the status line). Tab and Shift+Tab reach every control, and the editor row and
-// Send are on screen together, at 80 and at 40 columns (where the footer has a second hint row). A
+// Send are on screen together, at 80 and at 40 columns. A
 // resize from 30 to 6 rows keeps the focus at both widths; at 40 columns, Tab then Enter runs Send. The unit tests count the frame rows: block capture also returns the scrollback, and a
 // shrink moves the top rows of the tall frame there (a 6-row pane captured 25 lines, Linux lab
 // 2026-10-23).
@@ -583,6 +583,72 @@ func TestLateMessageLab(t *testing.T) {
 				t.Fatalf("the line above LATE-INSIDE is not its header with the late mark after the author:\n%s", last)
 			}
 		}
+	}
+}
+
+// TestComposerGrowLab (lead-comp2): a real 80x24 pane in thread mode with the stage 2 composer.
+// Seven typed lines grow the input to its 6 rows (the frame grows), and deleting them shrinks it
+// again. After each change the capture (scrollback and screen) holds each live node and each typed
+// line at most once, and after the delete no typed line stays: the live region's height change
+// leaves no stale rows.
+func TestComposerGrowLab(t *testing.T) {
+	l := newModeLab(t)
+	l.sql("UPDATE stage SET n = 2", true)
+	pane := l.open("lazyrex_modelab_mode")
+	l.resize(pane, 80, 24)
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last capture:\n%s", last)
+		}
+	})
+	l.waitFor("the composer frame", 30*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Ctrl+Q quit")
+	})
+	once := func(step string, texts ...string) {
+		t.Helper()
+		for _, text := range append([]string{"╭", "Action w1", "Action w2"}, texts...) {
+			if n := strings.Count(last, text); n > 1 {
+				t.Errorf("%s: %d copies of %q on the pane, want at most 1", step, n, text)
+			}
+		}
+	}
+	// The renderer focuses the composer's editor first (model.apply), with the cursor at the end.
+	keys := []string{"send-key", "-s", l.session, "-b", pane}
+	var typed []string
+	for i := 2; i <= 8; i++ {
+		keys = append(keys, "shift+enter", "L", fmt.Sprint(i))
+		typed = append(typed, fmt.Sprintf("│ L%d ", i))
+	}
+	l.must(keys...)
+	l.waitFor("the grown composer", 10*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "│ L8 ")
+	})
+	time.Sleep(time.Second) // the frames for the earlier lines are drawn
+	last = l.screen(pane)
+	t.Logf("grown capture:\n%s", last)
+	once("grown", typed...)
+	// The two actions share the 10-row bound, so the input shows 2 to 6 of its 8 lines.
+	if n := strings.Count(last, "│ L"); n < 2 || n > 6 {
+		t.Errorf("grown: %d typed input rows on the pane, want 2 to 6", n)
+	}
+	back := []string{"send-key", "-s", l.session, "-b", pane}
+	for range 7 * 3 {
+		back = append(back, "backspace")
+	}
+	l.must(back...)
+	l.waitFor("the shrunk composer", 10*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "│ DRAFT-TEXT ") && !strings.Contains(last, "│ L8 ")
+	})
+	time.Sleep(time.Second)
+	last = l.screen(pane)
+	t.Logf("shrunk capture:\n%s", last)
+	once("shrunk", "DRAFT-TEXT")
+	if strings.Contains(last, "│ L") {
+		t.Errorf("shrunk: a typed line stays on the pane after the delete")
 	}
 }
 

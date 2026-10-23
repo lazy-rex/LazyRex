@@ -425,7 +425,7 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 			border = p.accent
 		}
 		area := m.editorView(e)
-		hint, second := composerHint(width)
+		hint := composerHint(width)
 		sendWidth := min(10, width-4)
 		var sendControl *control
 		if n.SendAction != nil && n.SendAction.Enabled && e.Area.Value() != "" && !e.Conflict && !e.Sending && !e.WantSend {
@@ -434,23 +434,18 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 		innerWidth := width - 4
 		hintWidth := max(0, innerWidth-sendWidth-1)
 		hint = ansi.Truncate(hint, hintWidth, "")
-		// The footer is the hint and the one-row Send button. A narrow pane adds a second hint row.
+		// The footer is the hint and the one-row Send button.
 		muted := lipgloss.NewStyle().Foreground(p.muted)
 		footer := muted.Render(hint) + strings.Repeat(" ", max(0, innerWidth-sendWidth-lipgloss.Width(hint))) + m.buttonView(n.ID+":send", "Send ↑", sendWidth, true, sendControl != nil)
-		footerRows := 1
-		if second != "" {
-			footer += "\n" + muted.Render(ansi.Truncate(second, hintWidth, ""))
-			footerRows = 2
-		}
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).Padding(0, 1).Render(area + "\n" + footer)
 		lines := strings.Split(box, "\n")
-		sendRow := len(lines) - 1 - footerRows
+		sendRow := len(lines) - 2 // the footer row, above the bottom border
 		for i, line := range lines {
 			ctl := c
 			if i == sendRow {
 				ctl = sendControl
 			}
-			if i > sendRow { // the narrow second hint row and the bottom border are decorative
+			if i > sendRow { // the bottom border is decorative
 				ctl = nil
 			}
 			add(line, fmt.Sprintf("%s:edit:%d", n.ID, i), ctl)
