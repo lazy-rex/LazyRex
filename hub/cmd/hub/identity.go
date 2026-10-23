@@ -1,8 +1,8 @@
 package main
 
 // Agent identity: an agent is its conversation. The hub records which conversation runs in which
-// pane, and an append-only lifecycle log. Messages address identities; a spawn's legacy agent ID
-// reaches its identity through identity_aliases.
+// pane, and an append-only lifecycle log. Messages address identities; an agent spawn's address
+// "spawn:<spawn_id>" reaches the first identity that its pane reported (spawns.identity).
 //
 // An identity is "<kind>:<conversation id>". Reports come from agent hooks (SessionStart,
 // UserPromptSubmit; sources hookSources). Ordering: reports are ordered by the start time of the
@@ -39,9 +39,6 @@ CREATE TABLE IF NOT EXISTS identity_panes (block_id TEXT PRIMARY KEY, session_id
 CREATE TABLE IF NOT EXISTS identities (identity TEXT PRIMARY KEY, kind TEXT NOT NULL, conversation_id TEXT NOT NULL,
   state TEXT NOT NULL, block_id TEXT NOT NULL, predecessor TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '',
   created TEXT NOT NULL, updated TEXT NOT NULL);
--- A legacy agent (a roster or spawn name) taken over by the first identity reported from its pane.
--- Permanent: an alias follows the conversation, not the pane.
-CREATE TABLE IF NOT EXISTS identity_aliases (legacy TEXT PRIMARY KEY, identity TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS identity_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, identity TEXT NOT NULL,
   block_id TEXT NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);
 -- hub.workers reads identity_seen of each agent worker from the log rows of its block (paneSeen).
@@ -129,20 +126,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 
 	h.identMu.Lock()
 	defer h.identMu.Unlock()
-	// The agent bound to the pane, for the result. Its join binding may name an older process: the
-	// pane row below decides the process generation. An opener writes the in-memory binding after
-	// its commit, so the stored spawn row of this pane also counts.
-	agentID := ""
-	h.mu.Lock()
-	for _, a := range h.agents {
-		if a.BlockID == block {
-			agentID = a.ID
-		}
-	}
-	h.mu.Unlock()
-	if agentID == "" {
-		agentID = spawnAgent
-	}
+	// The address of the agent spawn that is open in this pane ("spawn:<id>"), or "".
+	agentID := spawnAgent
 	result := func(state, pred string) map[string]any {
 		r := map[string]any{"identity": id, "state": state, "predecessor": nil, "name": name,
 			"pane": map[string]any{"session_id": sess, "block_id": block}, "agent_id": nil}
@@ -230,10 +215,15 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 				return nil, err
 			}
 		}
+		// A spawn opened after the pane's first report (an adoption on a later report) binds now.
+		bound, err := h.bindSpawn(ctx, tx, agentID, id, block)
+		if err != nil {
+			return nil, err
+		}
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
-		if known && oldName != name {
+		if bound || known && oldName != name {
 			h.identityChanged(ctx)
 		}
 		return result("unchanged", pred), nil
@@ -267,16 +257,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	if err := h.identityLog(ctx, tx, id, block, event, detail); err != nil {
 		return nil, err
 	}
-	if agentID != "" && agentID != "user" {
-		res, err := tx.ExecContext(ctx, `INSERT INTO identity_aliases VALUES (?, ?, ?) ON CONFLICT (legacy) DO NOTHING`, agentID, id, now)
-		if err != nil {
-			return nil, err
-		}
-		if n, _ := res.RowsAffected(); n == 1 {
-			if err := h.identityLog(ctx, tx, id, block, "aliased", map[string]any{"legacy": agentID}); err != nil {
-				return nil, err
-			}
-		}
+	if _, err := h.bindSpawn(ctx, tx, agentID, id, block); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -284,6 +266,40 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	h.identityChanged(ctx)
 	log.Printf("identity %s %s in %s (source %s, previous %q)", id, event, block, source, row.current)
 	return result("current", pred), nil
+}
+
+// spawnIdentity is the identity bound to the spawn address id, or id itself: another ID, or a
+// spawn that has not reported yet.
+func (h *Hub) spawnIdentity(ctx context.Context, id string) string {
+	if spawnID, ok := strings.CutPrefix(id, "spawn:"); ok {
+		var bound string
+		if h.db.QueryRowContext(ctx, `SELECT identity FROM spawns WHERE spawn_id = ? AND agent_id = ?`, spawnID, id).Scan(&bound) == nil && bound != "" {
+			return bound
+		}
+	}
+	return id
+}
+
+// spawnAddress is the address of an agent spawn: a message or notice to it goes to the first
+// identity that its pane reported.
+func spawnAddress(spawnID string) string { return "spawn:" + spawnID }
+
+// bindSpawn binds the agent spawn addr ("spawn:<id>", open in block) to id if it has no identity
+// yet: the first identity that the spawn's pane reports stays its identity, also after a /clear and
+// after the spawn closes (lead-d-r1, lead-d-r2). It reports whether it bound.
+func (h *Hub) bindSpawn(ctx context.Context, tx *sql.Tx, addr, id, block string) (bool, error) {
+	spawnID, ok := strings.CutPrefix(addr, "spawn:")
+	if !ok {
+		return false, nil
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE spawns SET identity = ? WHERE spawn_id = ? AND agent_id = ? AND identity = ''`, id, spawnID, addr)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	return true, h.identityLog(ctx, tx, id, block, "bound", map[string]any{"spawn_id": spawnID})
 }
 
 // paneOfHint finds the caller's pane, the hinted block first. The hint is not trusted: the pid
@@ -542,19 +558,29 @@ func (h *Hub) identityPaneClosed(ctx context.Context, block string) {
 
 // identityList handles hub.identity.list {log?: n}: every identity, and the last n log entries.
 func (h *Hub) identityList(ctx context.Context, args map[string]any) (any, error) {
+	// The address of the agent spawn open in each pane. Read first: the store has one connection.
+	agentOf := map[string]string{}
+	srows, err := h.db.QueryContext(ctx, `SELECT block_id, agent_id FROM spawns WHERE status = 'open' AND agent_id LIKE 'spawn:%'`)
+	if err != nil {
+		return nil, err
+	}
+	for srows.Next() {
+		var block, addr string
+		if err := srows.Scan(&block, &addr); err != nil {
+			srows.Close()
+			return nil, err
+		}
+		agentOf[block] = addr
+	}
+	srows.Close()
+	if err := srows.Err(); err != nil {
+		return nil, err
+	}
 	rows, err := h.db.QueryContext(ctx, `SELECT identity, kind, conversation_id, state, block_id, predecessor, name, created, updated FROM identities ORDER BY created`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	h.mu.Lock()
-	agentOf := map[string]string{}
-	for _, a := range h.agents {
-		if a.BlockID != "" {
-			agentOf[a.BlockID] = a.ID
-		}
-	}
-	h.mu.Unlock()
 	list := []any{}
 	for rows.Next() {
 		var id, kind, conv, state, block, pred, name, created, updated string
@@ -607,8 +633,8 @@ func (h *Hub) identityChanged(ctx context.Context) {
 // test replaces it.
 var identitySyncGap = func() {}
 
-// identitySync rebuilds h.idents and h.aliases from the store. A current identity is bound to its
-// pane's process generation; its program status is read once when its pane changes.
+// identitySync rebuilds h.idents and h.spawnAddrs from the store. A current identity is bound to
+// its pane's process generation; its program status is read once when its pane changes.
 func (h *Hub) identitySync(ctx context.Context) error {
 	rows, err := h.db.QueryContext(ctx, `SELECT i.identity, i.kind, i.state, i.name, COALESCE(p.block_id, ''), COALESCE(p.session_id, ''),
 		COALESCE(p.child_pid, 0), COALESCE(p.child_start, '') FROM identities i LEFT JOIN identity_panes p ON p.current = i.identity`)
@@ -628,50 +654,18 @@ func (h *Hub) identitySync(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	aliases := map[string]string{}
-	arows, err := h.db.QueryContext(ctx, `SELECT legacy, identity FROM identity_aliases`)
-	if err != nil {
+	if err := h.spawnAddrsLoad(ctx); err != nil {
 		return err
 	}
-	for arows.Next() {
-		var l, id string
-		if arows.Scan(&l, &id) == nil {
-			aliases[l] = id
-		}
-	}
-	arows.Close()
 	// Keep what memory knows for an unchanged binding: status, delivery suppression, connection.
-	// A current identity keeps the readiness policy (status record) of the legacy agent bound to
-	// its pane. A new identity record that took over that agent (its alias) also starts with the
-	// agent's delivery suppression: a notice already written to the pane for the legacy ID is not
-	// written again after the redirect. Another conversation in the same pane inherits nothing.
 	var fresh []*Agent
 	h.mu.Lock()
-	legacy := map[string]*Agent{}
-	for _, a := range next {
-		if a.IdState != "current" {
-			continue
-		}
-		for _, l := range h.agents {
-			if l.BlockID == a.BlockID {
-				a.StatusRecord = l.StatusRecord
-				if aliases[l.ID] == a.ID {
-					legacy[a.ID] = l // only the identity that took over this legacy ID
-				}
-			}
-		}
-	}
 	kept := map[string]*Agent{}
 	for id, a := range next {
-		if old := h.idents[id]; old != nil && old.BlockID == a.BlockID && old.ChildPID == a.ChildPID && old.StatusRecord == a.StatusRecord {
+		if old := h.idents[id]; old != nil && old.BlockID == a.BlockID && old.ChildPID == a.ChildPID {
 			a.delivered, a.ClientID = old.delivered, old.ClientID
 			kept[id] = old
 			continue
-		}
-		if l := legacy[id]; l != nil {
-			for ns, rev := range l.delivered {
-				a.delivered[ns] = rev
-			}
 		}
 		if a.live() {
 			fresh = append(fresh, a)
@@ -688,37 +682,78 @@ func (h *Hub) identitySync(ctx context.Context) error {
 	for id, old := range kept {
 		next[id].State, next[id].Record = old.State, old.Record
 	}
-	h.idents, h.aliases = next, aliases
+	h.idents = next
 	h.syncPrompts()
 	h.mu.Unlock()
 	return nil
 }
 
-// aliasesOf lists the legacy IDs that an identity took over. h.mu must be held.
-func (h *Hub) aliasesOf(id string) []string {
-	out := []string{}
-	for l, i := range h.aliases {
-		if i == id {
-			out = append(out, l)
-		}
-	}
-	sort.Strings(out)
-	return out
+// spawnAddr is an agent spawn's address "spawn:<spawn_id>" as the hub knows it: the spawn's
+// title, the first identity that its pane reported (or ""), and whether the spawn ended (closed or
+// failed). An address that never bound and ended takes no message or notice (lead-d-r1).
+type spawnAddr struct {
+	spawnID, name, identity string
+	ended                   bool
 }
 
-// noticeTarget is the agent record that receives a notice for id. A legacy ID that an identity took
-// over always goes to that identity: while the identity is detached or superseded, the notice waits.
-// The legacy record may still name the same pane, which can run another conversation after /clear.
-// h.mu must be held.
+// spawnAddrsLoad reads every agent spawn address from the store. It logs each address that ended
+// before its first report since the last load, and then hints "agents": a plugin that holds items
+// for that address ends them.
+func (h *Hub) spawnAddrsLoad(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT spawn_id, title, identity, status FROM spawns WHERE agent_id LIKE 'spawn:%'`)
+	if err != nil {
+		return err
+	}
+	next := map[string]*spawnAddr{}
+	for rows.Next() {
+		var sa spawnAddr
+		var status string
+		if err := rows.Scan(&sa.spawnID, &sa.name, &sa.identity, &status); err != nil {
+			rows.Close()
+			return err
+		}
+		sa.ended = status == "closed" || status == "failed"
+		next[spawnAddress(sa.spawnID)] = &sa
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	var gone []string
+	for addr, sa := range next {
+		if old := h.spawnAddrs[addr]; sa.identity == "" && sa.ended && old != nil && !old.ended {
+			gone = append(gone, addr)
+		}
+	}
+	h.spawnAddrs = next
+	h.mu.Unlock()
+	for _, addr := range gone {
+		log.Printf("agent spawn %s ended before its agent reported: its messages and notices are not delivered", addr)
+	}
+	if len(gone) > 0 {
+		h.changed("agents")
+	}
+	return nil
+}
+
+// spawnEnded loads the spawn addresses again after an agent spawn closed or failed.
+func (h *Hub) spawnEnded(ctx context.Context) {
+	if err := h.spawnAddrsLoad(ctx); err != nil {
+		log.Printf("spawn addresses: %v", err)
+	}
+}
+
+// noticeTarget is the agent record that receives a notice for id: an identity, or for a spawn
+// address the identity that it bound. A notice to a spawn waits until its first report, and goes
+// only while that identity is current: after a /clear the address still names the first
+// conversation. h.mu must be held.
 func (h *Hub) noticeTarget(id string) *Agent {
-	if i, ok := h.aliases[id]; ok {
-		if a := h.idents[i]; a != nil && a.IdState == "current" {
+	if sa := h.spawnAddrs[id]; sa != nil {
+		if a := h.idents[sa.identity]; a != nil && a.IdState == "current" {
 			return a
 		}
 		return nil
-	}
-	if a := h.agents[id]; a != nil {
-		return a
 	}
 	return h.idents[id]
 }
@@ -737,34 +772,17 @@ func identsOf(m map[string]*Agent) []*Agent {
 	return out
 }
 
-// agentsList handles hub.agents {all?}: "user", every current or detached identity (all: also the
-// superseded ones), and the legacy agents that no identity took over. Each identity lists its aliases.
+// agentsList handles hub.agents {all?}: "user", then every current or detached identity. all:
+// also the superseded identities, and each agent spawn address that waits for its first report
+// (state "starting"), so that a message to it can wait (lead-d-r1).
 func (h *Hub) agentsList(args map[string]any) any {
 	all, _ := args["all"].(bool)
 	only, _ := args["session_id"].(string) // optional: only agents whose pane is in this session
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	list := []any{}
-	for _, id := range h.agentOrder {
-		a := h.agents[id]
-		if _, taken := h.aliases[id]; taken && !all {
-			continue
-		}
-		if only != "" && a.Session != only {
-			continue
-		}
-		e := map[string]any{"id": a.ID, "name": a.Name, "joined": a.live(), "ready": a.ready(), "legacy": id != "user", "session_id": a.Session}
-		if a.live() {
-			e["activity"] = a.State
-			e["block_id"] = a.BlockID
-		}
-		if a.Profile != "" {
-			e["profile"] = a.Profile
-		}
-		if i, taken := h.aliases[id]; taken {
-			e["alias_of"] = i
-		}
-		list = append(list, e)
+	if only == "" {
+		list = append(list, map[string]any{"id": "user", "name": "User", "joined": false, "ready": false, "session_id": ""})
 	}
 	for _, a := range identsOf(h.idents) {
 		if a.IdState == "superseded" && !all {
@@ -778,30 +796,59 @@ func (h *Hub) agentsList(args map[string]any) any {
 			name = a.ID // an unnamed tab: readers need a nonempty name (messaging tab titles)
 		}
 		e := map[string]any{"id": a.ID, "name": name, "kind": a.Kind, "state": a.IdState,
-			"joined": a.IdState == "current" && a.live(), "ready": a.IdState == "current" && a.ready(), "aliases": h.aliasesOf(a.ID), "session_id": a.Session}
+			"joined": a.IdState == "current" && a.live(), "ready": a.IdState == "current" && a.ready(), "session_id": a.Session}
 		if a.IdState == "current" && a.live() {
 			e["activity"] = a.State // the agent's program status: idle, working, done, …; "" when unknown
 			e["block_id"] = a.BlockID
 		}
 		list = append(list, e)
 	}
+	if all && only == "" {
+		addrs := make([]string, 0, len(h.spawnAddrs))
+		for addr, sa := range h.spawnAddrs {
+			if sa.identity == "" && !sa.ended {
+				addrs = append(addrs, addr)
+			}
+		}
+		sort.Strings(addrs)
+		for _, addr := range addrs {
+			sa := h.spawnAddrs[addr]
+			list = append(list, map[string]any{"id": addr, "name": sa.name, "state": "starting", "spawn_id": sa.spawnID, "joined": false, "ready": false, "session_id": ""})
+		}
+	}
 	return map[string]any{"agents": list}
 }
 
-// resolveAgent handles hub.agents.resolve {to}: an exact ID, a legacy ID's identity, a unique
-// identity prefix (at least 4 characters after the colon), or a unique name among current identities.
-func (h *Hub) resolveAgent(args map[string]any) (any, error) {
+// resolveAgent handles hub.agents.resolve {to}: an exact ID, a spawn address, a unique identity
+// prefix (at least 4 characters after the colon), or a unique name among current identities. A
+// spawn address gives the first identity that its pane reported; before that report, the address
+// itself (bound false) while the spawn has not ended (lead-d-r1).
+func (h *Hub) resolveAgent(ctx context.Context, args map[string]any) (any, error) {
 	to, _ := args["to"].(string)
 	to = strings.TrimSpace(to)
 	if to == "" {
 		return nil, bad("invalid: to is required")
 	}
+	if spawnID, ok := strings.CutPrefix(to, "spawn:"); ok {
+		var agent, identity, status string
+		err := h.db.QueryRowContext(ctx, `SELECT agent_id, identity, status FROM spawns WHERE spawn_id = ?`, spawnID).Scan(&agent, &identity, &status)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, bad("unknown: no spawn %s", spawnID)
+		case err != nil:
+			return nil, err
+		case agent != to:
+			return nil, refuse("invalid_target", "spawn %s is not an agent spawn: it never reports an identity", spawnID)
+		case identity != "":
+			return map[string]any{"id": identity, "via": "spawn"}, nil
+		case status == "closed" || status == "failed":
+			return nil, refuse("not_delivered", "the spawn ended before its agent reported")
+		}
+		return map[string]any{"id": to, "via": "spawn", "bound": false}, nil
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if i, ok := h.aliases[to]; ok {
-		return map[string]any{"id": i, "via": "alias"}, nil
-	}
-	if h.idents[to] != nil || h.agents[to] != nil {
+	if to == "user" || h.idents[to] != nil {
 		return map[string]any{"id": to, "via": "id"}, nil
 	}
 	candidates := func(match func(a *Agent) bool) []*Agent {
@@ -834,12 +881,11 @@ func (h *Hub) resolveAgent(args map[string]any) (any, error) {
 	return nil, bad("unknown: no agent matches %q", to)
 }
 
-// aliasSet is every ID of one agent: its identity and each legacy ID that the identity took over
-// (identity_aliases, read now). Spawn rows keep the ID that made them; replay and stop accept any
-// ID of the set (the coordinator, 2026-10-19), so they follow a migration, a resume back and forth
-// between panes, and aliases from before this rule, with no row rewrite.
-func (h *Hub) aliasSet(ctx context.Context, id string) ([]string, error) {
-	return aliasSetIn(ctx, h.db, id)
+// agentIDs is every ID of one agent: its identity and each spawn address bound to that identity
+// (spawns.identity, read now). A grant or a key can name either, so replay, stop and grants accept
+// any ID of the set.
+func (h *Hub) agentIDs(ctx context.Context, id string) ([]string, error) {
+	return agentIDsIn(ctx, h.db, id)
 }
 
 // dbQuerier is *sql.DB or *sql.Tx.
@@ -848,29 +894,36 @@ type dbQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func aliasSetIn(ctx context.Context, q dbQuerier, id string) ([]string, error) {
+func agentIDsIn(ctx context.Context, q dbQuerier, id string) ([]string, error) {
 	if id == "" || id == "user" {
 		return []string{id}, nil
 	}
 	root := id
-	switch err := q.QueryRowContext(ctx, `SELECT identity FROM identity_aliases WHERE legacy = ?`, id).Scan(&root); {
-	case errors.Is(err, sql.ErrNoRows):
-		root = id
-	case err != nil:
-		return nil, err
+	if spawnID, ok := strings.CutPrefix(id, "spawn:"); ok {
+		var bound string
+		switch err := q.QueryRowContext(ctx, `SELECT identity FROM spawns WHERE spawn_id = ? AND agent_id = ?`, spawnID, id).Scan(&bound); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return nil, err
+		case bound != "":
+			root = bound
+		}
+		if root == id {
+			return []string{id}, nil // not bound yet: the address alone
+		}
 	}
 	set := []string{root}
-	rows, err := q.QueryContext(ctx, `SELECT legacy FROM identity_aliases WHERE identity = ? ORDER BY legacy`, root)
+	rows, err := q.QueryContext(ctx, `SELECT agent_id FROM spawns WHERE identity = ? AND agent_id LIKE 'spawn:%' ORDER BY agent_id`, root)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var l string
-		if err := rows.Scan(&l); err != nil {
+		var a string
+		if err := rows.Scan(&a); err != nil {
 			return nil, err
 		}
-		set = append(set, l)
+		set = append(set, a)
 	}
 	return set, rows.Err()
 }
@@ -880,7 +933,7 @@ func (h *Hub) sameAgent(ctx context.Context, a, b string) (bool, error) {
 	if a == b {
 		return true, nil
 	}
-	set, err := h.aliasSet(ctx, a)
+	set, err := h.agentIDs(ctx, a)
 	if err != nil {
 		return false, err
 	}
@@ -896,7 +949,7 @@ func (h *Hub) sameAgent(ctx context.Context, a, b string) (bool, error) {
 // columns in cols from table. Two rows (two IDs of one agent used the key before they became
 // one) are refused: a replay cannot tell which request it repeats.
 func (h *Hub) callerKeyRow(ctx context.Context, table, cols, caller, key string) (*sql.Row, error) {
-	set, err := h.aliasSet(ctx, caller)
+	set, err := h.agentIDs(ctx, caller)
 	if err != nil {
 		return nil, err
 	}
@@ -935,7 +988,7 @@ var errKeyTaken = refuse("conflict", "another ID of this agent admitted the same
 // for key. The hub's database has one connection, so the check and the insert are atomic with
 // respect to every other admission and every alias write.
 func keyTakenIn(ctx context.Context, tx *sql.Tx, table, caller, key string) error {
-	set, err := aliasSetIn(ctx, tx, caller)
+	set, err := agentIDsIn(ctx, tx, caller)
 	if err != nil {
 		return err
 	}

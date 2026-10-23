@@ -29,11 +29,11 @@ var agentHubActions = map[string]bool{"hub.profiles": true, "hub.spawn": true, "
 
 var agentListActions = []map[string]any{
 	{"name": "hub.agents", "kind": "client", "title": "List agents",
-		"description": "List the agents you can message: \"user\" (the human) and each conversation (id \"<kind>:<conversation id>\", name = its tab label, state current, detached or superseded). Set all=true to include superseded conversations and the legacy names they replaced (alias_of). Each entry has session_id, the Rex session of its pane (empty when unknown); set session_id to list only that session's agents.",
+		"description": "List the agents you can message: \"user\" (the human) and each conversation (id \"<kind>:<conversation id>\", name = its tab label, state current, detached or superseded). Set all=true to include superseded conversations and the agent spawns that wait for their first report (id \"spawn:<spawn_id>\", state starting). Each entry has session_id, the Rex session of its pane (empty when unknown); set session_id to list only that session's agents.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{"all": map[string]any{"type": "boolean"},
 			"session_id": map[string]any{"type": "string"}}, "additionalProperties": false}},
 	{"name": "hub.agents.resolve", "kind": "client", "title": "Resolve an agent",
-		"description": "Turn a name into an agent ID: an exact ID, a legacy name, a unique ID prefix (\"claude:7a18\"), or a unique tab name. An ambiguous name lists the candidates.",
+		"description": "Turn a name into an agent ID: an exact ID, an agent spawn address (\"spawn:<spawn_id>\"), a unique ID prefix (\"claude:7a18\"), or a unique tab name. An ambiguous name lists the candidates.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{"to": map[string]any{"type": "string", "minLength": 1}},
 			"required": []string{"to"}, "additionalProperties": false}},
 }

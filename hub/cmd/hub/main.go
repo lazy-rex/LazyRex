@@ -56,11 +56,6 @@ type Config struct {
 	// window's right split, the default) or "layer" (a floating layer in the same window). It goes
 	// away when the user decides.
 	UISlot string `json:"ui_slot"`
-	Agents []struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		StatusRecord string `json:"status_record"`
-	} `json:"agents"`
 	// Entries are the config field plugins (pluginconfig.go). loadConfig checks them into entries,
 	// in config order. The hub resolves the entries at each start attempt (resolveEntries).
 	Entries []json.RawMessage `json:"plugins"`
@@ -86,9 +81,8 @@ type Agent struct {
 	State                  string           // latest state of the trusted record; "" when absent or removed
 	Record                 statusRecord     // the trusted record's fields (prompts.go); Record.State == State
 	stateGen               int              // counts record writes (setRecord): a status read applies only if none happened during it
-	ClientID               string           // the shim connection that joined last
-	Profile                string           // set for an agent that a spawn created
-	Kind, IdState          string           // an identity (identity.go): its kind and state; "" for a legacy agent
+	ClientID               string           // the agent face connection of this conversation
+	Kind, IdState          string           // the identity's kind and state (identity.go)
 	delivered              map[string]int64 // namespace -> highest intent revision written for this connection (notice_deliveries keeps it across restarts)
 }
 
@@ -205,21 +199,19 @@ type Hub struct {
 	exec        int
 	wrapped     atomic.Bool
 	relaunching atomic.Bool
-	calls    *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
+	calls       *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
 	// The crash backoff clock (respawn.go). nil: time.Now and time.AfterFunc; a test sets fakes.
 	now       func() time.Time
 	afterFunc func(time.Duration, func()) stopper
 
 	mu           sync.Mutex
-	identMu      sync.Mutex // serializes identity reports (identity.go)
-	agents       map[string]*Agent
-	agentOrder   []string               // config agents first, then spawned agents in creation order
+	identMu      sync.Mutex             // serializes identity reports (identity.go)
 	agentRex     *rex.Rex               // the agent face (agentface.go)
 	agentKick    chan struct{}          // wakes agentKeymapLoop
 	agentForward map[string]string      // plugin action -> plugin client, as last declared on the agent face
 	forwards     map[string]map[int]int // plugin client -> requester pid -> hub.forward calls in flight (agentface.go)
 	idents       map[string]*Agent      // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
-	aliases      map[string]string      // legacy agent ID -> the identity that took it over
+	spawnAddrs   map[string]*spawnAddr  // agent spawn address "spawn:<id>" -> its spawn and bound identity (identity.go)
 	plugins      map[string]*Plugin     // by name: one record for each bound entry name
 	// entries are the config entries (pluginconfig.go), in config order, then the managed entries.
 	// entriesMu guards the fields that a resolution or a reload changes. Lock order: the plugin
@@ -259,8 +251,8 @@ func loadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
-	if c.Server == "" || c.State == "" || len(c.Agents) == 0 {
-		return c, fmt.Errorf("%s: server, state and agents are required", path)
+	if c.Server == "" || c.State == "" {
+		return c, fmt.Errorf("%s: server and state are required", path)
 	}
 	// The hub keeps its own LazyRex session (workSession). A configured session ID went stale
 	// when that session closed, so the field is refused, not ignored.
@@ -307,8 +299,8 @@ var pluginArgKey = regexp.MustCompile(`^[a-z0-9_]+$`)
 var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true, "main": true, "lazyrex_sdk": true}
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
-var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join",
-	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.store.ops_scan", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.admin.relaunch", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.plugins.hold.acquire", "hub.plugins.hold.release", "hub.plugins.hold.status", "hub.plugins.attempt.resolve", "hub.info",
+var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve",
+	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.store.ops_scan", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.shutdown", "hub.admin.relaunch", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.plugins.hold.acquire", "hub.plugins.hold.release", "hub.plugins.hold.status", "hub.plugins.attempt.resolve", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.plugins.ops", "hub.plugins.tags", "hub.plugins.log", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
@@ -554,7 +546,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		return nil, fmt.Errorf("welcome has no client id: %s", r.Welcome)
 	}
 	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
-		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
+		idents: map[string]*Agent{}, spawnAddrs: map[string]*spawnAddr{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
 	h.sql = newSQLService(cfg.State, h.currentClient)
 	h.sql.committed = h.markSQL // the views that read a changed table, and every view without a table set
 	h.sql.rendered = h.renderRead
@@ -568,10 +560,6 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	}
 	h.sql.notified = h.kickNotices
 	h.sql.returning = h.db.sqlReturning
-	for _, a := range cfg.Agents {
-		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
-		h.agentOrder = append(h.agentOrder, a.ID)
-	}
 	h.entries, h.managedErr = cfg.entries, cfg.managedErr
 	if h.managedErr != nil {
 		log.Printf("%v: every managed entry is refused", h.managedErr)
@@ -600,15 +588,12 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if err := r.Call(ctx, "client.set_label", map[string]any{"label": "lazyrex-hub"}, nil); err != nil {
 		return nil, err
 	}
-	// uiStart attaches to the LazyRex session (the work session) before bindings are read, so no
+	// uiStart attaches to the LazyRex session (the work session) before identities are read, so no
 	// change is missed between the two.
 	if err := h.uiStart(ctx); err != nil {
 		return nil, err
 	}
 	if err := h.workersLoad(ctx); err != nil {
-		return nil, err
-	}
-	if err := h.loadBindings(ctx); err != nil {
 		return nil, err
 	}
 	if err := h.identitySync(ctx); err != nil {
@@ -741,7 +726,7 @@ func (h *Hub) handleEvent(ctx context.Context, raw json.RawMessage) {
 			h.kickSpawns()
 		case "block_created":
 			h.tabReplCreated(se.SessionID, se.Event.Payload.BlockID) // before a close or exit event of the block
-			h.kickSpawns() // a pending spawn's pane may have appeared
+			h.kickSpawns()                                           // a pending spawn's pane may have appeared
 		case "session_view_changed":
 			h.uiSessionChanged(se.SessionID)
 		case "window_closed":
@@ -760,7 +745,7 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 	case "child_exited":
 		go h.identityChildExited(ctx, blockID)
 		h.mu.Lock()
-		h.syncPrompts() // a legacy agent's process is gone: its prompt closes
+		h.syncPrompts() // a process is gone: its prompt closes
 		h.mu.Unlock()
 		if v, _ := h.viewByBlock(ctx, blockID); v != nil {
 			go h.uiChildExited(ctx, blockID) // a renderer, not a plugin
@@ -794,7 +779,7 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 		json.Unmarshal(payload, &ev)
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		for _, a := range h.everyAgent() {
+		for _, a := range h.idents {
 			if a.BlockID != blockID {
 				continue
 			}
@@ -864,29 +849,20 @@ func (h *Hub) pluginByClient(clientID string) *Plugin {
 	return nil
 }
 
-// roster lists every valid recipient: legacy agents, every identity in any state (a superseded
-// identity keeps its mailbox), and aliased legacy IDs.
+// roster lists every valid recipient: "user", every identity in any state (a superseded identity
+// keeps its mailbox), and each agent spawn address that is bound or still waits for its first
+// report. h.mu must be held.
 func (h *Hub) roster() map[string]bool {
-	m := map[string]bool{}
-	for id := range h.agents {
-		m[id] = true
-	}
+	m := map[string]bool{"user": true}
 	for id := range h.idents {
 		m[id] = true
 	}
+	for addr, sa := range h.spawnAddrs {
+		if sa.identity != "" || !sa.ended {
+			m[addr] = true
+		}
+	}
 	return m
-}
-
-// everyAgent returns the legacy agents and the identities. h.mu must be held.
-func (h *Hub) everyAgent() []*Agent {
-	out := make([]*Agent, 0, len(h.agents)+len(h.idents))
-	for _, a := range h.agents {
-		out = append(out, a)
-	}
-	for _, a := range h.idents {
-		out = append(out, a)
-	}
-	return out
 }
 
 func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
@@ -921,12 +897,10 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 	switch p.Action {
 	case "hub.register":
 		return h.register(ctx, p, args)
-	case "hub.join":
-		return h.join(ctx, p, args)
 	case "hub.agents":
 		return h.agentsList(args), nil
 	case "hub.agents.resolve":
-		return h.resolveAgent(args)
+		return h.resolveAgent(ctx, args)
 	case "hub.identity.report":
 		return h.identityReport(ctx, p, args)
 	case "hub.digest":
@@ -1006,7 +980,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.viewEffectRetry(ctx, p, args)
 	case "hub.view.operation":
 		return h.viewOperation(ctx, p, args)
-	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.admin.relaunch",
+	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.unlock", "hub.admin.shutdown", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.admin.relaunch",
 		"hub.plugins.hold.acquire", "hub.plugins.hold.release", "hub.plugins.hold.status", "hub.plugins.attempt.resolve":
 		if in, err := h.callerInManagedPane(pid); err != nil {
 			return nil, unverifiedCaller(err)
@@ -1183,19 +1157,14 @@ func (h *Hub) identify(ctx context.Context, target int) (map[string]any, error) 
 	return out, nil
 }
 
-// identifyPID finds the agent of a process for hub.identify: a pane's current conversation
-// identity comes first; else the legacy joined agent.
+// identifyPID finds the agent of a process for hub.identify: the current conversation identity of
+// the pane that runs it.
 func (h *Hub) identifyPID(target int) map[string]any {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, a := range h.idents {
 		if a.IdState == "current" && a.live() && descendsFrom(target, a.ChildPID) {
-			return map[string]any{"found": true, "agent": a.ID, "identity": a.ID, "legacy": h.aliasesOf(a.ID), "block_id": a.BlockID, "session_id": h.bindingSession(a)}
-		}
-	}
-	for _, a := range h.agents {
-		if a.live() && descendsFrom(target, a.ChildPID) {
-			return map[string]any{"found": true, "agent": a.ID, "block_id": a.BlockID, "session_id": h.bindingSession(a)}
+			return map[string]any{"found": true, "agent": a.ID, "identity": a.ID, "block_id": a.BlockID, "session_id": a.Session}
 		}
 	}
 	return map[string]any{"found": false}
@@ -1231,7 +1200,7 @@ func (h *Hub) callerInManagedPane(pid int) (bool, error) {
 	in := func(c int) bool { return c > 0 && slices.Contains(chain, c) }
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, a := range h.everyAgent() {
+	for _, a := range h.idents {
 		if a.live() && in(a.ChildPID) {
 			return true, nil
 		}

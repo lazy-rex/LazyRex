@@ -12,8 +12,8 @@ import (
 
 // Lab tests of the plugin manager's ops (pluginops.go). Lab only: HARNESS_LAB=1.
 
-// opsAgent opens a test agent pane (lazyrex-hub testagent) that joins as the roster agent id, and
-// returns its helper client. The hub sees the pane's real ancestry for its calls.
+// opsAgent opens a test agent pane (lazyrex-hub testagent) that reports the identity "claude:<id>",
+// and returns its helper client. The hub sees the pane's real ancestry for its calls.
 func (s *startLab) opsAgent(id string) string {
 	s.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -32,28 +32,22 @@ func (s *startLab) opsAgent(id string) string {
 		s.t.Fatal(err)
 	}
 	if err := s.l.r.Call(ctx, "session.new_window", map[string]any{"session_id": sess.SessionID, "window_label": id,
-		"layout": shell([]string{s.bin, "testagent", "-id", id, "-join", id})}, nil); err != nil {
+		"layout": shell([]string{s.bin, "testagent", "-id", id})}, nil); err != nil {
 		s.t.Fatal(err)
 	}
 	var client string
-	s.wait("agent "+id+" joins", func() bool {
+	s.wait("agent "+id+" starts", func() bool {
 		c, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		var err error
-		if client, err = s.c.resolveClient(c, "lazyrex-testagent:"+id); err != nil {
-			return false
-		}
-		raw, err := s.c.perform(c, client, "agent.status", nil)
-		var st struct {
-			Joined    bool   `json:"joined"`
-			JoinError string `json:"join_error"`
-		}
-		json.Unmarshal(raw, &st)
-		if st.JoinError != "" {
-			s.t.Fatalf("agent %s: %s", id, st.JoinError)
-		}
-		return err == nil && st.Joined
+		client, err = s.c.resolveClient(c, "lazyrex-testagent:"+id)
+		return err == nil
 	})
+	// The report runs in a new process in the pane, as an agent hook does.
+	if _, err := s.c.perform(ctx, client, "agent.report", map[string]any{"args": map[string]any{
+		"kind": "claude", "conversation_id": id, "source": "startup"}}); err != nil {
+		s.t.Fatalf("agent %s: report: %v", id, err)
+	}
 	return client
 }
 
@@ -89,12 +83,6 @@ func (s *startLab) opDone(agent, key string, args map[string]any) map[string]any
 // caller outside every pane is refused.
 func TestPluginOpsLab(t *testing.T) {
 	s := newStartLab(t)
-	var c map[string]any
-	b, _ := os.ReadFile(s.cfg)
-	json.Unmarshal(b, &c)
-	c["agents"] = []any{map[string]any{"id": "alice", "name": "alice"}}
-	b, _ = json.MarshalIndent(c, "", " ")
-	os.WriteFile(s.cfg, b, 0o600)
 	s.writeSource("m", `{"name":"m","main":"main.lua"}`, "m")
 	s.writeSource("d", `{"name":"d","main":"main.lua","depends":["m"]}`, "d")
 	s.writeManagedIDs("m=m", "d=d")
@@ -158,7 +146,7 @@ func TestPluginOpsLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.c.perform(ctx, face, "hub.plugins.op", map[string]any{"key": "x", "op": "stop", "entry": "managed:m"}); err == nil || !strings.Contains(err.Error(), "not a joined agent") {
+	if _, err := s.c.perform(ctx, face, "hub.plugins.op", map[string]any{"key": "x", "op": "stop", "entry": "managed:m"}); err == nil || !strings.Contains(err.Error(), "not a reported conversation") {
 		t.Errorf("a caller outside every pane: %v", err)
 	}
 	if _, err := s.call("hub.plugins.op", map[string]any{"key": "x", "op": "stop", "entry": "managed:m"}); err == nil {

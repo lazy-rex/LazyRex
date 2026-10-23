@@ -338,16 +338,14 @@ func setupHubConfig(e setupEnv, dir, server string) (b []byte, skipped []string,
 		return nil, nil, fmt.Errorf("the plugin entries: %w", err)
 	}
 	c := struct {
-		Server     string              `json:"server"`
-		State      string              `json:"state"`
-		View       string              `json:"view"`
-		Agents     []map[string]string `json:"agents"`
-		Plugins    []entry             `json:"plugins"`
-		Profiles   string              `json:"profiles"`
-		PaletteLua string              `json:"palette_lua"`
+		Server     string  `json:"server"`
+		State      string  `json:"state"`
+		View       string  `json:"view"`
+		Plugins    []entry `json:"plugins"`
+		Profiles   string  `json:"profiles"`
+		PaletteLua string  `json:"palette_lua"`
 	}{
 		Server: server, State: filepath.Join(dir, "state"), View: filepath.Join(filepath.Dir(e.exe), "lazyrex-view"),
-		Agents:   []map[string]string{{"id": "user", "name": "User", "status_record": ""}},
 		Plugins:  plugins,
 		Profiles: filepath.Join(dir, "profiles.json"), PaletteLua: filepath.Join(filepath.Dir(e.rexConfigFile()), "lazyrex_palette.lua"),
 	}

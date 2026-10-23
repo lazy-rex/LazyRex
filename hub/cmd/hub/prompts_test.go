@@ -8,14 +8,13 @@ import (
 	"testing"
 )
 
-// promptHub is a hub with one legacy agent bound to this test process (a live binding).
+// promptHub is a hub with one current identity "alice" in a pane of this test process (a live binding).
 func promptHub(t *testing.T) (*Hub, *Agent) {
 	t.Helper()
 	h, _ := uiTestHub(t)
 	pid := os.Getpid()
-	a := &Agent{ID: "alice", Name: "Alice", Session: "session:s", BlockID: "block:b", ChildPID: pid, ChildStart: startTime(pid), delivered: map[string]int64{}}
-	h.agents = map[string]*Agent{"alice": a}
-	h.agentOrder = []string{"alice"}
+	a := &Agent{ID: "alice", Name: "Alice", Kind: "claude", IdState: "current", Session: "session:s", BlockID: "block:b", ChildPID: pid, ChildStart: startTime(pid), delivered: map[string]int64{}}
+	h.idents = map[string]*Agent{"alice": a}
 	h.generation = 7
 	return h, a
 }
@@ -179,7 +178,7 @@ func TestPromptsList(t *testing.T) {
 func TestAgentsListBlockID(t *testing.T) {
 	h, _ := promptHub(t)
 	list := h.agentsList(map[string]any{}).(map[string]any)["agents"].([]any)
-	if e := list[0].(map[string]any); e["block_id"] != "block:b" {
+	if e := list[1].(map[string]any); e["id"] != "alice" || e["block_id"] != "block:b" { // list[0] is "user"
 		t.Fatalf("agents: %+v", e)
 	}
 }
@@ -209,69 +208,6 @@ func openPrompts(h *Hub) []*prompt {
 	return out
 }
 
-// One prompt for each pane: a legacy agent that a current identity in the same pane took over
-// (an alias) has no prompt of its own. At the identity's first report the legacy prompt closes
-// with the reason "alias", and the identity opens the same prompt (Telegram's review).
-func TestPromptAliasedLegacyPane(t *testing.T) {
-	h, a := promptHub(t)
-	ask := map[string]any{"state": "blocked", "kind": "permission", "app": "claude-code", "msg": "Allow Bash?"}
-	status(h, "block:b", ask)
-	legacy := openPrompt(h, "alice")
-	if legacy == nil {
-		t.Fatal("the legacy pane has no prompt")
-	}
-
-	// The agent's hook reports the conversation: the identity takes over alice in the same pane.
-	id := &Agent{ID: "claude:c1", Name: "Alice", Kind: "claude", IdState: "current", Session: a.Session, BlockID: a.BlockID,
-		ChildPID: a.ChildPID, ChildStart: a.ChildStart, delivered: map[string]int64{}}
-	h.mu.Lock()
-	id.setRecord(a.Record)
-	h.idents = map[string]*Agent{id.ID: id}
-	h.aliases = map[string]string{"alice": id.ID}
-	revBefore := h.prompts.rev
-	h.syncPrompts()
-	rev := h.prompts.rev
-	h.mu.Unlock()
-	open := openPrompts(h)
-	if len(open) != 1 || open[0].Agent != id.ID {
-		t.Fatalf("one prompt for the pane, the identity's: %+v", open)
-	}
-	p := open[0]
-	if lastClose(h, "alice") != (closedPrompt{legacy.ID, "alias"}) {
-		t.Fatalf("the legacy prompt closes with alias: %+v", lastClose(h, "alice"))
-	}
-	if p.ID == legacy.ID || p.Kind != legacy.Kind || p.Msg != legacy.Msg || p.App != legacy.App || rev != revBefore+2 {
-		t.Fatalf("the identity opens the same prompt after the close: %+v (rev %d -> %d)", p, revBefore, rev)
-	}
-	h.mu.Lock()
-	gone := h.promptOpen(legacy.ID)
-	h.mu.Unlock()
-	if gone != nil {
-		t.Fatal("the old legacy prompt still takes an answer")
-	}
-
-	// A resync (as an identity resync, a restart or a reconcile does) brings no duplicate.
-	h.mu.Lock()
-	h.syncPrompts()
-	h.mu.Unlock()
-	if open := openPrompts(h); len(open) != 1 || open[0] != p {
-		t.Fatalf("a resync changed the prompts: %+v", open)
-	}
-
-	// Each later block of the pane opens one prompt.
-	status(h, "block:b", map[string]any{"state": "working", "app": "claude-code"})
-	if open := openPrompts(h); len(open) != 0 {
-		t.Fatalf("working left prompts: %+v", open)
-	}
-	status(h, "block:b", map[string]any{"state": "blocked", "kind": "permission", "app": "claude-code", "msg": "Allow Edit?"})
-	if open := openPrompts(h); len(open) != 1 || open[0].Agent != id.ID {
-		t.Fatalf("a later block opens one prompt, the identity's: %+v", open)
-	}
-	if c := lastClose(h, "alice"); c.ID != legacy.ID {
-		t.Fatalf("alice got a prompt again: %+v", c)
-	}
-}
-
 // Only a current identity owns a prompt. A superseded or detached identity that memory still binds
 // to the pane (a stale binding) has none: the rule reads IdState, not only the binding.
 func TestPromptOnlyCurrentIdentity(t *testing.T) {
@@ -284,7 +220,6 @@ func TestPromptOnlyCurrentIdentity(t *testing.T) {
 	c1, c2, c3 := bound("claude:c1", "superseded"), bound("claude:c2", "current"), bound("claude:c3", "detached")
 	h.mu.Lock()
 	h.idents = map[string]*Agent{c1.ID: c1, c2.ID: c2, c3.ID: c3}
-	h.aliases = map[string]string{"alice": c1.ID}
 	h.mu.Unlock()
 	status(h, "block:b", ask)
 	if open := openPrompts(h); len(open) != 1 || open[0].Agent != c2.ID {
@@ -320,7 +255,8 @@ func promptEvents(t *testing.T, h *Hub) []string {
 }
 
 // The real owner transition through the store (identitySync, as a report, a restart and a
-// reconcile run it): legacy pane alice -> the first report (claude:c1 takes alice over) -> /clear
+// reconcile run it): alice (an identity that memory binds, not in the store) -> the first stored
+// report (claude:c1; alice is gone) -> /clear
 // (claude:c2 in the same pane, claude:c1 superseded). At each step the pane has one prompt; each
 // close comes before the next open. Late answers to alice's and c1's prompts write nothing, and a
 // same-key replay returns the same refusal.
@@ -328,6 +264,9 @@ func TestPromptOwnerTransitionStore(t *testing.T) {
 	h, a, pl, f := answerHub(t)
 	ctx := context.Background()
 	if _, err := h.db.Exec(identitySchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.workersSchemaStart(ctx); err != nil { // the identity sync reads the spawn addresses
 		t.Fatal(err)
 	}
 	h.rex = replyRex(t, func(method string) (any, string) {
@@ -338,7 +277,7 @@ func TestPromptOwnerTransitionStore(t *testing.T) {
 	})
 	pa := openPrompt(h, "alice")
 	if pa == nil {
-		t.Fatal("the legacy pane has no prompt")
+		t.Fatal("alice's pane has no prompt")
 	}
 	sync := func() {
 		t.Helper()
@@ -359,10 +298,11 @@ func TestPromptOwnerTransitionStore(t *testing.T) {
 		return open[0]
 	}
 
-	// The first report: claude:c1 takes alice over.
-	h.db.Exec(`INSERT INTO identity_panes VALUES (?, ?, ?, ?, 'claude', 'claude:c1', '')`, a.BlockID, a.Session, a.ChildPID, a.ChildStart)
+	// The first stored report: claude:c1 in alice's pane.
+	if _, err := h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES (?, ?, ?, ?, 'claude', 'claude:c1')`, a.BlockID, a.Session, a.ChildPID, a.ChildStart); err != nil {
+		t.Fatal(err)
+	}
 	h.db.Exec(`INSERT INTO identities VALUES ('claude:c1', 'claude', 'c1', 'current', ?, '', 'Alice', 'x', 'x')`, a.BlockID)
-	h.db.Exec(`INSERT INTO identity_aliases VALUES ('alice', 'claude:c1', 'x')`)
 	sync()
 	p1 := one("claude:c1")
 
@@ -378,7 +318,7 @@ func TestPromptOwnerTransitionStore(t *testing.T) {
 	if one("claude:c2") != p2 {
 		t.Fatal("a resync replaced the prompt")
 	}
-	want := []string{"opened alice", "closed alice alias", "opened claude:c1", "closed claude:c1 gone", "opened claude:c2"}
+	want := []string{"opened alice", "closed alice gone", "opened claude:c1", "closed claude:c1 gone", "opened claude:c2"}
 	if got := promptEvents(t, h); strings.Join(got, "; ") != strings.Join(want, "; ") {
 		t.Fatalf("prompt events:\n got %q\nwant %q", got, want)
 	}

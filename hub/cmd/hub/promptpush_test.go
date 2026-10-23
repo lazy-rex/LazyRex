@@ -280,14 +280,13 @@ func registerPlugin(h *Hub, name, instance, client string) *Plugin {
 	return pl
 }
 
-// ownerPushHub is promptHub with the legacy agent "zulu" (it sorts after every identity ID), whose
+// ownerPushHub is promptHub with the identity "zulu" (it sorts after every "claude:" ID), whose
 // prompt is open and pushed to telegram.
 func ownerPushHub(t *testing.T, f *fakePush) (*Hub, *Agent) {
 	t.Helper()
 	h, a := promptHub(t)
 	a.ID = "zulu"
-	h.agents = map[string]*Agent{a.ID: a}
-	h.agentOrder = []string{a.ID}
+	h.idents = map[string]*Agent{a.ID: a}
 	f.install(t)
 	registerTG(h, "instance", "client")
 	t.Cleanup(func() {
@@ -298,12 +297,12 @@ func ownerPushHub(t *testing.T, f *fakePush) (*Hub, *Agent) {
 		h.mu.Unlock()
 	})
 	setStatus(h, a, statusRecord{State: "blocked", Msg: "Allow?"})
-	waitPush(t, "the legacy prompt", func() bool { return f.count() == 1 })
+	waitPush(t, "the first prompt", func() bool { return f.count() == 1 })
 	return h, a
 }
 
-// takeOver makes the identity id the pane's current owner: the alias of a's legacy ID, or a /clear
-// that supersedes the previous identity.
+// takeOver makes the identity id the pane's current owner: a /clear that supersedes the previous
+// identity (prev, or a when prev is nil).
 func takeOver(h *Hub, a *Agent, id string, prev *Agent) *Agent {
 	c := &Agent{ID: id, Kind: "claude", IdState: "current", Session: a.Session, BlockID: a.BlockID, ChildPID: a.ChildPID, ChildStart: a.ChildStart}
 	h.mu.Lock()
@@ -312,11 +311,11 @@ func takeOver(h *Hub, a *Agent, id string, prev *Agent) *Agent {
 	if h.idents == nil {
 		h.idents = map[string]*Agent{}
 	}
-	if prev != nil {
-		prev.IdState = "superseded"
+	if prev == nil {
+		prev = a
 	}
+	prev.IdState = "superseded"
 	h.idents[id] = c
-	h.aliases = map[string]string{a.ID: "claude:c1"}
 	h.syncPrompts()
 	return c
 }
@@ -341,15 +340,15 @@ func pushes(f *fakePush, from int, client string) []string {
 }
 
 // The consumer receives each owner transfer as close, then open (the hub lead's sender rule: rev
-// order, not agent-ID order): legacy zulu -> claude:c1 (alias), then claude:c1 -> claude:b2 (a
-// /clear; b2 sorts before c1).
+// order, not agent-ID order): zulu -> claude:c1, then claude:c1 -> claude:b2 (both a /clear; b2
+// sorts before c1).
 func TestPromptPushOwnerTransferOrder(t *testing.T) {
 	f := &fakePush{}
 	h, a := ownerPushHub(t, f)
 	c1 := takeOver(h, a, "claude:c1", nil)
-	waitPush(t, "the alias transfer", func() bool { return f.count() >= 3 })
+	waitPush(t, "the first transfer", func() bool { return f.count() >= 3 })
 	if got := pushes(f, 1, ""); len(got) != 2 || got[0] != "close zulu" || got[1] != "open claude:c1" {
-		t.Fatalf("alias transfer pushes %q, want close zulu, open claude:c1", got)
+		t.Fatalf("first transfer pushes %q, want close zulu, open claude:c1", got)
 	}
 	takeOver(h, a, "claude:b2", c1)
 	waitPush(t, "the /clear transfer", func() bool { return f.count() >= 5 })
