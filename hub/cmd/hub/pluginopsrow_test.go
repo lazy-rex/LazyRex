@@ -87,8 +87,9 @@ func TestPluginOpAddRowNamedByManifest(t *testing.T) {
 
 // The guard (lead-b8-step4-final, C4 plan NEW 1): a row with an instance bound or running, a
 // desired running row, a row with a run or a selected run, a prepared or sending intent, and an
-// unsettled attempt of an op on the name are conflict; nothing more is written. Resolved intents
-// and an operator-resolved attempt pass.
+// unsettled attempt of an op on the name are conflict; nothing more is written. An open bound
+// handler (bound_at set, outcome empty) is conflict even when proof or an operator settles its
+// attempt. Resolved intents and an operator-resolved attempt with no open handler pass.
 func TestPluginOpAddRowGuard(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -112,6 +113,15 @@ func TestPluginOpAddRowGuard(t *testing.T) {
 		{"an operator-resolved attempt", []string{
 			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
 			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, resolved_by) VALUES ('a1', 'o1', 'start', 1, '{"by":"operator"}')`}, true},
+		{"an open bound handler, operator-resolved", []string{
+			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, resolved_by) VALUES ('a1', 'o1', 'start', 1, 't', '{"by":"operator"}')`}, false},
+		{"an open bound handler, proved", []string{
+			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, proof) VALUES ('a1', 'o1', 'start', 1, 't', 'not_applied')`}, false},
+		{"a bound handler with an outcome, operator-resolved", []string{
+			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, outcome, resolved_by) VALUES ('a1', 'o1', 'start', 1, 't', 'unknown', '{"by":"operator"}')`}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := rowHub(t)
