@@ -360,7 +360,8 @@ also with `tx = false`. A retry of an agent also finds a reply saved under one o
 (`ctx.aliases`); a new reply is saved under its current ID. A reply with `status = 'running'` is never saved, so a retry reaches the
 handler. With `store = false`, every call reaches the handler.
 
-`ctx`: `agent` (nil for the user), `user`, `key`, `session_id`, `block_id`, `requester_pid`,
+`ctx`: `agent` (nil for the user), `user`, `key`, `session_id`, `block_id`, `spawn_id` (the agent
+spawn whose open pane is the caller's pane; nil otherwise), `requester_pid`,
 `aliases`, `identity` (the hub.identify reply), and for views `route`, `input`, `view_id`, `args`,
 `query` and `source`. `ctx.source.pwd` is the source pane directory that the hub read once at the
 open (the raw `terminal.pwd` value, a `file://` URI); `ctx.source.pwd_error` is the reason when it
