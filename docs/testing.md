@@ -684,8 +684,9 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
   files inside its own directory (docs/plugin-sources.md, section 2).
 - `tests/isolation/`: a probe plugin as the plugin under test, a smaller probe of its own as a
   dependency (`isodep/`, which loads no source outside its directory), and a spawned worker. They
-  report their environment, args and working directory. The tests also check the test-mode
-  profile refusals.
+  report their environment, args and working directory. The plugin under test also reports its
+  own dir and a `${PLUGIN}` path from `test.env`: the two match, also after a crash respawn. The
+  tests also check the test-mode profile refusals.
 - `TestHarnessIsolation` runs `tests/isolation` with an outer `HOME` and `XDG_CONFIG_HOME` in a
   temporary dir (never the real home) that hold a sentinel, and an outer secret variable. No lab
   process finds the sentinel through `HOME` or `XDG_CONFIG_HOME` or gets the secret. The outer
