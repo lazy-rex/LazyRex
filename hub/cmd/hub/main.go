@@ -215,6 +215,7 @@ type Hub struct {
 	forwards     map[string]map[int]int // plugin client -> requester pid -> hub.forward calls in flight (agentface.go)
 	idents       map[string]*Agent      // conversation identities ("claude:<id>"), mirrored from the store (identity.go)
 	spawnAddrs   map[string]*spawnAddr  // agent spawn address "spawn:<id>" -> its spawn and bound identity (identity.go)
+	spawnAddrRev int64                  // counts each change of spawnAddrs; a load installs its read only if no change came after it
 	plugins      map[string]*Plugin     // by name: one record for each bound entry name
 	// entries are the config entries (pluginconfig.go), in config order, then the managed entries.
 	// entriesMu guards the fields that a resolution or a reload changes. Lock order: the plugin
