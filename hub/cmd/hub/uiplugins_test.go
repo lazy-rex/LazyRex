@@ -8,7 +8,7 @@ import (
 
 // uiPlugins returns the plugins with declared tabs and the plugins with a live tab view (the rows
 // that loadViews reads), the home plugin first. A plugin that declares no tabs, with an open view, still
-// gets its pass, so that view closes or retires (reconcile).
+// gets its pass, so that view closes (reconcile).
 func TestUIPluginsIncludesLiveTabViews(t *testing.T) {
 	h, _ := workerTestHub(t)
 	if _, err := h.db.Exec(uiSchema); err != nil {
