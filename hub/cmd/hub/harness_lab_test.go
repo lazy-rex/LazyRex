@@ -475,3 +475,57 @@ func TestLabKeeperMainRunsNoHub(t *testing.T) {
 		t.Errorf("output %q", out.String())
 	}
 }
+
+// The parity sweep of a plugin with test.parity_routes in its manifest, through lazyrex-hub test.
+// lazyrex-hub test sends the routes as a JSON argument, and Rex decodes it, so the runner gets a
+// table (msg-parity-red-4f6d). Each -run pattern matches no test, so only the sweep runs, and the
+// run ends with "matched no test". The cases: the home plugin (/forms/launch, rendered by its
+// fixture), and copies of tests/harness whose manifest lists /forms/fix (a palette command, so the
+// sweep renders it) and then also /forms/chain (only an action opens it, so no render reaches it).
+// The last case fails, so a list that the runner drops does not pass.
+func TestHarnessParityRoutesLab(t *testing.T) {
+	bin, root := harnessBinary(t)
+	harness := func(t *testing.T, routes ...string) string {
+		dir := filepath.Join(t.TempDir(), "harness")
+		if err := os.CopyFS(dir, os.DirFS(filepath.Join(root, "tests", "harness"))); err != nil {
+			t.Fatal(err)
+		}
+		m, _ := json.Marshal(map[string]any{"name": "harnessfix", "main": "fixture.lua", "notice": "Fixture notice.",
+			"test": map[string]any{"plugins": []any{map[string]any{"source": "stubs/tabfix"}}, "parity_routes": routes}})
+		if err := os.WriteFile(filepath.Join(dir, "lazyrex.json"), m, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	sweep := regexp.MustCompile(`(?m)^(ok  |FAIL) parity sweep: [0-9]+ passed, ([0-9]+) failed`)
+	cases := []struct {
+		name    string
+		dir     func(*testing.T) string
+		ok      bool
+		problem string
+	}{
+		{"home plugin", func(*testing.T) string { return filepath.Join(root, "plugins", "lazyrex") }, true, ""},
+		{"rendered route", func(t *testing.T) string { return harness(t, "/forms/fix") }, true, ""},
+		{"unrendered route", func(t *testing.T) string { return harness(t, "/forms/fix", "/forms/chain") }, false,
+			"unchecked contextual route (the fixture did not render it): /forms/chain"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out, code := runHarness(t, bin, c.dir(t), "-keep", "-run", "no test has this name")
+			if code != 1 || !strings.Contains(out, "matched no test") {
+				t.Errorf("exit %d\n%s", code, out)
+			}
+			m := sweep.FindStringSubmatch(out)
+			if m == nil || (m[1] == "ok  ") != c.ok || (m[2] == "0") != c.ok {
+				t.Errorf("the parity sweep, want ok=%v:\n%s", c.ok, out)
+			}
+			if strings.Contains(out, "parity_routes:") {
+				t.Errorf("the runner refused parity_routes:\n%s", out)
+			}
+			if c.problem != "" && !strings.Contains(out, c.problem) {
+				t.Errorf("the sweep does not report %q:\n%s", c.problem, out)
+			}
+			assertLabsGone(t, out)
+		})
+	}
+}
