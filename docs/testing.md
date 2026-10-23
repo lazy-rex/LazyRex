@@ -691,9 +691,10 @@ lab server too:
 The main lab is the full lab that runs on hub main after each push. It sets `HARNESS_LAB`,
 `PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and `HUBCTL_LAB` (together about 40 s more on Linux).
 Then it runs the view labs: `MODE_LAB=1 CHUNK_LAB=1 HUBUNAVAIL_LAB=1 go test . -count=1 -v -run
-'Lab$'` in `view/`, with its own log and summary line. Every view lab gate is on in the main lab,
-except a gate for a documented known limit: `RESIZE_BURST_LAB` stays off. A red view step is a
-red main, as a red hub step is. The first lines of each main lab log name the tip and the
+'Lab$'` in `view/`, with its own log and summary line. Every gate of a test that this command
+selects is on, except a gate for a documented known limit: `RESIZE_BURST_LAB` stays off. The
+`TEAPROBE_LAB` diagnostics are not `*Lab` tests, and the main lab does not run them. A red view
+step is a red main, as a red hub step is. The first lines of each main lab log name the tip and the
 envs.
 
 - A test that runs the hub binary uses `o.startLab` and `o.startHub` (`TestSessionRenameKeptLab`).
