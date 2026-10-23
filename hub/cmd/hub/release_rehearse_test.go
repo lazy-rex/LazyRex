@@ -688,4 +688,16 @@ func TestReleaseLabAgents(t *testing.T) {
 	if err := h.checkLabAgents(); err != nil {
 		t.Errorf("a lab hub.db with a pane row and no current identity: %v", err)
 	}
+	// SQLite resolves table names without ASCII case, so the check does too (codex-25's point on
+	// snapStore); a name that is not a table fails.
+	h = labHubDB(t)
+	exec(h, `DROP TABLE bindings; CREATE TABLE Bindings (agent TEXT); INSERT INTO Bindings VALUES ('a')`)
+	if err := h.checkLabAgents(); err == nil || !strings.Contains(err.Error(), "1 agent bindings") {
+		t.Errorf("a lab hub.db with a row in Bindings: %v", err)
+	}
+	h = labHubDB(t)
+	exec(h, `DROP TABLE bindings; CREATE VIEW bindings AS SELECT 'a' AS agent`)
+	if err := h.checkLabAgents(); err == nil || !strings.Contains(err.Error(), "is a view, not a table") {
+		t.Errorf("a lab hub.db with a view bindings: %v", err)
+	}
 }
