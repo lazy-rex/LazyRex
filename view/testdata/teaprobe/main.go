@@ -5,9 +5,13 @@
 //	  Starts in inline mode with "Connecting…", like the renderer. After -delay the first tree
 //	  arrives and the program chooses -mode. With -bytes, the program puts the terminal in raw
 //	  mode itself and gives Bubble Tea a reader that first appends each read to FILE in hex (one
-//	  line per read): the bytes before the parser, beside the key messages after it. Keys: p prints one line above the live region
-//	  (tea.Println), P prints 30, a switches the alt screen, q quits. The live region shows the
-//	  size, the mode, the redraw count and the last 10 key messages.
+//	  line per read): the bytes before the parser, beside the key messages after it. The terminal
+//	  is then raw for output too (no CR on a newline), so a -bytes run shows the input only: its
+//	  drawing is not evidence.
+//	  Keys: p prints one line above the live region (tea.Println), m prints 30 (rex send-key P
+//	  sends a lowercase p), a switches the alt screen, q quits. The live region shows
+//	  "LIVE p=<printed> | <Connecting… or tree> alt=<bool> <cols>x<rows> r=<redraws>" and the
+//	  last 10 key messages.
 //	teaprobe raw
 //	  Puts the terminal in raw mode and prints the bytes of each read in hex. Ctrl+C quits.
 //
@@ -66,7 +70,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			m.printed++
 			return m, tea.Println(line(m.printed))
-		case "P":
+		case "m":
 			var cmds []tea.Cmd
 			for range 30 {
 				m.printed++
@@ -84,7 +88,8 @@ func (m *model) View() tea.View {
 	if m.ready {
 		state = "tree"
 	}
-	s := fmt.Sprintf("LIVE %s alt=%v size=%dx%d redraw=%d printed=%d", state, m.alt, m.w, m.h, m.redraw, m.printed)
+	// Short enough for 50 columns: Bubble Tea cuts a live row at the terminal width.
+	s := fmt.Sprintf("LIVE p=%d | %s alt=%v %dx%d r=%d", m.printed, state, m.alt, m.w, m.h, m.redraw)
 	for _, k := range m.keys {
 		s += "\n  key " + k
 	}
@@ -93,7 +98,7 @@ func (m *model) View() tea.View {
 	return v
 }
 
-// tee writes each read to log in hex before the parser gets it.
+// tee writes each read to log in hex before the parser gets it. A write error ends the input.
 type tee struct {
 	r   io.Reader
 	log *os.File
@@ -102,7 +107,10 @@ type tee struct {
 func (t tee) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
 	if n > 0 {
-		fmt.Fprintf(t.log, "%s % x\n", time.Now().Format("15:04:05.000"), p[:n])
+		// A lost log line would make the record wrong: a write error ends the input.
+		if _, werr := fmt.Fprintf(t.log, "%s % x\n", time.Now().Format("15:04:05.000"), p[:n]); werr != nil {
+			return 0, werr
+		}
 	}
 	return n, err
 }
