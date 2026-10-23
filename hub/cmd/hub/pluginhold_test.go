@@ -332,7 +332,7 @@ func TestPluginResolutionVisible(t *testing.T) {
 				b, _ := json.Marshal(v)
 				raw[k] = b
 			}
-			v, err := hub.pluginOpsList(ctx, raw)
+			v, err := hub.pluginOpsList(ctx, raw, "")
 			if err != nil {
 				t.Fatal(err)
 			}

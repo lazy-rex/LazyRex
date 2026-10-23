@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -352,6 +354,72 @@ func TestPluginOpSettingsExpect(t *testing.T) {
 	json.Unmarshal([]byte(`{"key":"k","op":"settings","entry":"managed:x","expect":{"args":{"a":"1"}},"input":{"args":{}}}`), &args)
 	if _, r, err := agentOpRequest(args); err != nil || string(r.Expect) != `{"args":{"a":"1"}}` {
 		t.Errorf("an agent settings request with expect: %+v, %v", r, err)
+	}
+}
+
+// hub.plugins.ops {origin_view} (C8): the newest 50 ops that the user's operations of that view
+// admitted, newest first. The view must be a view of the calling plugin, else not_found. The
+// agent face has no origin_view.
+func TestPluginOpsOriginView(t *testing.T) {
+	h, _, dir := opsTestHub(t, "")
+	if _, err := h.db.Exec(uiSchema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, session_id, block_id, client_id, attachment) VALUES
+		('v1', 'home', 'home', '/forms/a', 'open', 's1', 'b1', 'renderer', 'att-1'),
+		('v2', 'other', 'home', '/forms/b', 'open', 's1', 'b2', 'renderer', 'att-2')`); err != nil {
+		t.Fatal(err)
+	}
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "x"))
+	opsLoadEntries(t, h)
+	admit := func(origin opOrigin, key string, i int) string {
+		v, err := h.admitOp(context.Background(), origin, origin.Kind, key, opRequest{Op: "settings", Entry: "managed:x",
+			Input: json.RawMessage(fmt.Sprintf(`{"args":{"k":"%d"}}`, i))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.(map[string]any)["op_id"].(string)
+	}
+	var mine []string
+	for i := range 52 {
+		mine = append(mine, admit(opOrigin{"user", "v1"}, fmt.Sprintf("v1-%d", i), i))
+		if i == 10 {
+			admit(opOrigin{"user", "v2"}, "v2-0", 100)
+			admit(opOrigin{"agent", "v1"}, "agent-0", 101) // an agent ID equal to the view ID
+		}
+	}
+	list := func(args string, plugin string) ([]string, error) {
+		var raw map[string]json.RawMessage
+		json.Unmarshal([]byte(args), &raw)
+		v, err := h.pluginOpsList(context.Background(), raw, plugin)
+		if err != nil {
+			return nil, err
+		}
+		var ids []string
+		for _, o := range v.(map[string]any)["ops"].([]any) {
+			ids = append(ids, o.(map[string]any)["op_id"].(string))
+		}
+		return ids, nil
+	}
+	got, err := list(`{"origin_view":"v1"}`, "home")
+	want := slices.Clone(mine[2:])
+	slices.Reverse(want)
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("origin_view v1: %v, %d ops, want the newest 50 of v1", err, len(got))
+	}
+	for _, view := range []string{"v2", "v-unknown"} {
+		if _, err := list(`{"origin_view":"`+view+`"}`, "home"); err == nil || !strings.Contains(err.Error(), "not_found") {
+			t.Errorf("origin_view %s: %v", view, err)
+		}
+	}
+	if _, err := list(`{"origin_view":"v1","op_id":"`+mine[0]+`"}`, "home"); err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("op_id and origin_view: %v", err)
+	}
+	if _, err := list(`{"origin_view":"v1"}`, ""); err == nil || !strings.Contains(err.Error(), "unknown field origin_view") {
+		t.Errorf("origin_view on the agent face: %v", err)
+	}
+	if got, err := list(`{}`, "home"); err != nil || len(got) != 50 {
+		t.Errorf("the newest 50: %v, %d ops", err, len(got))
 	}
 }
 

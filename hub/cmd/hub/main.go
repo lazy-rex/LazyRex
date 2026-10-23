@@ -1105,7 +1105,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 				return nil, bad("args must be an object")
 			}
 		}
-		return h.pluginOpsList(ctx, raw)
+		return h.pluginOpsList(ctx, raw, pl.Name)
 	case "hub.grant.create":
 		return h.grantCreate(ctx, p, ns, args)
 	case "hub.grant.get":

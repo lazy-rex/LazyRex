@@ -302,7 +302,7 @@ func (h *Hub) pluginOpAgent(ctx context.Context, p perform) (any, error) {
 		return nil, err
 	}
 	if p.Action == "hub.plugins.ops" {
-		return h.pluginOpsList(ctx, args)
+		return h.pluginOpsList(ctx, args, "")
 	}
 	key, req, err := agentOpRequest(args)
 	if err != nil {
@@ -706,11 +706,32 @@ func (h *Hub) opView(ctx context.Context, id string) (any, error) {
 }
 
 // pluginOpsList answers hub.plugins.ops: one op by op_id, or the 50 newest.
-func (h *Hub) pluginOpsList(ctx context.Context, args map[string]json.RawMessage) (any, error) {
+// plugin: the calling plugin on the plugin face; "" on the agent face.
+func (h *Hub) pluginOpsList(ctx context.Context, args map[string]json.RawMessage, plugin string) (any, error) {
 	for k := range args {
-		if k != "op_id" {
+		if k != "op_id" && (k != "origin_view" || plugin == "") {
 			return nil, bad("invalid: unknown field %s", k)
 		}
+	}
+	query, qargs := `SELECT op_id FROM plugin_ops ORDER BY created DESC, rowid DESC LIMIT 50`, []any{}
+	if raw, ok := args["origin_view"]; ok {
+		// origin_view (C8): the ops of the user's operations of one view of the calling plugin.
+		var view, owner string
+		if _, both := args["op_id"]; both {
+			return nil, bad("invalid: give op_id or origin_view, not both")
+		}
+		if json.Unmarshal(raw, &view) != nil || view == "" {
+			return nil, bad("invalid: origin_view must be a string")
+		}
+		err := h.db.QueryRowContext(ctx, `SELECT plugin FROM views WHERE view_id = ?`, view).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && owner != plugin {
+			return nil, refuse("not_found", "no view %s of plugin %s", view, plugin)
+		} else if err != nil {
+			return nil, err
+		}
+		query = `SELECT op_id FROM plugin_ops WHERE json_extract(origin, '$.kind') = 'user' AND json_extract(origin, '$.id') = ?
+			ORDER BY created DESC, rowid DESC LIMIT 50`
+		qargs = append(qargs, view)
 	}
 	var id string
 	if raw, ok := args["op_id"]; ok {
@@ -723,7 +744,7 @@ func (h *Hub) pluginOpsList(ctx context.Context, args map[string]json.RawMessage
 		}
 		return v, err
 	}
-	rows, err := h.db.QueryContext(ctx, `SELECT op_id FROM plugin_ops ORDER BY created DESC, rowid DESC LIMIT 50`)
+	rows, err := h.db.QueryContext(ctx, query, qargs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1812,9 +1833,9 @@ var pluginOpActions = []map[string]any{
 	{"name": "hub.plugins.op", "kind": "client", "title": "Run a plugin operation",
 		"description": "Start, stop, remove or change the settings of a plugin entry. entry is \"managed:<id>\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=<op_id>. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
-			"key":   map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
-			"op":    map[string]any{"type": "string", "enum": []string{"start", "stop", "settings", "remove"}},
-			"entry": map[string]any{"type": "string", "minLength": 1},
+			"key":    map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+			"op":     map[string]any{"type": "string", "enum": []string{"start", "stop", "settings", "remove"}},
+			"entry":  map[string]any{"type": "string", "minLength": 1},
 			"input":  settingsSchema,
 			"expect": settingsSchema,
 		}, "required": []string{"key", "op", "entry"}, "additionalProperties": false}},
