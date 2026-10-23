@@ -1,8 +1,8 @@
 package main
 
 // Profiles and workers: named commands that the hub starts in a new tab of its session.
-// An agent profile also creates a hub agent for the new pane, so the agent can join and
-// message without a hand-written roster entry. See README "Profiles and workers".
+// An agent profile gives the new pane an agent spawn address ("spawn:<spawn_id>"), which binds to
+// the first identity that the pane reports. See README "Profiles and workers".
 
 import (
 	"context"
@@ -37,10 +37,8 @@ CREATE TABLE IF NOT EXISTS spawns (spawn_id TEXT PRIMARY KEY, caller TEXT NOT NU
   error TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', created TEXT NOT NULL,
   effective_args TEXT NOT NULL DEFAULT '',
   generation INTEGER NOT NULL DEFAULT 0,
+  identity TEXT NOT NULL DEFAULT '',
   UNIQUE (caller, key));
--- Agents that a spawn created. IDs are never reused: the mailbox history belongs to one instance.
-CREATE TABLE IF NOT EXISTS dyn_agents (agent TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL,
-  spawn_id TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
 -- A locked path refuses new spawns whose cwd is the path or under it (hub.cwd.lock), for example
 -- while a plugin removes a worktree. owner is the plugin; key is its operation key.
@@ -207,6 +205,9 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		`ALTER TABLE spawns ADD COLUMN generation INTEGER NOT NULL DEFAULT 0`,
 		// The identity that a resume spawn continues (resume.go); '' on other spawns.
 		`ALTER TABLE spawns ADD COLUMN resume_of TEXT NOT NULL DEFAULT ''`,
+		// The first identity that an agent spawn's pane reported: the identity of its address
+		// "spawn:<spawn_id>" (identity.go). '' before that report; kept after the spawn closes.
+		`ALTER TABLE spawns ADD COLUMN identity TEXT NOT NULL DEFAULT ''`,
 		// A restart's pane and configured program (agentrestart.go); a resume-only table has none.
 		`ALTER TABLE agent_op_targets ADD COLUMN stop_block TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE agent_op_targets ADD COLUMN stop_session TEXT NOT NULL DEFAULT ''`,
@@ -223,34 +224,12 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 	return nil
 }
 
-// workersLoad creates the schema and loads the dynamic agents. It runs before loadBindings, so a
-// spawned agent keeps its binding across a hub restart.
+// workersLoad creates the schema and fails the spawns that a stopped hub never sent.
 func (h *Hub) workersLoad(ctx context.Context) error {
 	if err := h.workersSchemaStart(ctx); err != nil {
 		return err
 	}
-	if err := h.failUnsentSpawns(ctx); err != nil {
-		return err
-	}
-	rows, err := h.db.QueryContext(ctx, `SELECT agent, name, profile FROM dyn_agents ORDER BY created, agent`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	h.mu.Lock()
-	for rows.Next() {
-		var id, name, profile string
-		if err := rows.Scan(&id, &name, &profile); err != nil {
-			h.mu.Unlock()
-			return err
-		}
-		if h.agents[id] == nil {
-			h.agents[id] = &Agent{ID: id, Name: name, Profile: profile, delivered: map[string]int64{}}
-			h.agentOrder = append(h.agentOrder, id)
-		}
-	}
-	h.mu.Unlock()
-	return rows.Err()
+	return h.failUnsentSpawns(ctx)
 }
 
 // workersRun starts the spawn resolver and the profile watcher after initialization.
@@ -287,7 +266,7 @@ func (h *Hub) spawnCaller(ctx context.Context, p perform, args map[string]any) (
 	return h.agentOfPID(ctx, p.Requester.Principal.PID)
 }
 
-// agentOfPID is the joined agent or current conversation identity of the pane that runs pid.
+// agentOfPID is the current conversation identity of the pane that runs pid.
 func (h *Hub) agentOfPID(ctx context.Context, pid int) (string, error) {
 	_, block, _, err := h.paneOf(ctx, pid)
 	if err != nil {
@@ -295,15 +274,12 @@ func (h *Hub) agentOfPID(ctx context.Context, pid int) (string, error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// The pane's current conversation identity first: it needs no join.
-	for _, list := range [][]*Agent{identsOf(h.idents), identsOf(h.agents)} {
-		for _, a := range list {
-			if block != "" && a.BlockID == block && a.live() && (a.Kind == "" || a.IdState == "current") {
-				return a.ID, nil
-			}
+	for _, a := range identsOf(h.idents) {
+		if block != "" && a.BlockID == block && a.live() && a.IdState == "current" {
+			return a.ID, nil
 		}
 	}
-	return "", bad("the caller is not a joined agent or a reported conversation")
+	return "", bad("the caller is not a reported conversation")
 }
 
 func (h *Hub) profilesList(ctx context.Context) (any, error) {
@@ -588,14 +564,13 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 		return nil, err
 	}
 	defer tx.Rollback()
-	name, err := h.admitSpawn(ctx, tx, s, prof, title, string(fp), resolved)
-	if err != nil {
+	if err := h.admitSpawn(ctx, tx, s, prof, title, string(fp), resolved); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	h.spawnAdmitted(s, prof, name)
+	h.spawnAdmitted(s, prof)
 	if err := h.sendSpawn(ctx, s, placement, spawnArgv(s, prof, resolved)); err != nil {
 		return nil, err
 	}
@@ -670,38 +645,22 @@ func (h *Hub) effectiveCwd(prof Profile, cwdArg string) (string, error) {
 	return realDir(dir)
 }
 
-// admitSpawn inserts one spawn row in tx and, for an agent profile, its new agent. It returns the
-// agent's name. The caller commits, then calls spawnAdmitted.
-func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Profile, title, request string, effective map[string]string) (string, error) {
+// admitSpawn inserts one spawn row in tx. An agent profile's spawn gets the address
+// "spawn:<spawn_id>" (agent_id) and a numbered default title. The caller commits, then calls
+// spawnAdmitted.
+func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Profile, title, request string, effective map[string]string) error {
 	if err := keyTakenIn(ctx, tx, "spawns", s.Caller, s.Key); err != nil {
-		return "", err
+		return err
 	}
-	now := s.Created
 	name := ""
 	if prof.Kind == "agent" {
-		h.mu.Lock()
-		taken := func(id string) bool { return h.agents[id] != nil }
-		h.mu.Unlock()
+		s.Agent = spawnAddress(s.ID)
 		var n int64
 		tx.QueryRowContext(ctx, `SELECT value FROM counters WHERE name = ?`, "agent/"+prof.ID).Scan(&n)
-		for {
-			n++
-			s.Agent = fmt.Sprintf("%s-%d", prof.ID, n)
-			h.mu.Lock()
-			used := taken(s.Agent)
-			h.mu.Unlock()
-			var exists int
-			tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM dyn_agents WHERE agent = ?`, s.Agent).Scan(&exists)
-			if !used && exists == 0 {
-				break
-			}
-		}
+		n++
 		name = fmt.Sprintf("%s %d", prof.Name, n)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO counters VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value`, "agent/"+prof.ID, n); err != nil {
-			return "", err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO dyn_agents VALUES (?, ?, ?, ?, ?)`, s.Agent, name, prof.ID, s.ID, now); err != nil {
-			return "", err
+			return err
 		}
 	}
 	s.Title = title
@@ -715,32 +674,31 @@ func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Prof
 	// one connection, so transactions run one at a time): no spawn enters a locked path, and a
 	// removal that locked, removed and unlocked before this point leaves no directory to admit.
 	if path, owner, err := lockedPath(ctx, tx, s.Cwd); err != nil {
-		return "", err
+		return err
 	} else if path != "" {
-		return "", bad("conflict: %s is locked by %s", path, owner)
+		return bad("conflict: %s is locked by %s", path, owner)
 	}
 	if again, err := realDir(s.Cwd); err != nil || again != s.Cwd {
-		return "", bad("conflict: %s changed or was removed before admission", s.Cwd)
+		return bad("conflict: %s changed or was removed before admission", s.Cwd)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO spawns (`+spawnCols+`, request) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, s.Caller, s.Key, s.Profile, s.Title, s.Agent, s.Parent, s.Status, "", "", "", "", s.Created, s.Session, s.Cwd, request); err != nil {
-		return "", err
+		return err
 	}
 	eff, _ := json.Marshal(effective)
 	if _, err := tx.ExecContext(ctx, `UPDATE spawns SET effective_args = ?, generation = ? WHERE spawn_id = ?`, string(eff), h.generation, s.ID); err != nil {
-		return "", err
+		return err
 	}
-	return name, nil
+	return nil
 }
 
-// spawnAdmitted runs after the admission commits: the new agent becomes known in memory, and
-// hub.workers lists the starting worker.
-func (h *Hub) spawnAdmitted(s *spawnRow, prof Profile, name string) {
+// spawnAdmitted runs after the admission commits: an agent spawn's address becomes known in memory
+// (it waits for its first identity), and hub.workers lists the starting worker.
+func (h *Hub) spawnAdmitted(s *spawnRow, prof Profile) {
 	what := []string{"workers"}
 	if s.Agent != "" {
 		h.mu.Lock()
-		h.agents[s.Agent] = &Agent{ID: s.Agent, Name: name, Profile: prof.ID, delivered: map[string]int64{}}
-		h.agentOrder = append(h.agentOrder, s.Agent)
+		h.spawnAddrs[s.Agent] = &spawnAddr{spawnID: s.ID, name: s.Title}
 		h.mu.Unlock()
 		what = append(what, "agents")
 	}
@@ -750,15 +708,11 @@ func (h *Hub) spawnAdmitted(s *spawnRow, prof Profile, name string) {
 
 // spawnArgv is the pane command. Rex has no env option on a spawn (roadmap #1, rechecked on
 // 1203): use /usr/bin/env. Every pane drops the agent variables, also an accessory: the user can
-// start an agent in it. LAZYREX_AGENT too: only an agent spawn sets it again, so a stale one
-// never reaches a shell.
+// start an agent in it.
 func spawnArgv(s *spawnRow, prof Profile, resolved map[string]string) []string {
-	argv := []string{"/usr/bin/env", "-u", "LAZYREX_AGENT"}
+	argv := []string{"/usr/bin/env"}
 	for _, k := range agentEnvUnset {
 		argv = append(argv, "-u", k)
-	}
-	if s.Agent != "" {
-		argv = append(argv, "LAZYREX_AGENT="+s.Agent)
 	}
 	keys := make([]string, 0, len(prof.Env))
 	for k := range prof.Env {
@@ -792,46 +746,22 @@ var spawnCreate = func(ctx context.Context, h *Hub, method string, req map[strin
 	return h.rex.Call(ctx, method, req, out)
 }
 
-// openSpawn records the pane. The spawn row and the agent's binding commit together, so a crash
-// cannot leave an open agent spawn without its pane.
+// openSpawn records the pane.
 func (h *Hub) openSpawn(ctx context.Context, s *spawnRow, window, block string) error {
-	tx, err := h.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE spawns SET status = 'open', window_id = ?, block_id = ?, session_id = ?, error = '' WHERE spawn_id = ? AND status = 'sending'`, window, block, s.Session, s.ID)
+	res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'open', window_id = ?, block_id = ?, session_id = ?, error = '' WHERE spawn_id = ? AND status = 'sending'`, window, block, s.Session, s.ID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		// An adoption (a join or an identity report from the pane) can open the spawn while its
-		// create request is in flight. The same block is the same pane: the spawn is open, and
-		// its binding and events were written once already.
-		cur, err := scanSpawn(tx.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE spawn_id = ?`, s.ID))
+		// An adoption (an identity report from the pane) can open the spawn while its create
+		// request is in flight. The same block is the same pane: the spawn is open, and its events
+		// were written once already.
+		cur, err := scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE spawn_id = ?`, s.ID))
 		if err == nil && cur.Status == "open" && cur.Block == block {
 			*s = *cur
 			return nil
 		}
 		return fmt.Errorf("spawn %s is no longer sending", s.ID)
-	}
-	if s.Agent != "" {
-		// The pane belongs to this agent from now on. Its process joins with LAZYREX_AGENT.
-		if _, err := tx.ExecContext(ctx, `INSERT INTO bindings (agent, session_id, block_id, child_pid, child_start) VALUES (?, ?, ?, 0, '')
-			ON CONFLICT (agent) DO UPDATE SET session_id = excluded.session_id, block_id = excluded.block_id`, s.Agent, s.Session, block); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if s.Agent != "" {
-		h.mu.Lock()
-		if a := h.agents[s.Agent]; a != nil {
-			a.Session, a.BlockID = s.Session, block
-			h.syncPrompts()
-		}
-		h.mu.Unlock()
 	}
 	s.Status, s.Window, s.Block, s.Error = "open", window, block, ""
 	h.ev.emit("spawn_opened", map[string]any{"spawn_id": s.ID, "block_id": block, "agent": s.Agent})
@@ -968,10 +898,9 @@ func (h *Hub) failUnsentSpawns(ctx context.Context) error {
 var errSpawnMoved = errors.New("the spawn is no longer pending")
 
 // failSpawn stores a failure. It changes s, emits the event and reports the change only after the
-// update is stored. It fires "workers" only: a write fires "agents" only when it changes what
-// agentsList returns, and agentsList reads no spawns row.
+// update is stored. It fires "workers"; an agent spawn also loads the spawn addresses again
+// (spawnEnded), which fires "agents" when an address that never bound ends.
 func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) error {
-	// The agent ID stays retired: join refuses an agent whose spawn failed.
 	res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'failed', error = ? WHERE spawn_id = ? AND status IN ('prepared', 'sending')`, why, s.ID)
 	if err != nil {
 		log.Printf("spawn %s: store the failure: %v", s.ID, err)
@@ -983,16 +912,19 @@ func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) error {
 	s.Status, s.Error = "failed", why
 	h.ev.emit("spawn_failed", map[string]any{"spawn_id": s.ID, "error": why})
 	h.changed("workers")
+	if s.Agent != "" {
+		h.spawnEnded(ctx)
+	}
 	return nil
 }
 
 // resolveSpawns reports spawns whose Rex request had no known outcome, for example after a hub
 // crash. A label is only a discovery hint (architecture.md), so this never adopts or closes a pane
 // by its label. It records how many candidate panes exist, for the worker list. An agent spawn
-// opens when its process joins or reports its identity from the one candidate pane (adoptSpawn).
+// opens when its process reports its identity from the one candidate pane (adoptSpawn).
 // An accessory spawn stays pending, visible in the worker list, and hub.stop refuses it (known
 // limit of v1). It runs at start and on Rex events that can change the answer (kickSpawns): a
-// block created or closed, a session destroyed, an agent join or adoption. A timer is armed only
+// block created or closed, a session destroyed, an adoption. A timer is armed only
 // for a pending spawn that is still in its first-request window, and after an error.
 func (h *Hub) resolveSpawns(ctx context.Context) {
 	for {
@@ -1070,7 +1002,7 @@ func (h *Hub) resolveNext(ctx context.Context) (next time.Time, err error) {
 			why = fmt.Sprintf("outcome unknown: %d candidate pane(s)", n)
 		}
 		if s.Agent != "" && n == 1 {
-			why += "; waiting for the agent to join"
+			why += "; waiting for the agent to report"
 		}
 		if why != s.Error {
 			h.db.ExecContext(ctx, `UPDATE spawns SET error = ? WHERE spawn_id = ? AND status = 'sending'`, why, s.ID)
@@ -1131,6 +1063,9 @@ func (h *Hub) workerGone(ctx context.Context, s *spawnRow, why string) error {
 	if n, _ := res.RowsAffected(); n == 1 {
 		h.ev.emit(event, map[string]any{"spawn_id": s.ID, "session_id": s.Session, "error": why})
 		h.changed("workers", "agents")
+		if s.Agent != "" {
+			h.spawnEnded(ctx)
+		}
 	}
 	current, err := h.spawnByID(ctx, s.ID)
 	if err != nil {
@@ -1150,8 +1085,8 @@ func spawnCandidates(blocks map[string]rexBlock, spawnID string) []string {
 	return out
 }
 
-// adoptSpawn opens a pending agent spawn when its process joins (via "join") or reports its
-// identity (via "identity") from its pane. The caller's pane, found from the caller's PID, is the
+// adoptSpawn opens a pending agent spawn when its process reports its identity from its pane (via
+// names the path in the log). The caller's pane, found from the caller's PID, is the
 // proof; the label only rules out other panes. It returns the spawn's status after the attempt.
 func (h *Hub) adoptSpawn(ctx context.Context, s *spawnRow, block, via string) (string, error) {
 	blocks, err := h.workerBlocks(ctx, s)
@@ -1394,7 +1329,7 @@ func (h *Hub) stop(ctx context.Context, p perform, args map[string]any) (any, er
 	case "closed":
 		return map[string]any{"spawn_id": id, "status": "closed"}, nil
 	case "prepared", "sending":
-		return nil, bad("not_ready: %s has no identified pane yet, so the hub cannot stop it. An agent spawn opens when its agent joins; otherwise close its tab by hand", id)
+		return nil, bad("not_ready: %s has no identified pane yet, so the hub cannot stop it. An agent spawn opens when its agent reports; otherwise close its tab by hand", id)
 	case "failed":
 		res, err := h.db.ExecContext(ctx, `UPDATE spawns SET status = 'closed', closed_by = ? WHERE spawn_id = ? AND status = 'failed'`, caller, id)
 		if err != nil {
@@ -1432,6 +1367,9 @@ func (h *Hub) closeSpawn(ctx context.Context, s *spawnRow, by string) {
 		s.Status, s.ClosedBy = "closed", by
 		h.ev.emit("spawn_closed", map[string]any{"spawn_id": s.ID, "by": by})
 		h.changed("workers", "agents")
+		if s.Agent != "" {
+			h.spawnEnded(ctx)
+		}
 	}
 }
 
@@ -1471,18 +1409,15 @@ func (h *Hub) navigateWorker(ctx context.Context, args map[string]any) (any, err
 	return map[string]any{"spawn_id": id, "status": "navigating"}, nil
 }
 
-// navigateAgent handles hub.navigate.agent {agent}: it shows the tab of a live agent (an identity
-// or a legacy agent) on the apps, like navigateWorker. Plugins call it for a click on an agent.
+// navigateAgent handles hub.navigate.agent {agent}: it shows the tab of a live agent (a current
+// identity) on the apps, like navigateWorker. Plugins call it for a click on an agent.
 func (h *Hub) navigateAgent(ctx context.Context, args map[string]any) (any, error) {
 	id, _ := args["agent"].(string)
 	h.mu.Lock()
 	a := h.idents[id]
-	if a == nil || a.IdState != "current" {
-		a = h.agents[id]
-	}
 	var sess, block string
-	if a != nil && a.live() {
-		sess, block = h.bindingSession(a), a.BlockID
+	if a != nil && a.IdState == "current" && a.live() {
+		sess, block = a.Session, a.BlockID
 	}
 	h.mu.Unlock()
 	if block == "" {
@@ -1648,7 +1583,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			kept = append(kept, k)
 		}
 	}
-	sort.Slice(kept, func(i, j int) bool { return kept[i].(map[string]any)["name"].(string) < kept[j].(map[string]any)["name"].(string) })
+	sort.Slice(kept, func(i, j int) bool {
+		return kept[i].(map[string]any)["name"].(string) < kept[j].(map[string]any)["name"].(string)
+	})
 	h.mu.Unlock()
 	h.entriesMu.Unlock()
 	out := []any{}

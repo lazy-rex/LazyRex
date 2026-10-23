@@ -40,7 +40,7 @@ func (a *adoptRex) answer(method string, _ json.RawMessage) (any, string) {
 	return map[string]any{"blocks": a.blocks}, ""
 }
 
-// adoptTestHub has the agent spawn spawn-test (agent-1) in the given state, in session:s1, and a
+// adoptTestHub has the agent spawn spawn-test (spawn:spawn-test) in the given state, in session:s1, and a
 // fake Rex with these blocks.
 func adoptTestHub(t *testing.T, status string, blocks ...rexBlock) (*Hub, *adoptRex) {
 	t.Helper()
@@ -91,8 +91,8 @@ func kicked(h *Hub) bool {
 // event via identity, and wakes resolveSpawns.
 func TestAdoptReportedOpensTheSpawn(t *testing.T) {
 	h, _ := adoptTestHub(t, "sending", labeled("block:b1", "spawn-test"))
-	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "agent-1" {
-		t.Fatalf("agent = %q, want agent-1", got)
+	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "spawn:spawn-test" {
+		t.Fatalf("agent = %q, want spawn:spawn-test", got)
 	}
 	if st, b := spawnStatus(t, h, "spawn-test"); st != "open" || b != "block:b1" {
 		t.Fatalf("spawn: %s %s", st, b)
@@ -102,9 +102,6 @@ func TestAdoptReportedOpensTheSpawn(t *testing.T) {
 	}
 	if !kicked(h) {
 		t.Fatal("no kickSpawns after the adoption")
-	}
-	if h.agents["agent-1"].BlockID != "block:b1" {
-		t.Fatal("the agent binding was not written")
 	}
 }
 
@@ -152,7 +149,7 @@ func TestAdoptReportedRetriesAfterAnError(t *testing.T) {
 		if st, _ := spawnStatus(t, h, "spawn-test"); st != "sending" {
 			t.Fatalf("call %d failed: spawn %s", call, st)
 		}
-		if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "agent-1" {
+		if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "spawn:spawn-test" {
 			t.Fatalf("call %d failed: the next report: agent = %q", call, got)
 		}
 		if st, b := spawnStatus(t, h, "spawn-test"); st != "open" || b != "block:b1" {
@@ -165,12 +162,11 @@ func TestAdoptReportedRetriesAfterAnError(t *testing.T) {
 func TestAdoptReportedChecksOnlyTheLabeledSpawn(t *testing.T) {
 	h, _ := adoptTestHub(t, "sending", labeled("block:b2", "spawn-b"))
 	if _, err := h.db.Exec(`INSERT INTO spawns (spawn_id,caller,key,request,profile,title,agent_id,parent,status,created,session_id)
- VALUES ('spawn-b','user','key-b','{}','agent','Agent 2','agent-2','user','sending','2026-10-16T23:00:00Z','session:s1')`); err != nil {
+ VALUES ('spawn-b','user','key-b','{}','agent','Agent 2','spawn:spawn-b','user','sending','2026-10-16T23:00:00Z','session:s1')`); err != nil {
 		t.Fatal(err)
 	}
-	h.agents["agent-2"] = &Agent{ID: "agent-2", Profile: "agent"}
-	if got := h.adoptReported(context.Background(), "session:s1", "block:b2"); got != "agent-2" {
-		t.Fatalf("agent = %q, want agent-2", got)
+	if got := h.adoptReported(context.Background(), "session:s1", "block:b2"); got != "spawn:spawn-b" {
+		t.Fatalf("agent = %q, want spawn:spawn-b", got)
 	}
 	if st, b := spawnStatus(t, h, "spawn-b"); st != "open" || b != "block:b2" {
 		t.Fatalf("spawn-b: %s %s", st, b)
@@ -187,8 +183,8 @@ func TestAdoptReportedOpenSpawn(t *testing.T) {
 	if _, err := h.db.Exec(`UPDATE spawns SET block_id = 'block:b1'`); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "agent-1" {
-		t.Fatalf("agent = %q, want agent-1", got)
+	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "spawn:spawn-test" {
+		t.Fatalf("agent = %q, want spawn:spawn-test", got)
 	}
 	if _, err := h.db.Exec(`UPDATE spawns SET block_id = 'block:b9'`); err != nil {
 		t.Fatal(err)
@@ -229,7 +225,7 @@ func TestAdoptReportedHasABound(t *testing.T) {
 	ar.mu.Lock()
 	ar.hold = nil
 	ar.mu.Unlock()
-	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "agent-1" {
+	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "spawn:spawn-test" {
 		t.Fatalf("the next report: agent = %q", got)
 	}
 }

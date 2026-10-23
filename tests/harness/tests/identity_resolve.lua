@@ -1,4 +1,4 @@
--- Agent identity, stage 2 on the hub (hub/cmd/hub/identity.go): a pane that never joins is known by
+-- Agent identity on the hub (hub/cmd/hub/identity.go): a pane is known by
 -- its report alone; hub.agents lists identities; hub.agents.resolve by ID, prefix and tab name; a
 -- clear report supersedes the old identity.
 
@@ -11,16 +11,16 @@ end
 
 local function resolve(to) return H.hub('hub.agents.resolve', {to = to}).id end
 
--- planner is a pane that never joins, with the identity claude:plan-2041. A repeat report is unchanged.
+-- planner is a pane with the identity claude:plan-2041. A repeat report is unchanged.
 local function planner()
   local p = agent('planner', {report = false, title = 'Planner'})
   return p, p:report({kind = 'claude', conversation_id = 'plan-2041'})
 end
 
-test('a pane that never joins is known by its report alone', function()
+test('a pane is known by its report alone', function()
   local p, r = planner()
   expect(r.state).to_be('current')
-  expect(r.agent_id, 'no legacy agent in this pane').to_be(nil)
+  expect(r.agent_id, 'no agent spawn in this pane').to_be(nil)
   expect(r.name).to_be('Planner')
   local e = agents()['claude:plan-2041']
   expect(e.name).to_be('Planner')
@@ -39,7 +39,7 @@ test('resolve by ID, unique tab name and unique prefix; unknown and short prefix
   expect_error(function() resolve('claude:pl') end, 'unknown') -- a prefix needs 4 characters after the colon
 end)
 
-test('a pane that never joins can spawn: the spawn records the identity as its caller', function()
+test('a reported pane can spawn: the spawn records the identity as its caller', function()
   local p = planner()
   local s = p:hub('hub.spawn', {profile = 'shell', key = 'id-spawn-1'})
   expect(s.status).to_be('open')

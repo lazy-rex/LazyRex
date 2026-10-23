@@ -222,7 +222,7 @@ func (h *Hub) resumeTargets(ctx context.Context, req map[string]any) ([]opTarget
 	var ids []string
 	if a, ok := req["agent"].(string); ok {
 		id := a
-		h.db.QueryRowContext(ctx, `SELECT identity FROM identity_aliases WHERE legacy = ?`, a).Scan(&id)
+		id = h.spawnIdentity(ctx, a)
 		var n int
 		if h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identities WHERE identity = ?`, id).Scan(&n); n == 0 {
 			return nil, bad("unknown: no agent identity %q", a)
@@ -278,7 +278,7 @@ func (h *Hub) resumeTargets(ctx context.Context, req map[string]any) ([]opTarget
 }
 
 // sourceSpawn is the spawn whose profile, session, cwd, title and args the identity resumes with:
-// the spawn of the identity's last pane, else the spawn of an agent ID that became its alias.
+// the spawn of the identity's last pane, else the last agent spawn bound to the identity.
 func (h *Hub) sourceSpawn(ctx context.Context, identity, block string) (*spawnRow, error) {
 	if block != "" {
 		s, err := scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE block_id = ? ORDER BY created DESC LIMIT 1`, block))
@@ -286,14 +286,13 @@ func (h *Hub) sourceSpawn(ctx context.Context, identity, block string) (*spawnRo
 			return s, err
 		}
 	}
-	return scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE agent_id != '' AND agent_id IN
-		(SELECT legacy FROM identity_aliases WHERE identity = ?) ORDER BY created DESC LIMIT 1`, identity))
+	return scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE agent_id != '' AND identity = ? ORDER BY created DESC LIMIT 1`, identity))
 }
 
 // releaseTarget ends the reservation of an identity's active target (phase released). It is
 // stored as its own operation, so a retry of the same key replays it.
 func (h *Hub) releaseTarget(ctx context.Context, key, request, identity string) (any, error) {
-	h.db.QueryRowContext(ctx, `SELECT identity FROM identity_aliases WHERE legacy = ?`, identity).Scan(&identity)
+	identity = h.spawnIdentity(ctx, identity)
 	opID := randomID("op-")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := h.db.BeginTx(ctx, nil)
