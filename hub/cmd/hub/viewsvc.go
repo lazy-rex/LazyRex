@@ -63,10 +63,16 @@ type historyFetch struct {
 	err     error
 }
 
-func (h *Hub) viewsStart(ctx context.Context) error {
-	h.vs = &viewSvc{snaps: map[string]*snapshot{}, dirty: map[string]bool{}, notify: map[string]bool{}, workers: map[string]chan struct{}{}, seen: map[string]map[string]string{},
+// newViewSvc returns a view service with every map made. viewsStart and the tests use it.
+func newViewSvc() *viewSvc {
+	return &viewSvc{snaps: map[string]*snapshot{}, dirty: map[string]bool{}, notify: map[string]bool{}, workers: map[string]chan struct{}{}, seen: map[string]map[string]string{},
 		history: map[string]*historyFetch{}, views: map[string]map[string]*viewState{}, all: map[string]renderCause{}, loose: map[string]renderCause{},
-		epoch: map[string]int64{}, senders: map[notifyKey]*viewNotifier{}, ctx: ctx}
+		epoch: map[string]int64{}, renders: map[string]*openRender{}, senders: map[notifyKey]*viewNotifier{}}
+}
+
+func (h *Hub) viewsStart(ctx context.Context) error {
+	h.vs = newViewSvc()
+	h.vs.ctx = ctx
 	if _, err := h.db.ExecContext(ctx, viewOpsSchema); err != nil {
 		return err
 	}
@@ -100,7 +106,6 @@ func (h *Hub) viewsStart(ctx context.Context) error {
 func (h *Hub) kickViews(plugin string, cause renderCause) {
 	h.vs.mu.Lock()
 	if cause != 0 {
-		h.vs.initLocked()
 		h.vs.all[plugin] |= cause
 		h.vs.dirty[plugin] = true
 	}

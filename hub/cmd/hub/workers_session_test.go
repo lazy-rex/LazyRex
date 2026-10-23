@@ -50,7 +50,8 @@ func TestWorkerSessionLab(t *testing.T) {
 		h.rex = r
 		h.ui = &uiState{sess: map[string]string{session(t): uiSessionKey}, kick: make(chan struct{}, 1)}
 		h.selfClosed = map[string]bool{}
-		h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{"test": make(chan struct{}, 1)}}
+		h.vs = newViewSvc()
+		h.vs.workers["test"] = make(chan struct{}, 1)
 		h.plugins = map[string]*Plugin{"test": {Name: "test", ClientID: "client:00000000-0000-0000-0000-000000000001"}}
 		h.cfg.Profiles = t.TempDir() + "/profiles.json"
 		if err := os.WriteFile(h.cfg.Profiles, []byte(`{"profiles":[{"id":"probe","name":"Probe","kind":"accessory","command":["/bin/sleep","120"]}]}`), 0600); err != nil {
