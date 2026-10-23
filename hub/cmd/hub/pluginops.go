@@ -453,10 +453,10 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	if len(req.Input) > 0 && req.Op != "settings" && req.Op != "add" && req.Op != "update" {
 		return nil, bad("invalid: only settings, add and update have input")
 	}
-	// An agent add or update is a request that the user confirms (B9). Until that flow exists, the
-	// code is user_only (temporary; docs/hub.md).
+	// An agent add or update is a request that the user confirms (B9). Until B9, the code is
+	// user_only, and the text names what the agent can do (P1; docs/hub.md).
 	if origin.Kind == "agent" && (req.Op == "add" || req.Op == "update") {
-		return nil, refuse("user_only", "%s is a user operation for now: an agent cannot add or update plugins until the request flow exists; ask the user to use LazyRex: Plugins…", req.Op)
+		return nil, refuse("user_only", "add and update need the user: ask the user to open LazyRex: Plugins…")
 	}
 	if req.Op == "add" {
 		return h.addAdmission(op, req)

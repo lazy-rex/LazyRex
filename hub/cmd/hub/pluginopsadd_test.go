@@ -67,10 +67,12 @@ func TestPluginOpAddAdmission(t *testing.T) {
 	if op := opsOf(t, h, mustLastOp(t, h)); op.Entry != "managed:deep" {
 		t.Fatalf("the default id of a subdir: %+v", op)
 	}
-	// An agent add and an agent update are user_only (temporary, until the request flow).
+	// An agent add and an agent update are user_only (until B9), and the text tells the agent what
+	// to do (P1).
 	for _, req := range []opRequest{{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/x@v1"})},
 		{Op: "update", Entry: "managed:tools", Input: rawJSON(map[string]any{"to": "latest"})}} {
-		if _, err := opsAdmit(t, h, "a1", "agent-"+req.Op, req); !isRefusal(err, "user_only") {
+		_, err := opsAdmit(t, h, "a1", "agent-"+req.Op, req)
+		if !isRefusal(err, "user_only") || !strings.HasSuffix(err.Error(), ": add and update need the user: ask the user to open LazyRex: Plugins…") {
 			t.Errorf("agent %s: %v", req.Op, err)
 		}
 	}
