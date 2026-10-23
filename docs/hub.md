@@ -187,6 +187,7 @@ render is also untracked after a query with its ID fails with an error other tha
 also before the statement runs (invalid arguments, a database that does not open): the hub cannot
 know the tables, and after it reads a `sqlite_` table other than
 `sqlite_schema` (`sqlite_sequence` and `sqlite_stat1` change without a mark).
+A covered hub read with the open render ID ("Hub reads in a render") will not untrack it.
 
 Marks and races (the rules of "Render dependencies" apply):
 
@@ -198,6 +199,35 @@ Marks and races (the rules of "Render dependencies" apply):
   `deps.prefixes` filters store commits only. The other triggers do not use the set.
 - `hub.test.renders` shows `sql_tracked` (true when the view has a table set) for each view. It
   shows no table names.
+
+### Hub reads in a render (planned, G1 part B)
+
+Planned (G1 part B, lead-g1-spec and lead-g1b-plan; this section becomes "built" with the code).
+A covered hub read in a render is a tracked read of its change names, as a tokened query is a
+tracked read of its tables.
+
+- The covered actions and their change names: `hub.agents` and `hub.agents.resolve` give
+  `agents`; `hub.workers` gives `workers`; `hub.profiles` gives `profiles` and `workers` (its
+  `running` counts come from the spawns). `hub.plugins` is not covered: it untracks, as today.
+- The plugin sends the open render ID as `render` with a covered call (the SDK does it). The call
+  then does not untrack the render. When the call returns without error, the hub adds its change
+  names to the render's read set. An error, a closed or unknown ID, or an ID of another plugin or
+  instance untracks, as for a query. A `hub.workers` read in which a Rex read failed (a pane's
+  process or its program status) also untracks the render: the hub knows that the list is
+  incomplete.
+- A good, tracked render installs its change names beside its tables. Then `changed(name)` marks
+  the view when its names hold that name, whatever `deps.changes` says. A render that read change
+  names and no table gets an empty table set: no SQL commit marks it. A render that read nothing
+  keeps no table set, as today.
+- The rules above for table sets apply to change names too: a view in flight is marked by every
+  change; a new registration drops the names, and a render from before it installs nothing; a
+  failed or untracked render clears them.
+- Limits. Part of each covered result comes from outside the hub: the OS process table and Rex.
+  The hub learns of a change there only through a Rex event. A process that ends without a Rex
+  event is seen at the next event. A profile file edit is seen when `checkProfiles` runs (a
+  `hub.profiles` call, or a view that gets focus), as today. The hub has no Rex reconnect: when
+  the Rex connection closes, the hub ends, and a new hub renders every view fresh after its plugin
+  registers.
 
 The home plugin reads no table: each render calls hub actions, so it is untracked. Its views
 render again through `hub.changed` marks (agents, workers, plugins, profiles). The launch notice
