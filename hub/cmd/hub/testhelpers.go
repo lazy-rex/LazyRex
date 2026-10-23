@@ -6,10 +6,9 @@ package main
 //   - testview is the renderer of a test hub (config "view"). The hub's UI worker starts it in a
 //     pane like the real renderer. It attaches, subscribes and answers the hub's callbacks, and
 //     carries the test's view calls (testview.*) to the hub with its attachment.
-//   - testagent is a test agent. It joins as a roster agent from its pane, reports conversation
-//     identities from a new child process each time (like an agent hook), and carries the test's
-//     agent calls: through the agent face (agent.call, the MCP path), to the plugin (agent.direct),
-//     or to the hub (agent.hub).
+//   - testagent is a test agent. It reports conversation identities from a new child process each
+//     time (like an agent hook), and carries the test's agent calls: through the agent face
+//     (agent.call, the MCP path), to the plugin (agent.direct), or to the hub (agent.hub).
 //
 // Rex delivers requests to one client one at a time. So every handler here answers after one
 // short call to the hub, the agent face or a plugin, and none waits for progress that needs a
@@ -523,9 +522,8 @@ func testAgentMain(argv []string) int {
 	}
 	fs := flag.NewFlagSet("testagent", flag.ContinueOnError)
 	id := fs.String("id", "", "test agent name (its label is lazyrex-testagent:<id>)")
-	join := fs.String("join", "", "roster agent to join as (hub.join), from this pane")
 	if err := fs.Parse(argv); err != nil || *id == "" {
-		fmt.Fprintln(os.Stderr, "usage: lazyrex-hub testagent -id <name> [-join <roster agent>] (lab only)")
+		fmt.Fprintln(os.Stderr, "usage: lazyrex-hub testagent -id <name> (lab only)")
 		return 2
 	}
 	log.SetPrefix("testagent " + *id + " ")
@@ -540,26 +538,8 @@ func testAgentMain(argv []string) int {
 		return 1
 	}
 	var mu sync.Mutex
-	joined, joinErr := *join == "", ""
 	reports := map[string]*asyncReport{} // async key -> outcome (nil: running)
 	var input *strings.Builder           // agent.input: the captured pane input (nil: not capturing)
-	if *join != "" {
-		go func() {
-			for i := 0; i < 100; i++ {
-				hub, err := c.resolveClient(ctx, "lazyrex-hub")
-				if err == nil {
-					_, err = c.perform(ctx, hub, "hub.join", map[string]any{"agent": *join})
-				}
-				mu.Lock()
-				joined, joinErr = err == nil, errString(err)
-				mu.Unlock()
-				if err == nil || !strings.Contains(err.Error(), "not_ready") && !strings.Contains(err.Error(), "not_found") {
-					return
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-		}()
-	}
 	go c.serve(func(p perform, args map[string]any) {
 		action, _ := args["action"].(string)
 		inner := args["args"]
@@ -578,7 +558,7 @@ func testAgentMain(argv []string) int {
 		case "agent.status":
 			mu.Lock()
 			defer mu.Unlock()
-			c.reply(p.CallID, map[string]any{"id": *id, "pid": os.Getpid(), "joined": joined, "join_error": joinErr}, nil)
+			c.reply(p.CallID, map[string]any{"id": *id, "pid": os.Getpid()}, nil)
 		case "agent.call": // the agent face: the path agents use (`rex -C lazyrex do`)
 			client, err := target(agentLabel)
 			if err != nil {

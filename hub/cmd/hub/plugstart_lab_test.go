@@ -133,7 +133,7 @@ func startLabWith(t *testing.T, serverArgs []string, withHome bool, sources ...s
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.Test.Agents, m.Test.Args, m.Test.WatchRoots, m.Test.Env = nil, nil, nil, nil
+	m.Test.Args, m.Test.WatchRoots, m.Test.Env = nil, nil, nil
 	o := &testOpts{dir: dir, lazyrex: root, self: bin, rexBin: rexBin, m: m, serverArgs: serverArgs}
 	if withHome {
 		if o.home, err = homePlugin(root); err != nil {

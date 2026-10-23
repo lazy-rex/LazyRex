@@ -164,7 +164,7 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 // nothing.
 func TestNoNotice(t *testing.T) {
 	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p"}, "q": {Name: "q", run: pluginRun{Name: "q", Notice: "x"}}},
-		agents: map[string]*Agent{"alice": {ID: "alice"}}}
+		idents: map[string]*Agent{"alice": {ID: "alice"}}}
 	notes := []noticeOp{{agent: "alice", pending: true}}
 	err := h.admitSQLNotices("p", notes)
 	var se *storeError
