@@ -652,12 +652,16 @@ func (h *rehearsal) checkLabAgents() error {
 		{"bindings", "", "agent bindings"},
 		{"identity_panes", " WHERE current != ''", "panes with a current identity (identity_panes)"},
 	} {
-		var has int
-		if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", c.table).Scan(&has); err != nil {
-			return relFail("the lab hub.db: %v", err)
-		}
-		if has == 0 {
+		// SQLite resolves a table name without ASCII case, so the lookup does too; a name that is
+		// not a table fails.
+		var typ string
+		switch err := db.QueryRow("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE", c.table).Scan(&typ); {
+		case errors.Is(err, sql.ErrNoRows):
 			continue
+		case err != nil:
+			return relFail("the lab hub.db: %v", err)
+		case typ != "table":
+			return relFail("the lab hub.db: %s is a %s, not a table", c.table, typ)
 		}
 		var n int
 		if err := db.QueryRow("SELECT count(*) FROM " + c.table + c.where).Scan(&n); err != nil {
