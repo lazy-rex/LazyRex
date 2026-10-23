@@ -51,7 +51,7 @@ func (f *changedFake) count() int {
 
 func changedTestHub(clients map[string]string) *Hub {
 	h := &Hub{plugins: map[string]*Plugin{}, noticeKick: make(chan struct{}, 1),
-		vs: &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}}
+		vs: newViewSvc()}
 	for name, client := range clients {
 		h.plugins[name] = &Plugin{Name: name, ClientID: client}
 		h.vs.workers[name] = make(chan struct{}, 1)

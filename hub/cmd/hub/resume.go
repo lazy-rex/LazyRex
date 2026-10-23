@@ -396,9 +396,6 @@ func (h *Hub) setPhase(ctx context.Context, t *opTarget, from, to, detail string
 
 // kickResume wakes resumeLoop. Repeated kicks coalesce.
 func (h *Hub) kickResume() {
-	if h.resumeKick == nil {
-		return
-	}
 	select {
 	case h.resumeKick <- struct{}{}:
 	default:

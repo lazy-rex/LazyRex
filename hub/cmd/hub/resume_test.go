@@ -60,6 +60,7 @@ func TestProfileResumeTemplate(t *testing.T) {
 func resumeTestHub(t *testing.T) *Hub {
 	t.Helper()
 	h, src := workerTestHub(t)
+	h.vs = newViewSvc() // an agent op kicks the restart forms
 	ctx := context.Background()
 	if err := h.workersSchemaStart(ctx); err != nil {
 		t.Fatal(err)
