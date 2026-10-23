@@ -608,8 +608,10 @@ func TestLiveRegionResizeLab(t *testing.T) {
 	})
 	t.Logf("80x24 start capture:\n%s", last)
 	// The last two pairs come in a burst: the second size follows the first with no wait, as an
-	// app does when it lays out a pane that it shows.
-	for _, sizes := range [][][2]int{{{50, 24}}, {{80, 24}}, {{40, 24}}, {{100, 24}}, {{100, 12}}, {{60, 30}}, {{30, 8}, {90, 26}}, {{120, 40}, {70, 18}}} {
+	// app does when it lays out a pane that it shows. Every new pane holds the old frame, also
+	// after Rex rewraps it: a pane shorter than that pushes the old frame's top rows into the
+	// scrollback, where no frame can erase them (teaprobe A5, a known limit).
+	for _, sizes := range [][][2]int{{{50, 24}}, {{80, 24}}, {{40, 24}}, {{100, 24}}, {{100, 12}}, {{60, 30}}, {{60, 14}, {90, 26}}, {{120, 40}, {70, 18}}} {
 		step := ""
 		for _, size := range sizes {
 			step += fmt.Sprintf("%dx%d ", size[0], size[1])
