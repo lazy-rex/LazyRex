@@ -157,7 +157,7 @@ func TestReleaseSetRefused(t *testing.T) {
 		"neither":         {mod: func(e map[string]any) { item(e, "expect", []any{map[string]any{"pointer": "/a"}}) }, want: "exactly one of value and empty"},
 		"hub action":      {mod: func(e map[string]any) { item(e, "action", "hub.sql.exec") }, want: "not a plugin action"},
 		"args not object": {mod: func(e map[string]any) { item(e, "args", []any{1}) }, want: "not a JSON object"},
-		"action with sql": {mod: func(e map[string]any) { item(e, "sql", "SELECT 1") }, want: "only action, args and expect"},
+		"action with sql": {mod: func(e map[string]any) { item(e, "sql", "SELECT 1") }, want: "only action, args, expect and until"},
 		"sql seed": {mod: func(e map[string]any) {
 			e["seed"] = []any{map[string]any{"kind": "sql", "sql": "SELECT 1", "rows": []any{}}}
 		}, want: "probe only"},

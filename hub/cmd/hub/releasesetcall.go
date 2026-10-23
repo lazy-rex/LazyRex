@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	relSeedAgent = "relseed" // the lab-only roster agent that runs the action items
-	relPeerAgent = "relpeer" // a second lab-only roster agent that never joins (<PEER>)
+	relSeedAgent = "relseed"   // the lab-only roster agent that runs the action items
+	relPeerAgent = "relpeer"   // a second lab-only roster agent that never joins (<PEER>)
+	relLabInert  = "lab_inert" // the lab-only accessory profile (command true)
+	relLabAgent  = "lab_agent" // the lab-only agent profile (command true)
 )
 
 // relCallOut is the result of one call: the rex exit code and its output.
@@ -144,19 +146,8 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	}
 	// hub.join goes to the hub client; the items go to the agent face (agentLabel), which carries
 	// the plugin actions that agents may call.
-	rexDo := func(client string) string {
-		return fmt.Sprintf("rex -S %s --autostart=false --timeout 60s -C %s do", shQuote(h.l.server), shQuote(client))
-	}
-	lines := []string{"#!/bin/sh",
-		"cd " + shQuote(dir),
-		"while [ ! -e go ]; do sleep 0.1; done",
-		fmt.Sprintf(`%s hub.join --args '{"agent":"%s"}' > join.out 2>&1; echo $? > join.code`, rexDo(client), relSeedAgent)}
-	for i, c := range calls {
-		lines = append(lines, fmt.Sprintf(`%s %s --args @args-%d.json > out-%d 2>&1; echo $? > code-%d`, rexDo(agentLabel), shQuote(c.Action), i, i, i))
-	}
-	lines = append(lines, "echo done > done", "")
 	script := filepath.Join(dir, "batch.sh")
-	if err := os.WriteFile(script, []byte(strings.Join(lines, "\n")), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte(batchScript(dir, h.l.server, client, calls)), 0o700); err != nil {
 		return nil, err
 	}
 	arg, _ := json.Marshal(map[string]any{"session_id": session, "flavor": "com.superlogical.terminal.shell",
@@ -210,22 +201,16 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o600); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(time.Duration(30+60*len(calls)) * time.Second)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "done")); err == nil {
-			break
+	untils := 0
+	for _, c := range calls {
+		if len(c.Until) > 0 {
+			untils++
 		}
-		if time.Now().After(deadline) {
-			return nil, relFail("the agent pane %s did not finish; see %s", name, dir)
-		}
-		time.Sleep(200 * time.Millisecond)
 	}
-	if code := readCode(filepath.Join(dir, "join.code")); code != 0 {
-		return nil, relFail("the agent pane %s: hub.join exited %d: %s", name, code, bytes.TrimSpace(mustReadFile(filepath.Join(dir, "join.out"))))
-	}
-	outs := make([]relCallOut, len(calls))
-	for i := range calls {
-		outs[i] = relCallOut{Code: readCode(filepath.Join(dir, fmt.Sprintf("code-%d", i))), Out: mustReadFile(filepath.Join(dir, fmt.Sprintf("out-%d", i))), Vals: vals}
+	deadline := time.Now().Add(time.Duration(30+60*len(calls))*time.Second + time.Duration(untils)*relUntilWindow)
+	outs, err := serveBatch(dir, calls, vals, h.say, deadline)
+	if err != nil {
+		return nil, relFail("the agent pane %s: %v", name, err)
 	}
 	if err := h.closePane(session, block, relSeedAgent); err != nil {
 		return nil, err

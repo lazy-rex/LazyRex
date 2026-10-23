@@ -26,7 +26,7 @@ var setLabPlugins = []struct {
 }
 
 // setLabFile is the set file of the test: Tunnels with no seed and a list probe; Messaging with one
-// message to the seed agent itself, and action and sql probes.
+// message to the seed agent itself, and action and sql probes, and an until item in the seed and the probes.
 func setLabFile(t *testing.T) []byte {
 	act := func(action string, args map[string]any, expect ...map[string]any) map[string]any {
 		it := map[string]any{"kind": "action", "action": action, "args": args}
@@ -43,9 +43,14 @@ func setLabFile(t *testing.T) []byte {
 			"keys": keys, "changes": []any{}, "inserts": []any{}})
 	}
 	send := map[string]any{"to": "<SELF>", "body": "lab seed one", "key": "lab-seed-send-1"}
+	// An until item (coordinator ruling c49-kit-option-a): the history read repeats until it has
+	// the seed message, in the seed and in every probe run.
+	history := act("messaging.history", map[string]any{"thread": "<SELF>", "limit": 1}, val("/thread", "<SELF>"))
+	history["until"] = []any{val("/messages/0/body", "lab seed one")}
 	return setBytes(
 		entry(0, []any{}, []any{act("tunnels.list", map[string]any{}, empty("/forwards"), empty("/pending"), empty("/cleanups"))}, map[string]any{}),
-		entry(1, []any{act("messaging.send", send)}, []any{
+		entry(1, []any{act("messaging.send", send), history}, []any{
+			history,
 			act("messaging.history", map[string]any{"thread": "<SELF>", "limit": 1}, val("/messages/0/body", "lab seed one"), val("/thread", "<SELF>")),
 			act("messaging.send", send, val("/key", "lab-seed-send-1")),
 			map[string]any{"kind": "sql", "sql": "SELECT body, sender FROM messages ORDER BY seq", "rows": []any{[]any{"lab seed one", relSeedAgent}}},
@@ -73,8 +78,13 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	lab := filepath.Join("/tmp", fmt.Sprintf("rexlab-release-t%dset", os.Getpid()))
-	if out, err := labRehearse(t, bin, f, run, lab, nil, "-set", setPath); err != nil {
-		t.Fatalf("rehearse -set: %v (log %s; the lab %s is kept)", err, out, lab)
+	logp, err := labRehearse(t, bin, f, run, lab, nil, "-set", setPath)
+	if err != nil {
+		t.Fatalf("rehearse -set: %v (log %s; the lab %s is kept)", err, logp, lab)
+	}
+	// The until item ran through the pane loop: the tool logged its attempts.
+	if n := strings.Count(string(mustReadFile(logp)), "(messaging.history): until attempt 1: exit 0"); n < 4 {
+		t.Errorf("the log has %d until attempts of messaging.history, want the seed and 3 probe runs or more", n)
 	}
 	var rec relRehearsal
 	if err := json.Unmarshal(mustReadFile(filepath.Join(run, relRehearsalFile)), &rec); err != nil {

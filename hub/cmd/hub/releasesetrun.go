@@ -707,9 +707,14 @@ func (h *rehearsal) setNeed(need map[string][]string, l *pluginLock) error {
 }
 
 // setLabFiles adds the lab parts that the set items need, and returns them for the transform
-// record: the seed agent and the peer agent in the lab config, the inert accessory profile, the
-// lab renderer (when a view item exists), the lab source directory and the lab Git repository.
+// record: the seed agent and the peer agent in the lab config, the inert accessory and agent
+// profiles (lab_inert, lab_agent: command true), the lab renderer (when a view item exists), the
+// lab source directory and the lab Git repository.
 func (h *rehearsal) setLabFiles(lab, cfgPath string) ([]relRewrite, error) {
+	// It writes lab files only: the live config and profiles never get the lab agents or profiles.
+	if err := checkPath(cfgPath, []string{lab}); err != nil {
+		return nil, relFail("the set lab config: %v", err)
+	}
 	b, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return nil, err
@@ -727,6 +732,9 @@ func (h *rehearsal) setLabFiles(lab, cfgPath string) ([]relRewrite, error) {
 	cfg["agents"] = append(agents, map[string]any{"id": relSeedAgent, "name": "Release seed"}, map[string]any{"id": relPeerAgent, "name": "Release peer"})
 	out := []relRewrite{{Key: "config.agents." + relSeedAgent, Lab: "added (lab only)"}, {Key: "config.agents." + relPeerAgent, Lab: "added (lab only)"}}
 	p, _ := cfg["profiles"].(string)
+	if err := checkPath(p, []string{lab}); err != nil {
+		return nil, relFail("the set lab profiles: %v", err)
+	}
 	pf := map[string]any{}
 	if pb, err := os.ReadFile(p); err == nil {
 		if err := json.Unmarshal(pb, &pf); err != nil {
@@ -737,12 +745,15 @@ func (h *rehearsal) setLabFiles(lab, cfgPath string) ([]relRewrite, error) {
 	}
 	list, _ := pf["profiles"].([]any)
 	for _, x := range list {
-		if q, _ := x.(map[string]any); q["id"] == "lab_inert" {
-			return nil, relFail("the live profiles have the profile lab_inert, which the set rehearsal adds")
+		if q, _ := x.(map[string]any); q["id"] == relLabInert || q["id"] == relLabAgent {
+			return nil, relFail("the live profiles have the profile %v, which the set rehearsal adds", q["id"])
 		}
 	}
-	pf["profiles"] = append(list, map[string]any{"id": "lab_inert", "name": "Release lab inert", "kind": "accessory", "command": []string{"true"}})
-	out = append(out, relRewrite{Key: "profiles.lab_inert", Lab: "added (lab only): command true"})
+	// An accessory profile (the Profiles view path) and an agent profile (an automation needs an
+	// agent profile). Both run only "true".
+	pf["profiles"] = append(list, map[string]any{"id": relLabInert, "name": "Release lab inert", "kind": "accessory", "command": []string{"true"}},
+		map[string]any{"id": relLabAgent, "name": "Release lab agent", "kind": "agent", "command": []string{"true"}})
+	out = append(out, relRewrite{Key: "profiles." + relLabInert, Lab: "added (lab only): command true"}, relRewrite{Key: "profiles." + relLabAgent, Lab: "added (lab only): kind agent, command true"})
 	views := false
 	for _, e := range h.set.file.Plugins {
 		for _, it := range append(append([]relSetItem{}, e.Seed...), e.Probe...) {

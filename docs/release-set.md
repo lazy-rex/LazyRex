@@ -65,7 +65,7 @@ An entry has these fields:
 There are three kinds of item:
 
 - `action`: the lab agent calls the plugin action `action` with `args` (a JSON object). The action
-  must not be a `hub.*` action. The item has only `kind`, `action`, `args` and `expect`.
+  must not be a `hub.*` action. The item has only `kind`, `action`, `args`, `expect` and `until`.
 - `view`: the user path. A lab pane in `pane_dir` (must start with `<LAB>/`) runs the palette
   `command`. A lab renderer attaches the view at `route` and sends the node action `action` on
   `node_id`, with `input` and `operation_key`. Each `operation_key` must be unique in the file. The
@@ -90,6 +90,25 @@ An `expect` is a list of `{"pointer": <JSON pointer>, "value": <JSON>}` or
 `{"pointer": ..., "empty": true}`. `value` is an exact comparison of canonical JSON. `empty` accepts
 `{}` and `[]`, because Lua encodes an empty table as either.
 
+### Until
+
+An action item can have `until`: a list with the same form as `expect`. Only an action item can
+have it. The runner repeats the call until the reply meets every `until` entry:
+
+- Each attempt runs in the same lab pane, as the same agent, with the same args file. So a keyed
+  action is a replay of the same operation.
+- One window of 60 s covers all attempts of the item, the calls and the 1 s pause between them. A
+  call does not get its own 60 s.
+- A nonzero exit fails the item at once: an error reply is not a state to wait for. To wait for a
+  state, put `until` on a read-only status action, and put the next write after it.
+- After the window, the item fails with the last reply and its exit code.
+- The tool logs each attempt: the attempt number, the exit code and the reply.
+- The later items of the batch run only after the `until` item is met.
+
+`expect` is checked once, on the reply that met `until`, in the phases that check expects (not in
+the seed). An item without `until` runs once, as before. The owner review covers `until`, because
+it is part of the entry hash.
+
 ### The entry hash
 
 `entry_sha256` is the sha256 of the canonical JSON of the entry without `review`. The canonical form
@@ -101,8 +120,8 @@ one of them, so the reviewed bytes would not show the value that runs.
 
 ### Lab placeholders
 
-Strings in `args`, `input` and `expect` values can contain these placeholders. The tool replaces
-them in the lab only. The reviewed bytes keep the placeholders.
+Strings in `args`, `input`, `expect` and `until` values can contain these placeholders. The tool
+replaces them in the lab only. The reviewed bytes keep the placeholders.
 
 | Placeholder | Lab value |
 |---|---|
@@ -112,6 +131,22 @@ them in the lab only. The reviewed bytes keep the placeholders.
 | `<SESSION_ID>`, `<BLOCK_ID>` | The session and block of the lab pane of the batch. |
 
 If two member names become one name after the replacement, the tool refuses the item.
+
+### Lab files
+
+The set rehearsal adds these to the lab files only. It refuses a config or profiles file outside the
+lab, and a live config or profiles file that already has one of these ids.
+
+| Item | Lab value |
+|---|---|
+| Agents `relseed`, `relpeer` | Roster agents of the lab config. |
+| Profile `lab_inert` | Kind `accessory`, command `["true"]` (for example the Profiles view path). |
+| Profile `lab_agent` | Kind `agent`, command `["true"]` (for example an automation, which needs an agent profile). |
+| `<LAB>/repos/demo` | A Git repository with one empty commit on `main` and no remote. |
+| `<LAB>/src` | An empty directory, for example a `pane_dir`. |
+
+Do not name a live profile (for example an agent profile of the user) in a set entry. A lab process
+must not start a real agent.
 
 ## The data rules
 
@@ -181,4 +216,7 @@ if one of these is not true:
   and the SDK paths must differ. This proves freeze equivalence and the gate unit tests. It is not a
   run of the live gate from the CLI.
 - The fault cases run only for the first plugin of the set.
+- The lab test runs a real `until` item (Messaging history) through the lab pane, but its reply meets
+  `until` at the first attempt. The repeats, the shared window and the timeout are proven by
+  `TestReleaseSetUntilBatch`: it runs the real pane script under `/bin/sh` with a stand-in `rex`.
 - The release labs run on Linux. The final 4.2 rehearsal runs on the Mac under the load gate.

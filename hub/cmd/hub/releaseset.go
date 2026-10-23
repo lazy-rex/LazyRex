@@ -40,7 +40,9 @@ type relSetEntry struct {
 // action Action with Args. Kind "view": the user path; a lab pane in PaneDir runs the palette
 // Command, a lab renderer attaches the view at Route and sends the node action Action with Input and
 // OperationKey. Kind "sql" (probe only): a read-only query of the lab plugin database, whose Rows
-// must be exactly equal. Expect applies to the action or view operation result.
+// must be exactly equal. Expect applies to the action or view operation result. Until (action only):
+// the runner repeats the same call (same args and key: a replay) until the result meets these
+// expects, for at most 60 s.
 type relSetItem struct {
 	Kind         string               `json:"kind"`
 	Action       string               `json:"action,omitempty"`
@@ -55,6 +57,7 @@ type relSetItem struct {
 	Params       []json.RawMessage    `json:"params,omitempty"`
 	Rows         *[][]json.RawMessage `json:"rows,omitempty"`
 	Expect       []relSetExpect       `json:"expect,omitempty"`
+	Until        []relSetExpect       `json:"until,omitempty"`
 }
 
 // relSetExpect is one assertion on a result: the value at Pointer is exactly Value, or, with Empty,
@@ -355,7 +358,7 @@ func (it *relSetItem) check() error {
 			return fmt.Errorf("the args of %s are not a JSON object", it.Action)
 		}
 		if it.PaneDir != "" || it.Command != "" || it.Route != "" || it.NodeID != "" || len(it.Input) > 0 || it.OperationKey != "" || it.SQL != "" || it.Rows != nil {
-			return fmt.Errorf("an action item has only action, args and expect")
+			return fmt.Errorf("an action item has only action, args, expect and until")
 		}
 	case "view":
 		switch {
@@ -367,8 +370,8 @@ func (it *relSetItem) check() error {
 			return fmt.Errorf("a view item needs an operation_key")
 		case !isObject(it.Input):
 			return fmt.Errorf("the input of %s/%s is not a JSON object", it.NodeID, it.Action)
-		case len(it.Args) > 0 || it.SQL != "" || it.Rows != nil:
-			return fmt.Errorf("a view item has no args, sql or rows")
+		case len(it.Args) > 0 || it.SQL != "" || it.Rows != nil || len(it.Until) > 0:
+			return fmt.Errorf("a view item has no args, sql, rows or until")
 		}
 	case "sql":
 		switch {
@@ -376,13 +379,13 @@ func (it *relSetItem) check() error {
 			return fmt.Errorf("the sql %q is not a SELECT", it.SQL)
 		case it.Rows == nil:
 			return fmt.Errorf("a sql item needs rows (an empty list for no row)")
-		case it.Action != "" || len(it.Args) > 0 || it.PaneDir != "" || it.Command != "" || len(it.Expect) > 0:
+		case it.Action != "" || len(it.Args) > 0 || it.PaneDir != "" || it.Command != "" || len(it.Expect) > 0 || len(it.Until) > 0:
 			return fmt.Errorf("a sql item has only sql, params and rows")
 		}
 	default:
 		return fmt.Errorf("the kind %q is not action, view or sql", it.Kind)
 	}
-	for _, x := range it.Expect {
+	for _, x := range append(slices.Clone(it.Expect), it.Until...) {
 		if x.Pointer != "" && !strings.HasPrefix(x.Pointer, "/") {
 			return fmt.Errorf("%q is not a JSON pointer", x.Pointer)
 		}
