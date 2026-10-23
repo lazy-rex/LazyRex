@@ -256,7 +256,8 @@ func TestSlotConfirmSurvivesHubRestartLab(t *testing.T) {
 	if len(panes) != 1 || panes[want] == "" {
 		t.Fatalf("after discard: panes %v, want only %s", panes, want)
 	}
-	// The choice completes once: a repeat (a lost answer) answers the row's state and opens nothing.
+	// The choice completes once: a repeat (a lost answer) is refused, because the old view is now
+	// closed, and it opens nothing.
 	if _, err := choose(h2, lr.id, old, att, "repl-c", "discard"); err == nil || !strings.Contains(err.Error(), "stale_view") {
 		t.Fatalf("a repeated discard: %v, want stale_view (the old view is closed)", err)
 	}

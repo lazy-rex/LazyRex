@@ -37,8 +37,10 @@ test('parity report', function()
     end
   end
   local checked = {}
+  -- A checked route can carry a query (/forms/worktree?path=...); a declared contextual route is
+  -- its path, so a route counts by its path.
   for _, c in ipairs(report.checked or {}) do
-    if c.plugin == plugin then checked[c.route] = true end
+    if c.plugin == plugin then checked[c.route:match('^[^?]*')] = true end
   end
   for _, v in ipairs(report.unrendered or {}) do
     if v.plugin == plugin then problems[#problems + 1] = 'unchecked (no render reached it): ' .. v.route end

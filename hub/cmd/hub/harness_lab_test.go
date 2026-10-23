@@ -481,14 +481,27 @@ func TestLabKeeperMainRunsNoHub(t *testing.T) {
 // table (msg-parity-red-4f6d). Each -run pattern matches no test, so only the sweep runs, and the
 // run ends with "matched no test". The cases: the home plugin (/forms/launch, rendered by its
 // fixture), and copies of tests/harness whose manifest lists /forms/fix (a palette command, so the
-// sweep renders it) and then also /forms/chain (only an action opens it, so no render reaches it).
-// The last case fails, so a list that the runner drops does not pass.
+// sweep renders it), the same with the command opening /forms/fix?mode=q (a route with a query
+// counts by its path, as the Worktrees forms are rendered), and then also /forms/chain (only an
+// action opens it, so no render reaches it). The last case fails, so a list that the runner drops
+// does not pass.
 func TestHarnessParityRoutesLab(t *testing.T) {
 	bin, root := harnessBinary(t)
-	harness := func(t *testing.T, routes ...string) string {
+	harness := func(t *testing.T, query bool, routes ...string) string {
 		dir := filepath.Join(t.TempDir(), "harness")
 		if err := os.CopyFS(dir, os.DirFS(filepath.Join(root, "tests", "harness"))); err != nil {
 			t.Fatal(err)
+		}
+		if query {
+			// The palette command opens the form with a query; the fixture renders /forms/fix with any query.
+			f := filepath.Join(dir, "fixture.lua")
+			src, _ := os.ReadFile(f)
+			out := strings.Replace(string(src), "route = '/forms/fix', action = 'fix.put'", "route = '/forms/fix?mode=q', action = 'fix.put'", 1)
+			out = strings.Replace(out, "if args.route == '/forms/fix' or args.route == '/forms/chain' then", "if args.route:match('^/forms/fix%??') or args.route == '/forms/chain' then", 1)
+			if strings.Count(out, "/forms/fix?mode=q") != 1 || !strings.Contains(out, "args.route:match('^/forms/fix") {
+				t.Fatal("the fixture patch did not apply")
+			}
+			os.WriteFile(f, []byte(out), 0o600)
 		}
 		m, _ := json.Marshal(map[string]any{"name": "harnessfix", "main": "fixture.lua", "notice": "Fixture notice.",
 			"test": map[string]any{"plugins": []any{map[string]any{"source": "stubs/tabfix"}}, "parity_routes": routes}})
@@ -505,8 +518,9 @@ func TestHarnessParityRoutesLab(t *testing.T) {
 		problem string
 	}{
 		{"home plugin", func(*testing.T) string { return filepath.Join(root, "plugins", "lazyrex") }, true, ""},
-		{"rendered route", func(t *testing.T) string { return harness(t, "/forms/fix") }, true, ""},
-		{"unrendered route", func(t *testing.T) string { return harness(t, "/forms/fix", "/forms/chain") }, false,
+		{"rendered route", func(t *testing.T) string { return harness(t, false, "/forms/fix") }, true, ""},
+		{"route with a query", func(t *testing.T) string { return harness(t, true, "/forms/fix") }, true, ""},
+		{"unrendered route", func(t *testing.T) string { return harness(t, false, "/forms/fix", "/forms/chain") }, false,
 			"unchecked contextual route (the fixture did not render it): /forms/chain"},
 	}
 	for _, c := range cases {
