@@ -26,7 +26,7 @@ func TestReleaseDevPaneCommand(t *testing.T) {
 			t.Fatalf("argv %q", argv)
 		}
 		c := exec.Command(argv[0], argv[1:]...)
-		c.Env = append(os.Environ(), "LAZYREX_FETCH_ROLE=fetch") // as if the server's env had it
+		c.Env = append(os.Environ(), "LAZYREX_FETCH_ROLE=fetch", "DEV_REAL=1") // as if the server's env had them
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("the command: %v\n%s", err, out)
 		}

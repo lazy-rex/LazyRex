@@ -5,7 +5,9 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -170,23 +172,32 @@ func (h *rehearsal) closePane(session, block, agent string) error {
 	if agent == "" {
 		return nil
 	}
+	// The hub keeps a binding row after its process ends ("bound but not live"); the next join of
+	// the agent from a new pane replaces it. So wait until the binding is not live: no row, or the
+	// row of the closed block whose process (pid and start time) has ended.
 	for i := 0; i < 75; i++ {
 		db, err := h.hubDB(true)
 		if err != nil {
 			return err
 		}
-		var n int
-		err = db.QueryRow("SELECT count(*) FROM bindings WHERE agent = ?", agent).Scan(&n)
+		var bound string
+		var pid int
+		var start string
+		err = db.QueryRow("SELECT block_id, child_pid, child_start FROM bindings WHERE agent = ?", agent).Scan(&bound, &pid, &start)
 		db.Close()
-		if err != nil {
-			return relFail("the bindings of %s: %v", agent, err)
-		}
-		if n == 0 {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil
+		case err != nil:
+			return relFail("the binding of %s: %v", agent, err)
+		case bound != block:
+			return relFail("the binding of %s names the block %s, not the closed pane %s", agent, bound, block)
+		case startTime(pid) != start:
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return relFail("the hub keeps a binding of %s after its pane %s closed", agent, block)
+	return relFail("the bound process of %s still runs after its pane %s closed", agent, block)
 }
 
 // checkExpects applies the expects of an item to a JSON result. Value: the canonical JSON at the

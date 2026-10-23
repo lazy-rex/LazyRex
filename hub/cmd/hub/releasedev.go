@@ -259,7 +259,7 @@ func (r *releaser) devStop(p relPane) error {
 // devPaneCommand is the command of a dev pane, for every spec, live and lab: /bin/sh -c with a
 // POSIX command (dev.sh has its own #!/bin/sh). No login shell runs, so no profile changes the
 // pane. The PATH is the child PATH of this release, with the go directory first;
-// LAZYREX_FETCH_ROLE is unset; DEV_REAL=1 only for a real spec.
+// LAZYREX_FETCH_ROLE and an inherited DEV_REAL are unset; DEV_REAL=1 only for a real spec.
 func (r *releaser) devPaneCommand(gobin, devsh string) []string {
 	real := ""
 	if r.spec.Real {
@@ -271,7 +271,7 @@ func (r *releaser) devPaneCommand(gobin, devsh string) []string {
 			path += ":" + p
 		}
 	}
-	cmd := fmt.Sprintf("unset LAZYREX_FETCH_ROLE; export PATH=%s; %sexec %s %s 2>&1 | tee -a %s",
+	cmd := fmt.Sprintf("unset LAZYREX_FETCH_ROLE DEV_REAL; export PATH=%s; %sexec %s %s 2>&1 | tee -a %s",
 		shQuote(path), real, shQuote(devsh), shQuote(r.cfg.path), shQuote(r.spec.DevLog))
 	return []string{"/bin/sh", "-c", cmd}
 }
