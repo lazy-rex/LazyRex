@@ -1413,27 +1413,21 @@ func hasNotify(args map[string]any) bool {
 	return false
 }
 
-// hubFlagSet holds the flags of a hub run. sdkN counts the -sdk flags (the last one wins).
+// hubFlagSet holds the flags of a hub run.
 type hubFlagSet struct {
 	faults              *faults
 	config, sdk         *string
 	real, test, restart *bool
-	sdkN                int
 }
 
-// hubFlags defines the flags of a hub run on set. main parses with them, and the release SDK check
-// (sdkArgExact) parses a hub argv with them: so the check follows the hub's own flag rules.
+// hubFlags defines the flags of a hub run on set.
 func hubFlags(set *flag.FlagSet) *hubFlagSet {
-	v := &hubFlagSet{faults: &faults{}, sdk: new(string)}
+	v := &hubFlagSet{faults: &faults{}}
 	v.config = set.String("config", "", "hub configuration JSON (required)")
 	set.Var(v.faults, "lab-fault", "lab-only fault, for example point=store-commit,mode=exit (repeatable)")
 	v.real = set.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
 	v.test = set.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
 	v.restart = set.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")
-	set.Func("sdk", "the plugin SDK directory (sdk/lua of the LazyRex checkout); default: sdk/lua above this binary", func(s string) error {
-		v.sdkN++
-		*v.sdk = s
-		return nil
-	})
+	v.sdk = set.String("sdk", "", "the plugin SDK directory (sdk/lua of the LazyRex checkout); default: sdk/lua above this binary")
 	return v
 }
