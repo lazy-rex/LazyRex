@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -518,4 +519,58 @@ func TestFetchGapNewMessageInsideTheHeldRange(t *testing.T) {
 	if strings.Contains(out, "(late)") {
 		t.Fatal("the fill marked a message late")
 	}
+}
+
+// TestFetchStopsWhileTheViewEnds (codex-29 blocker at 8f104d33): an open fetch runs, and an
+// operation is outstanding. Ctrl+Q, the hub's close, a reload or a retirement stops the fetch's
+// call, and a later tree starts no fetch while the request waits. Through model.Update.
+func TestFetchStopsWhileTheViewEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"ctrl+q", tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl}},
+		{"close", closeRequested{}},
+		{"reload", reloadRequested{}},
+		{"retire", retireRequested{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newModel(&viewClient{ViewID: "v1", Plugin: "messaging", Route: "/thread/42", Requests: make(chan mutation, 16)})
+			m.ready = true
+			m.print.pages = (&fakePages{thread: msgs(span(1, 600)...), size: 300}).get
+			m.operations["held"] = true
+			tree := page(msgs(span(301, 600)...), true, 600)
+			m.Update(tree)
+			old := m.print.fetch
+			if old == nil {
+				t.Fatal("the open fetch did not start")
+			}
+			m.Update(tc.msg)
+			if old.ctx.Err() == nil || m.print.fetch != nil {
+				t.Fatalf("%s did not stop the fetch (call context %v)", tc.name, old.ctx.Err())
+			}
+			m.Update(tree)
+			if m.print.fetch != nil {
+				t.Fatalf("a later tree started a fetch while %s waits", tc.name)
+			}
+		})
+	}
+}
+
+// TestFetchAgainAfterAFailedClose: a close stops the open fetch; the close fails, and the view
+// stays. The current tree fetches again at once.
+func TestFetchAgainAfterAFailedClose(t *testing.T) {
+	m := newModel(&viewClient{ViewID: "v1", Plugin: "messaging", Route: "/thread/42", Requests: make(chan mutation, 16)})
+	m.ready = true
+	m.print.pages = (&fakePages{thread: msgs(span(1, 600)...), size: 300}).get
+	m.Update(page(msgs(span(301, 600)...), true, 600))
+	m.Update(closeRequested{})
+	if !m.closeRunning || m.print.fetch != nil {
+		t.Fatalf("the close did not run, or the fetch did not stop (running %v)", m.closeRunning)
+	}
+	m.Update(closeFinished{err: errors.New("the hub refused")})
+	if m.print.fetch == nil {
+		t.Fatal("no fetch after the failed close")
+	}
+	m.cancelFetch()
 }
