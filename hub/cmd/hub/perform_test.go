@@ -212,3 +212,17 @@ func TestCloseRequestAfterACut(t *testing.T) {
 		})
 	}
 }
+
+// The error of an unknown outcome names the hub's wait only when the hub's own wait cut the call:
+// when the caller's context ended first, the duration would be wrong (review of cbcd96e).
+func TestUnknownOutcomeText(t *testing.T) {
+	shortPerformWait(t, 7*time.Second)
+	if err := unknownOutcome(context.Background(), "the app", 5000); !isRefusal(err, "outcome_unknown") || err.Error() != "outcome_unknown: the app did not answer within 7 s; the request may still apply" {
+		t.Errorf("the hub's cut: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := unknownOutcome(ctx, "the app", 5000); !isRefusal(err, "outcome_unknown") || err.Error() != "outcome_unknown: the app did not answer before the caller's deadline; the request may still apply" {
+		t.Errorf("the caller's deadline: %v", err)
+	}
+}

@@ -33,12 +33,12 @@ const appTimeoutMS = 5000
 // that the request may still apply, and the hub never sends it again by itself. observeApp sees
 // the call's own error.
 func appPerform(h *Hub, ctx context.Context, app, action string, args map[string]any) error {
-	ctx, cancel := performCtx(ctx, appTimeoutMS)
+	cctx, cancel := performCtx(ctx, appTimeoutMS)
 	defer cancel()
-	err := appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": action, "args": args, "timeout_ms": appTimeoutMS}, nil)
+	err := appCall(h, cctx, "client.perform", map[string]any{"client_id": app, "action": action, "args": args, "timeout_ms": appTimeoutMS}, nil)
 	h.observeApp(app, action, err)
 	if errors.Is(err, context.DeadlineExceeded) {
-		return refuse("outcome_unknown", "the app did not answer within %g s; the request may still apply", performWait(appTimeoutMS).Seconds())
+		return unknownOutcome(ctx, "the app", appTimeoutMS)
 	}
 	return err
 }
