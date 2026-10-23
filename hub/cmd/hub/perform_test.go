@@ -170,3 +170,45 @@ func TestAppCallsHaveADeadline(t *testing.T) {
 		return err
 	})
 }
+
+// Row 12: a view.close_request that the hub's wait cuts is not tried again (Rex can still deliver
+// it). A failure that Rex reports is tried again while the close is pending and the attachment is
+// current: three tries.
+func TestCloseRequestAfterACut(t *testing.T) {
+	shortPerformWait(t, 200*time.Millisecond)
+	for _, c := range []struct {
+		what  string
+		code  string // "" = never answers
+		sends int
+	}{{"a cut", "", 1}, {"a refusal", "refused", 3}} {
+		t.Run(c.what, func(t *testing.T) {
+			h := releaseTestHub(t)
+			if _, err := h.db.Exec(pairSchema); err != nil {
+				t.Fatal(err)
+			}
+			h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, client_id, attachment) VALUES ('v', 'p', 't', '/', 'open', 'c', 'a1')`)
+			h.db.Exec(`INSERT INTO view_transcripts (view_id, status, close_pending) VALUES ('v', 'declined', 1)`)
+			wait := neverAnswer(t)
+			fr := newPerformRex(t, func(performCall) (any, string) {
+				if c.code != "" {
+					return nil, c.code
+				}
+				return wait()
+			})
+			h.rex = fr.dial(t)
+			done := make(chan struct{})
+			go func() { h.requestClose("p", "v", "c", "a1"); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("requestClose did not end within 5 s")
+			}
+			if n := sendsTo(fr, "view.close_request", "a1"); n != c.sends {
+				t.Errorf("%d sends, want %d", n, c.sends)
+			}
+			if e := loggedEvents(t, h, "view_close_requested"); len(e) != 1 || e[0]["error"] == "" {
+				t.Errorf("view_close_requested: %v, want one with the error", e)
+			}
+		})
+	}
+}

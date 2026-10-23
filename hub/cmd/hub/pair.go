@@ -565,9 +565,14 @@ func (h *Hub) requestClose(plugin, viewID, client, attachment string) {
 			h.ev.emit("view_close_cancelled", map[string]any{"plugin": plugin, "view_id": viewID})
 			return
 		}
-		err = h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "view.close_request",
+		cctx, cancel := performCtx(ctx, 5000)
+		err = h.rex.Call(cctx, "client.perform", map[string]any{"client_id": client, "action": "view.close_request",
 			"args": map[string]any{"view_id": viewID, "attachment": attachment}, "timeout_ms": 5000}, nil)
-		if err == nil || h.composerAttachment(ctx, viewID) != attachment {
+		cancel()
+		// After the hub's own cut the outcome is unknown, and Rex can still deliver the request: no
+		// other try. A failure that Rex reports is tried again. A repeated request is harmless: the
+		// renderer only marks its close pending (closeRequested).
+		if err == nil || errors.Is(err, context.DeadlineExceeded) || h.composerAttachment(ctx, viewID) != attachment {
 			break
 		}
 		time.Sleep(time.Duration(i+1) * 300 * time.Millisecond)
