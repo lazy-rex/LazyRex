@@ -528,7 +528,7 @@ func TestPluginLogFailedLoadAfterChange(t *testing.T) {
 	waitLogLoad(t, h, "managed:x")
 	changeLogRecord(h, "restart")
 	h.loads.mu.Lock()
-	h.loads.logs.run = func(ctx context.Context, key string) (any, bool, error) {
+	h.loads.logs.run = func(ctx context.Context, key string, _ any) (any, bool, error) {
 		return nil, true, errors.New("the load failed")
 	}
 	h.loads.mu.Unlock()
@@ -538,7 +538,101 @@ func TestPluginLogFailedLoadAfterChange(t *testing.T) {
 	if v["block"] != nil || v["error"] != "the load failed" {
 		t.Fatalf("a failed load of i2: %v", v)
 	}
-	if v["state"] != "loading" && v["state"] != "failed" {
+	if v["state"] != "failed" {
 		t.Fatalf("a failed load of i2: state %v", v["state"])
+	}
+}
+
+// failingLogs makes every log load of h fail, and counts the loads.
+func failingLogs(h *Hub) *atomic.Int32 {
+	var runs atomic.Int32
+	h.loads.mu.Lock()
+	h.loads.logs.run = func(ctx context.Context, key string, _ any) (any, bool, error) {
+		runs.Add(1)
+		return nil, true, errors.New("the load failed")
+	}
+	h.loads.mu.Unlock()
+	return &runs
+}
+
+// A failed load records the record that it tried and its time (the hub lead, lead-c7fail;
+// codex-27, plugins-c7-failure-retry-blocker). For that record the failure is fresh for logFresh:
+// a normal request returns state failed, block null and the error, and starts no load. Refresh
+// starts one; after logFresh one request starts one; a change of the record starts one at once,
+// also when the record never had a good value.
+func TestPluginLogFailedLoadIsFresh(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		first bool   // the first load of the entry fails (no good value)
+		then  string // after the failure: "reads", "refresh", "expire" or "change"
+		runs  int32
+	}{
+		{"repeated reads after a good value", false, "reads", 1},
+		{"repeated reads with no good value", true, "reads", 1},
+		{"refresh", false, "refresh", 2},
+		{"expiry", false, "expire", 2},
+		{"a record change after a failed first load", true, "change", 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := logTestHub(t, blockTextCall)
+			now := time.Unix(1000, 0)
+			h.loads.mu.Lock()
+			h.loads.now = func() time.Time { return now } // read under h.loads.mu
+			h.loads.mu.Unlock()
+			if !c.first {
+				askLog(t, h, map[string]any{"entry": "managed:x"})
+				waitLogLoad(t, h, "managed:x")
+				changeLogRecord(h, "restart")
+			}
+			runs := failingLogs(h)
+			askLog(t, h, map[string]any{"entry": "managed:x"})
+			waitLogLoad(t, h, "managed:x")
+			args := map[string]any{"entry": "managed:x"}
+			switch c.then {
+			case "reads":
+				for range 5 {
+					if v := askLog(t, h, args); v["state"] != "failed" || v["block"] != nil || v["error"] != "the load failed" {
+						t.Fatalf("a read after the failure: %v", v)
+					}
+					waitLogLoad(t, h, "managed:x")
+				}
+			case "refresh":
+				args["refresh"] = true
+			case "expire":
+				h.loads.mu.Lock()
+				now = now.Add(logFresh)
+				h.loads.mu.Unlock()
+			case "change":
+				changeLogRecord(h, "block")
+			}
+			if c.then != "reads" {
+				if v := askLog(t, h, args); v["state"] != "loading" || v["block"] != nil {
+					t.Fatalf("the request after the failure: %v", v)
+				}
+				waitLogLoad(t, h, "managed:x")
+				askLog(t, h, map[string]any{"entry": "managed:x"}) // fresh again: no load
+				waitLogLoad(t, h, "managed:x")
+			}
+			if n := runs.Load(); n != c.runs {
+				t.Fatalf("the failing load ran %d times, want %d", n, c.runs)
+			}
+		})
+	}
+}
+
+// A load that starts after the record moved away from its request's record keeps nothing: the
+// entry goes back to idle (a kept value is always of its stamp).
+func TestPluginLogLoadStartsAfterChange(t *testing.T) {
+	h := logTestHub(t, blockTextCall)
+	for range loadsAtOnce {
+		h.loads.sem <- struct{}{} // every slot is taken: the load waits
+	}
+	askLog(t, h, map[string]any{"entry": "managed:x"})
+	changeLogRecord(h, "restart")
+	for range loadsAtOnce {
+		<-h.loads.sem
+	}
+	if r := waitLogLoad(t, h, "managed:x"); r["state"] != "idle" || r["value"] != nil {
+		t.Fatalf("a load for the earlier record: %v", r)
 	}
 }
