@@ -1405,7 +1405,7 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 				return nil, err
 			}
 			if attempt != "" {
-				h.opCallFault(pl.Name) // a lab test: the hub stops between sent_at and the first effect
+				h.opCallFault(pl.Name, "hold-after-sent") // a lab test: the hub stops between sent_at and the first effect
 			}
 			if err := h.ensurePluginRow(ctx, pl.Name); err != nil {
 				return nil, err

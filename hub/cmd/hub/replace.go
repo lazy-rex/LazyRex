@@ -194,6 +194,9 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	if cand, err = h.publishLocal(e, cand); err != nil {
 		return nil, refuse("refused", "%s; the running instance %s is unchanged", strings.TrimPrefix(err.Error(), "refused: "), owned)
 	}
+	if attempt != "" {
+		h.opCallFault(name, "hold-before-retire") // a lab test closes the block before the retire
+	}
 	// Retirement begins: from here the old instance can be gone or partly stopped.
 	ok, err := h.retire(ctx, pl)
 	if err != nil {
