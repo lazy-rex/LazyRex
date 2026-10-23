@@ -4,7 +4,8 @@ package main
 // "plugins_from" peer and applies them through the plugin manager: an update op of origin peer
 // with the peer's pin as its stored target. Only GitHub sources sync; a local source names a path
 // on the other host. The peer wins for each source that it lists. A source that this hub does not
-// have is only offered (hub.peer.status); the user adds it. A config entry of this hub is skipped.
+// have is only offered (hub.plugins "offered"); the user adds it from the Plugins panel, and the
+// add names the complete offer (addAdmission). A config entry of this hub is skipped.
 
 import (
 	"bytes"
@@ -14,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 )
@@ -53,6 +55,34 @@ type peerManaged struct {
 	Source string `json:"source"`
 }
 
+// peerOffer is a source of the plugins_from peer that this hub does not have (hub.plugins
+// "offered"): the peer, its managed id ("" when the source is in the peer's config file), and the
+// peer's pin. The user adds it from the Plugins panel; the add names this complete offer.
+type peerOffer struct {
+	Peer   string   `json:"peer"`
+	ID     string   `json:"id"`
+	Source string   `json:"source"`
+	Pin    pinEntry `json:"pin"`
+}
+
+// peerOffered gives the offers of the last sync with the plugins_from peer: [] when none.
+func (h *Hub) peerOffered() []peerOffer {
+	out := []peerOffer{}
+	if h.peers == nil {
+		return out
+	}
+	for _, l := range h.peers.links {
+		if l.cfg.PluginsFrom {
+			l.mu.Lock()
+			if l.sync != nil {
+				out = append(out, l.sync.Offered...)
+			}
+			l.mu.Unlock()
+		}
+	}
+	return out
+}
+
 // peerPluginsServe is hub.peer.plugins, called by a peer hub: the pin document of this hub
 // (lazyrex-hub plugin export) and the id and source of each managed GitHub entry.
 func (h *Hub) peerPluginsServe(args map[string]any) (any, error) {
@@ -80,7 +110,7 @@ func (h *Hub) peerPluginsServe(args map[string]any) (any, error) {
 type peerSync struct {
 	LastOK    *string          `json:"last_ok"`    // RFC 3339 time of the last sync with no error
 	LastError string           `json:"last_error"` // the last sync's error, "" for none
-	Offered   []peerManaged    `json:"offered"`    // the peer's sources that this hub does not have
+	Offered   []peerOffer      `json:"offered"`    // the peer's sources that this hub does not have
 	Skipped   []peerSkip       `json:"skipped"`    // the peer's sources that this hub does not sync
 	Updating  []map[string]any `json:"updating"`   // {entry, op_id, phase}: the ops of the last sync
 	logged    map[string]bool  // the skipped sources already logged
@@ -96,6 +126,7 @@ type peerSkip struct {
 func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 	for {
 		s, err := h.peerPluginsSync(ctx, l)
+		offerChanged := false
 		l.mu.Lock()
 		if l.sync == nil {
 			l.sync = &peerSync{logged: map[string]bool{}}
@@ -108,6 +139,7 @@ func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 		} else {
 			now := time.Now().UTC().Format(time.RFC3339)
 			l.sync.LastOK, l.sync.LastError = &now, ""
+			offerChanged = !slices.Equal(l.sync.Offered, s.Offered)
 			l.sync.Offered, l.sync.Updating = s.Offered, s.Updating
 			l.sync.Skipped = s.Skipped
 			for _, k := range s.Skipped {
@@ -118,6 +150,9 @@ func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 			}
 		}
 		l.mu.Unlock()
+		if offerChanged {
+			h.changed("plugins") // hub.plugins "offered": an open Plugins panel renders again
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -153,7 +188,7 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 		}
 	}
 	h.entriesMu.Unlock()
-	s := &peerSync{Offered: []peerManaged{}, Skipped: []peerSkip{}, Updating: []map[string]any{}}
+	s := &peerSync{Offered: []peerOffer{}, Skipped: []peerSkip{}, Updating: []map[string]any{}}
 	var errs []string
 	for _, p := range doc.Entries {
 		pe := &configEntry{Source: p.Source}
@@ -169,7 +204,7 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 		}
 		switch {
 		case match == nil:
-			o := peerManaged{Source: p.Source}
+			o := peerOffer{Peer: l.cfg.Name, Source: p.Source, Pin: p}
 			for _, m := range r.Managed {
 				if m.Source == p.Source {
 					o.ID = m.ID

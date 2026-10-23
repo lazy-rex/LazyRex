@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -85,6 +86,23 @@ func (h *Hub) addAdmission(op *pluginOp, req opRequest) (*pluginOp, error) {
 	if !strings.HasPrefix(in.Source, "github:") {
 		return nil, bad("invalid: add needs a GitHub source github:<owner>/<repo>[/<subdir>]@<ref>; add a local directory by hand or with the plugin command")
 	}
+	// An add of an offer (the Plugins panel's confirm): the target is the complete offer that the
+	// user saw. It must be a current offer of the plugins_from peer, else nothing starts. Its pin
+	// is the stored target: a later change of the offer does not change what this op starts.
+	var offer *peerOffer
+	if len(req.Target) > 0 {
+		var o peerOffer
+		if err := decodeStrict(req.Target, &o); err != nil {
+			return nil, bad("invalid: target: %v", err)
+		}
+		if o.ID == "" || in.Source != o.Source || in.ID != o.ID {
+			return nil, bad("invalid: the add of an offer gives the offer's source and id as input")
+		}
+		if !slices.Contains(h.peerOffered(), o) {
+			return nil, refuse("candidate_changed", "the offered code changed since it was shown: confirm the current offer")
+		}
+		offer = &o
+	}
 	e := &configEntry{Source: in.Source, Args: in.Args, WatchRoots: in.WatchRoots}
 	if err := e.checkSource(""); err != nil {
 		return nil, bad("invalid: %v", err)
@@ -132,6 +150,12 @@ func (h *Hub) addAdmission(op *pluginOp, req opRequest) (*pluginOp, error) {
 	m := fileEntry(e)
 	b, _ := json.Marshal(opAddInput{Source: m.Source, ID: m.ID, Args: m.Args, WatchRoots: m.WatchRoots})
 	op.Entry, op.Input, op.Base, op.EntryIdentity = "managed:"+in.ID, string(b), "absent", entryIdentity(e)
+	if offer != nil {
+		pin, _ := json.Marshal(offer.Pin)
+		if op.Target, err = peerTarget(pin, m.Source); err != nil {
+			return nil, err
+		}
+	}
 	if op.LockBase, err = h.lockSnapshot([]string{m.Source}); err != nil {
 		return nil, err
 	}

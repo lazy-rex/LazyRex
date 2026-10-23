@@ -1629,7 +1629,8 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		out = append(out, entry)
 	}
-	return map[string]any{"plugins": out, "refused": refused, "entries": entries, "kept": kept}, nil
+	// offered: the plugins_from peer's sources that this hub does not have (peersync.go).
+	return map[string]any{"plugins": out, "refused": refused, "entries": entries, "kept": kept, "offered": h.peerOffered()}, nil
 }
 
 var countSuffix = regexp.MustCompile(` \(\d+\)$`)
