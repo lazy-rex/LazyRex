@@ -377,3 +377,41 @@ func TestPeerPluginsSyncFetch(t *testing.T) {
 		t.Fatalf("after the lock: %+v, the lock entry %+v, the peer's %+v", op, le, want)
 	}
 }
+
+// The in-sync check compares the whole pin: a latest source at the same commit and digest under
+// another release tag is not in sync.
+func TestPeerPluginsSyncLatestTag(t *testing.T) {
+	b, _, _, _ := atTestHub(t, "github:acme/notes@latest")
+	cur := readTestLock(t, b).Plugins["github:acme/notes@v1.0.0"]
+	lock := readTestLock(t, b)
+	le := *cur
+	le.Ref, le.RefKind, le.Tag = "latest", "latest", "v1.0.0"
+	lock.Plugins["github:acme/notes@latest"] = &le
+	writeTestLock(t, b, lock)
+	var tag string
+	b.cfg.HubName, b.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	b.peers = newPeerSet(b.cfg)
+	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
+		p := pinEntry{Source: "github:acme/notes@latest", lockPin: le.lockPin}
+		p.Tag = tag
+		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: []pinEntry{p}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return json.Marshal(map[string]any{"pins": json.RawMessage(doc), "managed": []peerManaged{}})
+	}
+	for _, c := range []struct {
+		tag string
+		ops int
+	}{{"v1.0.0", 0}, {"v1.0.1", 1}} {
+		tag = c.tag
+		if _, err := b.peerPluginsSync(context.Background(), b.peerLink("mac")); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		b.db.QueryRow(`SELECT count(*) FROM plugin_ops WHERE scope = 'peer:mac'`).Scan(&n)
+		if n != c.ops {
+			t.Fatalf("the peer tag %s: %d ops, want %d", c.tag, n, c.ops)
+		}
+	}
+}

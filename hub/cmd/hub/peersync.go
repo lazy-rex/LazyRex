@@ -185,7 +185,8 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 			s.Skipped = append(s.Skipped, peerSkip{Source: p.Source, Entry: opEntryKey(match), Why: "a config entry of this hub"})
 			continue
 		}
-		if cur, ok := lock.Plugins[p.Source]; ok && match.Source == p.Source && cur.Commit == p.Commit && cur.Digest == p.Digest {
+		// The whole pin counts: the same commit of a latest source can have another release tag.
+		if cur, ok := lock.Plugins[p.Source]; ok && match.Source == p.Source && cur.lockPin == p.lockPin {
 			continue // in sync
 		}
 		op, err := h.peerUpdate(ctx, l.cfg.Name, opEntryKey(match), p)
