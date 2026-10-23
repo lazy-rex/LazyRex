@@ -588,8 +588,9 @@ func TestLateMessageLab(t *testing.T) {
 
 // TestLiveRegionResizeLab (coord-tvglitch-1): a real pane in thread mode with a docked composer
 // (stage 2). The pane changes size several times. After each change the whole capture (scrollback
-// and screen) holds the composer once: one top border and one DRAFT-TEXT. A width change never
-// moves live rows into the scrollback legitimately, so a second copy is a stale frame.
+// and screen) holds each live node at most once: the composer border, DRAFT-TEXT, the two actions
+// and the more-above row. A resize never moves live rows into the scrollback legitimately, so a
+// second copy is a stale row of an earlier frame.
 func TestLiveRegionResizeLab(t *testing.T) {
 	l := newModeLab(t)
 	l.sql("UPDATE stage SET n = 2", true)
@@ -605,6 +606,7 @@ func TestLiveRegionResizeLab(t *testing.T) {
 		last = l.screen(pane)
 		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Ctrl+Q quit")
 	})
+	t.Logf("80x24 start capture:\n%s", last)
 	// The last two pairs come in a burst: the second size follows the first with no wait, as an
 	// app does when it lays out a pane that it shows.
 	for _, sizes := range [][][2]int{{{50, 24}}, {{80, 24}}, {{40, 24}}, {{100, 24}}, {{100, 12}}, {{60, 30}}, {{30, 8}, {90, 26}}, {{120, 40}, {70, 18}}} {
@@ -619,8 +621,11 @@ func TestLiveRegionResizeLab(t *testing.T) {
 			return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Ctrl+Q quit")
 		})
 		t.Logf("%s capture:\n%s", step, last)
-		if n, d := strings.Count(last, "╭"), strings.Count(last, "DRAFT-TEXT"); n != 1 || d != 1 {
-			t.Errorf("%s: %d composer top borders and %d DRAFT-TEXT on the pane, want 1 and 1", step, n, d)
+		// The tree has one of each, so a second copy is a stale row of an earlier frame.
+		for _, text := range []string{"╭", "DRAFT-TEXT", "Action w1", "Action w2", "more above"} {
+			if n := strings.Count(last, text); n > 1 {
+				t.Errorf("%s: %d copies of %q on the pane, want at most 1", step, n, text)
+			}
 		}
 	}
 }

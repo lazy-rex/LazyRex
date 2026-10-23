@@ -1,7 +1,7 @@
 // teaprobe is a probe program for the thread-view facts (docs/rex-protocol.md), not part of the
 // renderer. It uses the renderer's Bubble Tea version (view/go.mod). Build: go build ./testdata/teaprobe
 //
-//	teaprobe tea [-delay 2s] [-mode inline|alt] [-bytes FILE]
+//	teaprobe tea [-delay 2s] [-mode inline|alt] [-bytes FILE] [-box N] [-trace FILE]
 //	  Starts in inline mode with "Connecting…", like the renderer. After -delay the first tree
 //	  arrives and the program chooses -mode. With -bytes, the program puts the terminal in raw
 //	  mode itself and gives Bubble Tea a reader that first appends each read to FILE in hex (one
@@ -11,7 +11,9 @@
 //	  Keys: p prints one line above the live region (tea.Println), m prints 30 (rex send-key P
 //	  sends a lowercase p), a switches the alt screen, q quits. The live region shows
 //	  "LIVE p=<printed> | <Connecting… or tree> alt=<bool> <cols>x<rows> r=<redraws>" and the
-//	  last 10 key messages.
+//	  last 10 key messages. With -box N, the live region has N more rows "B<nn>|" + 60 cells + "|":
+//	  a frame of several rows, each wider than 50 columns. With -trace, Bubble Tea logs each
+//	  write of its renderer to FILE (TEA_TRACE).
 //	teaprobe raw
 //	  Puts the terminal in raw mode and prints the bytes of each read in hex. Ctrl+C quits.
 //
@@ -37,6 +39,7 @@ type firstTree struct{}
 type model struct {
 	alt, ready   bool
 	mode         string
+	box          int
 	w, h, redraw int
 	printed      int
 	keys         []string
@@ -93,6 +96,9 @@ func (m *model) View() tea.View {
 	for _, k := range m.keys {
 		s += "\n  key " + k
 	}
+	for i := range m.box {
+		s += fmt.Sprintf("\nB%02d|%s|", i+1, strings.Repeat("=", 60))
+	}
 	v := tea.NewView(s)
 	v.AltScreen = m.alt
 	return v
@@ -147,8 +153,13 @@ func main() {
 	delay := fs.Duration("delay", 2*time.Second, "time until the first tree")
 	mode := fs.String("mode", "inline", "the mode for the first tree: inline or alt")
 	bytesFile := fs.String("bytes", "", "append the input bytes to this file in hex")
+	box := fs.Int("box", 0, "the number of wide rows in the live region")
+	trace := fs.String("trace", "", "the Bubble Tea trace file (TEA_TRACE)")
 	if len(os.Args) > 1 {
 		fs.Parse(os.Args[2:])
+	}
+	if *trace != "" {
+		os.Setenv("TEA_TRACE", *trace) // tea.NewProgram reads it
 	}
 	var opts []tea.ProgramOption
 	if *bytesFile != "" {
@@ -166,7 +177,7 @@ func main() {
 		defer term.Restore(os.Stdin.Fd(), old)
 		opts = append(opts, tea.WithInput(tee{os.Stdin, log}))
 	}
-	p := tea.NewProgram(&model{mode: *mode}, opts...)
+	p := tea.NewProgram(&model{mode: *mode, box: *box}, opts...)
 	go func() { time.Sleep(*delay); p.Send(firstTree{}) }()
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

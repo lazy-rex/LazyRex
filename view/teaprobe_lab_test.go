@@ -307,6 +307,35 @@ func TestTeaProbeA2Width(t *testing.T) {
 	}
 }
 
+// A4: a live frame of several rows, each wider than the narrow width, through width changes
+// (coord-tvglitch). Each step notes how many copies of each frame row the capture holds; the
+// trace file has each write of the renderer.
+func TestTeaProbeA4FrameWidth(t *testing.T) {
+	trace := filepath.Join(os.TempDir(), fmt.Sprintf("teaprobe-trace-%d.log", time.Now().UnixNano()))
+	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline", "-box", "6", "-trace", trace)
+	l.note("trace: %s", trace)
+	l.waitScreen("the first tree", func(s string) bool { return strings.Contains(s, "| tree alt=false") })
+	l.keys("p", "p", "p")
+	l.waitScreen("3 printed", printedCount(3))
+	frame := func(name string) {
+		text := l.capture(name, "LIVE p=3 |")
+		plain := l.screen()
+		var counts []string
+		for i := 1; i <= 6; i++ {
+			mark := fmt.Sprintf("B%02d|", i)
+			counts = append(counts, fmt.Sprintf("%s unwrapped %d text %d", mark, strings.Count(text, mark), strings.Count(plain, mark)))
+		}
+		l.note("step %02d %s frame rows: %v", l.step, name, counts)
+	}
+	frame("at-80")
+	for _, w := range []int{50, 80, 40, 100} {
+		l.resize(w, 24)
+		geometry := fmt.Sprintf(" %dx24 ", w)
+		l.waitScreen("the live region at "+geometry, func(s string) bool { return strings.Contains(s, geometry) })
+		frame(fmt.Sprintf("at-%d", w))
+	}
+}
+
 // A3: which heights a resize from the owner applies.
 func TestTeaProbeA3Height(t *testing.T) {
 	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline")
