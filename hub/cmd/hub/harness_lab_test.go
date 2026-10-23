@@ -159,6 +159,17 @@ func TestHarnessIdentityPass(t *testing.T) {
 	assertLabsGone(t, out)
 }
 
+// tests/peers: the lab hub has test.hub_name and test.peers, and the plugin gets envelopes through
+// hub.test.peer.deliver, the delivery path of a pulled envelope (docs/hub.md, "Peer hubs").
+func TestPeersSuitePass(t *testing.T) {
+	bin, root := harnessBinary(t)
+	out, code := runHarness(t, bin, filepath.Join(root, "tests", "peers"), "-keep")
+	if code != 0 || !strings.Contains(out, "tests/peers.lua: 5 passed, 0 failed") {
+		t.Fatalf("exit %d, want 0 and tests/peers.lua: 5 passed, 0 failed\n%s", code, out)
+	}
+	assertLabsGone(t, out)
+}
+
 // Each fixture in tests/harness-fail names the reason it must fail in its first line.
 func TestHarnessFailures(t *testing.T) {
 	bin, root := harnessBinary(t)
