@@ -125,6 +125,9 @@ One line per item: what, its owner, and why it waits.
 - A plugin spawn whose outcome stays unknown reports `running` and has no timer owner. Two cases:
   the child read after `createBlock` fails or times out (the intent stays `sending`), and the block
   read after the block ID is recorded fails while the child had already exited (`checkMapped`
-  logs it). The next start, reload or hub restart resolves both. Owner: Hub Fixes. Waits: the fix
-  (D-a: a `starting` state with a backoff timer) passes the lostexit series' line budget
-  (lead-lostexit-r3).
+  logs it). The next start, reload or hub restart retries the reconciliation: it adopts a live
+  child of the first case by its instance argv. It does not resolve a first-case child that
+  exited: the intent does not record the block ID, and `findInstanceBlock` matches only a live
+  child, so the intent stays unresolved. Owner: Hub Fixes. Waits: the fix (D-a: a `starting` state
+  with a backoff timer, which must also attribute that exited child to its block) passes the
+  lostexit series' line budget (lead-lostexit-r3).
