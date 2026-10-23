@@ -277,7 +277,7 @@ func TestPluginWaitDependencyLaterChangeLab(t *testing.T) {
 	same("the stop of a")
 	s.must("hub.admin.start", map[string]any{"plugin": "a"})
 	a, _ := s.startRun("a")
-	s.writeSource("a", `{"name":"a","main":"main.lua","depends":["missing"]}`, "")
+	s.spoilRun("a") // the crash respawn of a is refused
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s.c.perform(ctx, a.ClientID, "fix.exit", nil) // the reply can race the exit
