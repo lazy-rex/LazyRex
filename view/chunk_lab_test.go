@@ -25,6 +25,8 @@ type chunkLab struct {
 	session string
 	owner   *wire
 	ctx     context.Context
+	hub     *exec.Cmd
+	hubArgs []string // the hub binary and its arguments
 }
 
 func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
@@ -74,24 +76,12 @@ func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
 	t.Cleanup(func() { server.Process.Signal(syscall.SIGTERM); server.Wait(); serverLog.Close() })
 	l.waitFor("the lab server", 10*time.Second, func() bool { _, err := l.cli("ls"); return err == nil })
 
-	hub := exec.Command(hubBin, "-test", "-sdk", filepath.Join(root, "sdk", "lua"), "-config", cfg)
-	hub.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + lab, "REX_SERVER=" + l.socket}
-	logf, _ := os.OpenFile(filepath.Join(lab, "hub.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	hub.Stdout, hub.Stderr = logf, logf
-	if err := hub.Start(); err != nil {
-		t.Fatal(err)
-	}
+	l.hubArgs = []string{hubBin, "-test", "-sdk", filepath.Join(root, "sdk", "lua"), "-config", cfg}
+	l.startHub()
 	t.Cleanup(func() {
-		hub.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { hub.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(15 * time.Second):
-			hub.Process.Kill()
-			<-done
+		if l.hub.ProcessState == nil {
+			l.stopHub()
 		}
-		logf.Close()
 	})
 
 	var s struct {
@@ -114,6 +104,34 @@ func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
 	}
 	l.owner = owner
 	return l
+}
+
+// startHub starts the lab hub; its output goes to hub.log.
+func (l *chunkLab) startHub() {
+	l.t.Helper()
+	l.hub = exec.Command(l.hubArgs[0], l.hubArgs[1:]...)
+	l.hub.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + l.lab, "REX_SERVER=" + l.socket}
+	logf, _ := os.OpenFile(filepath.Join(l.lab, "hub.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	l.hub.Stdout, l.hub.Stderr = logf, logf
+	if err := l.hub.Start(); err != nil {
+		l.t.Fatal(err)
+	}
+	logf.Close() // the hub holds its own copy
+}
+
+// stopHub stops the lab hub: SIGTERM, then the wait, as the hub's keeper does (labkeeper.go).
+func (l *chunkLab) stopHub() {
+	l.t.Helper()
+	l.hub.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { l.hub.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		l.hub.Process.Kill()
+		<-done
+		l.t.Logf("the lab hub did not stop on SIGTERM; it was killed")
+	}
 }
 
 func (l *chunkLab) cli(args ...string) (string, error) {

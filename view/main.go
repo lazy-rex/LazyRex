@@ -68,22 +68,52 @@ func main() {
 		}
 		return
 	}
+	// The renderer's pane output goes through one boundary (output.go). A write to a closed output
+	// returns EPIPE and takes the failure path, instead of a SIGPIPE that kills the process.
+	signal.Ignore(syscall.SIGPIPE)
+	out := newPaneFile(os.Stdout)
+	client.outFailed = out.Failed
+	out.onFault = client.closeSeen
 	model := newModel(client)
-	program := tea.NewProgram(model, tea.WithContext(ctx))
+	model.print.out = out
+	program := tea.NewProgram(model, tea.WithContext(ctx), tea.WithOutput(out))
 	client.emit = program.Send
+	go func() {
+		select {
+		case <-out.fault:
+			program.Send(outputFailed{})
+		case <-ctx.Done():
+		}
+	}()
 	go client.run(ctx)
-	if _, err = program.Run(); err != nil && ctx.Err() == nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	// A closed view leaves no status behind. A reload keeps it: the new renderer reports again.
-	if !model.reloadReady && model.programStatus != "" && model.programStatus != statusClear {
-		os.Stdout.WriteString(statusClear)
-	}
-	if model.reloadReady && ctx.Err() == nil {
+	_, err = program.Run()
+	code := afterRun(model, out.paneOut, err, ctx.Err() != nil)
+	if code == 0 && model.reloadReady && ctx.Err() == nil {
 		if err := syscall.Exec(executable, os.Args, os.Environ()); err != nil {
 			fmt.Fprintln(os.Stderr, "Cannot reload renderer:", err)
 			os.Exit(1)
 		}
 	}
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// afterRun ends a renderer process after Run and returns its exit status. A failed output, also
+// one that only the final flush found, gets the bounded draft save once (print.go) and status 1,
+// with nothing more written: stderr is the same pane. Otherwise a closed view clears its status
+// (a reload keeps it: the new renderer reports again), and a Run error is status 1.
+func afterRun(m *model, out *paneOut, runErr error, cancelled bool) int {
+	if !out.Failed() && !m.reloadReady && m.programStatus != "" && m.programStatus != statusClear {
+		out.WriteString(statusClear)
+	}
+	if out.Failed() {
+		m.finishFailure()
+		return 1
+	}
+	if runErr != nil && !cancelled {
+		fmt.Fprintln(os.Stderr, runErr)
+		return 1
+	}
+	return 0
 }

@@ -43,6 +43,23 @@ type protocolFixture struct {
 	// answer, "no client" a reply without the client; otherwise the connection state).
 	resolveAnswer any
 	inspect       map[string]string
+	// holdSaves: hub.view.draft.save gets no reply (print_test.go, the bounded failure save).
+	holdSaves bool
+	// tree: the snapshot for hub.view.subscribe and hub.view.get in place of testSnapshot.
+	tree any
+	gets int
+}
+
+// changed sends view.changed for the current attachment, as the hub does after a change.
+func (f *protocolFixture) changed(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	conn, attachment := f.conn, f.attachment
+	f.mu.Unlock()
+	b, _ := json.Marshal(map[string]any{"type": "event", "payload": map[string]any{"type": "client_perform_requested", "payload": map[string]any{"call_id": "changed", "action": "view.changed", "requester": map[string]string{"client_id": "hub"}, "args": map[string]string{"view_id": "v1", "attachment": attachment}}}})
+	if err := conn.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -165,8 +182,15 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 			case "hub.view.subscribe":
 				f.subscriptions++
 				result = testSnapshot("saved", "1")
+				if f.tree != nil {
+					result = f.tree
+				}
 			case "hub.view.get":
+				f.gets++
 				result = testSnapshot("saved", "1")
+				if f.tree != nil {
+					result = f.tree
+				}
 			case "hub.view.action", "hub.view.draft.save", "hub.view.send":
 				f.admissions++
 				result = map[string]any{"status": "accepted", "operation_key": args["operation_key"]}
@@ -181,6 +205,10 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 					f.complete = true
 					f.mu.Unlock()
 					return
+				}
+				if f.holdSaves && action == "hub.view.draft.save" {
+					f.mu.Unlock()
+					continue
 				}
 			case "hub.view.operation":
 				f.lookups++

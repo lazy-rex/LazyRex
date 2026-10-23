@@ -24,6 +24,9 @@ import (
 type Message struct {
 	ID, Author, Text, At string
 	Own, FYI             bool
+	// Late: the message arrived after a newer one was printed (thread view v1.2 item 2). The
+	// header shows "(late)" after the author.
+	Late bool
 }
 
 const reset = "\x1b[0m"
@@ -52,6 +55,9 @@ func Format(m Message, previous *Message, dark bool) string {
 		gap = "\n"
 	}
 	header := rgb(color) + "▍ " + reset + "\x1b[1m" + rgb(color) + oneLine(m.Author) + reset
+	if m.Late {
+		header += " " + rgb(dim) + "(late)" + reset
+	}
 	if m.At != "" {
 		header += " " + rgb(dim) + "· " + oneLine(m.At) + reset
 	}

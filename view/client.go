@@ -56,6 +56,72 @@ type viewClient struct {
 	lost                                   bool
 	available                              bool
 	Role                                   string // "transcript" for the printer of a pair; "" for the composer
+	// The seen gate (thread view v1.2 item 3): seenClosed until the renderer decides its mode;
+	// seenAlt sends as before; seenThread sends only while seenOK (the current tree's newest ID
+	// is printed). outFailed is the output boundary's latch: after a fault no seen goes out.
+	seenGate  int
+	seenOK    bool
+	outFailed func() bool
+}
+
+const (
+	seenClosed = iota
+	seenAlt
+	seenThread
+)
+
+// decideSeen opens the seen gate when the renderer decides its mode. Alt mode sends one seen at
+// once (reason "connect" unless one waits), then as before. Thread mode waits for a printed newest
+// ID (allowSeen).
+func (v *viewClient) decideSeen(thread bool) {
+	v.mu.Lock()
+	v.seenGate, v.seenOK = seenAlt, false
+	if thread {
+		v.seenGate = seenThread
+	}
+	v.mu.Unlock()
+	if !thread {
+		v.wakeSeen()
+	}
+}
+
+// allowSeen opens a thread view's gate: the current tree's newest ID is printed. reason is
+// "content" after the print of new messages; "" keeps a waiting reason (else "connect"). It wakes
+// the run loop only when the gate opens or a reason is new, so a draft-only tree sends nothing.
+func (v *viewClient) allowSeen(reason string) {
+	v.mu.Lock()
+	wake := !v.seenOK || reason != ""
+	v.seenOK = true
+	if reason != "" && v.seenReason != "focus" {
+		v.seenReason = reason
+	}
+	v.mu.Unlock()
+	if wake {
+		v.wakeSeen()
+	}
+}
+
+// blockSeen closes a thread view's gate: the current tree has no newest ID, or it is not printed.
+func (v *viewClient) blockSeen() {
+	v.mu.Lock()
+	v.seenOK = false
+	v.mu.Unlock()
+}
+
+// closeSeen closes the gate for good (an output failure). The output boundary calls it from its
+// writer, before the model hears of the failure.
+func (v *viewClient) closeSeen() {
+	v.mu.Lock()
+	v.seenGate, v.seenOK = seenClosed, false
+	v.outFailed = func() bool { return true }
+	v.mu.Unlock()
+}
+
+func (v *viewClient) wakeSeen() {
+	select {
+	case v.seen <- struct{}{}:
+	default:
+	}
 }
 
 // focus records the current terminal focus before the broker sends a read notice. reason says
@@ -69,14 +135,20 @@ func (v *viewClient) focus(focused bool, reason string) {
 	}
 	v.mu.Unlock()
 	if focused {
-		select {
-		case v.seen <- struct{}{}:
-		default:
-		}
+		v.wakeSeen()
 	}
 }
+
+// markSeen sends hub.view.seen when the view has focus and the gate is open. A closed gate keeps
+// the reason for later. The pair's transcript printer has no gate.
 func (v *viewClient) markSeen(ctx context.Context) {
 	v.mu.Lock()
+	open := v.Role == "transcript" || v.seenGate == seenAlt || v.seenGate == seenThread && v.seenOK
+	failed := v.outFailed != nil && v.outFailed()
+	if !open || failed {
+		v.mu.Unlock()
+		return
+	}
 	focused, reason := v.focused, v.seenReason
 	v.seenReason = ""
 	v.mu.Unlock()
@@ -222,6 +294,9 @@ func (v *viewClient) call(ctx context.Context, action string, args map[string]an
 	v.mu.Lock()
 	w, hub, attachment := v.w, v.hub, v.attachment
 	v.mu.Unlock()
+	if w == nil || hub == "" {
+		return errNotAttached
+	}
 	input := map[string]any{"view_id": v.ViewID, "attachment": attachment}
 	for k, val := range args {
 		input[k] = val
@@ -309,6 +384,7 @@ func (v *viewClient) connect(ctx context.Context) error {
 	v.mu.Lock()
 	v.hub = hub
 	v.attachment = attached.Attachment
+	v.seenOK = false // a new attachment sends seen at its first thread frame with a printed newest ID
 	v.lost = false
 	v.available = false
 	v.mu.Unlock()
@@ -370,6 +446,8 @@ func (v *viewClient) admit(ctx context.Context, req mutation) error {
 }
 
 var errFinal = errors.New("operation completed")
+
+var errNotAttached = errors.New("the view is not attached")
 
 func (v *viewClient) check(ctx context.Context, pending map[string]mutation) error {
 	for key, req := range pending {

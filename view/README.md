@@ -78,6 +78,41 @@ A composer's editor and Send are one focus span, so a short window holds the edi
 
 The last frame before the exit is empty, on the screen that is active, also during a panel replacement.
 
+### Printed messages (thread mode)
+
+Thread mode prints each message of the current history page once, above the live region, oldest first (view/print.go).
+The terminal owns the printed lines. The renderer never rewrites them.
+
+- The ledger of printed message IDs belongs to the process and its pane. A reattach or a new tree does not clear it.
+- One print runs at a time. Later batches wait in order.
+- A print commits its IDs after its write returns. A failed write commits nothing.
+- A message is late when a printed message comes after it in the page.
+  The renderer prints it at the bottom, with "(late)" after the header.
+- The first print waits for the terminal's theme reply, or for the theme timeout (300 ms).
+
+### The seen gate
+
+The renderer sends no `hub.view.seen` until the mode is decided.
+
+- Alt mode sends one seen at the decision, then uses the focus rules below.
+- Thread mode sends seen only after a print that holds the current tree's newest message ID.
+- A tree without a history page, or with an unprinted newest message, sends no seen.
+- A new attachment sends no seen until its first thread frame.
+
+### Output failures
+
+The first failed or short write to the pane is fatal (view/output.go):
+
+1. The renderer prints nothing more, commits no print, and sends no seen.
+2. The renderer saves each dirty composer draft with one `hub.view.draft.save` call and a new operation key.
+   All saves share one 5 s deadline. There is no retry.
+3. The process exits with status 1. It writes nothing to stderr, because stderr is the same pane.
+
+A timed-out save has an unknown outcome. The next view reads what the plugin committed.
+
+Known limit: the respawn after this exit makes a new view, and a new view has no `open_args`.
+So full mode ("Show full history") ends, and the new renderer prints the newest 500 messages.
+
 ### Known limit: the clear before the alt screen
 
 Before alt-on, the renderer draws an empty inline frame and waits `altClearDelay` (50 ms).

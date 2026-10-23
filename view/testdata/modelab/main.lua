@@ -2,8 +2,9 @@
 -- /thread/lab) render by the
 -- SQL row stage(n): 0 is a read-only thread (a history node and a notice), 1 is an error tree with
 -- 12 widget actions, more than a 10-row pane holds, 2 is a thread with 2 widget actions and a
--- composer with a saved draft (so Send is enabled). An action records its name in clicked(name);
--- a send records 'send'.
+-- composer with a saved draft (so Send is enabled), 3 is a thread whose history holds the rows of
+-- msgs(id, author, text) in insert order. An action records its name in clicked(name); a send
+-- records 'send'.
 -- A command opens only a /forms/ or /panels/ route (hub forms.go). The renderer decides its mode
 -- from the tree, never from the route, so stage 0 is a thread frame on this form route.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
@@ -23,6 +24,16 @@ local function render(args)
     return {tree = {title = 'Mode lab', nodes = {
       {id = 'notice', type = 'widget', text = 'LAB-NOTICE'},
       {id = 'history', type = 'history', page_size = 10, messages = {{id = 'm1', author = 'codex', text = 'LAB-MSG'}}},
+    }}}
+  end
+  if row[1] == 3 then
+    local messages = {}
+    for _, m in ipairs(hub('hub.sql.query', {sql = 'SELECT id, author, text FROM msgs ORDER BY rowid', params = {}, render = args.render}).rows) do
+      messages[#messages + 1] = {id = m[1], author = m[2], text = m[3]}
+    end
+    return {tree = {title = 'Mode lab', nodes = {
+      {id = 'notice', type = 'widget', text = 'LAB-NOTICE'},
+      {id = 'history', type = 'history', page_size = 500, messages = messages},
     }}}
   end
   if row[1] == 2 then
@@ -78,4 +89,5 @@ hub('hub.register', {plugin = 'modelab', instance_id = instance_id,
 hub('hub.ui.tabs', {tabs = {{key = 'lab', title = 'Mode lab tab', route = '/thread/lab'}}})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS stage (n INTEGER)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS clicked (name TEXT)'})
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS msgs (id TEXT, author TEXT, text TEXT)'})
 rex.call('client.set_label', {label = 'lazyrex-plugin:modelab'})

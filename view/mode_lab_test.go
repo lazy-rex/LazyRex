@@ -179,6 +179,69 @@ func TestShortPaneLab(t *testing.T) {
 	})
 }
 
+// TestPrintLab (v1.2 item 3): a real pane in thread mode prints its history above the live region.
+// It prints 3 messages once each, in order; then a new message from an SQL write; then, after a
+// restart of the hub process (the renderer reattaches), only a new message, because the ledger of
+// printed IDs belongs to the process. Each check reads the whole capture (with the scrollback).
+func TestPrintLab(t *testing.T) {
+	l := newModeLab(t)
+	insert := func(i int) {
+		t.Helper()
+		l.sql(fmt.Sprintf("INSERT INTO msgs VALUES ('p%d', 'codex', 'PRINT-%d')", i, i), true)
+	}
+	for i := 1; i <= 3; i++ {
+		insert(i)
+	}
+	l.sql("UPDATE stage SET n = 3", true)
+	pane := l.open("lazyrex_modelab_mode")
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last screen:\n%s", last)
+		}
+	})
+	printed := func(step string, n int) {
+		t.Helper()
+		newest := fmt.Sprintf("PRINT-%d", n)
+		l.waitFor(step+": "+newest+" printed", 30*time.Second, func() bool {
+			last = l.screen(pane)
+			return strings.Contains(last, newest)
+		})
+		// A second copy or a late mark would come in the same print as the newest message or before it.
+		at := -1
+		for i := 1; i <= n; i++ {
+			text := fmt.Sprintf("PRINT-%d", i)
+			if c := strings.Count(last, text); c != 1 {
+				t.Fatalf("%s: %s is on the pane %d times:\n%s", step, text, c, last)
+			}
+			j := strings.Index(last, text)
+			if j < at {
+				t.Fatalf("%s: %s is above the message before it:\n%s", step, text, last)
+			}
+			at = j
+		}
+		if strings.Contains(last, "(late)") {
+			t.Fatalf("%s: a message is marked late:\n%s", step, last)
+		}
+		if c := strings.Count(last, "LAB-NOTICE"); c != 1 {
+			t.Fatalf("%s: the live region is on the pane %d times:\n%s", step, c, last)
+		}
+	}
+	printed("the first tree", 3)
+	insert(4)
+	printed("an SQL insert", 4)
+	t.Logf("before the hub restart:\n%s", last)
+	l.stopHub()
+	l.startHub()
+	l.waitFor("the restarted hub's palette entry", 30*time.Second, func() bool {
+		out, _ := l.cli("actions")
+		return strings.Contains(out, "lazyrex_modelab_mode")
+	})
+	insert(5)
+	printed("an insert after the reattach", 5)
+	t.Logf("after the reattach:\n%s", last)
+}
+
 // tabPane waits for the plugin's open, attached tab view on route, takes its pane and sizes it.
 // It returns the pane's session and block.
 func (l *chunkLab) tabPane(route string, columns, rows int) (session, pane string) {

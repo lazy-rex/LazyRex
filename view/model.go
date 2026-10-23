@@ -99,6 +99,7 @@ type model struct {
 	quitting                               bool     // the last frame is empty
 	liveEditor                             int      // the composer's editor rows in an inline frame
 	liveOffset                             int      // the first row of the focus window
+	print                                  printer  // thread mode's printed region (print.go)
 }
 
 func newModel(client *viewClient) *model {
@@ -694,11 +695,11 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uv.DarkColorSchemeEvent:
 		m.setDark(true)
 		m.themeReady = true
-		return m, tea.RequestBackgroundColor
+		return m, tea.Batch(tea.RequestBackgroundColor, m.nextPrint())
 	case uv.LightColorSchemeEvent:
 		m.setDark(false)
 		m.themeReady = true
-		return m, tea.RequestBackgroundColor
+		return m, tea.Batch(tea.RequestBackgroundColor, m.nextPrint())
 	case tea.BlurMsg:
 		m.client.focus(false, "")
 		return m, nil
@@ -716,26 +717,31 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		m.setDark(msg.IsDark())
 		m.themeReady = true
-		return m, nil
+		return m, m.nextPrint()
 	case formThemeTimeout:
 		m.themeReady = true
-		return m, nil
+		return m, m.nextPrint()
 	case Snapshot:
 		before, wasPending := m.lastMessageIDs(), m.altPending
 		m.apply(msg)
 		m.client.mu.Lock()
 		focused := m.client.focused
 		m.client.mu.Unlock()
-		if focused && !reflect.DeepEqual(before, m.lastMessageIDs()) {
+		// Thread mode sends "content" only after the print of the newest message (print.go).
+		if focused && m.mode != viewThread && !reflect.DeepEqual(before, m.lastMessageIDs()) {
 			m.client.focus(true, "content")
 		}
-		decided := m.clearBeforeAlt(wasPending)
+		decided := tea.Batch(m.clearBeforeAlt(wasPending), m.printTree())
 		// The first snapshot always reports, so a record left by an earlier renderer is replaced.
 		if seq := statusSequence(m.snapshot.Status); seq != m.programStatus {
 			m.programStatus = seq
 			return m, tea.Batch(tea.Raw(seq), decided)
 		}
 		return m, decided
+	case printDone:
+		return m, m.printFinished(msg)
+	case outputFailed:
+		return m, m.failOutput()
 	case altClear:
 		m.altPending = false
 		return m, nil

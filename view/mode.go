@@ -90,6 +90,9 @@ func (m *model) decide() {
 		mode, decided := decideViewMode(m.snapshot)
 		m.mode, note = mode, decided
 		m.altPending = mode == viewAlt && m.haveView && !m.lastView.AltScreen
+		if mode != viewNeutral {
+			m.client.decideSeen(mode == viewThread) // seen stays closed until the decision
+		}
 	} else if m.mode == viewAlt && treeHasHistory(m.snapshot) && m.snapshot.Layout != "transcript" {
 		note = noteHistoryInAlt
 	}

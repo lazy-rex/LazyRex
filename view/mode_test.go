@@ -344,7 +344,7 @@ func TestFocusWindowFollowsTheFocus(t *testing.T) {
 // erased before CSI ?1049h. This proves the order of the tested run only: the clear is best effort
 // (altClearDelay, view/README.md "Known limit").
 func TestAltClearBytes(t *testing.T) {
-	out := newProtoOut(nil)
+	out, term := newTestOut(nil)
 	m := newModel(&viewClient{ViewID: "v1", Route: "/thread/42", Requests: make(chan mutation, 16)})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -359,7 +359,7 @@ func TestAltClearBytes(t *testing.T) {
 	if _, err := p.Run(); ctx.Err() != nil {
 		t.Fatalf("the program did not end: %v", err)
 	}
-	raw := out.String()
+	raw := term.String()
 	t.Logf("raw output %q", raw)
 	text, on := strings.LastIndex(raw, "NEUTRAL-ERROR"), strings.Index(raw, "\x1b[?1049h")
 	if text < 0 || on < text {
