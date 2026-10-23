@@ -9,15 +9,18 @@ import (
 )
 
 // setGateFixture is a live plugin step "beta" (the second step of the set alpha, beta) whose state
-// equals the rehearsed state: the hub run, its record and set file, the live inputs and the
-// candidate. Each case of TestReleaseSetGate changes one part.
+// equals the rehearsed state: the hub run, its record and set file, the live inputs, the running
+// hub and the candidate. Each case of TestReleaseSetGate changes one part.
 type setGateFixture struct {
-	r    *releaser
-	c    *relCandidate
-	hub  *relHub
-	tool string
-	run  string // the hub run
-	sdk  string // the SDK of the release clone
+	r     *releaser
+	c     *relCandidate
+	hub   *relHub
+	tool  string
+	run   string   // the hub run
+	sdk   string   // the SDK of the release clone
+	state string   // the live state (events.jsonl)
+	argv  []string // the exact argv of the running hub
+	start string   // the start time of the running hub process
 }
 
 func newSetGateFixture(t *testing.T) *setGateFixture {
@@ -32,33 +35,50 @@ func newSetGateFixture(t *testing.T) *setGateFixture {
 			t.Fatal(err)
 		}
 	}
-	f := &setGateFixture{tool: filepath.Join(dir, "tool"), run: filepath.Join(dir, "hubrun")}
+	f := &setGateFixture{tool: filepath.Join(dir, "tool"), run: filepath.Join(dir, "hubrun"), state: filepath.Join(dir, "live", "state"), start: "Mon 1"}
 	write(f.tool, []byte("tool v1"))
-	cfg := &pluginCmdConfig{path: filepath.Join(dir, "live", "config.json"), managed: filepath.Join(dir, "live", "managed.json"), lock: filepath.Join(dir, "live", "lock.json")}
+	cfg := &pluginCmdConfig{path: filepath.Join(dir, "live", "config.json"), managed: filepath.Join(dir, "live", "managed.json"),
+		lock: filepath.Join(dir, "live", "lock.json"), state: f.state}
 	write(cfg.path, []byte(`{"config":1}`))
 	write(cfg.managed, []byte(`{"managed":1}`))
+	if err := writeLock(cfg.lock, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{}}); err != nil {
+		t.Fatal(err)
+	}
 	base, _ := json.Marshal(peerBase{Version: pinDocVersion, Peers: map[string]map[string]basePin{setGatePeer: {"gh:o/beta": {Commit: setFrom, Digest: sgB}}}})
 	write(peersPath(cfg.lock), base)
 	releaseDir := filepath.Join(dir, "release")
 	f.sdk = filepath.Join(releaseDir, "LazyRex", "sdk", "lua")
 	write(filepath.Join(f.sdk, "x.lua"), []byte("x"))
+	sdkDigest, err := dirDigest(f.sdk)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// The hub run: spec, candidate, journal, the H hub, set file and record.
+	// The running hub: the last hub_started event, its process start time and its exact argv.
+	write(filepath.Join(f.state, "events.jsonl"), []byte(`{"event":"hub_started","client_id":"client:h","pid":4242}`+"\n"))
+	f.hub = &relHub{PID: 4242, Start: f.start, Client: "client:h", Seq: 1}
+	f.argv = []string{filepath.Join(f.state, "dev", "hub"), "-config", cfg.path, "-sdk", f.sdk}
+
+	// The hub run: spec, candidate, journal (a passed verify last), the H hub, set file and record.
 	hubSpec := map[string]any{"kind": "hub", "h": strings.Repeat("a", 40), "config": cfg.path, "server": "unix:///live.sock",
 		"release_dir": releaseDir, "dev_log": filepath.Join(dir, "dev.log")}
 	sb, _ := json.Marshal(hubSpec)
 	write(filepath.Join(f.run, relSpecFile), sb)
 	cb, _ := json.Marshal(relCandidate{Kind: "hub", To: relPin{Commit: strings.Repeat("a", 40)}})
 	write(filepath.Join(f.run, relCandidateFile), cb)
-	write(filepath.Join(f.run, "journal.jsonl"), []byte(`{"at":"t","step":"start","op":"x","phase":"end"}`+"\n"))
-	f.hub = &relHub{PID: 4242, Start: "Mon 1", Client: "c"}
+	write(filepath.Join(f.run, "journal.jsonl"), []byte(`{"at":"t","step":"start","op":"x","phase":"end"}`+"\n"+
+		`{"at":"t","step":"verify","op":"verified","phase":"end"}`+"\n"))
 	hb, _ := json.Marshal(f.hub)
 	write(filepath.Join(f.run, relHubFile), hb)
 	write(filepath.Join(f.run, relSetJSON), setBytes(seal(t, setEntry("alpha")), seal(t, setEntry("beta"))))
 
+	lockSum, err := lockPinsHash(cfg.lock)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.c = &relCandidate{Kind: "plugin", Source: "gh:o/beta", Name: "beta", From: relPin{setFrom, sgB}, To: relPin{setTo, sgT},
-		Peer: setGatePeer, Pins: []string{"gh:o/alpha " + setTo + " " + sgAT, "gh:o/beta " + setFrom + " " + sgB},
-		HubCommit: strings.Repeat("a", 40), SDKDir: f.sdk, SDKDigest: "sdk1"}
+		Peer: setGatePeer, Pins: []string{"gh:o/alpha " + setTo + " " + sgAT, "gh:o/beta " + setFrom + " " + sgB}, LockPins: lockSum,
+		HubCommit: strings.Repeat("a", 40), SDKDir: f.sdk, SDKDigest: sdkDigest}
 	lab := *f.c
 	lab.SDKDir = "/tmp/lab/sdk"
 	bp, err := basePinLines(cfg.lock)
@@ -66,7 +86,9 @@ func newSetGateFixture(t *testing.T) *setGateFixture {
 		t.Fatal(err)
 	}
 	f.r = &releaser{run: filepath.Join(dir, "pluginrun"), cfg: cfg,
-		spec: &relSpec{Kind: "plugin", Plugin: "beta", To: setTo, Config: cfg.path, Server: "unix:///live.sock"}}
+		spec:        &relSpec{Kind: "plugin", Plugin: "beta", To: setTo, Config: cfg.path, Server: "unix:///live.sock"},
+		startOf:     func(pid int) string { return map[bool]string{true: f.start}[pid == f.hub.PID] },
+		argvExactOf: func(pid int) ([]string, error) { return f.argv, nil }}
 	f.writeRecord(t, func(rec *relRehearsal) {
 		rec.SetSteps = []relSetStep{{Plugin: "alpha", Candidate: relCandidate{Name: "alpha"}}, {Plugin: "beta", Candidate: lab, BasePins: bp}}
 	})
@@ -141,15 +163,67 @@ func TestReleaseSetGate(t *testing.T) {
 			os.WriteFile(peersPath(f.r.cfg.lock), b, 0o600)
 		}, "the base pins differ"},
 		"SDK digest": {func(t *testing.T, f *setGateFixture) { f.c.SDKDigest = "sdk2" }, "the SDK digest of the frozen candidate"},
+		// The SDK comes from the exact argv, not from the candidate.
 		"SDK root": {func(t *testing.T, f *setGateFixture) {
 			other := filepath.Join(t.TempDir(), "sdk")
 			os.MkdirAll(other, 0o700)
-			f.c.SDKDir = other
+			f.argv[len(f.argv)-1] = other
 		}, "uses the SDK"},
-		"no SDK": {func(t *testing.T, f *setGateFixture) { f.c.SDKDir = "" }, "has no -sdk directory"},
-		"hub instance": {func(t *testing.T, f *setGateFixture) {
-			f.hub = &relHub{PID: f.hub.PID, Start: "Tue 2", Client: f.hub.Client}
+		"SDK files": {func(t *testing.T, f *setGateFixture) { os.WriteFile(filepath.Join(f.sdk, "y.lua"), []byte("y"), 0o600) }, "are not the SDK files of the rehearsed step"},
+		"candidate SDK dir only": {func(t *testing.T, f *setGateFixture) {
+			other := filepath.Join(t.TempDir(), "sdk")
+			os.MkdirAll(other, 0o700)
+			f.argv[len(f.argv)-1] = other
+			f.c.SDKDir = f.sdk
+		}, "uses the SDK"},
+		"no -sdk":       {func(t *testing.T, f *setGateFixture) { f.argv = f.argv[:len(f.argv)-2] }, "no -sdk flag"},
+		"two -sdk":      {func(t *testing.T, f *setGateFixture) { f.argv = append(f.argv, "-sdk", f.sdk) }, "2 -sdk flags"},
+		"-sdk after --": {func(t *testing.T, f *setGateFixture) { f.argv = append(f.argv[:len(f.argv)-2], "--", "-sdk", f.sdk) }, "after its flags"},
+		"-sdk after a positional": {func(t *testing.T, f *setGateFixture) {
+			f.argv = append(f.argv[:len(f.argv)-2], "extra", "-sdk", f.sdk)
+		}, "after its flags"},
+		"argv read fails": {func(t *testing.T, f *setGateFixture) {
+			f.r.argvExactOf = func(int) ([]string, error) { return nil, os.ErrPermission }
+		}, "the argv of the hub pid"},
+		"restart during the argv read": {func(t *testing.T, f *setGateFixture) {
+			f.r.argvExactOf = func(int) ([]string, error) { f.start = "Tue 2"; return f.argv, nil }
+		}, "after the argv read"},
+		"restart during the hashing": {func(t *testing.T, f *setGateFixture) {
+			// The hub restarts after the argv read: a new hub_started event with a new client.
+			f.r.argvExactOf = func(int) ([]string, error) {
+				return f.argv, nil
+			}
+			orig := f.r.startOf
+			n := 0
+			f.r.startOf = func(pid int) string {
+				n++
+				if n > 2 {
+					return "Tue 2"
+				}
+				return orig(pid)
+			}
+		}, "after the hashing"},
+		"hub start": {func(t *testing.T, f *setGateFixture) {
+			f.hub = &relHub{PID: f.hub.PID, Start: "Tue 2", Client: f.hub.Client, Seq: f.hub.Seq}
 		}, "is not the H hub that the hub run started"},
+		"hub client": {func(t *testing.T, f *setGateFixture) {
+			f.hub = &relHub{PID: f.hub.PID, Start: f.hub.Start, Client: "client:other", Seq: f.hub.Seq}
+		}, "is not the H hub that the hub run started"},
+		"hub seq": {func(t *testing.T, f *setGateFixture) {
+			f.hub = &relHub{PID: f.hub.PID, Start: f.hub.Start, Client: f.hub.Client, Seq: 2}
+		}, "is not the H hub that the hub run started"},
+		"lock metadata": {func(t *testing.T, f *setGateFixture) {
+			writeLock(f.r.cfg.lock, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{"gh:o/beta": {Name: "beta", Commit: setFrom, Digest: sgB}}})
+			f.c.LockPins, _ = lockPinsHash(f.r.cfg.lock)
+		}, "the lock (without cache dirs) of the frozen candidate"},
+		"no verify": {func(t *testing.T, f *setGateFixture) {
+			os.WriteFile(filepath.Join(f.run, "journal.jsonl"), []byte(`{"at":"t","step":"start","op":"x","phase":"end"}`+"\n"), 0o600)
+		}, "not a passed verify"},
+		"a replace after the verify": {func(t *testing.T, f *setGateFixture) {
+			fh, _ := os.OpenFile(filepath.Join(f.run, "journal.jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+			fh.WriteString(`{"at":"t","step":"replace","op":"replace-x","phase":"begin"}` + "\n")
+			fh.Close()
+		}, "not a passed verify"},
 		"hub commit": {func(t *testing.T, f *setGateFixture) { f.c.HubCommit = strings.Repeat("b", 40) }, "the hub commit of the frozen candidate"},
 		"hub run rolled back": {func(t *testing.T, f *setGateFixture) {
 			fh, _ := os.OpenFile(filepath.Join(f.run, "journal.jsonl"), os.O_APPEND|os.O_WRONLY, 0)

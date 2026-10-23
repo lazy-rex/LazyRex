@@ -120,33 +120,12 @@ func (r *releaser) checkSetGate(c *relCandidate, hub *relHub, tool string) error
 		return fail("the set moves %s from %s to %s; this run moves it from %s to %s", e.Plugin, e.From, e.To, c.From.Commit, c.To.Commit)
 	}
 	lc := step.Candidate
-	for _, f := range []struct {
-		name string
-		ok   bool
-	}{
-		{"kind", c.Kind == lc.Kind},
-		{"source", c.Source == lc.Source},
-		{"name", c.Name == lc.Name},
-		{"FROM pin", c.From == lc.From},
-		{"TO pin", c.To == lc.To},
-		{"peer", c.Peer == lc.Peer},
-		{"lock pins", slices.Equal(c.Pins, lc.Pins)},
-		{"hub commit", c.HubCommit == lc.HubCommit},
-		{"SDK digest", c.SDKDigest == lc.SDKDigest},
-		{"FROM manifest sdk", c.FromSDK == lc.FromSDK},
-		{"TO manifest sdk", c.ToSDK == lc.ToSDK},
-		{"full-tier reasons", slices.Equal(c.Reasons, lc.Reasons)},
-	} {
-		if !f.ok {
-			return fail("the %s of the frozen candidate differs from the rehearsed step %d (%s)", f.name, i+1, step.Plugin)
-		}
-	}
 	base, err := basePinLines(r.cfg.lock)
 	if err != nil {
 		return relFail("the base pins: %v", err)
 	}
-	if !slices.Equal(base, step.BasePins) {
-		return fail("the base pins differ from the rehearsed step %d (%s)", i+1, step.Plugin)
+	if err := compareSetStep(c, base, step); err != nil {
+		return fail("%v of the rehearsed step %d (%s)", err, i+1, step.Plugin)
 	}
 	// The hub run: the hub release of this config and server that started the running H hub, never
 	// rolled back.
@@ -180,24 +159,85 @@ func (r *releaser) checkSetGate(c *relCandidate, hub *relHub, tool string) error
 			return fail("the hub run has a rollback")
 		}
 	}
-	hh := hr.readHub(relHubFile)
-	if hh == nil || hh.PID != hub.PID || hh.Start != hub.Start {
-		return fail("the running hub (pid %d) is not the H hub that the hub run started", hub.PID)
+	// A passed verify is the last record: a run that stopped before its verify, or that changed
+	// something after it, is not a released H.
+	if n := len(recs); n == 0 || recs[n-1].Step != "verify" || recs[n-1].Op != relVerifiedOp || recs[n-1].Phase != "end" {
+		return fail("the last record of the hub run is not a passed verify")
 	}
-	// The SDK of the running hub is the SDK of the release clone.
-	if c.SDKDir == "" {
-		return fail("the running hub has no -sdk directory")
+	hh := hr.readHub(relHubFile)
+	if hh == nil || *hh != *hub {
+		return fail("the running hub (pid %d, %s, seq %d) is not the H hub that the hub run started", hub.PID, hub.Client, hub.Seq)
+	}
+	// The SDK of the running hub, from its exact argv: the SDK of the release clone, with the files
+	// of the rehearsed step. The hub identity is checked before the argv read, after it, and after
+	// the hashing.
+	if err := r.sameHub(hub, "the set gate, before the argv read"); err != nil {
+		return err
+	}
+	argv, err := r.argvExact(hub.PID)
+	if err == nil && len(argv) == 0 {
+		err = fmt.Errorf("the argv is empty")
+	}
+	if err != nil {
+		return fail("the argv of the hub pid %d: %v", hub.PID, err)
+	}
+	if err := r.sameHub(hub, "the set gate, after the argv read"); err != nil {
+		return err
+	}
+	p, err := sdkArgExact(argv)
+	if err != nil {
+		return fail("%v", err)
 	}
 	want, err := resolveExisting(filepath.Join(hs.ReleaseDir, "LazyRex", "sdk", "lua"))
 	if err != nil {
 		return fail("the SDK of the release clone: %v", err)
 	}
-	got, err := resolveExisting(c.SDKDir)
+	got, err := resolveExisting(p)
 	if err != nil {
 		return fail("the SDK of the running hub: %v", err)
 	}
 	if got != want {
 		return fail("the running hub uses the SDK %s, not %s", got, want)
+	}
+	d, err := dirDigest(p)
+	if err != nil {
+		return fail("the files of the hub -sdk path %q: %v", p, err)
+	}
+	if d != lc.SDKDigest {
+		return fail("the files of the hub -sdk path %q are not the SDK files of the rehearsed step", p)
+	}
+	return r.sameHub(hub, "the set gate, after the hashing")
+}
+
+// compareSetStep compares a frozen candidate c and the base pins base with a rehearsed step. Only
+// the fields without a path count: the pins, the lock without cache dirs, the hub commit, the SDK
+// files and the manifest facts. The lab test uses it on the candidates of a second lab.
+func compareSetStep(c *relCandidate, base []string, step relSetStep) error {
+	lc := step.Candidate
+	for _, f := range []struct {
+		name string
+		ok   bool
+	}{
+		{"kind", c.Kind == lc.Kind},
+		{"source", c.Source == lc.Source},
+		{"name", c.Name == lc.Name},
+		{"FROM pin", c.From == lc.From},
+		{"TO pin", c.To == lc.To},
+		{"peer", c.Peer == lc.Peer},
+		{"lock pins", slices.Equal(c.Pins, lc.Pins)},
+		{"lock (without cache dirs)", c.LockPins == lc.LockPins},
+		{"hub commit", c.HubCommit == lc.HubCommit},
+		{"SDK digest", c.SDKDigest == lc.SDKDigest},
+		{"FROM manifest sdk", c.FromSDK == lc.FromSDK},
+		{"TO manifest sdk", c.ToSDK == lc.ToSDK},
+		{"full-tier reasons", slices.Equal(c.Reasons, lc.Reasons)},
+	} {
+		if !f.ok {
+			return fmt.Errorf("the %s of the frozen candidate differs from that", f.name)
+		}
+	}
+	if !slices.Equal(base, step.BasePins) {
+		return fmt.Errorf("the base pins differ from those")
 	}
 	return nil
 }

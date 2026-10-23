@@ -885,8 +885,20 @@ func hubReplace(r *releaser) error {
 }
 
 func hubVerify(r *releaser) error {
-	return r.verifyList(relVerifyFwd)
+	if err := r.verifyList(relVerifyFwd); err != nil {
+		return err
+	}
+	// The end of a verified forward: the set gate of a plugin step needs it as the last record of
+	// the hub run (a later replace or rollback appends after it).
+	c, err := r.readCandidate()
+	if err != nil {
+		return err
+	}
+	return r.appendJournal(relVerifiedOp, "end", map[string]string{"h": c.To.Commit})
 }
+
+// relVerifiedOp is the journal op of a passed hub verify.
+const relVerifiedOp = "verified"
 
 // readHub reads a hub that a step recorded in the run file name, nil without one.
 func (r *releaser) readHub(name string) *relHub {
