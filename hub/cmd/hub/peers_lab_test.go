@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,9 +46,9 @@ if err then print('register: ' .. tostring(err)) end
 rex.call('client.set_label', {label = 'lazyrex-plugin:peerfix'})
 `
 
-// peerLab is one lab hub of the two-hub test.
-func peerLab(t *testing.T) *startLab {
-	s := newStartLab(t, "peerfix")
+// peerLab is one lab hub of the two-hub test, with more lab server options (serverArgs).
+func peerLab(t *testing.T, serverArgs ...string) *startLab {
+	s := newServerLab(t, serverArgs, "peerfix")
 	d := filepath.Join(s.src, "peerfix")
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
@@ -94,12 +95,21 @@ func (s *startLab) got() []any {
 // to b and b's plugin gets it with from_hub a; b's plugin replies and a gets it. A JSON-looking
 // body stays a string. A refused envelope does not stop the next one. Then both outboxes are
 // empty and both links are up.
+//
+// b's lab server also listens on HTTP at 127.0.0.1, and a reaches b at that address: a's pulls and
+// nudges arrive at b's hub over TCP, from a caller with no process ID, as from a remote hub.
 func TestPeerHubsLab(t *testing.T) {
 	if os.Getenv("HARNESS_LAB") == "" {
 		t.Skip("lab test: set HARNESS_LAB=1")
 	}
-	a, b := peerLab(t), peerLab(t)
-	a.setPeer("a", "b", b.l.server)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp := "http://" + ln.Addr().String()
+	ln.Close()
+	a, b := peerLab(t), peerLab(t, "--extra-listen", tcp, "--allow-anonymous")
+	a.setPeer("a", "b", tcp)
 	b.setPeer("b", "a", a.l.server)
 	a.start()
 	b.start()

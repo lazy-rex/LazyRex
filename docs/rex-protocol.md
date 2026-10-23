@@ -1148,3 +1148,16 @@ what Rex held, not what the phone drew.
 - Not tested: a hardware keyboard (none was connected), so Shift+Return and Option+Return from
   iOS are unknown. The user was asked to scroll with a finger; no capture shows
   the effect, and the user did not report on it. Selection and copy were not tested.
+
+### Hub client actions from a caller with no process (observed 2026-10-23, Rex 0.0.1792158932-g88fd41, lab, Mac)
+
+Federation v1 (docs/hub.md "Peer hubs") calls a peer hub with the rex CLI. Lab: `TestPeerHubsLab`.
+
+- Lab server b runs with `--extra-listen http://127.0.0.1:<port> --allow-anonymous`.
+- Hub a calls b at `rex -S http://127.0.0.1:<port> --autostart=false --timeout 10s -C lazyrex-hub do hub.peer.pull ...`.
+  A `-S` value with a port is an address, not a host label.
+- Over TCP, Rex has no process ID for the caller. `hub.peer.pull` and `hub.peer.nudge` on the
+  `lazyrex-hub` client still reached b's hub and answered. The hub client has no caller gate for
+  its own actions, so any client that reaches the Rex server can call them.
+- Delivery a to b, 2 envelopes, with the nudge: 178 ms.
+- Not tested: a Rex server on another host (a tailnet label for `-S`).
