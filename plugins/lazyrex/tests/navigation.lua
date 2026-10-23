@@ -3,7 +3,7 @@
 -- effects that the hub runs and records. A form that a panel opened replaces the panel; the
 -- form's end opens the panel again (docs/hub.md, panels).
 
-local codex = agent('codex')
+local codex = agent('codex', {kind = 'codex', title = 'Codex'})
 
 local function find(list, id)
   for _, x in ipairs(list or {}) do if x.id == id then return x end end
@@ -33,29 +33,29 @@ end
 test('Message while Messaging fails the open: the effect fails, the panel stays; a retry opens it', function()
   local id = fault({point = 'action', action = 'hub.ui.tabs', when = 'before', mode = 'fail', plugin = 'messaging'})
   local p = user:panel('agents')
-  local op = p:action('agents', 'message', {item_id = 'codex'}, 'nav-message-fail')
+  local op = p:action('agents', 'message', {item_id = codex.id}, 'nav-message-fail')
   expect(fault_fired(id)).to_be(true)
   expect(op.status).to_be('succeeded')
   expect(op.effects).to_be('failed')
   p:render()
   expect(open_view(p.id), 'the panel stays').to_be_truthy()
-  op = p:action('agents', 'message', {item_id = 'codex'}, 'nav-message')
+  op = p:action('agents', 'message', {item_id = codex.id}, 'nav-message')
   expect(op.status).to_be('succeeded')
-  expect(op.result).to_equal({navigate = {plugin = 'messaging', tab = 'thread/codex'}})
+  expect(op.result).to_equal({navigate = {plugin = 'messaging', tab = 'thread/' .. codex.id}})
   expect(op.effects).to_be('done')
-  expect(tab('thread/codex', 'messaging'), 'the messaging plugin opened the thread tab').to_be_truthy()
+  expect(tab('thread/' .. codex.id, 'messaging'), 'the messaging plugin opened the thread tab').to_be_truthy()
 end)
 
 test('Message with Messaging absent: no Message action; Messaging back: Message again', function()
   H.hub('hub.admin.stop', {plugin = 'messaging'})
   local p = user:panel('agents')
   wait('the panel shows no Message action', function()
-    local c = find(H.node(p:render(), 'agents').items, 'codex')
+    local c = find(H.node(p:render(), 'agents').items, codex.id)
     return c and c.action == nil
   end)
   H.hub('hub.admin.start', {plugin = 'messaging'})
   wait('the panel shows Message again', function()
-    local c = find(H.node(p:render(), 'agents').items, 'codex')
+    local c = find(H.node(p:render(), 'agents').items, codex.id)
     return c and c.action and c.action.name == 'message'
   end)
 end)

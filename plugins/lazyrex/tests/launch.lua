@@ -4,7 +4,7 @@
 -- launcher stub first: the home plugin registers Launch Profile… only while no other plugin offers
 -- a launch (a palette command whose action is hub.spawn).
 
-local codex = agent('codex')
+local codex = agent('codex', {kind = 'codex', title = 'Codex'})
 local args_file = H.args.lab .. '/home/task-args'
 
 H.hub('hub.admin.stop', {plugin = 'launcher'})
@@ -59,7 +59,7 @@ test('agent path: hub.spawn starts the same profile', function()
   expect(r.status).to_be('open')
   local w = find(workers(), r.spawn_id)
   expect(w.title).to_be('Test')
-  expect(w.parent).to_be('codex')
+  expect(w.parent).to_be(codex.id)
 end)
 
 local named

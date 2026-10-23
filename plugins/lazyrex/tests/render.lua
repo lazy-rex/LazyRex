@@ -2,7 +2,7 @@
 -- Profiles come from tests/profiles.json; the plugins are the messaging and launcher stubs and the
 -- harness fixture.
 
-local codex = agent('codex')
+local codex = agent('codex', {kind = 'codex', title = 'Codex'})
 
 local function panel() return user:panel('agents'):render() end
 local function find(list, id)
@@ -34,8 +34,8 @@ test('the panel lists the agents with Message, without the user', function()
   expect(tree.title).to_be('Agents')
   local agents = H.node(tree, 'agents').items
   expect(find(agents, 'user'), 'the user is not an agent item').to_be(nil)
-  expect(find(agents, 'codex').label).to_be('Codex')
-  expect(find(agents, 'codex').action.name, 'messaging is loaded: a Message action').to_be('message')
+  expect(find(agents, codex.id).label).to_be('Codex')
+  expect(find(agents, codex.id).action.name, 'messaging is loaded: a Message action').to_be('message')
   expect(H.node(tree, 'plugins'), 'no plugin list: each plugin has its own palette entry').to_be(nil)
 end)
 

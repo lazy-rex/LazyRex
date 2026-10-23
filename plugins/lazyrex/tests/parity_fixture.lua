@@ -13,7 +13,7 @@ user:view('/forms/launch'):render()
 H.hub('hub.admin.start', {plugin = 'launcher'})
 wait('the home plugin drops Launch Profile…', function() return not commands().launch end)
 
-local w = agent('codex'):call('hub.spawn', {profile = 'shell', key = 'parity-worker', title = 'Parity worker'})
+local w = agent('codex', {kind = 'codex', title = 'Codex'}):call('hub.spawn', {profile = 'shell', key = 'parity-worker', title = 'Parity worker'})
 user:command('agents')
 local panel = user:view('/panels/agents')
 panel:render()

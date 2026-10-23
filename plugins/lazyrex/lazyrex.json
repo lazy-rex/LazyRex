@@ -3,7 +3,6 @@
  "main": "lazyrex.lua",
  "test": {
   "plugins": [{"source": "tests/stubs/messaging"}, {"source": "tests/stubs/launcher"}, {"source": "../../tests/harness"}],
-  "agents": [{"id": "codex", "name": "Codex"}],
   "profiles": "tests/profiles.json",
   "parity_fixture": "tests/parity_fixture.lua",
   "parity_routes": ["/forms/launch"],

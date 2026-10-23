@@ -34,7 +34,7 @@ end
 
 test('an agent that reports its identity is listed', function()
   -- The production path: an agent CLI's hook reports its conversation (hub.identity.report).
-  local a = agent('rt', {join = false})
+  local a = agent('rt', {report = false})
   local v = view('agents')
   expect(find(H.node(v:get().tree, 'agents').items, 'claude:rt-1')).to_be(nil)
   a:report({kind = 'claude', conversation_id = 'rt-1'})
@@ -45,22 +45,23 @@ end)
 
 test('a worker that starts and closes changes the worker list', function()
   local v = view('agents')
-  local w = agent('codex'):call('hub.spawn', {profile = 'shell', key = 'rt-worker', title = 'Tracked'})
+  local w = agent('codex', {kind = 'codex', title = 'Codex'}):call('hub.spawn', {profile = 'shell', key = 'rt-worker', title = 'Tracked'})
   shows(v, 'the new worker', function(tree) return find(H.node(tree, 'workers').items, w.spawn_id) end)
   rex.call('block.close', {session_id = w.session_id, block_id = w.block_id})
   shows(v, 'the closed worker leaves', function(tree) return find(H.node(tree, 'workers').items, w.spawn_id) == nil end)
 end)
 
 test('a plugin that stops and starts changes the Message action', function()
+  local codex = agent('codex', {kind = 'codex', title = 'Codex'})
   local v = view('agents')
-  expect(find(H.node(v:get().tree, 'agents').items, 'codex').action).to_be_truthy()
+  expect(find(H.node(v:get().tree, 'agents').items, codex.id).action).to_be_truthy()
   H.hub('hub.admin.stop', {plugin = 'messaging'})
   shows(v, 'no Message action without messaging', function(tree)
-    return find(H.node(tree, 'agents').items, 'codex').action == nil
+    return find(H.node(tree, 'agents').items, codex.id).action == nil
   end)
   H.hub('hub.admin.start', {plugin = 'messaging'})
   shows(v, 'the Message action again', function(tree)
-    return find(H.node(tree, 'agents').items, 'codex').action ~= nil
+    return find(H.node(tree, 'agents').items, codex.id).action ~= nil
   end)
 end)
 

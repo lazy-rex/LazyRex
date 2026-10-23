@@ -2,7 +2,7 @@
 -- worker menu's Stop and the panel's Dismiss (tool = 'hub.stop'); an agent calls hub.stop. Hub
 -- rule (workers.go stop): any agent may stop any worker (decision "Agents may act on anything").
 
-local codex = agent('codex')
+local codex = agent('codex', {kind = 'codex', title = 'Codex'})
 
 local function listed(id)
   for _, w in ipairs(codex:call('hub.workers', {}).workers or {}) do if w.spawn_id == id then return w end end

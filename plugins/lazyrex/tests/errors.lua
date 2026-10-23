@@ -1,7 +1,7 @@
 -- The home plugin keeps a hub error's code (lazyrex.lua hub_error). A definite refusal
 -- ends a launch; a transient code is retried by the hub.
 
-local codex = agent('codex')
+local codex = agent('codex', {kind = 'codex', title = 'Codex'})
 local function workers() return codex:call('hub.workers', {}).workers or {} end
 
 -- The launch form is registered only while no other plugin offers a launch (the launcher stub is
