@@ -18,9 +18,10 @@ local function profile(id, kind, stop, dir, when)
       stop == 'fgchild' and 'int' or stop}}
 end
 
--- A forged argv0: the pane runs the hub binary under the name of a codex symlink.
+-- A forged argv0: the pane runs the hub binary under the name of a codex symlink. exec -a is a bash
+-- feature (on Linux /bin/sh can be dash, which has no -a).
 local forged = {id = 'forged', name = 'forged', kind = 'agent', cwd = lab,
-  command = {'/bin/sh', '-c', 'exec -a "$0" "$1" testagent cli codex "$2" startup start', lab .. '/bin/codex', hub_bin, '${conv}'},
+  command = {'/bin/bash', '-c', 'exec -a "$0" "$1" testagent cli codex "$2" startup start', lab .. '/bin/codex', hub_bin, '${conv}'},
   args = {{name = 'conv', required = true}}, resume = {'/bin/sh', '${conversation_id}'}}
 
 -- A pane shell: its program is the configured /bin/bash, but it is not an agent CLI.
@@ -91,6 +92,18 @@ end
 local function write_block(sess, block, data)
   local _, err = rex.call('block.method', {session_id = sess, block_id = block, method = 'write', args = {data = data}})
   if err ~= nil then error('write: ' .. tostring(err), 0) end
+end
+
+-- exec_sleep makes the fake exec /bin/sleep in its pid, and waits until Rex reports the new path. Rex
+-- reports the resolved path: /usr/bin/sleep where /bin is a link to /usr/bin (Linux with merged /usr).
+local function exec_sleep(sess, block)
+  local before = pane_child(sess, block)
+  write_block(sess, block, 'hello\r')
+  write_block(sess, block, 'exec\r')
+  H.wait('the exec', function()
+    local c = pane_child(sess, block)
+    return c and c.pid == before.pid and c.path ~= before.path
+  end)
 end
 
 local function restart(args)
@@ -210,9 +223,7 @@ end)
 test('an exec to another path in the same pid is refused', function()
   local id, old, sess = started('codexlike', 'codex', 'k11')
   local pid = pane_child(sess, old).pid
-  write_block(sess, old, 'hello\r')
-  write_block(sess, old, 'exec\r')
-  H.wait('the exec', function() local c = pane_child(sess, old); return c and c.path == '/bin/sleep' end)
+  exec_sleep(sess, old)
   expect(pane_child(sess, old).pid).to_be(pid)
   local t = target(restart({key = 'x-k11', agent = id}), id)
   expect(t.phase).to_be('refused')
@@ -226,9 +237,7 @@ test('a check that fails during the stop: failed, the reply says not stopped', f
   -- so the lines go only after it.
   H.wait('the exit key', function() return log('k14'):find('signal: INT', 1, true) end)
   local pid = pane_child(sess, old).pid
-  write_block(sess, old, 'hello\r')
-  write_block(sess, old, 'exec\r')
-  H.wait('the exec', function() local c = pane_child(sess, old); return c and c.path == '/bin/sleep' end)
+  exec_sleep(sess, old)
   expect(pane_child(sess, old).pid).to_be(pid)
   local t = target(finished('x-k14', {agent = id}), id)
   expect(t.phase).to_be('failed')
