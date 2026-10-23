@@ -100,10 +100,9 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
     SQLite keeps `PRAGMA user_version` as a 32-bit signed integer (a larger value is kept as 0;
     observed with the sqlite3 CLI 3.54.0). Otherwise the plugin fails at load.
 
-  **The order rule.** Set `base = N` only when every live database is already at version N or above.
-  So a base collapses only the steps that a release before it shipped: N is at most the last version
-  of the previous release. New steps of the same release stay entries above the base; a later
-  release can collapse them. The commit that collapses the steps has a test that compares the
+  **Collapsing.** A plugin may collapse its steps to a base at any time: live runs main, and data
+  loss is accepted (the coordinator, 2026-10-23). A database below the base fails at load, as
+  above; delete it or keep the steps. The commit that collapses the steps has a test that compares the
   schema from the base with the schema from the old steps 1 to N (`sqlite_master`: type, name and
   the normalized SQL). The reviewer sees it pass with the old steps, before they go.
 
