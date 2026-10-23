@@ -45,7 +45,6 @@ A new key can duplicate a completed mutation.
 
 A recipient can be a full conversation ID, a unique ID prefix, or a unique current tab name.
 Resolve uncertain names with `hub.agents.resolve to=NAME`.
-Legacy names remain aliases to their first conversation. They do not follow a pane after `/clear`.
 
 `messaging.read` accepts `thread` and `since`. Keep one cursor per thread filter.
 Omit `since` after an interruption to recover all unacknowledged messages.
