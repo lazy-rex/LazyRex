@@ -699,6 +699,7 @@ func (h *Hub) spawnAdmitted(s *spawnRow, prof Profile) {
 	if s.Agent != "" {
 		h.mu.Lock()
 		h.spawnAddrs[s.Agent] = &spawnAddr{spawnID: s.ID, name: s.Title}
+		h.spawnAddrRev++
 		h.mu.Unlock()
 		what = append(what, "agents")
 	}
@@ -1116,7 +1117,18 @@ var adoptReportWait = 5 * time.Second
 // ancestry proved the pane. An error is only logged: the report never fails because of the
 // adoption, and the next report from the pane tries again. It returns the agent of the spawn that
 // is open in this pane (also one that another opener opened), or "".
+//
+// A spawn that is already open in this block needs no label: its recorded block names it, so its
+// first report binds its address also when the pane has no spawn label (codex-24's review).
 func (h *Hub) adoptReported(ctx context.Context, sess, block string) string {
+	open, err := scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE block_id = ? AND status = 'open'`, block))
+	if err == nil {
+		return open.Agent
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("identity report: the open spawn of %s: %v", block, err)
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(ctx, adoptReportWait)
 	defer cancel()
 	blocks, err := h.blocksIn(ctx, sess)

@@ -696,38 +696,43 @@ type spawnAddr struct {
 	ended                   bool
 }
 
+// spawnAddrsLoadGap runs in spawnAddrsLoad between the store read and the install. A test
+// replaces it.
+var spawnAddrsLoadGap = func() {}
+
 // spawnAddrsLoad reads every agent spawn address from the store. It logs each address that ended
 // before its first report since the last load, and then hints "agents": a plugin that holds items
 // for that address ends them.
+//
+// The read runs without h.mu. A change of h.spawnAddrs after the read began (an admission, or
+// another load) makes the read stale: the load reads again, so an older read never replaces a
+// newer state (codex-24's review).
 func (h *Hub) spawnAddrsLoad(ctx context.Context) error {
-	rows, err := h.db.QueryContext(ctx, `SELECT spawn_id, title, identity, status FROM spawns WHERE agent_id LIKE 'spawn:%'`)
-	if err != nil {
-		return err
-	}
-	next := map[string]*spawnAddr{}
-	for rows.Next() {
-		var sa spawnAddr
-		var status string
-		if err := rows.Scan(&sa.spawnID, &sa.name, &sa.identity, &status); err != nil {
-			rows.Close()
+	var gone []string
+	for {
+		h.mu.Lock()
+		rev := h.spawnAddrRev
+		h.mu.Unlock()
+		next, err := h.spawnAddrsRead(ctx)
+		if err != nil {
 			return err
 		}
-		sa.ended = status == "closed" || status == "failed"
-		next[spawnAddress(sa.spawnID)] = &sa
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	h.mu.Lock()
-	var gone []string
-	for addr, sa := range next {
-		if old := h.spawnAddrs[addr]; sa.identity == "" && sa.ended && old != nil && !old.ended {
-			gone = append(gone, addr)
+		spawnAddrsLoadGap()
+		h.mu.Lock()
+		if h.spawnAddrRev != rev {
+			h.mu.Unlock()
+			continue
 		}
+		for addr, sa := range next {
+			if old := h.spawnAddrs[addr]; sa.identity == "" && sa.ended && old != nil && !old.ended {
+				gone = append(gone, addr)
+			}
+		}
+		h.spawnAddrs = next
+		h.spawnAddrRev++
+		h.mu.Unlock()
+		break
 	}
-	h.spawnAddrs = next
-	h.mu.Unlock()
 	for _, addr := range gone {
 		log.Printf("agent spawn %s ended before its agent reported: its messages and notices are not delivered", addr)
 	}
@@ -735,6 +740,26 @@ func (h *Hub) spawnAddrsLoad(ctx context.Context) error {
 		h.changed("agents")
 	}
 	return nil
+}
+
+// spawnAddrsRead reads the agent spawn addresses from the store.
+func (h *Hub) spawnAddrsRead(ctx context.Context) (map[string]*spawnAddr, error) {
+	rows, err := h.db.QueryContext(ctx, `SELECT spawn_id, title, identity, status FROM spawns WHERE agent_id LIKE 'spawn:%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	next := map[string]*spawnAddr{}
+	for rows.Next() {
+		var sa spawnAddr
+		var status string
+		if err := rows.Scan(&sa.spawnID, &sa.name, &sa.identity, &status); err != nil {
+			return nil, err
+		}
+		sa.ended = status == "closed" || status == "failed"
+		next[spawnAddress(sa.spawnID)] = &sa
+	}
+	return next, rows.Err()
 }
 
 // spawnEnded loads the spawn addresses again after an agent spawn closed or failed.
