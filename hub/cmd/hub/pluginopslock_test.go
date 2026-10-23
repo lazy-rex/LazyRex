@@ -510,3 +510,29 @@ func TestPluginOpManagedReadBackLimit(t *testing.T) {
 		t.Fatalf("proof %q", proof)
 	}
 }
+
+// A crash before the rename, and then the lock does not read (here, a directory): the op ends
+// conflict, and it first settles the open attempt (no sent_at: not_applied), so no attempt of an
+// ended op stays open.
+func TestPluginOpLockUnreadableSettles(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	h := fetchTestHub(t, r)
+	op := fetchedAdd(t, h, "c", "github:acme/notes@v1.0.0")
+	h.pops.fault = func(p string) bool { return p == "plugin-op-before-lock-rename" }
+	if err := h.opLock(context.Background(), op); !errors.Is(err, errOpCrash) {
+		t.Fatalf("the crash: %v", err)
+	}
+	h.pops.fault = nil
+	os.Remove(opLockFile(h))
+	if err := os.Mkdir(opLockFile(h), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	op = opsOf(t, h, op.ID)
+	if err := h.opLock(context.Background(), op); err != nil || op.Phase != "conflict" {
+		t.Fatalf("the replay: %+v %v", op, err)
+	}
+	var outcome, proof string
+	if err := h.db.QueryRow(`SELECT outcome, proof FROM plugin_op_attempts WHERE op_id = ? AND call = 'write:lock'`, op.ID).Scan(&outcome, &proof); err != nil || outcome == "" || !strings.HasPrefix(proof, "not_applied") {
+		t.Fatalf("the attempt: %q %q %v", outcome, proof, err)
+	}
+}
