@@ -267,6 +267,15 @@ func TestCandidateChange(t *testing.T) {
 	if b, _ := json.Marshal(candidateChange(&pluginRun{Dir: "/d2"}, &pluginRun{Dir: "/d1"})); string(b) != `{"dir":"/d2"}` {
 		t.Errorf("local: %s", b)
 	}
+	// A run of a local snapshot: its dir is the snapshot, so the candidate's source dir is not a
+	// change. A candidate of another source (a managed entry moved to another directory) is.
+	snap := &pluginRun{Source: "/src/m", Dir: "/state/plugins/local/ab.t1", Entry: "local/ab.t1"}
+	if b, _ := json.Marshal(candidateChange(&pluginRun{Source: "/src/m", Dir: "/src/m"}, snap)); string(b) != "null" {
+		t.Errorf("snapshot, the same source: %s", b)
+	}
+	if b, _ := json.Marshal(candidateChange(&pluginRun{Source: "/src/m2", Dir: "/src/m2"}, snap)); string(b) != `{"dir":"/src/m2"}` {
+		t.Errorf("snapshot, another source: %s", b)
+	}
 }
 
 // hub.plugins: a refused entry has only {"error"}; an entry without a run, or with a candidate equal
