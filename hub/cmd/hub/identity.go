@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +32,8 @@ const identitySchema = `
 -- generation. kind is the kind of the current conversation. reporter_start orders hook reports.
 -- child_path/child_invoked (added in workers.go): the generation's executable and exec path, the first
 -- complete values that the Rex answer of an accepted report gave (agentrestart.go); cleared with the
--- generation.
+-- generation. cli_pid/cli_start (added in workers.go): the agent CLI that the current conversation
+-- follows when it is not the pane child (agentProcess); 0 and '': the pane child.
 CREATE TABLE IF NOT EXISTS identity_panes (block_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, child_pid INTEGER NOT NULL,
   child_start TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '', current TEXT NOT NULL DEFAULT '', reporter_start TEXT NOT NULL DEFAULT '');
 -- state: current (runs in block_id), superseded (replaced in its pane by another conversation),
@@ -72,8 +74,8 @@ func startBefore(a, b string) bool {
 
 type identityPane struct {
 	block, session, childStart, kind, current, reporterStart string
-	childPath, childInvoked                                  string
-	childPID                                                 int
+	childPath, childInvoked, cliStart                        string
+	childPID, cliPID                                         int
 }
 
 func (h *Hub) identityLog(ctx context.Context, q execer, id, block, event string, detail map[string]any) error {
@@ -119,6 +121,7 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 		return nil, bad("not_in_pane: caller pid %d is not in a Rex pane", reporter)
 	}
 	cstart := startTime(child)
+	cli, cliStart := agentProcess(h.procReader(), reporter, child)
 	// Before identMu and the transaction: the adoption calls Rex.
 	spawnAgent := h.adoptReported(ctx, sess, block)
 	name, nameErr := h.paneName(ctx, sess, block)
@@ -147,8 +150,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	}
 	defer tx.Rollback()
 	var row identityPane
-	err = tx.QueryRowContext(ctx, `SELECT block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked FROM identity_panes WHERE block_id = ?`, block).
-		Scan(&row.block, &row.session, &row.childPID, &row.childStart, &row.kind, &row.current, &row.reporterStart, &row.childPath, &row.childInvoked)
+	err = tx.QueryRowContext(ctx, `SELECT block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked, cli_pid, cli_start FROM identity_panes WHERE block_id = ?`, block).
+		Scan(&row.block, &row.session, &row.childPID, &row.childStart, &row.kind, &row.current, &row.reporterStart, &row.childPath, &row.childInvoked, &row.cliPID, &row.cliStart)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		row = identityPane{block: block}
@@ -186,10 +189,11 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	if (path == "" || invoked == "") && cstart != "" && proc.path != "" && proc.invoked != "" {
 		path, invoked = proc.path, proc.invoked
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked, cli_pid, cli_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (block_id) DO UPDATE SET session_id = excluded.session_id, child_pid = excluded.child_pid, child_start = excluded.child_start,
-		kind = excluded.kind, current = excluded.current, reporter_start = excluded.reporter_start, child_path = excluded.child_path, child_invoked = excluded.child_invoked`,
-		block, sess, child, cstart, kind, id, rs, path, invoked); err != nil {
+		kind = excluded.kind, current = excluded.current, reporter_start = excluded.reporter_start, child_path = excluded.child_path, child_invoked = excluded.child_invoked,
+		cli_pid = excluded.cli_pid, cli_start = excluded.cli_start`,
+		block, sess, child, cstart, kind, id, rs, path, invoked, cli, cliStart); err != nil {
 		return nil, err
 	}
 	var state, pred, oldName string
@@ -223,7 +227,9 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
-		if bound || known && oldName != name {
+		// A new CLI process for the same conversation (a resume in the same shell) changes what the
+		// conversation follows.
+		if bound || known && oldName != name || row.cliPID != cli || row.cliStart != cliStart {
 			h.identityChanged(ctx)
 		}
 		return result("unchanged", pred), nil
@@ -266,6 +272,38 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	h.identityChanged(ctx)
 	log.Printf("identity %s %s in %s (source %s, previous %q)", id, event, block, source, row.current)
 	return result("current", pred), nil
+}
+
+// agentProcess is the agent CLI that a pane's conversation follows when it is not the pane child
+// (lead-irgap4): the leader of the pane terminal's foreground process group, when the reporter runs
+// under it and it runs under the pane child (a CLI that an interactive shell started). 0 and "": the
+// conversation follows the pane child. A CLI under a shell that stays sends no Rex exit event, so
+// identityLoop checks that process. A CLI under a non-interactive wrapper (sh -c without exec) is
+// in the wrapper's group: it follows the pane child.
+func agentProcess(read func(int) (procRecord, error), reporter, child int) (int, string) {
+	r, err := read(child)
+	if err != nil || r.tpgid <= 0 || r.tpgid == child {
+		return 0, ""
+	}
+	if up, _ := ancestryOf(read, reporter); !slices.Contains(up, r.tpgid) {
+		return 0, ""
+	}
+	if up, _ := ancestryOf(read, r.tpgid); !slices.Contains(up, child) {
+		return 0, ""
+	}
+	lead, err := read(r.tpgid)
+	if err != nil || lead.zombie {
+		return 0, ""
+	}
+	return r.tpgid, lead.start
+}
+
+// procReader is h.procRead, or procRead when no test set one.
+func (h *Hub) procReader() func(int) (procRecord, error) {
+	if h.procRead != nil {
+		return h.procRead
+	}
+	return procRead
 }
 
 // spawnIdentity is the identity bound to the spawn address id, or id itself: another ID, or a
@@ -465,42 +503,81 @@ func (h *Hub) identityChildExited(ctx context.Context, block string) {
 	if pid != 0 && alive(pid, start) {
 		return // the recorded process still runs: the event is for another one
 	}
-	h.identityEndLocked(ctx, block, cur)
+	h.identityEndLocked(ctx, block, cur, "pane process exited")
 }
 
 // identityEndLocked ends the pane's process generation: it clears the pane's current identity and
-// detaches it (log event exited). The caller holds identMu and has decided that the process ended.
-func (h *Hub) identityEndLocked(ctx context.Context, block, cur string) {
-	h.db.ExecContext(ctx, `UPDATE identity_panes SET current = '', child_pid = 0, child_start = '', reporter_start = '', child_path = '', child_invoked = '' WHERE block_id = ?`, block)
+// detaches it (log event exited, with reason). The caller holds identMu and has decided that the
+// process ended.
+func (h *Hub) identityEndLocked(ctx context.Context, block, cur, reason string) {
+	h.db.ExecContext(ctx, `UPDATE identity_panes SET current = '', child_pid = 0, child_start = '', reporter_start = '', child_path = '', child_invoked = '',
+		cli_pid = 0, cli_start = '' WHERE block_id = ?`, block)
 	if cur != "" {
 		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', updated = ? WHERE identity = ? AND block_id = ?`,
 			time.Now().UTC().Format(time.RFC3339Nano), cur, block)
-		h.identityLog(ctx, h.db, cur, block, "exited", map[string]any{"reason": "pane process exited"})
+		h.identityLog(ctx, h.db, cur, block, "exited", map[string]any{"reason": reason})
 	}
 	h.identityChanged(ctx)
 }
 
+// identityLoopEvery is the period of identityLoop's check.
+const identityLoopEvery = 2 * time.Second
+
+// identityLoop checks, every identityLoopEvery, each current conversation that follows a process
+// other than its pane child (agentProcess): its exit sends no Rex event, because the pane child
+// (the shell) stays. A read (hub.workers, hub.agents) never writes; this loop does (lead-irgap4).
+func (h *Hub) identityLoop(ctx context.Context) {
+	t := time.NewTicker(identityLoopEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if err := h.identityCheck(ctx, false); err != nil {
+			log.Printf("identity check: %v", err)
+		}
+	}
+}
+
 // identityRecover ends the current identity of each pane whose recorded process is gone. An exit
-// while the hub was down sent the hub no event. Called at hub start, after identitySync. Only a
-// verified end clears: the system has no such pid, the pid has another start time, or the process
-// has exited and is not reaped (a zombie). A failed process read, or a pane without a recorded
-// process, keeps the identity and logs the reason (lead-c43rec). The pids are local: a report comes
-// only from a pane on this host (paneOfHint, descendsFrom).
-func (h *Hub) identityRecover(ctx context.Context) error {
-	rows, err := h.db.QueryContext(ctx, `SELECT block_id, child_pid, child_start FROM identity_panes WHERE current != ''`)
+// while the hub was down sent the hub no event. Called at hub start, after identitySync.
+func (h *Hub) identityRecover(ctx context.Context) error { return h.identityCheck(ctx, true) }
+
+// identityCheck ends the current identity of each pane whose followed process is gone: the agent
+// CLI (cli_pid, agentProcess), or the pane child when the row has no CLI. all: every current pane
+// (the start); else only the panes that follow a CLI (identityLoop; a pane child's exit has its Rex
+// event). Only a verified end clears: the system has no such pid, the pid has another start time,
+// or the process has exited and is not reaped (a zombie). A failed process read, or a pane without
+// a recorded process, keeps the identity; the start logs the reason (lead-c43rec). The pids are
+// local: a report comes only from a pane on this host (paneOfHint, descendsFrom).
+func (h *Hub) identityCheck(ctx context.Context, all bool) error {
+	q := `SELECT block_id, cli_pid, cli_start, child_pid, child_start FROM identity_panes WHERE current != ''`
+	if !all {
+		q += ` AND cli_pid > 0`
+	}
+	rows, err := h.db.QueryContext(ctx, q)
 	if err != nil {
 		return err
 	}
 	type pane struct {
 		block, start string
 		pid          int
+		cli          bool
 	}
 	var panes []pane
 	for rows.Next() {
 		var p pane
-		if err := rows.Scan(&p.block, &p.pid, &p.start); err != nil {
+		var cliStart, childStart string
+		var cliPID, childPID int
+		if err := rows.Scan(&p.block, &cliPID, &cliStart, &childPID, &childStart); err != nil {
 			rows.Close()
 			return err
+		}
+		p.pid, p.start, p.cli = childPID, childStart, cliPID > 0
+		if p.cli {
+			p.pid, p.start = cliPID, cliStart
 		}
 		panes = append(panes, p)
 	}
@@ -508,10 +585,7 @@ func (h *Hub) identityRecover(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	read := h.procRead
-	if read == nil {
-		read = procRead
-	}
+	read := h.procReader()
 	for _, p := range panes {
 		if p.pid <= 0 || p.start == "" {
 			log.Printf("identity recover: pane %s: no recorded process", p.block)
@@ -521,18 +595,24 @@ func (h *Hub) identityRecover(ctx context.Context) error {
 		switch {
 		case errors.Is(err, errProcGone):
 		case err != nil:
-			log.Printf("identity recover: pane %s: %v", p.block, err)
+			if all {
+				log.Printf("identity recover: pane %s: %v", p.block, err)
+			}
 			continue
 		case r.start == p.start && !r.zombie:
 			continue // the recorded process still runs
 		}
+		reason, col := "pane process exited", "child"
+		if p.cli {
+			reason, col = "agent process exited", "cli"
+		}
 		h.identMu.Lock()
 		var cur, start string
 		var pid int
-		// The pane's row can change between the list and here (a report): end only the checked generation.
-		if h.db.QueryRowContext(ctx, `SELECT current, child_pid, child_start FROM identity_panes WHERE block_id = ?`, p.block).Scan(&cur, &pid, &start) == nil &&
+		// The pane's row can change between the list and here (a report): end only the checked process.
+		if h.db.QueryRowContext(ctx, `SELECT current, `+col+`_pid, `+col+`_start FROM identity_panes WHERE block_id = ?`, p.block).Scan(&cur, &pid, &start) == nil &&
 			cur != "" && pid == p.pid && start == p.start {
-			h.identityEndLocked(ctx, p.block, cur)
+			h.identityEndLocked(ctx, p.block, cur, reason)
 		}
 		h.identMu.Unlock()
 	}
@@ -637,7 +717,8 @@ var identitySyncGap = func() {}
 // its pane's process generation; its program status is read once when its pane changes.
 func (h *Hub) identitySync(ctx context.Context) error {
 	rows, err := h.db.QueryContext(ctx, `SELECT i.identity, i.kind, i.state, i.name, COALESCE(p.block_id, ''), COALESCE(p.session_id, ''),
-		COALESCE(p.child_pid, 0), COALESCE(p.child_start, '') FROM identities i LEFT JOIN identity_panes p ON p.current = i.identity`)
+		CASE WHEN p.cli_pid > 0 THEN p.cli_pid ELSE COALESCE(p.child_pid, 0) END, CASE WHEN p.cli_pid > 0 THEN p.cli_start ELSE COALESCE(p.child_start, '') END
+		FROM identities i LEFT JOIN identity_panes p ON p.current = i.identity`)
 	if err != nil {
 		return err
 	}

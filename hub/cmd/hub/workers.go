@@ -216,6 +216,10 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		// The exec facts of a pane's process generation (identity.go); '' on rows from before.
 		`ALTER TABLE identity_panes ADD COLUMN child_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE identity_panes ADD COLUMN child_invoked TEXT NOT NULL DEFAULT ''`,
+		// The agent CLI that the current conversation follows when it is not the pane child (an
+		// interactive shell started it, identity.go agentProcess); 0 and '': the pane child.
+		`ALTER TABLE identity_panes ADD COLUMN cli_pid INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE identity_panes ADD COLUMN cli_start TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err

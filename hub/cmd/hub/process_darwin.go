@@ -20,7 +20,8 @@ func procRead(pid int) (procRecord, error) {
 	}
 	st := list[0].Proc.P_starttime
 	// p_stat 5 is SZOMB (sys/proc.h): the process has exited and is not reaped.
-	return procRecord{ppid: int(list[0].Eproc.Ppid), start: fmt.Sprintf("%d.%06d", st.Sec, st.Usec), zombie: list[0].Proc.P_stat == 5}, nil
+	return procRecord{ppid: int(list[0].Eproc.Ppid), start: fmt.Sprintf("%d.%06d", st.Sec, st.Usec), zombie: list[0].Proc.P_stat == 5,
+		tpgid: int(list[0].Eproc.Tpgid)}, nil
 }
 
 // procArgv returns the command line of pid as words (ps; the words split at spaces).

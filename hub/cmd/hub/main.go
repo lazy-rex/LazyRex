@@ -648,6 +648,7 @@ func (h *Hub) run(ctx context.Context) {
 	go h.waitLoop(ctx)
 	go h.noticeLoop(ctx)
 	go h.resumeLoop(ctx)
+	go h.identityLoop(ctx)
 	h.peersRun(ctx)
 	h.kickNotices() // notices pending from before the start
 	go func() {

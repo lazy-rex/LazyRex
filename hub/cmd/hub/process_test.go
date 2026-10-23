@@ -13,7 +13,7 @@ func TestParseProcStat(t *testing.T) {
 	rest := " S 4242 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 12345 1000 10 18446744073709551615"
 	for _, name := range []string{"(sh)", "(a b) c)", "((x))"} {
 		r, err := parseProcStat("77 "+name+rest, 1700000000)
-		if err != nil || r.ppid != 4242 || r.start != "1700000123.450000" {
+		if err != nil || r.ppid != 4242 || r.start != "1700000123.450000" || r.tpgid != -1 {
 			t.Errorf("%s: %+v, %v", name, r, err)
 		}
 	}
