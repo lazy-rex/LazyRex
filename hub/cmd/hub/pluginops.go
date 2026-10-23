@@ -147,8 +147,9 @@ type opRequest struct {
 	Entry  string          `json:"entry"`  // "managed:<id>", or the exact source of a config entry
 	Expect json.RawMessage `json:"expect"` // start from the panel: the run that the panel showed
 	Input  json.RawMessage `json:"input"`  // settings: {args, watch_roots}; add: {source, id?, args?, watch_roots?}; update: {to}
-	// Target: a peer update only (peersync.go): the peer's pin of the source, a pin document entry.
-	// It is the stored target, so the op does not resolve; the fetch must give its digest.
+	// Target: a peer update (peersync.go): the peer's pin of the source, a pin document entry. A
+	// user's add of an offer: the complete offer {peer, id, source, pin} (hub.plugins "offered").
+	// The pin is the stored target, so the op does not resolve; the fetch must give its digest.
 	Target json.RawMessage `json:"target"`
 }
 
@@ -460,9 +461,12 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	if len(req.Input) > 0 && req.Op != "settings" && req.Op != "add" && req.Op != "update" {
 		return nil, bad("invalid: only settings, add and update have input")
 	}
-	// A peer makes only updates with a target, and only a peer gives a target (peersync.go).
-	if (origin.Kind == "peer") != (len(req.Target) > 0) || (origin.Kind == "peer" && (req.Op != "update" || len(req.Input) > 0)) {
-		return nil, bad("invalid: only a peer sync gives target, and it is an update with no input")
+	// A peer makes only updates with a target and no input (peersync.go). The only other target is
+	// the offer of a user's add: the complete offer that the panel showed (addAdmission).
+	peerUpdate := origin.Kind == "peer" && req.Op == "update" && len(req.Input) == 0 && len(req.Target) > 0
+	offerAdd := origin.Kind == "user" && req.Op == "add" && len(req.Target) > 0
+	if (origin.Kind == "peer" && !peerUpdate) || (len(req.Target) > 0 && !peerUpdate && !offerAdd) {
+		return nil, bad("invalid: only a peer sync gives target (an update with no input), and a user's add of an offer")
 	}
 	// An agent add or update is a request that the user confirms (B9). Until B9, the code is
 	// user_only, and the text names what the agent can do (P1; docs/hub.md).

@@ -311,7 +311,8 @@ func TestPeerPluginsSync(t *testing.T) {
 	if len(s.Updating) != 1 || s.Updating[0]["op_id"] != list[0].ID {
 		t.Errorf("updating: %+v", s.Updating)
 	}
-	if len(s.Offered) != 1 || s.Offered[0] != (peerManaged{ID: "newp", Source: "github:acme/newp@v1"}) {
+	newp := peerOffer{Peer: "mac", ID: "newp", Source: "github:acme/newp@v1", Pin: pin("github:acme/newp@v1", "newp", "v1", commit, digest)}
+	if len(s.Offered) != 1 || s.Offered[0] != newp {
 		t.Errorf("offered: %+v", s.Offered)
 	}
 	if len(s.Skipped) != 1 || s.Skipped[0].Source != "github:acme/cfg@v2" || s.Skipped[0].Entry != "github:acme/cfg@v1" {
