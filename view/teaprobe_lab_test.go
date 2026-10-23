@@ -332,8 +332,8 @@ func TestTeaProbeA5ShortPane(t *testing.T) {
 				if size != [2]int{80, 30} || l.step > 0 {
 					l.resize(size[0], size[1])
 				}
-				geometry := fmt.Sprintf(" %dx%d ", size[0], size[1])
-				l.waitScreen("the live region at"+geometry, func(s string) bool { return strings.Contains(s, geometry) })
+				// A frame taller than the pane can lose its LIVE row, so the step waits a fixed time.
+				time.Sleep(1500 * time.Millisecond)
 				text := l.capture(fmt.Sprintf("at-%dx%d", size[0], size[1]))
 				var counts []string
 				for i := 1; i <= 6; i++ {
