@@ -9,10 +9,12 @@ package main
 //     history node beside a list or form, or the paired layout decides alt mode, which prints
 //     nothing. A print released on a return from alt is written before the alt-off frame and is
 //     lost, so there is no return from alt (the failed v1.1 switching design);
+//   - order: only one print Sequence is active; later batches wait in model order and start at
+//     printDone, so the output is oldest first;
 //   - the guard (lead-tv-altprint): no print is queued outside thread mode, and alt is never
 //     chosen while a print is pending;
-//   - a reattach: printDone commits its IDs whatever the attachment; seen uses only the
-//     attachment that is current at printDone;
+//   - a reattach: printDone commits its IDs whatever the attachment; seen goes only through the
+//     attachment that is current at printDone, and only for the current tree's newest ID;
 //   - the output failure policy (v1.2 item 3): the first failed or short write is fatal; no
 //     ledger entry, no seen, no further output bytes; the draft is saved within a bound; exit
 //     status 1; an idle program is woken by a watcher goroutine, never by a Send from the writer.
@@ -152,9 +154,8 @@ type (
 		gate chan struct{} // test only: the print waits until the test closes it
 	}
 	printDone struct {
-		ids            []string
-		attach, newest string
-		text           string
+		ids  []string
+		text string
 	}
 	protoReattach struct{ attach string }
 	protoNewest   struct{ id string } // a frame whose newest ID is id
@@ -170,9 +171,10 @@ type protoModel struct {
 	newest         string
 	ledger         map[string]bool
 	queued         map[string]bool
-	pending        int
-	seen           []string // attachment:newest, in order
-	receipts       []bool   // at each printDone: the output holds the print's text
+	active         bool         // a print Sequence runs; only one runs at a time
+	waiting        []protoPrint // batches queued behind the active one, in model order
+	seen           []string     // attachment:newest, in order
+	receipts       []bool       // at each printDone: the output holds the print's text
 	logs           []string
 	loggedHistory  bool     // the one log line of a history node in alt mode is written
 	guard          []string // lead-tv-altprint violations; each test expects none
@@ -211,7 +213,7 @@ func (m *protoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case protoPrint:
 		return m, m.print(msg)
 	case printDone:
-		m.pending--
+		m.active = false
 		// The event loop wrote the line (insertAbove) before it delivered this message: both came
 		// from one Sequence, in order. The check is here, in Update, not in the Cmd's goroutine:
 		// p.Send returns before the loop has handled the print.
@@ -230,10 +232,19 @@ func (m *protoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delete(m.queued, id)
 			m.ledger[id] = true
 		}
-		if msg.attach == m.attach && m.ledger[m.newest] {
-			m.seen = append(m.seen, m.attach+":"+m.newest)
+		// Seen goes through the current attachment, for the current tree's newest ID, and only
+		// when this print holds that ID. The attachment at queue time plays no part.
+		for _, id := range msg.ids {
+			if id == m.newest {
+				m.seen = append(m.seen, m.attach+":"+m.newest)
+			}
 		}
-		if m.pending == 0 && m.quitAfterPrint {
+		if len(m.waiting) > 0 {
+			next := m.waiting[0]
+			m.waiting = m.waiting[1:]
+			return m, m.start(next)
+		}
+		if m.quitAfterPrint {
 			return m, tea.Quit
 		}
 	case protoReattach:
@@ -271,7 +282,7 @@ func (m *protoModel) tree(t protoTree) tea.Cmd {
 	m.frame = t.frame
 	if m.mode == modeNeutral {
 		mode, log := decideMode(t)
-		if mode == modeAlt && m.pending > 0 {
+		if mode == modeAlt && (m.active || len(m.waiting) > 0) {
 			m.guard = append(m.guard, "alt chosen while a print is pending")
 		}
 		m.mode = mode
@@ -288,6 +299,10 @@ func (m *protoModel) tree(t protoTree) tea.Cmd {
 			m.logs = append(m.logs, "history in alt mode: no print")
 			m.loggedHistory = true
 		}
+		return nil
+	}
+	if len(t.messages) == 0 {
+		m.newest = "" // an empty thread: no newest ID, so no receipt sends seen for it
 		return nil
 	}
 	newest := t.messages[len(t.messages)-1].id
@@ -315,8 +330,18 @@ func (m *protoModel) print(p protoPrint) tea.Cmd {
 	for _, id := range p.ids {
 		m.queued[id] = true
 	}
-	m.pending++
-	attach, newest, ids, text, gate := m.attach, p.ids[len(p.ids)-1], p.ids, p.text, p.gate
+	if m.active {
+		m.waiting = append(m.waiting, p)
+		return nil
+	}
+	return m.start(p)
+}
+
+// start runs one batch. Two Sequences run in two goroutines, so their prints can reach the
+// output in either order; only one batch is active, and printDone starts the next one.
+func (m *protoModel) start(b protoPrint) tea.Cmd {
+	m.active = true
+	ids, text, gate := b.ids, b.text, b.gate
 	return tea.Sequence(
 		func() tea.Msg {
 			if gate != nil {
@@ -326,7 +351,7 @@ func (m *protoModel) print(p protoPrint) tea.Cmd {
 		},
 		tea.Println(text),
 		func() tea.Msg {
-			return printDone{ids: ids, attach: attach, newest: newest, text: text}
+			return printDone{ids: ids, text: text}
 		},
 	)
 }
@@ -586,7 +611,7 @@ func TestProtoPairedTreeDecidesAlt(t *testing.T) {
 
 // TestProtoQueuedPrintThenReattach: the print was queued for attachment A and is written after
 // the reattach to B. The ledger keeps it (it is in this pane), A sends no seen, and B sends seen
-// at its first frame whose newest ID is printed.
+// at the receipt, because the print holds the current newest ID; no later frame is needed.
 func TestProtoQueuedPrintThenReattach(t *testing.T) {
 	m := newThreadModel(newProtoOut(nil))
 	gate := make(chan struct{})
@@ -596,8 +621,6 @@ func TestProtoQueuedPrintThenReattach(t *testing.T) {
 		p.Send(protoReattach{attach: "B"})
 		close(gate)
 		time.Sleep(100 * time.Millisecond)
-		p.Send(protoNewest{id: "m1"}) // B's first frame: the newest ID is already printed
-		time.Sleep(50 * time.Millisecond)
 		p.Quit()
 	})
 	if !m.ledger["m1"] {
@@ -686,4 +709,159 @@ func TestProtoShortWriteIsFatal(t *testing.T) {
 		t.Fatal("bytes reached the output after the short write")
 	}
 	t.Logf("%d bytes reached the output (the half write included); %d bytes dropped after it", before, out.dropped)
+}
+
+// TestProtoPendingPrintOrder (codex-29 on c31a8bb1): the first history queues m1 behind a gate;
+// the second history holds m1 and m2. m2 waits for m1's printDone, so the output is oldest first.
+func TestProtoPendingPrintOrder(t *testing.T) {
+	m := newProtoModel(newProtoOut(nil))
+	gate := make(chan struct{})
+	m = runProto(t, m, func(p *tea.Program) {
+		first := thread(protoMsg{"m1", "OLDER-PRINT"})
+		first.gate = gate
+		p.Send(first)
+		p.Send(thread(protoMsg{"m1", "OLDER-PRINT"}, protoMsg{"m2", "NEWER-PRINT"}))
+		time.Sleep(100 * time.Millisecond)
+		close(gate)
+		time.Sleep(100 * time.Millisecond)
+		p.Quit()
+	})
+	out := m.out.String()
+	t.Logf("raw output %q", out)
+	older, newer := strings.Index(out, "OLDER-PRINT"), strings.Index(out, "NEWER-PRINT")
+	if older < 0 || newer < older {
+		t.Fatalf("OLDER-PRINT at %d, NEWER-PRINT at %d: not oldest first", older, newer)
+	}
+	if strings.Count(out, "OLDER-PRINT") != 1 || strings.Count(out, "NEWER-PRINT") != 1 || !m.ledger["m1"] || !m.ledger["m2"] || len(m.queued) != 0 {
+		t.Fatalf("counts, ledger=%v or queued=%v wrong", m.ledger, m.queued)
+	}
+	if strings.Join(m.seen, ",") != "A:m2" {
+		t.Fatalf("seen=%v", m.seen)
+	}
+}
+
+// TestProtoWaitingBatchSurvivesReattach: m1 is active behind a gate and m2 waits when the view
+// reattaches to B. Both are printed once, oldest first; A sends no seen; B sends seen at m2's
+// receipt.
+func TestProtoWaitingBatchSurvivesReattach(t *testing.T) {
+	m := newProtoModel(newProtoOut(nil))
+	gate := make(chan struct{})
+	m = runProto(t, m, func(p *tea.Program) {
+		first := thread(protoMsg{"m1", "ACTIVE-PRINT"})
+		first.gate = gate
+		p.Send(first)
+		p.Send(thread(protoMsg{"m1", "ACTIVE-PRINT"}, protoMsg{"m2", "WAITING-PRINT"}))
+		p.Send(protoReattach{attach: "B"})
+		close(gate)
+		time.Sleep(100 * time.Millisecond)
+		p.Quit()
+	})
+	out := m.out.String()
+	active, waiting := strings.Index(out, "ACTIVE-PRINT"), strings.Index(out, "WAITING-PRINT")
+	if active < 0 || waiting < active || strings.Count(out, "ACTIVE-PRINT") != 1 || strings.Count(out, "WAITING-PRINT") != 1 {
+		t.Fatalf("active at %d, waiting at %d; output %q", active, waiting, out)
+	}
+	if !m.ledger["m1"] || !m.ledger["m2"] || strings.Join(m.seen, ",") != "B:m2" {
+		t.Fatalf("ledger=%v seen=%v", m.ledger, m.seen)
+	}
+}
+
+// TestProtoFailureDropsWaitingBatch: m1's write fails while m2 waits. m2 is never written,
+// nothing is committed, and the exit status is 1.
+func TestProtoFailureDropsWaitingBatch(t *testing.T) {
+	out := newProtoOut(func(b []byte) bool { return bytes.Contains(b, []byte("FAIL-FIRST")) })
+	m := newProtoModel(out)
+	m.saveDraft = func(context.Context) error { return nil }
+	gate := make(chan struct{})
+	m = runProto(t, m, func(p *tea.Program) {
+		first := thread(protoMsg{"m1", "FAIL-FIRST"})
+		first.gate = gate
+		p.Send(first)
+		p.Send(thread(protoMsg{"m1", "FAIL-FIRST"}, protoMsg{"m2", "NEVER-WRITTEN"}))
+		time.Sleep(50 * time.Millisecond)
+		close(gate)
+	})
+	if strings.Contains(out.String(), "NEVER-WRITTEN") || len(m.ledger) != 0 || len(m.seen) != 0 || m.exitCode != 1 {
+		t.Fatalf("ledger=%v seen=%v exit=%d output %q", m.ledger, m.seen, m.exitCode, out.String())
+	}
+}
+
+// TestProtoEmptyHistoryFirst: an empty thread decides thread mode and prints nothing; the next
+// history prints its message once, on the primary screen.
+func TestProtoEmptyHistoryFirst(t *testing.T) {
+	m := newProtoModel(newProtoOut(nil))
+	m = runProto(t, m, func(p *tea.Program) {
+		p.Send(thread())
+		time.Sleep(50 * time.Millisecond)
+		p.Send(thread(protoMsg{"m1", "FIRST-EVER"}))
+		time.Sleep(100 * time.Millisecond)
+		p.Quit()
+	})
+	out := m.out.String()
+	noAlt(t, out)
+	if m.mode != modeThread || strings.Count(out, "FIRST-EVER") != 1 || !m.ledger["m1"] || strings.Join(m.seen, ",") != "A:m1" {
+		t.Fatalf("mode=%d ledger=%v seen=%v output %q", m.mode, m.ledger, m.seen, out)
+	}
+}
+
+// TestProtoEmptyHistoryClearsNewest (codex-29): a print of m1 is pending when an empty history
+// arrives. The current tree has no newest ID, so m1's receipt sends no seen.
+func TestProtoEmptyHistoryClearsNewest(t *testing.T) {
+	m := newProtoModel(newProtoOut(nil))
+	gate := make(chan struct{})
+	m = runProto(t, m, func(p *tea.Program) {
+		first := thread(protoMsg{"m1", "BEFORE-EMPTY"})
+		first.gate = gate
+		p.Send(first)
+		p.Send(thread())
+		close(gate)
+		time.Sleep(100 * time.Millisecond)
+		p.Quit()
+	})
+	if !m.ledger["m1"] || len(m.seen) != 0 || strings.Count(m.out.String(), "BEFORE-EMPTY") != 1 {
+		t.Fatalf("ledger=%v seen=%v output %q", m.ledger, m.seen, m.out.String())
+	}
+}
+
+// TestProtoReattachFrameBeforeReceipt (codex-29): A queues m1; the view reattaches to B, and B's
+// history frame (newest m1) arrives before m1's receipt. The receipt sends seen through B only.
+func TestProtoReattachFrameBeforeReceipt(t *testing.T) {
+	m := newProtoModel(newProtoOut(nil))
+	gate := make(chan struct{})
+	m = runProto(t, m, func(p *tea.Program) {
+		first := thread(protoMsg{"m1", "A-QUEUED"})
+		first.gate = gate
+		p.Send(first)
+		p.Send(protoReattach{attach: "B"})
+		p.Send(thread(protoMsg{"m1", "A-QUEUED"})) // B's frame: m1 is queued, so no second print
+		time.Sleep(50 * time.Millisecond)
+		close(gate)
+		time.Sleep(100 * time.Millisecond)
+		p.Quit()
+	})
+	if strings.Join(m.seen, ",") != "B:m1" || strings.Count(m.out.String(), "A-QUEUED") != 1 || !m.ledger["m1"] {
+		t.Fatalf("seen=%v ledger=%v output %q", m.seen, m.ledger, m.out.String())
+	}
+}
+
+// TestReviewPendingPrintOrder is codex-29's probe on c31a8bb1 (message c29-order-probe-source),
+// unchanged except for gofmt.
+func TestReviewPendingPrintOrder(t *testing.T) {
+	m := newProtoModel(newProtoOut(nil))
+	gate := make(chan struct{})
+	m = runProto(t, m, func(p *tea.Program) {
+		first := thread(protoMsg{"m1", "OLDER-PRINT"})
+		first.gate = gate
+		p.Send(first)
+		p.Send(thread(protoMsg{"m1", "OLDER-PRINT"}, protoMsg{"m2", "NEWER-PRINT"}))
+		time.Sleep(100 * time.Millisecond)
+		close(gate)
+		time.Sleep(100 * time.Millisecond)
+		p.Quit()
+	})
+	out := m.out.String()
+	older, newer := strings.Index(out, "OLDER-PRINT"), strings.Index(out, "NEWER-PRINT")
+	if older < 0 || newer < older {
+		t.Fatalf("prints out of order: older=%d newer=%d output=%q", older, newer, out)
+	}
 }
