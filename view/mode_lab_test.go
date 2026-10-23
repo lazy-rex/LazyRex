@@ -286,7 +286,9 @@ func (l *chunkLab) tabPane(route string, columns, rows int) (session, pane strin
 
 // TestReloadLeavesNoLiveRowsLab (v1.2, C11): a thread tab reloads its renderer (hub.ui.reload;
 // the process and the pane stay). The old renderer's last frame is empty, so after the new
-// renderer draws, the pane shows the live region once.
+// renderer draws, the pane shows the live region once. The new process clears the pane before
+// Bubble Tea starts (lead-tv-clear2), so its print of the history is the only copy: LAB-MSG is in
+// the whole capture once, also after later frame flushes.
 func TestReloadLeavesNoLiveRowsLab(t *testing.T) {
 	l := newModeLab(t)
 	session, pane := l.tabPane("/thread/lab", 80, 20)
@@ -319,10 +321,19 @@ func TestReloadLeavesNoLiveRowsLab(t *testing.T) {
 		last = screen()
 		return strings.Contains(last, "LAB-NOTICE") && !strings.Contains(last, "Connecting")
 	})
-	if n := strings.Count(last, "LAB-NOTICE"); n != 1 {
-		t.Fatalf("the pane shows the live region %d times after the reload:\n%s", n, last)
+	once := func(step string) {
+		t.Helper()
+		for _, text := range []string{"LAB-NOTICE", "LAB-MSG"} {
+			if n := strings.Count(last, text); n != 1 {
+				t.Fatalf("%s: %s is on the pane %d times:\n%s", step, text, n, last)
+			}
+		}
 	}
+	once("after the reload")
 	t.Logf("after the reload:\n%s", last)
+	time.Sleep(2 * time.Second)
+	last = screen()
+	once("2 s after the reload")
 }
 
 func must[T any](v T, err error) T {
