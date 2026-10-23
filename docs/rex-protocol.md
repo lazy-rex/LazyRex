@@ -1094,4 +1094,4 @@ were logged by `teaprobe tea -bytes`. iOS version: not reported.
     `CSI ? 2027 ; 2 $ y`, `CSI ? 1 u`).
 - Not tested: a hardware keyboard (none was connected), so Shift+Return and Option+Return from
   iOS are unknown. The user was asked to scroll with a finger; no capture shows
-  the effect, and the user reported no problem with it in words. Selection and copy were not tested.
+  the effect, and the user did not report on it. Selection and copy were not tested.
