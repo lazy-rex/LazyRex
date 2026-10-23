@@ -1179,10 +1179,21 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		return err
 	}
 	attempt = hex.EncodeToString(b)
+	// The attempt stores the expect_run that a start or a replace sends (opRun); the other calls
+	// store the op's target.
+	expectRun := op.Target
+	if call == "start" || call == "replace" {
+		x, err := opRun(op)
+		if err != nil {
+			return h.setOpPhase(ctx, op, "failed", "", call+": "+err.Error())
+		}
+		b, _ := json.Marshal(x)
+		expectRun = string(b)
+	}
 	// The start and stop handlers bind the attempt (target_instance, target_block, intent_id) and
 	// commit sent_at before their first effect (adminattempt.go).
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, expect_run, at) VALUES (?, ?, ?, ?, ?)`,
-		attempt, op.ID, call, op.Target, time.Now().UnixMilli()); err != nil {
+		attempt, op.ID, call, expectRun, time.Now().UnixMilli()); err != nil {
 		return err
 	}
 	var res any
@@ -1349,28 +1360,78 @@ func (h *Hub) opEntryNow(op *pluginOp) (pl *Plugin, now string) {
 	return pl, now
 }
 
-// entryChanged is the op's conflict when its target is bound to another entry than at admission.
-// This check only saves a call: the admin handler checks expect_entry again under its locks.
-func entryChanged(op *pluginOp, now string) error {
-	return refuse("entry_changed", "%s was admitted for entry %s; the target is bound to %s now; nothing was called", op.Entry, op.EntryIdentity, now)
+// entryChanged is the op's conflict when its target is bound to another entry than expect (the
+// op's opExpectEntry). This check only saves a call: the admin handler checks expect_entry again
+// under its locks.
+func entryChanged(op *pluginOp, expect, now string) error {
+	return refuse("entry_changed", "%s expects entry %s; the target is bound to %s now; nothing was called", op.Entry, expect, now)
+}
+
+// opExpectEntry is the entry identity that the op's lifecycle calls expect (C5 plan r1 item 1).
+// An add or an update calls after its managed write, so it expects the intended entry (for an add,
+// that is also the entry at admission). Every other op expects the entry at admission.
+func opExpectEntry(op *pluginOp) (string, error) {
+	if op.Kind != "add" && op.Kind != "update" {
+		return op.EntryIdentity, nil
+	}
+	var t opResolved
+	if err := json.Unmarshal([]byte(op.Target), &t); err != nil {
+		return "", fmt.Errorf("the stored target: %v", err)
+	}
+	m, err := op.newManaged(t)
+	if err != nil {
+		return "", err
+	}
+	return entryIdentity(&configEntry{managed: m.ID, Source: m.Source}), nil
+}
+
+// opRun is the expect_run of the op's start and replace calls (C5 plan r1 item 1): for an add or
+// an update, the pin at the target source (source, commit and digest); for a restart, its stored
+// run; for a start, its stored expect_run. A local source has no commit and no digest.
+func opRun(op *pluginOp) (map[string]any, error) {
+	var x map[string]any
+	switch op.Kind {
+	case "add", "update":
+		var t opResolved
+		var pin lockEntry
+		if json.Unmarshal([]byte(op.Target), &t) != nil || json.Unmarshal([]byte(op.Pin), &pin) != nil {
+			return nil, errors.New("the stored target or pin does not read")
+		}
+		x = map[string]any{"source": t.Source, "commit": pin.Commit, "digest": pin.Digest}
+	case "restart":
+		var r opRestartTarget
+		if err := json.Unmarshal([]byte(op.Target), &r); err != nil {
+			return nil, fmt.Errorf("the stored target: %v", err)
+		}
+		x = map[string]any{"source": r.Source, "commit": r.Commit, "digest": r.Digest}
+	default:
+		if err := json.Unmarshal([]byte(op.Target), &x); err != nil {
+			return nil, fmt.Errorf("the stored target: %v", err)
+		}
+	}
+	for k, v := range x {
+		if v == "" {
+			delete(x, k)
+		}
+	}
+	return x, nil
 }
 
 // opStart starts the op's entry with the op's expect_run and expect_entry: nothing else than that
 // run of that entry starts.
 func (h *Hub) opStart(ctx context.Context, op *pluginOp, attempt string) (any, error) {
-	if _, now := h.opEntryNow(op); now != op.EntryIdentity {
-		return nil, entryChanged(op, now)
+	expect, err := opExpectEntry(op)
+	if err != nil {
+		return nil, err
 	}
-	var x map[string]any
-	if err := json.Unmarshal([]byte(op.Target), &x); err != nil {
-		return nil, fmt.Errorf("the stored target: %v", err)
+	if _, now := h.opEntryNow(op); now != expect {
+		return nil, entryChanged(op, expect, now)
 	}
-	for k, v := range x {
-		if v == "" {
-			delete(x, k) // a local source has no commit and no digest
-		}
+	x, err := opRun(op)
+	if err != nil {
+		return nil, err
 	}
-	args := map[string]any{"expect_run": x, "expect_entry": op.EntryIdentity, "attempt": attempt}
+	args := map[string]any{"expect_run": x, "expect_entry": expect, "attempt": attempt}
 	if op.Name != "" {
 		args["plugin"] = op.Name
 	} else {
@@ -1386,10 +1447,14 @@ func (h *Hub) opStop(ctx context.Context, op *pluginOp, attempt string) (any, er
 	if op.Name == "" || pl == nil {
 		return map[string]any{"desired": "stopped", "note": "no instance"}, nil
 	}
-	if now != op.EntryIdentity {
-		return nil, entryChanged(op, now)
+	expect, err := opExpectEntry(op)
+	if err != nil {
+		return nil, err
 	}
-	return opAdmin(ctx, h, "hub.admin.stop", map[string]any{"plugin": op.Name, "expect_entry": op.EntryIdentity, "attempt": attempt})
+	if now != expect {
+		return nil, entryChanged(op, expect, now)
+	}
+	return opAdmin(ctx, h, "hub.admin.stop", map[string]any{"plugin": op.Name, "expect_entry": expect, "attempt": attempt})
 }
 
 // opObserve ends an op whose call has an attempt without an outcome. The manager does not call
@@ -1492,7 +1557,13 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 	if stamp != entryStamp(desired, instance, session, block, pid, start, run) {
 		identity = "" // a write that does not know entry_identity changed the row (a rollback hub), or a kept record saved it
 	}
-	mine := op.EntryIdentity != "" && identity == op.EntryIdentity
+	// The entry that the call expected (opExpectEntry): an update's call names the entry after its
+	// write, not the entry at admission.
+	expect, err := opExpectEntry(op)
+	if err != nil {
+		return "", "", false, err
+	}
+	mine := expect != "" && identity == expect
 	if call == "stop" {
 		if mine && instance == target && desired == "stopped" && block == "" {
 			// The row alone is no proof: retire saves the cleared row before block.close, and it
@@ -1515,7 +1586,7 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 			}
 			return "applied: observed the stored record, and block " + t.block + " is not in session " + t.session, "stopped", false, nil
 		}
-		return "", fmt.Sprintf("the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, target, op.EntryIdentity), false, nil
+		return "", fmt.Sprintf("the record is %s with block %q and instance %q, saved with entry %q; the stop was for instance %q of entry %s", desired, block, instance, identity, target, expect), false, nil
 	}
 	var status string
 	if intent != "" {
