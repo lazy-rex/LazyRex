@@ -23,9 +23,10 @@ import (
 const agentLabel = "lazyrex"
 
 // agentHubActions are the hub's own actions on the agent face. Their descriptors come from
-// hubToolActions and agentListActions.
+// hubToolActions, agentListActions and pluginOpActions (hub.plugins.op, so the parity check of a
+// plugin manager view action finds it; agentDispatch sends it to pluginOpAgent first).
 var agentHubActions = map[string]bool{"hub.profiles": true, "hub.spawn": true, "hub.workers": true, "hub.stop": true,
-	"hub.agents": true, "hub.agents.resolve": true}
+	"hub.agents": true, "hub.agents.resolve": true, "hub.plugins.op": true}
 
 var agentListActions = []map[string]any{
 	{"name": "hub.agents", "kind": "client", "title": "List agents",
@@ -103,10 +104,9 @@ func (h *Hub) agentKeymapLoop(ctx context.Context) {
 	}
 }
 
-// agentKeymap declares the hub's agent actions and the registered exports of every plugin that
-// declares hub.forward, with the description and args schema that the plugin declared to Rex (read
-// back with client.inspect).
-func (h *Hub) agentKeymap(ctx context.Context) error {
+// agentHubFace is the hub's own part of the agent face: the shared hub tools that agents may call,
+// the list actions, and the plugin manager's ops.
+func agentHubFace() []map[string]any {
 	var actions []map[string]any
 	for _, a := range hubToolActions {
 		if agentHubActions[a["name"].(string)] {
@@ -114,7 +114,14 @@ func (h *Hub) agentKeymap(ctx context.Context) error {
 		}
 	}
 	actions = append(actions, agentListActions...)
-	actions = append(actions, pluginOpActions...)
+	return append(actions, pluginOpActions...)
+}
+
+// agentKeymap declares the hub's agent actions and the registered exports of every plugin that
+// declares hub.forward, with the description and args schema that the plugin declared to Rex (read
+// back with client.inspect).
+func (h *Hub) agentKeymap(ctx context.Context) error {
+	actions := agentHubFace()
 	forward := map[string]string{} // plugin action -> the plugin's client, for agentDispatch
 	type owner struct {
 		client  string
