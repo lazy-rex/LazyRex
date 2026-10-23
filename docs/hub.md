@@ -343,6 +343,8 @@ The plugin chooses the text and the state. For example, a thread with unread mes
 
 A plugin may declare its tabs again to change only a title (for example "Team (3)"). The hub renames the open tab with `session.set_window_label`, and keeps the tab's closed state and crash count.
 
+The column `ui_tabs.rev_known` of the 4.2 hub stays in hub.db until the release after 4.3: the hub no longer reads or writes it, and its DEFAULT 0 serves every INSERT. So a rollback to 4.2 finds it, and the 4.3 hub drops no column of 4.2. Its DROP comes back with the hub.store removal (`retiredSchema` in `store.go`; test `TestRetireSchemaKeepsRevKnown`).
+
 The renderer retains text, cursor, focus, and scroll state by node ID across revisions.
 A node type change invalidates the old control state.
 A removed dirty control retains its unsaved text in a recovery state until the user resolves it.

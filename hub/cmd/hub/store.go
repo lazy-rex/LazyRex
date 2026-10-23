@@ -71,9 +71,9 @@ func openDB(path string) (*DB, error) {
 // more than 0, so it runs at most once on a database, and a new database skips it. A step goes
 // when no live hub.db needs it any more.
 var retiredSchema = []struct{ check, statement string }{
-	// ui_tabs.rev_known marked the tabs closed before tab revisions existed. The live hub.db had no
-	// such row, so the column goes.
-	{`SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'rev_known'`, `ALTER TABLE ui_tabs DROP COLUMN rev_known`},
+	// Empty in 4.3. ui_tabs.rev_known (the 4.2 hub's column, no longer read or written; its DEFAULT 0
+	// serves every INSERT) stays until the release after 4.3, so a 4.2 rollback finds it and the 4.3
+	// rehearsal sees no dropped column. Its DROP comes back with 2d (lead-hubq2).
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.
