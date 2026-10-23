@@ -10,7 +10,7 @@ end
 
 test('a registered plugin without a hub.spawn command: Launch Profile… stays', function()
   expect(H.hub('hub.test.status', {}).plugins.launcher.registered).to_be(true)
-  wait('Launch Profile… is registered', function() return ids() == 'agents,stop,launch' end)
+  wait('Launch Profile… is registered', function() return ids() == 'agents,stop,plugins,launch' end)
 end)
 
 test('hub.plugins reports each plugin\'s palette commands', function()
