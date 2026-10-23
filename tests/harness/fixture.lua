@@ -202,6 +202,9 @@ local function domain(action, args, pid)
     if err then
       local text = type(err) == 'table' and (err.message or '') or tostring(err)
       local code = type(err) == 'table' and err.code or text:match('code=([%w_%-%.]+)%)%s*$')
+      -- The hub checks notices before it takes the writer, so a refused commit leaves the
+      -- transaction open. Roll it back; the commit's error is the answer.
+      rex.call('client.perform', {client_id = hub_id, action = 'hub.sql.rollback', args = {tx = tx}, timeout_ms = 10000})
       return {error = {code = code, message = text}}
     end
     return {}
