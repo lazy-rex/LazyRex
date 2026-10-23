@@ -732,15 +732,19 @@ func (h *Hub) admitSpawn(ctx context.Context, tx *sql.Tx, s *spawnRow, prof Prof
 	return name, nil
 }
 
-// spawnAdmitted runs after the admission commits: the new agent becomes known in memory.
+// spawnAdmitted runs after the admission commits: the new agent becomes known in memory, and
+// hub.workers lists the starting worker.
 func (h *Hub) spawnAdmitted(s *spawnRow, prof Profile, name string) {
+	what := []string{"workers"}
 	if s.Agent != "" {
 		h.mu.Lock()
 		h.agents[s.Agent] = &Agent{ID: s.Agent, Name: name, Profile: prof.ID, delivered: map[string]int64{}}
 		h.agentOrder = append(h.agentOrder, s.Agent)
 		h.mu.Unlock()
+		what = append(what, "agents")
 	}
 	h.ev.emit("spawn_intent", map[string]any{"spawn_id": s.ID, "profile": prof.ID, "caller": s.Caller, "agent": s.Agent})
+	h.changed(what...)
 }
 
 // spawnArgv is the pane command. Rex has no env option on a spawn (roadmap #1, rechecked on
