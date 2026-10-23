@@ -475,3 +475,19 @@ func TestLabKeeperMainRunsNoHub(t *testing.T) {
 		t.Errorf("output %q", out.String())
 	}
 }
+
+// The parity sweep of a plugin with test.parity_routes in its manifest (the home plugin:
+// /forms/launch) passes through lazyrex-hub test. lazyrex-hub test sends the routes as a JSON
+// argument, and Rex decodes it, so the runner gets a table (msg-parity-red-4f6d). The -run
+// pattern matches no test, so only the sweep runs, and the run ends with "matched no test".
+func TestHarnessParityRoutesLab(t *testing.T) {
+	bin, root := harnessBinary(t)
+	out, code := runHarness(t, bin, filepath.Join(root, "plugins", "lazyrex"), "-keep", "-run", "no test has this name")
+	if code != 1 || !strings.Contains(out, "matched no test") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	if !regexp.MustCompile(`(?m)^ok   parity sweep: [1-9][0-9]* passed, 0 failed$`).MatchString(out) {
+		t.Errorf("the parity sweep with parity_routes does not pass:\n%s", out)
+	}
+	assertLabsGone(t, out)
+}
