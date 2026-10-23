@@ -55,7 +55,7 @@ func TestLocalSnapshotHasOnlyItsDirLab(t *testing.T) {
 	}
 	r := result(outRes)
 	t.Logf("the load of ../outside.lua: %q", r)
-	if !s.snapshot(r[0]) || r[1] != "false" || !strings.Contains(r[2], r[0]+"/../outside.lua") || !strings.Contains(r[2], "No such file") {
+	if !s.snapshot(r[0]) || r[1] != "false" || !strings.Contains(r[2], r[0]+"/../outside.lua") || !strings.Contains(r[2], "no such file or directory") {
 		t.Errorf("the load of ../outside.lua: %q, want the missing-file error from a snapshot", r)
 	}
 	if s.status("out").Registered {
