@@ -559,6 +559,13 @@ test('ctx.aliases are the legacy IDs of the hub.identify reply', function()
   expect(s:agent('p.who', {}, 8).result.aliases, 'none').to_equal({})
 end)
 
+test('ctx.spawn_id is the spawn_id of the hub.identify reply; nil when the reply has none', function()
+  local s = plugin([[app.action('p.spawn', {}, function(ctx) return {spawn = ctx.spawn_id or 'none'} end, {store = false})]],
+    {spawns = {alice = 'sp-1'}})
+  expect(s:agent('p.spawn', {}).result, 'a reply with spawn_id').to_equal({spawn = 'sp-1'})
+  expect(s:agent('p.spawn', {}, 8).result, 'a reply without spawn_id').to_equal({spawn = 'none'})
+end)
+
 test('fingerprints tell an array from an object with text keys', function()
   local sdk = sandbox(sdk_dir, base, {source = 'return 1'}).sdk
   expect(sdk.fingerprint({value = {'x'}}) ~= sdk.fingerprint({value = {['1'] = 'x'}}), 'array and object').to_be(true)

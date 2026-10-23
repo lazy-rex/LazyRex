@@ -39,7 +39,7 @@ return function(sdk_dir, base, opts)
     if action == 'hub.identify' then
       local agent = s.agents[a.pid]
       if not agent then return {found = false} end
-      return {found = true, agent = agent, identity = agent, legacy = opts.legacy and opts.legacy[agent], session_id = 'session-' .. agent, block_id = 'block-' .. agent}
+      return {found = true, agent = agent, identity = agent, legacy = opts.legacy and opts.legacy[agent], session_id = 'session-' .. agent, block_id = 'block-' .. agent, spawn_id = opts.spawns and opts.spawns[agent]}
     end
     if action == 'hub.ui.invalidate' then s.invalidated = (s.invalidated or 0) + 1; return {} end
     return nil, {code = 'not_supported', message = 'sandbox hub: ' .. action}
