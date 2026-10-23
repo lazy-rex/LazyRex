@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -93,6 +95,37 @@ var retiredSchema = []retiredStep{
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_notice_plugins'`, statement: `DROP TABLE sql_notice_plugins`},
 	{table: "records", conditional: true},
 	{table: "ops", conditional: true},
+}
+
+// retiredExport is the output of "lazyrex-hub -retired-schema": retiredSchema as JSON. A change of
+// its fields changes Version. The release rehearsal reads it from the NEW hub binary.
+type retiredExport struct {
+	Version int            `json:"version"`
+	Retired []retiredEntry `json:"retired"`
+}
+
+type retiredEntry struct {
+	Table       string `json:"table"`
+	Column      string `json:"column"`
+	Conditional bool   `json:"conditional"`
+}
+
+// retiredSchemaMain prints retiredSchema as retiredExport version 1, in its order. It opens no
+// state and reads no config.
+func retiredSchemaMain(w io.Writer) int {
+	out := retiredExport{Version: 1, Retired: []retiredEntry{}}
+	for _, s := range retiredSchema {
+		out.Retired = append(out.Retired, retiredEntry{s.table, s.column, s.conditional})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if _, err := fmt.Fprintf(w, "%s\n", b); err != nil {
+		return 1
+	}
+	return 0
 }
 
 // retireSchema runs the steps of retiredSchema that are still due, except the conditional ones.

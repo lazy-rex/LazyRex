@@ -374,6 +374,11 @@ func main() {
 		case "version":
 			fmt.Println(versionText())
 			os.Exit(0)
+		case "-retired-schema":
+			// Only as the sole argument; with others it is an undefined flag (exit 2).
+			if len(os.Args) == 2 {
+				os.Exit(retiredSchemaMain(os.Stdout))
+			}
 		}
 	}
 	hf := hubFlags(flag.CommandLine)

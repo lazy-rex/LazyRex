@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -295,5 +297,27 @@ func TestOpenRemovesOnlyDeclared(t *testing.T) {
 				t.Error("the column ui_tabs.title went with rev_known")
 			}
 		})
+	}
+}
+
+// "lazyrex-hub -retired-schema" prints every retiredSchema step, in order, as version 1.
+func TestRetiredSchemaExport(t *testing.T) {
+	var b bytes.Buffer
+	if code := retiredSchemaMain(&b); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	d := json.NewDecoder(&b)
+	d.DisallowUnknownFields()
+	var got retiredExport
+	if err := d.Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != 1 || len(got.Retired) != len(retiredSchema) {
+		t.Fatalf("export %+v, want version 1 and %d entries", got, len(retiredSchema))
+	}
+	for i, s := range retiredSchema {
+		if e := got.Retired[i]; e.Table != s.table || e.Column != s.column || e.Conditional != s.conditional {
+			t.Errorf("entry %d is %+v, want %s %q conditional=%v", i, e, s.table, s.column, s.conditional)
+		}
 	}
 }
