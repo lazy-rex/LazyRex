@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -329,12 +330,19 @@ func TestFetchChildStalledBeforeExit(t *testing.T) {
 // Repeated fetches, normal and cancelled, leave no file descriptor and no goroutine of the hub
 // behind. GC is off during the fetches, so no finalizer closes a leaked pipe.
 func TestFetchChildNoLeak(t *testing.T) {
-	fds := func() int {
+	// fds is the fd table: each open fd and its target (readlink), so a closed fd cannot hide a new
+	// one in a count. The read's own directory fd is in it too, the same in each read.
+	fds := func() map[string]string {
 		e, err := os.ReadDir("/dev/fd")
 		if err != nil {
 			t.Fatal(err)
 		}
-		return len(e)
+		m := map[string]string{}
+		for _, x := range e {
+			l, _ := os.Readlink("/dev/fd/" + x.Name())
+			m[x.Name()] = l
+		}
+		return m
 	}
 	settle := func(want int, now func() int) int {
 		n := now()
@@ -344,19 +352,19 @@ func TestFetchChildNoLeak(t *testing.T) {
 		return n
 	}
 	// fd0 starts from a settled state (the hub lead's ruling lead-fdleak): a file of an earlier
-	// test that waits for a finalizer must close before the count, not during it (main lab
-	// 900e3f0c: "fds 11 -> 8"). Two GCs queue those finalizers, and the count must hold for 200 ms.
+	// test that waits for a finalizer must close before the read, not during it (main lab
+	// 900e3f0c: "fds 11 -> 8"). Two GCs queue those finalizers, and the table must hold for 200 ms.
 	// Then GC goes off.
 	raw := fds()
 	runtime.GC()
 	runtime.GC()
 	fd0 := fds()
 	for held, end := time.Now(), time.Now().Add(5*time.Second); time.Since(held) < 200*time.Millisecond; time.Sleep(10 * time.Millisecond) {
-		if n := fds(); n != fd0 {
+		if n := fds(); !maps.Equal(n, fd0) {
 			fd0, held = n, time.Now()
 		}
 		if time.Now().After(end) {
-			t.Fatalf("the fd count does not settle before the test: %d", fd0)
+			t.Fatalf("the fd table does not settle before the test: %v", fd0)
 		}
 	}
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
@@ -379,9 +387,9 @@ func TestFetchChildNoLeak(t *testing.T) {
 		}
 	}
 	fd1, g1 := fds(), settle(g0, runtime.NumGoroutine)
-	t.Logf("fds %d before the settle, %d -> %d; goroutines %d -> %d", raw, fd0, fd1, g0, g1)
-	if fd1 != fd0 || g1 > g0 {
-		t.Fatalf("leak: fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
+	t.Logf("fds %d before the settle, %d -> %d; goroutines %d -> %d", len(raw), len(fd0), len(fd1), g0, g1)
+	if !maps.Equal(fd1, fd0) || g1 > g0 {
+		t.Fatalf("leak: fds %v -> %v, goroutines %d -> %d", fd0, fd1, g0, g1)
 	}
 }
 
