@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"maps"
 	"slices"
 	"sort"
@@ -166,6 +165,10 @@ func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any,
 	go h.changed("plugins")
 
 	errs := map[string]string{}
+	errRecs := map[string]*Plugin{} // the record of each error, for its log line
+	fail := func(pl *Plugin, err error) {
+		errs[pl.Name], errRecs[pl.Name] = err.Error(), pl
+	}
 	byName := func(l []*Plugin) {
 		sort.Slice(l, func(i, j int) bool { return l[i].Name < l[j].Name })
 	}
@@ -184,13 +187,13 @@ func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any,
 		}
 		pl.lifecycle.Unlock()
 		if err != nil {
-			errs[pl.Name] = err.Error()
+			fail(pl, err)
 		}
 	}
 	for _, pl := range readded {
 		pl.lifecycle.Lock()
 		if err := h.startPluginWith(ctx, pl, true); err != nil {
-			errs[pl.Name] = err.Error()
+			fail(pl, err)
 		}
 		pl.lifecycle.Unlock()
 	}
@@ -201,13 +204,13 @@ func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any,
 		h.mu.Unlock()
 		if !running {
 			if err := h.startPlugin(ctx, pl); err != nil {
-				errs[pl.Name] = err.Error()
+				fail(pl, err)
 			}
 		}
 		pl.lifecycle.Unlock()
 	}
 	for name, e := range errs {
-		log.Printf("plugin %s: reload: %s", name, e)
+		h.recordLogf(errRecs[name], "reload: %s", e)
 	}
 	names := func(l []*Plugin) []string {
 		out := []string{}

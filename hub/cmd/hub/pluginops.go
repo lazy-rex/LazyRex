@@ -181,6 +181,7 @@ func (h *Hub) pluginOpsStart(ctx context.Context) error {
 		return err
 	}
 	h.pops.kick = make(chan struct{}, 1)
+	h.loadsStart(ctx)
 	go h.opsLoop(ctx)
 	h.kickOps() // ops that a stop or a crash interrupted
 	return nil
