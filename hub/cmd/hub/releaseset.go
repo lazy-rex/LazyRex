@@ -96,9 +96,67 @@ var (
 	relSetName   = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 )
 
+// noDupNames refuses a JSON text in which one object has two members with the same name (after
+// the escapes are decoded). A decoder keeps only the last of them, so the other value would be
+// lost without a sign.
+func noDupNames(raw []byte) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	type frame struct {
+		names map[string]bool // nil: an array
+		name  bool            // an object expects a member name next
+	}
+	var st []*frame
+	for {
+		t, err := d.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var top *frame
+		if len(st) > 0 {
+			top = st[len(st)-1]
+		}
+		if top != nil && top.names != nil && top.name {
+			if s, ok := t.(string); ok {
+				if top.names[s] {
+					return fmt.Errorf("an object has two members named %q", s)
+				}
+				top.names[s] = true
+				top.name = false
+				continue
+			}
+		}
+		switch t {
+		case json.Delim('{'):
+			st = append(st, &frame{names: map[string]bool{}, name: true})
+			continue
+		case json.Delim('['):
+			st = append(st, &frame{})
+			continue
+		case json.Delim('}'), json.Delim(']'):
+			st = st[:len(st)-1]
+			if len(st) > 0 {
+				top = st[len(st)-1]
+			} else {
+				top = nil
+			}
+		}
+		// A value ended: an object now expects a member name.
+		if top != nil && top.names != nil {
+			top.name = true
+		}
+	}
+}
+
 // canonicalJSON is the sorted, compact form of a JSON value, with numbers as written and no HTML
-// escapes: the form of `jq -cS`.
+// escapes: the form of `jq -cS`. Two members with one name are an error.
 func canonicalJSON(raw []byte) ([]byte, error) {
+	if err := noDupNames(raw); err != nil {
+		return nil, err
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	var v any

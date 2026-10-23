@@ -58,11 +58,35 @@ func TestReleaseSetPlaceholders(t *testing.T) {
 	if _, err := fillPlaceholders([]byte(`{"to":`), vals); err == nil {
 		t.Error("args that are not JSON: want an error")
 	}
+	// Two member names that become one name after the fill (codex-26): an error, not a lost value.
+	for _, in := range []string{`{"<SELF>":1,"relseed":2}`, `{"a":{"x<PEER>":1,"xrelpeer":2}}`, `[{"<SELF>":1,"\u003cSELF\u003e":2}]`} {
+		if out, err := fillPlaceholders([]byte(in), vals); err == nil {
+			t.Errorf("%s: want a refusal; got %s", in, out)
+		}
+	}
 	var v map[string]any
 	if err := json.Unmarshal(got, &v); err != nil {
 		t.Fatalf("%s: %v", got, err)
 	}
 	if v["repo"] != `/tmp/lab "x"/repos/demo` || v["s"] != "session:1" || v["to"].([]any)[1] != "relpeer" {
 		t.Fatalf("%v", v)
+	}
+}
+
+// Two members with one name in the input: the decoder keeps one value, so canonicalJSON and the
+// placeholder fill refuse them (codex-26).
+func TestReleaseNoDupNames(t *testing.T) {
+	for _, in := range []string{`{"a":1,"a":2}`, `{"<SELF>":1,"<SELF>":2}`, `[{"x":{"b":[1,{"c":1,"c":2}]}}]`, `{"a":{"b":1},"a":[]}`} {
+		if err := noDupNames([]byte(in)); err == nil {
+			t.Errorf("%s: want a refusal", in)
+		}
+		if _, err := canonicalJSON([]byte(in)); err == nil {
+			t.Errorf("canonicalJSON %s: want a refusal", in)
+		}
+	}
+	for _, in := range []string{`{"a":1,"b":{"a":2},"c":[{"a":3},{"a":4}]}`, `[["a","a"],{"a":"a"}]`, `{"a":{},"b":[],"c":{"a":[]}}`, `"a"`, `1`} {
+		if err := noDupNames([]byte(in)); err != nil {
+			t.Errorf("%s: %v", in, err)
+		}
 	}
 }

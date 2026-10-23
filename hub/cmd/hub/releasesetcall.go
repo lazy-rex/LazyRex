@@ -58,6 +58,9 @@ func checkFilled(result []byte, expects []relSetExpect, vals map[string]string) 
 // text, and encodes it without HTML escapes. It works on the decoded strings, so an escaped form
 // of a placeholder in the text (<SELF>) is replaced too.
 func fillPlaceholders(raw []byte, vals map[string]string) ([]byte, error) {
+	if err := noDupNames(raw); err != nil {
+		return nil, err
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	var v any
@@ -70,28 +73,45 @@ func fillPlaceholders(raw []byte, vals map[string]string) ([]byte, error) {
 		}
 		return s
 	}
-	var walk func(any) any
-	walk = func(v any) any {
+	var walk func(any) (any, error)
+	walk = func(v any) (any, error) {
 		switch x := v.(type) {
 		case string:
-			return fill(x)
+			return fill(x), nil
 		case []any:
 			for i := range x {
-				x[i] = walk(x[i])
+				w, err := walk(x[i])
+				if err != nil {
+					return nil, err
+				}
+				x[i] = w
 			}
 		case map[string]any:
+			// Two member names can become one name after the fill: refuse, or one value is lost.
 			m := make(map[string]any, len(x))
 			for k, e := range x {
-				m[fill(k)] = walk(e)
+				fk := fill(k)
+				if _, dup := m[fk]; dup {
+					return nil, fmt.Errorf("two member names become %q after the placeholders are filled", fk)
+				}
+				w, err := walk(e)
+				if err != nil {
+					return nil, err
+				}
+				m[fk] = w
 			}
-			return m
+			return m, nil
 		}
-		return v
+		return v, nil
+	}
+	filled, err := walk(v)
+	if err != nil {
+		return nil, err
 	}
 	var b bytes.Buffer
 	e := json.NewEncoder(&b)
 	e.SetEscapeHTML(false)
-	if err := e.Encode(walk(v)); err != nil {
+	if err := e.Encode(filled); err != nil {
 		return nil, err
 	}
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
