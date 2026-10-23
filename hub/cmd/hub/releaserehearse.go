@@ -722,14 +722,26 @@ func (h *rehearsal) schemaAt(phase string, back bool) error {
 	}
 	h.schemas[phase] = items
 	if phase != "before" {
+		// A column of OLD may go only as H's retired schema allows (retiredGone). The tier reasons
+		// (schemaChanges) do not change: a declared drop still selects the full tier.
+		if err := h.ensureRetired(); err != nil {
+			return err
+		}
 		var gone []string
 		for _, x := range missing(h.schemas["before"], items) {
-			if strings.HasPrefix(x, "column ") {
+			if strings.HasPrefix(x, "column ") && !h.retiredGone(x, items) {
 				gone = append(gone, x)
 			}
 		}
 		if len(gone) > 0 {
 			return relFail("phase %s: a column of OLD changed or went: %s", phase, strings.Join(gone, ", "))
+		}
+		// After a forward run, an unconditional drop of an item that OLD had is done. After a
+		// rollback, OLD may create the item again.
+		for _, e := range h.retired {
+			if !back && !e.Conditional && hasRetired(h.schemas["before"], e) && hasRetired(items, e) {
+				return relFail("phase %s: H declares the drop of %s, but it is still there", phase, e.name())
+			}
 		}
 	}
 	return nil
