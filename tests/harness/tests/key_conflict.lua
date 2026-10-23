@@ -11,18 +11,18 @@ local function hubcall(action, args, on_behalf)
 end
 
 local function ok(name, r)
-  if r.error then fail(name .. ': ' .. rex.json.encode(r.error)) end
+  if r.error then error(name .. ': ' .. rex.json.encode(r.error)) end
   return r.result
 end
 
--- conflict checks the code and that the message holds the exact full text.
+-- conflict checks the code and that the Rex text holds the exact full message. A raised error keeps
+-- the Rex text in raw (its message drops the repeated code); a fix.hub answer has it in message.
 local function conflict(name, e, text)
   local want = 'operation_conflict: ' .. text
   expect(e and e.code, name .. ' code').to_be('operation_conflict')
-  if not tostring(e.message):find(want, 1, true) then
-    fail(name .. ': the message ' .. rex.json.encode(e.message) .. ' does not hold ' .. rex.json.encode(want))
-  end
-  print('OBSERVED ' .. name .. ': ' .. tostring(e.message))
+  local got = tostring(e.raw or e.message)
+  print('OBSERVED ' .. name .. ': ' .. got)
+  expect(got:find(want, 1, true) ~= nil, name .. ' holds ' .. want).to_be(true)
 end
 
 test('setup: a worker profile', function()
@@ -30,21 +30,17 @@ test('setup: a worker profile', function()
 end)
 
 test('hub.spawn', function()
-  local s = ok('first', hubcall('hub.spawn', {['for'] = 'user', profile = 'probe', key = 'kc-spawn'}))
+  ok('first', hubcall('hub.spawn', {['for'] = 'user', profile = 'probe', key = 'kc-spawn'}))
   local r = hubcall('hub.spawn', {['for'] = 'user', profile = 'probe', key = 'kc-spawn', title = 'Other'})
   conflict('hub.spawn', r.error, 'key "kc-spawn" was used for a different request')
-  H.hub('hub.stop', {spawn_id = s.spawn_id})
 end)
 
 test('hub.spawn_window', function()
   local sess = assert(rex.call('session.create', {label = 'kc-window'})).session_id
   local layout = {leaf = {profile = 'probe'}}
-  local w = ok('first', hubcall('hub.spawn_window', {['for'] = 'user', key = 'kc-window', session = sess, layout = layout}))
+  ok('first', hubcall('hub.spawn_window', {['for'] = 'user', key = 'kc-window', session = sess, layout = layout}))
   local r = hubcall('hub.spawn_window', {['for'] = 'user', key = 'kc-window', session = sess, title = 'Other', layout = layout})
   conflict('hub.spawn_window', r.error, 'key "kc-window" was used for a different request')
-  for _, l in ipairs(w.leaves or {}) do
-    if l.spawn_id then H.hub('hub.stop', {spawn_id = l.spawn_id}) end
-  end
 end)
 
 test('hub.session.ensure', function()
