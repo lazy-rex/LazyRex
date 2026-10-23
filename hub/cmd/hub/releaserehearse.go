@@ -31,8 +31,6 @@ import (
 const (
 	relLiveRepo   = "https://github.com/lazy-rex/LazyRex.git"
 	relSuperseded = relRehearsalFile + ".superseded-"
-	relProbeKey   = "relprobe/value"
-	relProbeOp    = "relprobe/op"
 )
 
 // relFormatFiles are the files that own the lock, base, pin document and managed file formats. A
@@ -287,7 +285,7 @@ func labEnvironment(lab, server string) ([]string, error) {
 }
 
 // setup makes the lab: the clone and the OLD binary, the lab files, the lab server, the lab cache,
-// the lab run (freeze), and OLD in a dev pane with the probe rows.
+// the lab run (freeze), and OLD in a dev pane on a lab hub.db without agent bindings.
 func (h *rehearsal) setup() error {
 	L := h.lab
 	server := "unix://" + filepath.Join(L, "rex.sock")
@@ -431,7 +429,7 @@ func (h *rehearsal) setup() error {
 		return err
 	}
 
-	// OLD in a dev pane in a lab session; then the probe rows, written while OLD is stopped.
+	// OLD in a dev pane in a lab session; then the binding check, while OLD is stopped.
 	var created struct {
 		SessionID string `json:"session_id"`
 	}
@@ -452,7 +450,7 @@ func (h *rehearsal) setup() error {
 	}); err != nil {
 		return err
 	}
-	if err := h.writeProbes(); err != nil {
+	if err := h.checkLabBindings(); err != nil {
 		return err
 	}
 	if err := h.withLab(func(lr *releaser) error {
@@ -461,9 +459,6 @@ func (h *rehearsal) setup() error {
 		}
 		return lr.verifyList(relVerifyBack)
 	}); err != nil {
-		return err
-	}
-	if err := h.data("setup"); err != nil {
 		return err
 	}
 	return h.schema("before")
@@ -595,9 +590,6 @@ func (h *rehearsal) forwardChecks(name string) error {
 	if err := h.checkSDK(name, relHubFile, h.r.spec.H); err != nil {
 		return err
 	}
-	if err := h.data(name); err != nil {
-		return err
-	}
 	if err := h.schema(name); err != nil {
 		return err
 	}
@@ -638,28 +630,13 @@ func (h *rehearsal) hubDB(readOnly bool) (*sql.DB, error) {
 	return sql.Open("sqlite", "file:"+p+q)
 }
 
-// probeNS are the plugin namespaces of the probe rows: the names of the verify list.
-func (h *rehearsal) probeNS() ([]string, error) {
-	b, err := os.ReadFile(filepath.Join(h.run, relVerifyBack))
-	if err != nil {
-		return nil, err
-	}
-	var list []relVerifyEntry
-	if err := json.Unmarshal(b, &list); err != nil {
-		return nil, err
-	}
-	var ns []string
-	for _, e := range list {
-		ns = append(ns, e.Name)
-	}
-	sort.Strings(ns)
-	return ns, nil
-}
-
-// writeProbes refuses an agent binding in the lab hub.db (a lab hub never gets live bindings), then
-// writes one record and one saved operation for each plugin (the r31 probe rows).
-func (h *rehearsal) writeProbes() error {
-	db, err := h.hubDB(false)
+// checkLabBindings refuses an agent binding in the lab hub.db: a lab hub never gets live bindings.
+// The rehearsal writes no row in the hub.db. A hub after the hub.store removal (2d) has no records
+// or ops table, and a probe row in a plugin's sql/<ns>.db would change the data that the set lab
+// compares. LIMIT: the default tier checks the schema of the hub.db but no retained hub row; only
+// the full tier with a probe file checks rows (writeFileProbes).
+func (h *rehearsal) checkLabBindings() error {
+	db, err := h.hubDB(true)
 	if err != nil {
 		return err
 	}
@@ -671,48 +648,6 @@ func (h *rehearsal) writeProbes() error {
 	if n != 0 {
 		return relFail("the lab hub.db has %d agent bindings", n)
 	}
-	ns, err := h.probeNS()
-	if err != nil {
-		return err
-	}
-	for _, p := range ns {
-		if _, err := db.Exec("INSERT INTO records (ns, key, value, rev) VALUES (?, ?, ?, 1)", p, relProbeKey, probeValue(p)); err != nil {
-			return relFail("the probe record of %s: %v", p, err)
-		}
-		if _, err := db.Exec("INSERT INTO ops (ns, key, fingerprint, result) VALUES (?, ?, ?, ?)", p, relProbeOp, "relprobe-fp-"+p, probeResult(p)); err != nil {
-			return relFail("the probe operation of %s: %v", p, err)
-		}
-	}
-	return nil
-}
-
-func probeValue(ns string) string  { return `{"probe":"` + ns + `-value"}` }
-func probeResult(ns string) string { return `{"probe":"` + ns + `-result"}` }
-
-// data checks that each probe row is exactly as written.
-func (h *rehearsal) data(phase string) error {
-	db, err := h.hubDB(true)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	ns, err := h.probeNS()
-	if err != nil {
-		return err
-	}
-	for _, p := range ns {
-		var v, fp, res string
-		if err := db.QueryRow("SELECT value FROM records WHERE ns = ? AND key = ?", p, relProbeKey).Scan(&v); err != nil {
-			return relFail("phase %s: the probe record of %s: %v", phase, p, err)
-		}
-		if err := db.QueryRow("SELECT fingerprint, result FROM ops WHERE ns = ? AND key = ?", p, relProbeOp).Scan(&fp, &res); err != nil {
-			return relFail("phase %s: the probe operation of %s: %v", phase, p, err)
-		}
-		if v != probeValue(p) || fp != "relprobe-fp-"+p || res != probeResult(p) {
-			return relFail("phase %s: the probe rows of %s changed: %q %q %q", phase, p, v, fp, res)
-		}
-	}
-	h.say("data %s: the probe rows of %d plugins are exact", phase, len(ns))
 	return nil
 }
 

@@ -240,9 +240,11 @@ func labFixtureAt(t *testing.T, f, bin, old, h string, plugins []labPlugin) {
 		t.Fatal(err)
 	}
 	// The probe file of the full tier: rows in a table of OLD, as a stand-in for a table that H adds.
+	// meta is in every hub.db before and after the hub.store removal; the hub reads and writes only
+	// its own keys rev and generation (store.go), so the probe keys stay as written.
 	probes := filepath.Join(f, "probes.sql")
-	os.WriteFile(probes, []byte(`INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k1', '{"v":1}', 1);
-INSERT INTO records (ns, key, value, rev) VALUES ('relprobe-file', 'k2', '{"v":2}', 1);
+	os.WriteFile(probes, []byte(`INSERT INTO meta (k, v) VALUES ('relprobe-file-k1', 1);
+INSERT INTO meta (k, v) VALUES ('relprobe-file-k2', 2);
 `), 0o600)
 	spec := filepath.Join(f, "spec.json")
 	b, _ = json.Marshal(map[string]any{"kind": "hub", "h": h, "config": cfg, "release_dir": filepath.Join(f, "release"),

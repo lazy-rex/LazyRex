@@ -585,21 +585,16 @@ func TestReleaseFileProbes(t *testing.T) {
 	}
 }
 
-// labHubDB is a lab hub.db made by the hub's own openDB, so it has the schema of this hub, and a
-// back verify list with the plugins alpha and beta.
+// labHubDB is a lab hub.db made by the hub's own openDB, so it has the schema of this hub.
 func labHubDB(t *testing.T) *rehearsal {
 	t.Helper()
-	h := &rehearsal{lab: t.TempDir(), run: t.TempDir(), r: &releaser{out: &bytes.Buffer{}}}
+	h := &rehearsal{lab: t.TempDir(), r: &releaser{out: &bytes.Buffer{}}, schemas: map[string][]string{}}
 	os.MkdirAll(filepath.Join(h.lab, relLabState), 0o700)
 	db, err := openDB(filepath.Join(h.lab, relLabState, "hub.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
-	b, _ := json.Marshal([]relVerifyEntry{{Name: "alpha"}, {Name: "beta"}})
-	if err := os.WriteFile(filepath.Join(h.run, relVerifyBack), b, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return h
 }
 
@@ -607,10 +602,10 @@ func labHubDB(t *testing.T) *rehearsal {
 // a new hub.db has no records or ops table). A lab hub.db with an agent binding refuses.
 func TestReleaseLabHubDB(t *testing.T) {
 	h := labHubDB(t)
-	if err := h.writeProbes(); err != nil {
+	if err := h.checkLabBindings(); err != nil {
 		t.Fatalf("the setup step on a new lab hub.db: %v", err)
 	}
-	if err := h.data("setup"); err != nil {
+	if err := h.schema("before"); err != nil {
 		t.Fatalf("the phase step on a new lab hub.db: %v", err)
 	}
 	h = labHubDB(t)
@@ -619,10 +614,44 @@ func TestReleaseLabHubDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`INSERT INTO bindings VALUES ('a', 'block:1', 1, 's')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO bindings (agent, block_id, child_pid, child_start) VALUES ('a', 'block:1', 1, 's')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.writeProbes(); err == nil || !strings.Contains(err.Error(), "agent bindings") {
+	if err := h.checkLabBindings(); err == nil || !strings.Contains(err.Error(), "agent bindings") {
 		t.Errorf("a lab hub.db with an agent binding: %v", err)
+	}
+}
+
+// The probe file of the lab fixture (meta rows) on the schema of this hub: the rows are checked, and
+// a changed or deleted probe row fails.
+func TestReleaseFileProbesMeta(t *testing.T) {
+	for name, change := range map[string]string{
+		"changed": `UPDATE meta SET v = 3 WHERE k = 'relprobe-file-k1'`,
+		"deleted": `DELETE FROM meta WHERE k = 'relprobe-file-k2'`,
+	} {
+		h := labHubDB(t)
+		h.r.spec = &relSpec{Probes: "probes.sql"}
+		script := `INSERT INTO meta (k, v) VALUES ('relprobe-file-k1', 1);
+INSERT INTO meta (k, v) VALUES ('relprobe-file-k2', 2);`
+		if err := os.WriteFile(filepath.Join(h.lab, "probes.sql"), []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.writeFileProbes(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := h.checkFileProbes("forward"); err != nil {
+			t.Fatalf("%s: before the change: %v", name, err)
+		}
+		db, err := h.hubDB(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(change); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		if err := h.checkFileProbes("rollback"); err == nil || !strings.Contains(err.Error(), "the probe row meta") {
+			t.Errorf("%s: a %s probe row: %v", name, name, err)
+		}
 	}
 }
