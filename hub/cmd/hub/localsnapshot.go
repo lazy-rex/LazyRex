@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -24,6 +25,10 @@ var (
 // localSnapshotHook runs after the candidate check and before the copy (a test changes the source
 // there).
 var localSnapshotHook func()
+
+// localCopyHook runs for each file after its stat and before its copy (a test makes the file grow
+// there).
+var localCopyHook func(path string)
 
 // publishLocal gives the run of the local candidate cand of entry e from a published snapshot:
 //  1. Copy the source into a stage, local/.stage-<token>. A .git directory is skipped. A symlink or
@@ -105,10 +110,13 @@ func sameManifest(m *pluginManifest, main, dir string, cand *pluginRun) bool {
 		m.Events == cand.Events && m.Notice == cand.Notice && slices.Equal(m.Depends, cand.Depends)
 }
 
-// copyLocal copies the local source src into the new directory dst, as a stage: files 0600, or
+// copyLocal copies the local source src into the new directory dst, as a stage, within the bounds: files 0600, or
 // 0700 when any execute bit is set; directories 0700. A .git directory is skipped.
 func copyLocal(name, src, dst string) error {
 	files, size := 0, int64(0)
+	over := func() error {
+		return refuse("refused", "plugin %s: the source %s is over the copy bound (%d files, %d bytes)", name, src, localSnapshotFiles, localSnapshotBytes)
+	}
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -128,16 +136,45 @@ func copyLocal(name, src, dst string) error {
 		if err != nil {
 			return err
 		}
-		files, size = files+1, size+fi.Size()
-		if files > localSnapshotFiles || size > localSnapshotBytes {
-			return refuse("refused", "plugin %s: the source %s is over the copy bound (%d files, %d bytes)", name, src, localSnapshotFiles, localSnapshotBytes)
+		if files++; files > localSnapshotFiles {
+			return over()
 		}
-		if err := copyFile(p, out); err != nil { // 0600
+		if localCopyHook != nil {
+			localCopyHook(p)
+		}
+		// The bound counts the bytes that the copy wrote: a file can grow after its stat.
+		n, err := copyBounded(p, out, localSnapshotBytes-size)
+		if err != nil {
 			return err
+		}
+		if size += n; size > localSnapshotBytes {
+			return over()
 		}
 		if fi.Mode()&0o111 != 0 {
 			return os.Chmod(out, 0o700)
 		}
 		return nil
 	})
+}
+
+// copyBounded copies the file src into the new file dst (0600), at most limit+1 bytes, and gives
+// the number of bytes that it copied.
+func copyBounded(src, dst string, limit int64) (int64, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return 0, err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(out, io.LimitReader(in, limit+1))
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return n, err
 }
