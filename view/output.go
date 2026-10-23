@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -10,16 +11,22 @@ import (
 
 var errPaneOutput = errors.New("the pane output failed")
 
+// showCursor is DECTCEM set. The view draws its own caret, so the pane never shows the terminal
+// cursor while the program runs (see inlineView: the renderer parks it on the first live row).
+var showCursor = []byte("\x1b[?25h")
+
 // paneOut is the renderer's output boundary (thread view v1.2 item 3). The first failed or short
 // write latches it: every later write is dropped and fails. It never calls Program.Send: it runs
 // onFault (the client closes its seen gate at once) and closes fault; a watcher goroutine wakes
-// the program.
+// the program. With hideCursor, it drops each showCursor from the program; restoreCursor shows the
+// cursor again after the program.
 type paneOut struct {
-	w       io.Writer
-	mu      sync.Mutex
-	failed  atomic.Bool
-	fault   chan struct{}
-	onFault func()
+	w          io.Writer
+	mu         sync.Mutex
+	failed     atomic.Bool
+	fault      chan struct{}
+	onFault    func()
+	hideCursor bool
 }
 
 func newPaneOut(w io.Writer) *paneOut {
@@ -32,8 +39,12 @@ func (o *paneOut) Write(b []byte) (int, error) {
 	if o.failed.Load() {
 		return 0, errPaneOutput
 	}
-	n, err := o.w.Write(b)
-	if err == nil && n < len(b) {
+	out := b
+	if o.hideCursor && bytes.Contains(b, showCursor) {
+		out = bytes.ReplaceAll(b, showCursor, nil)
+	}
+	n, err := o.w.Write(out)
+	if err == nil && n < len(out) {
 		err = io.ErrShortWrite
 	}
 	if err != nil {
@@ -44,7 +55,15 @@ func (o *paneOut) Write(b []byte) (int, error) {
 		close(o.fault)
 		return n, err
 	}
-	return n, nil
+	return len(b), nil
+}
+
+// restoreCursor ends hideCursor and shows the cursor, after the program.
+func (o *paneOut) restoreCursor() {
+	o.mu.Lock()
+	o.hideCursor = false
+	o.mu.Unlock()
+	o.Write(showCursor)
 }
 
 func (o *paneOut) WriteString(s string) (int, error) { return o.Write([]byte(s)) }

@@ -78,6 +78,16 @@ A composer's editor and Send are one focus span, so a short window holds the edi
 
 The last frame before the exit is empty, on the screen that is active, also during a panel replacement.
 
+### The cursor and a width change
+
+Each inline frame puts the terminal cursor on its first row (inlineView).
+Bubble Tea starts the next frame from the cursor: it moves up by the rows that it drew above the cursor, then erases to the end of the screen.
+When the pane gets narrower, Rex rewraps every row that is wider than the new width, also a row that the renderer ended itself (docs/rex-protocol.md, A4).
+A frame row above the cursor can then take two rows, and the move up stops inside the old frame: the old rows above it stay as a stale copy.
+With the cursor on the first row, every rewrapped row is below the cursor, and the erase removes it.
+The view draws its own caret, so the pane never shows the terminal cursor: the pane output drops each "show cursor" sequence (ESC[?25h) while the program runs, and shows the cursor again after it (output.go).
+The lab TestLiveRegionResizeLab checks that each live node is on the pane at most once after each size change.
+
 ### The clear at process start
 
 Every renderer process clears its pane once (cursor home, ESC[2J, ESC[3J), before Bubble Tea writes anything.

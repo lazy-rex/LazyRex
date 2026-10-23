@@ -56,6 +56,7 @@ func main() {
 	// returns EPIPE and takes the failure path, instead of a SIGPIPE that kills the process.
 	signal.Ignore(syscall.SIGPIPE)
 	out := newPaneFile(os.Stdout)
+	out.hideCursor = true
 	// Every renderer process clears its pane once, before Bubble Tea writes anything
 	// (lead-tv-clear2): a renderer restarted in the same pane would otherwise print the thread
 	// history a second time below the old copy. A failed clear is an output failure: exit 1 before
@@ -78,6 +79,7 @@ func main() {
 	}()
 	go client.run(ctx)
 	_, err = program.Run()
+	out.restoreCursor()
 	code := afterRun(model, out.paneOut, err, ctx.Err() != nil)
 	if code == 0 && model.reloadReady && ctx.Err() == nil {
 		if err := syscall.Exec(executable, os.Args, os.Environ()); err != nil {

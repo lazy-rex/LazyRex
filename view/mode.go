@@ -294,6 +294,11 @@ func (m *model) inlineView() tea.View {
 	v := tea.NewView(strings.Join(lines, "\n"))
 	v.ReportFocus = true
 	v.WindowTitle = singleLine(m.snapshot.Tree.Title)
+	// The renderer starts its next frame from the cursor. Rex rewraps a row that is wider than a
+	// new width, so a frame row above the cursor can become two rows and an older copy stays above
+	// the next frame (coord-tvglitch). On the first row, every rewrapped row is below the cursor,
+	// where the frame clears. The pane never shows this cursor (paneOut.hideCursor).
+	v.Cursor = tea.NewCursor(0, 0)
 	m.lastView, m.haveView = v, true
 	return v
 }

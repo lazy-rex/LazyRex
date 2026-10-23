@@ -128,6 +128,16 @@ func TestFirstFrameIsInline(t *testing.T) {
 	}
 }
 
+// TestInlineFrameParksTheCursorOnItsFirstRow (coord-tvglitch): an inline frame puts the cursor on
+// its first row, so the renderer starts the next frame above every row that Rex can rewrap.
+func TestInlineFrameParksTheCursorOnItsFirstRow(t *testing.T) {
+	m := modeModel(30)
+	v := m.View()
+	if v.Cursor == nil || v.Cursor.X != 0 || v.Cursor.Y != 0 {
+		t.Fatalf("the inline frame cursor: %+v", v.Cursor)
+	}
+}
+
 // TestFormRouteIsNeutralUntilItsTree: no route decides the mode (lead-tv-c2rules, A3).
 func TestFormRouteIsNeutralUntilItsTree(t *testing.T) {
 	m := newModel(&viewClient{ViewID: "v1", Route: "/forms/thread-menu", Requests: make(chan mutation, 16)})

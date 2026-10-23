@@ -1089,6 +1089,16 @@ text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-
   rows that a renderer breaks itself.
 - A live row wider than the terminal is cut by Bubble Tea. In one run its old copy stayed as a
   stale fragment after a resize.
+- A4, a live frame of several rows (Linux lab, the same Rex, LazyRex ebc1031d and f4e6c30e,
+  2026-10-23; `TestTeaProbeA4FrameWidth`). The frame has 4 short rows and 6 rows of 65 cells. At
+  80 columns, Bubble Tea leaves the hidden cursor at column 0 of the last frame row. At 50
+  columns, Rex rewraps each 65-cell row into 2 rows, although Bubble Tea ended each row with
+  CR LF: the frame takes 16 rows, and the cursor stays on the first part of the last row. Bubble
+  Tea then writes `CSI 9 A` and `CSI J` (the height of the old frame), which reaches only the
+  second part of the first wide row. The old LIVE row, the 3 key rows and the first part of `B01`
+  stay above the new frame. Each later narrowing (80 to 40) adds one more stale copy of `B01`.
+  With `-park` (the cursor on the first frame row), Bubble Tea writes only `CSI J` from the
+  first row, and each frame row is on the pane once at 50, 80, 40 and 100 columns.
 - Size. `block.method resize` applies only for the block's owner, or for a block with no owner.
   Otherwise Rex remembers the size and applies it when the caller becomes the owner (the method's
   description in `rex block inspect`; not tested). `block.method size` reported the session's
