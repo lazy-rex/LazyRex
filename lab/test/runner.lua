@@ -53,11 +53,24 @@ local function load_file(path)
   return chunk
 end
 
--- The setup decodes the runner's parity_routes first: a malformed value fails the file as a setup
--- failure, before the hub is asked. setup_out is the routes or the error, because a write to a
--- captured local can be lost after a caught error (docs/rex-protocol.md, "Rex Lua runtime").
+-- parity_routes returns the runner's parity_routes argument as a list of routes. Rex decodes an
+-- argument that is valid JSON (lazyrex-hub test sends a JSON array), so a valid value arrives as a
+-- table; a malformed one stays a string, and the checked decode fails it.
+local function parity_routes(v)
+  if v == nil then return {} end
+  if type(v) == 'string' then v = H.json_decode(v, 'parity_routes') end
+  if type(v) ~= 'table' then error('parity_routes: not a list of routes (' .. type(v) .. ')', 0) end
+  for i, r in ipairs(v) do
+    if type(r) ~= 'string' then error('parity_routes: route ' .. i .. ' is not a string (' .. type(r) .. ')', 0) end
+  end
+  return v
+end
+
+-- The setup checks parity_routes first: a malformed value fails the file as a setup failure, before
+-- the hub is asked. setup_out is the routes or the error, because a write to a captured local can
+-- be lost after a caught error (docs/rex-protocol.md, "Rex Lua runtime").
 local setup_ok, setup_out = pcall(function()
-  local routes = A.parity_routes and H.json_decode(A.parity_routes, 'parity_routes') or {}
+  local routes = parity_routes(A.parity_routes)
   H.setup(A)
   return routes
 end)
