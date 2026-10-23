@@ -159,10 +159,12 @@ func TestExpectRunDependencyStopsLab(t *testing.T) {
 	intents := s.intents("b")
 
 	// The hub serves one request of this client at a time, so the hold window has no hub call: a
-	// ends through its own client, and the test reads its pid. Its respawn is refused (a missing
-	// dependency), so a is not registered at the final admission of b.
+	// ends through its own client, and the test reads its pid. Its respawn is refused (the test
+	// spoils its selected snapshot before the hold), so a is not registered at the final admission
+	// of b.
 	a := s.status("a")
 	aStart := startTime(a.ChildPID)
+	s.spoilRun("a")
 	s.must("hub.test.fault", map[string]any{"point": "start-admission", "mode": "hold-after", "key": "b", "plugin": "b", "hold_ms": 6000})
 	done := make(chan error, 1)
 	go func() {
@@ -170,7 +172,6 @@ func TestExpectRunDependencyStopsLab(t *testing.T) {
 		done <- err
 	}()
 	time.Sleep(time.Second) // the start of b reaches its hold
-	s.writeSource("a", `{"name":"a","main":"main.lua","depends":["missing"]}`, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	s.c.perform(ctx, a.ClientID, "fix.exit", nil) // the reply may not arrive: the process ends
 	cancel()
@@ -187,8 +188,7 @@ func TestExpectRunDependencyStopsLab(t *testing.T) {
 		t.Errorf("b after the refusal: %v, %d intents (want desired stopped, not waiting, %d)", e, s.intents("b"), intents)
 	}
 
-	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "")
-	s.must("hub.admin.start", map[string]any{"plugin": "a"})
+	s.must("hub.admin.start", map[string]any{"plugin": "a"}) // an explicit start: a new snapshot
 	s.registered("a")
 	time.Sleep(2 * time.Second) // a wake, if any, runs now
 	if e := s.expectEntry("b"); e["desired"] != "stopped" || s.intents("b") != intents {
@@ -198,8 +198,9 @@ func TestExpectRunDependencyStopsLab(t *testing.T) {
 
 // A guarded start of a crashing plugin (the release tool's recovery of a crash): c registers and
 // exits at once, so the hub reports it crashing with a respawn due. Its source is then fixed, and
-// hub.admin.start with expect_run starts it. Whichever comes first, the start or the due respawn,
-// the end state is one live registered instance, and no later respawn spawns another.
+// hub.admin.start with expect_run starts it. A due respawn runs the selected run (the snapshot of
+// the crashing source), so only the start publishes the fixed source. The end state is one live
+// registered instance, and no later respawn spawns another.
 func TestExpectRunCrashingStartLab(t *testing.T) {
 	s := newStartLab(t, "c")
 	s.writeSource("c", `{"name":"c","main":"main.lua"}`, "")
@@ -207,8 +208,8 @@ func TestExpectRunCrashingStartLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.start()
-	// The baseline is taken while c is crashing, before the repair: a due respawn can run (and
-	// register) at any time after the repair, before the start is served.
+	// The baseline is taken while c is crashing, before the repair: a due respawn of the crashing
+	// snapshot can run (and register) at any time after the repair, before the start is served.
 	s.wait("crashing", func() bool { return s.entry("c")["state"] == "crashing" })
 	spawned := len(s.events("plugin_spawned", "c"))
 	s.writeSource("c", "", "c")
