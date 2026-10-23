@@ -1293,7 +1293,9 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 	case "hub.admin.rebind":
 		id, _ := args["agent"].(string)
 		block, _ := args["block_id"].(string)
-		a := h.agents[id]
+		h.mu.Lock()
+		a := h.agents[id] // a join or a spawn writes the map under h.mu
+		h.mu.Unlock()
 		if a == nil || block == "" {
 			return nil, bad("rebind needs a roster agent and a block_id")
 		}
