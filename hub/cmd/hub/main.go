@@ -72,6 +72,7 @@ type Config struct {
 	managedPath    string         // the resolved managed file
 	managedErr     error          // the managed file is malformed: no managed entry
 	path           string         // the config file, as given
+	hubLog         string         // <State>/hub.log under the restart wrapper (its only writer); "" without it
 }
 
 type Agent struct {
@@ -241,6 +242,8 @@ type Hub struct {
 
 	// pops is the plugin manager's op service (pluginops.go).
 	pops pluginOpsSvc
+	// loads are the background loads of the manager's views (pluginloads.go).
+	loads pluginLoads
 
 	changedQ changedQueue // hub.changed deliveries in flight (changed.go)
 }
@@ -306,7 +309,7 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.store.ops_scan", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.admin.relaunch", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.plugins.hold.acquire", "hub.plugins.hold.release", "hub.plugins.hold.status", "hub.plugins.attempt.resolve", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-	"hub.plugins", "hub.plugins.reload", "hub.plugins.ops", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
+	"hub.plugins", "hub.plugins.reload", "hub.plugins.ops", "hub.plugins.tags", "hub.plugins.log", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
 	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
 	"hub.prompts", "hub.prompt.answer",
 	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part"}
@@ -437,6 +440,7 @@ func main() {
 			os.Exit(exitStateMismatch)
 		}
 		cfg.State = state
+		cfg.hubLog = filepath.Join(state, "hub.log")
 	}
 	// The SDK and the view are resolved once, here (findSDK, resolveView): a later switch of a link
 	// in either path changes nothing for this hub, its plugin respawns or its renderers. A restart
@@ -576,7 +580,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	h.resolveLocked() // binds the names and makes their records
 	for _, e := range h.entries {
 		if e.err != nil {
-			log.Printf("plugin %s (%s): refused: %v", e.identity(), e.Source, e.err)
+			pluginLogf(e.name, opEntryKey(e), "refused (%s, %s): %v", e.identity(), e.Source, e.err)
 		}
 	}
 	h.entriesMu.Unlock()
@@ -1061,6 +1065,18 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.sql.dispatch(ctx, p.Action, sqlCall{plugin: ns, client: p.Requester.ClientID, args: args})
 	case "hub.reply.part":
 		return h.parts.part(p.Requester.ClientID, args)
+	case "hub.plugins.tags", "hub.plugins.log":
+		// The plugin manager views of the home plugin read the background loads (pluginloads.go).
+		h.mu.Lock()
+		home := h.homeRecordLocked(pl.Name)
+		h.mu.Unlock()
+		if !home {
+			return nil, bad("only the home plugin reads the plugin tags and logs")
+		}
+		if p.Action == "hub.plugins.tags" {
+			return h.pluginTags(p.Args)
+		}
+		return h.pluginLog(p.Args)
 	case "hub.plugins.ops":
 		// The plugins panel of the home plugin reads the plugin manager's ops (pluginops.go).
 		h.mu.Lock()
