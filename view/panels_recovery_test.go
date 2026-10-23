@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,3 +212,39 @@ func TestLateReadAfterResumeChangesNothing(t *testing.T) {
 		t.Fatal("A late read froze the renderer again")
 	}
 }
+
+// V6: the hub restarted while this renderer asked the user (case C of the former tests/panels-lab.mjs). A restarted
+// renderer attaches again; the attach reply names the replacement as confirming, so the prompt is
+// shown again, and Discard reaches the hub with the new attachment. The hub side (the row stays
+// confirming over a restart, the old attachment is stale) is TestSlotConfirmSurvivesHubRestartLab.
+func TestRestartedRendererPromptsAgainAndDiscards(t *testing.T) {
+	f := &protocolFixture{attachReplacement: map[string]any{"replacement_id": "r1", "state": "confirming", "next_title": "Worktrees"}}
+	r := newRecovery(t, f)
+	r.apply(r.next(isRecovered), false)
+	r.apply(r.next(isSnapshot), false)
+	// Only the hub restarted: the renderer keeps its unsaved input (a text field, which starts no
+	// draft save). Without it, the renderer discards by itself when it is ready (reload.go).
+	field := newEditor("saved", "1", "text")
+	field.setText("unsaved")
+	r.m.editors["field"] = field
+	r.apply(r.next(isReady), false) // Discard waits for a ready connection (replacementBlocked)
+	if r.m.replacement == nil || r.m.replacement.State != "confirming" || r.edits("lost") {
+		t.Fatal("The attach reply did not restore the prompt")
+	}
+	screen := r.m.View().Content
+	if !strings.Contains(screen, "Keep editing") || !strings.Contains(screen, "Discard and replace") {
+		t.Fatal(screen)
+	}
+	r.run(r.m.chooseReplacement("discard"))
+	f.mu.Lock()
+	confirms, attachment := f.confirms, f.attachment
+	f.mu.Unlock()
+	if len(confirms) != 1 || confirms[0]["choice"] != "discard" || confirms[0]["replacement_id"] != "r1" || confirms[0]["attachment"] != attachment {
+		t.Fatalf("Discard did not reach the hub with the new attachment: %v (attachment %s)", confirms, attachment)
+	}
+	if r.m.replacement == nil || r.m.replacement.State != "opening" {
+		t.Fatal("The renderer did not follow the hub's answer")
+	}
+}
+
+func isReady(msg tea.Msg) bool { c, ok := msg.(connectionMsg); return ok && c.Ready }

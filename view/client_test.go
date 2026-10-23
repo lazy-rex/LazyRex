@@ -53,6 +53,9 @@ type protocolFixture struct {
 	gets int
 	// conns counts the connections that reached the fixture (exit_test.go).
 	conns int
+	// confirms: the args of each hub.view.release_confirm call; the answer is the replacement
+	// opening (a discard) or cancelled (a keep).
+	confirms []map[string]any
 }
 
 // changed sends view.changed for the current attachment, as the hub does after a change.
@@ -169,6 +172,17 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 					problem = &wireError{Code: "stale_attachment", Message: "Wrong close attachment"}
 				} else {
 					result = map[string]any{"status": "closed"}
+				}
+			case "hub.view.release_confirm":
+				f.confirms = append(f.confirms, args)
+				if args["attachment"] != f.attachment {
+					problem = &wireError{Code: "refused", Message: "stale_attachment: attach again"}
+				} else {
+					state := "opening"
+					if args["choice"] == "keep" {
+						state = "cancelled"
+					}
+					result = map[string]any{"replacement": map[string]any{"replacement_id": args["replacement_id"], "state": state}}
 				}
 			case "hub.view.replacement":
 				f.reads++
