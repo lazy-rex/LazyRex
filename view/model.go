@@ -849,7 +849,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+t":
-			m.selectText = !m.selectText
+			if !m.inline() { // an inline frame has no mouse mode to turn off
+				m.selectText = !m.selectText
+			}
 			return m, nil
 		case "tab":
 			return m, m.moveFocus(1)

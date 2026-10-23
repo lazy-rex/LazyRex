@@ -116,15 +116,14 @@ func (m *model) quit() tea.Cmd {
 // inline reports a frame on the primary screen: neutral, thread, or the wait before alt-on.
 func (m *model) inline() bool { return m.mode != viewAlt || m.altPending }
 
-// liveRows returns the live region of an inline frame and the status line. Beside a history node
-// the composer and the other nodes get threadLiveRows rows; without one they get the pane height
-// minus 2 (the region and its status line stay under the pane height). Text is cut first; when
+// liveRows returns the live region of an inline frame and the status line. The composer and the
+// other nodes get the pane height minus 2 rows, and at most threadLiveRows beside a history node,
+// so the whole frame is at most the pane height minus 1 (v1.2 item 1f). Text is cut first; when
 // the controls alone do not fit, the rows become a window that holds the focused control.
 func (m *model) liveRows() []row {
-	history := treeHasHistory(m.snapshot)
 	bound := max(3, m.height-2)
-	if history {
-		bound = threadLiveRows
+	if treeHasHistory(m.snapshot) {
+		bound = min(threadLiveRows, bound)
 	}
 	m.liveEditor = 1
 	body := m.bodyRows()
@@ -136,6 +135,11 @@ func (m *model) liveRows() []row {
 		}
 		m.liveEditor = max(1, bound-len(body)-chrome)
 		composer = m.composerRows()
+		// The top border is not one of the editor's focus rows (an inline frame has no mouse), so a
+		// short focus window holds the editor row and Send together.
+		if len(composer) > 1 {
+			composer[1].Control = nil
+		}
 	}
 	body = trimBlank(body)
 	rows := append(cutText(body, max(0, bound-len(composer))), composer...)
@@ -268,14 +272,12 @@ func (m *model) inlineHelp() string {
 
 // inlineView draws the live region on the primary screen, without mouse reporting.
 func (m *model) inlineView() tea.View {
-	if m.quitting || m.altPending {
+	if m.altPending {
 		m.visibleRows = nil
 		v := tea.NewView("")
 		// The wait before alt-on keeps focus reporting and the title, so they do not flicker.
-		v.ReportFocus = m.altPending
-		if m.altPending {
-			v.WindowTitle = singleLine(m.snapshot.Tree.Title)
-		}
+		v.ReportFocus = true
+		v.WindowTitle = singleLine(m.snapshot.Tree.Title)
 		return v
 	}
 	m.visibleRows = m.liveRows()

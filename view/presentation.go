@@ -561,6 +561,13 @@ func fitHints(help string, width int) string {
 	return ansi.Truncate(strings.Join(hints, " · "), width, "…")
 }
 func (m *model) View() tea.View {
+	if m.quitting {
+		// The last frame is empty, on the screen that is active, so no row stays after the exit.
+		m.visibleRows, m.visibleSelect = nil, nil
+		v := tea.NewView("")
+		v.AltScreen = !m.inline()
+		return v
+	}
 	if m.replacement != nil {
 		return m.replacementView()
 	}
@@ -579,11 +586,6 @@ func (m *model) View() tea.View {
 	if m.inline() {
 		m.visibleSelect = nil
 		return m.inlineView()
-	}
-	if m.quitting {
-		v := tea.NewView("")
-		v.AltScreen = true
-		return v
 	}
 	var lines []string
 	h, thumb, start, limit := m.scrollbar()

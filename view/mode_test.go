@@ -369,3 +369,150 @@ func TestAltClearBytes(t *testing.T) {
 		t.Fatalf("no erase between the inline error and alt-on: %q", between)
 	}
 }
+
+// codex-29's probes for bbdb3152 (c29-bbdb3152-probe-bodies), unchanged except gofmt.
+func TestReviewThreadSmallPaneWithControls(t *testing.T) {
+	m := modeModel(6)
+	m.apply(treeOf(tvHistory, tvAction("w1"), tvAction("w2"), tvComposer))
+	v := m.View()
+	if n := len(strings.Split(v.Content, "\n")); n > m.height {
+		t.Fatalf("thread live frame has %d rows in a %d-row pane: %q", n, m.height, v.Content)
+	}
+}
+func TestReviewReplacementQuitClears(t *testing.T) {
+	m := modeModel(20)
+	m.apply(treeOf(tvHistory, tvComposer))
+	m.replacement = &panelReplacement{ID: "r1", replacementState: replacementState{State: "opening", NextTitle: "Next"}}
+	m.Update(closeFinished{})
+	if !m.quitting {
+		t.Fatal("closeFinished did not request quit")
+	}
+	if v := m.View(); v.Content != "" {
+		t.Fatalf("replacement frame survives successful close: %q", v.Content)
+	}
+}
+func TestReviewInlineCtrlTDoesNothing(t *testing.T) {
+	m := modeModel(20)
+	m.apply(treeOf(tvHistory, tvComposer))
+	m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	if m.selectText {
+		t.Fatal("Ctrl+T changed text selection state in thread mode")
+	}
+}
+
+// TestQuitFrameKeepsTheScreen: the last frame is empty on the screen that is active. The wait
+// before alt-on is still the primary screen.
+func TestQuitFrameKeepsTheScreen(t *testing.T) {
+	m := modeModel(30)
+	m.apply(treeOf(tvList))
+	m.View()
+	m.quit()
+	if v := m.View(); v.Content != "" || !v.AltScreen {
+		t.Fatalf("alt mode: the last frame: alt=%t content=%q", v.AltScreen, v.Content)
+	}
+	m = modeModel(30)
+	m.apply(treeOf(Node{ID: "l", Type: "loading", Text: "Loading"}))
+	m.View()
+	m.apply(treeOf(tvList))
+	if !m.altPending {
+		t.Fatal("no wait before alt-on")
+	}
+	m.quit()
+	if v := m.View(); v.Content != "" || v.AltScreen {
+		t.Fatalf("the wait before alt-on: the last frame: alt=%t content=%q", v.AltScreen, v.Content)
+	}
+}
+
+// TestShortThreadPaneKeepsEditorAndSend (v1.2 item 1f): in a 6-row pane, a thread tree with two
+// actions and a composer with a draft is at most 5 rows. Tab and Shift+Tab reach every control,
+// the focused control is on screen, and the editor row and Send stay together. A resize keeps the
+// focus.
+func TestShortThreadPaneKeepsEditorAndSend(t *testing.T) {
+	m := modeModel(30)
+	m.apply(treeOf(tvHistory, tvAction("w1"), tvAction("w2"), tvComposer))
+	m.editors["composer"].Area.SetValue("DRAFT-TEXT")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
+	controls := m.controls()
+	ids := make([]string, len(controls))
+	for i, c := range controls {
+		ids[i] = c.ID
+	}
+	if strings.Join(ids, " ") != "w1:action w2:action edit:composer composer:send" {
+		t.Fatalf("controls %q", ids)
+	}
+	check := func(step string) {
+		t.Helper()
+		v := ansi.Strip(m.View().Content)
+		if n := len(strings.Split(v, "\n")); n > m.height-1 {
+			t.Fatalf("%s: %d rows in a pane of %d:\n%s", step, n, m.height, v)
+		}
+		want := map[string][]string{"w1:action": {"Action w1"}, "w2:action": {"Action w2"}, "edit:composer": {"DRAFT-TEXT", "Send"}, "composer:send": {"DRAFT-TEXT", "Send"}}[m.focus]
+		for _, s := range want {
+			if !strings.Contains(v, s) {
+				t.Fatalf("%s: focus %q, %q is not on screen:\n%s", step, m.focus, s, v)
+			}
+		}
+	}
+	m.setFocus(ids[0])
+	check("first")
+	for i := 1; i < len(ids); i++ {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		if m.focus != ids[i] {
+			t.Fatalf("Tab %d: focus %q, want %q", i, m.focus, ids[i])
+		}
+		check(fmt.Sprintf("Tab %d", i))
+	}
+	for i := len(ids) - 2; i >= 0; i-- {
+		m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+		if m.focus != ids[i] {
+			t.Fatalf("Shift+Tab to %d: focus %q, want %q", i, m.focus, ids[i])
+		}
+		check(fmt.Sprintf("Shift+Tab %d", i))
+	}
+	m.setFocus("edit:composer")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	check("tall pane")
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
+	if m.focus != "edit:composer" {
+		t.Fatalf("the resize moved the focus to %q", m.focus)
+	}
+	check("resize from 30 to 6 rows")
+}
+
+// TestInlineIgnoresTheMouse: an inline frame has no mouse reporting, so a mouse event changes
+// nothing. In alt mode a click still focuses a control and Ctrl+T still turns text selection on.
+func TestInlineIgnoresTheMouse(t *testing.T) {
+	m := modeModel(30)
+	m.apply(treeOf(tvHistory, tvAction("w1"), tvComposer))
+	m.View()
+	at := func() (int, int) {
+		for y, r := range m.visibleRows {
+			for _, c := range r.rowControls() {
+				if c.ID == "w1:action" {
+					return m.leftMargin() + c.Left, y
+				}
+			}
+		}
+		t.Fatal("w1 is not on screen")
+		return 0, 0
+	}
+	x, y := at()
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	m.Update(tea.MouseMotionMsg{X: x, Y: y})
+	if m.pressed != "" || m.focus == "w1:action" || m.pointerKnown {
+		t.Fatalf("inline: pressed=%q focus=%q pointer=%t", m.pressed, m.focus, m.pointerKnown)
+	}
+
+	m = modeModel(30)
+	m.apply(treeOf(tvAction("w1"), tvComposer))
+	m.View()
+	x, y = at()
+	m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if m.pressed != "w1:action" || m.focus != "w1:action" {
+		t.Fatalf("alt: pressed=%q focus=%q", m.pressed, m.focus)
+	}
+	m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	if !m.selectText {
+		t.Fatal("alt: Ctrl+T did not turn text selection on")
+	}
+}

@@ -57,7 +57,8 @@ The renderer decides its mode once per process (thread view v1.2, item 1; view/m
   The renderer draws inline and prints nothing. The first frame is "Connecting to the hub…".
 - Thread: the first tree with a history node, no list or form node, and a layout other than `transcript`.
   The renderer stays on the primary screen for the life of the process, without mouse reporting.
-  The terminal owns the scrollback, so Page Up, Page Down, the wheel and Ctrl+T do nothing.
+  The terminal owns the scrollback and the pointer, so Page Up, Page Down, Ctrl+T and mouse events do nothing.
+  This applies to every inline frame: neutral, thread, and the wait before alt-on.
 - Alt: the first tree with any other content, a history node beside a list or form, or a paired composer
   (layout `transcript`). The renderer uses the alt screen as before.
 
@@ -67,12 +68,15 @@ Two defect cases show a fixed status note once per process:
 "view defect: history beside a list or form" and "view defect: history in alt mode".
 
 The live region is the composer and the other nodes, then one status line.
-Beside a history node they get at most 8 rows.
-Without one they get the pane height minus 2 rows.
+They get at most the pane height minus 2 rows, and at most 8 rows beside a history node.
+So every inline frame is at most the pane height minus 1 rows. Alt mode keeps its full-pane layout.
 When the rows do not fit, the renderer cuts text rows only, and ends each cut with "… <n> more lines".
 When the controls alone do not fit, the live region is a window that always holds the focused control,
 with "… <n> more above" and "… <n> more below" rows.
 Tab and Shift+Tab reach every control, and the window follows the focus.
+The composer's top border is not one of the editor's focus rows, so a short window holds the editor row and Send.
+
+The last frame before the exit is empty, on the screen that is active, also during a panel replacement.
 
 ### Known limit: the clear before the alt screen
 

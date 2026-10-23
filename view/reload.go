@@ -50,6 +50,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.reloadReady || m.retireReady || m.closeReady {
 		return m, nil
 	}
+	// An inline frame turns mouse reporting off: the terminal owns the pointer and the scrollback.
+	if m.inline() {
+		switch msg.(type) {
+		case tea.MouseMotionMsg, tea.MouseWheelMsg, tea.MouseClickMsg, tea.MouseReleaseMsg:
+			return m, nil
+		}
+	}
 	m.reuseView = false
 	if _, motion := msg.(tea.MouseMotionMsg); !motion {
 		m.visibleSelect = nil
