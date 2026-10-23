@@ -1,6 +1,8 @@
--- A plugin for the thread view mode labs (mode_lab_test.go). Its route /thread/lab renders by the
+-- A plugin for the thread view mode labs (mode_lab_test.go). Its route /forms/modelab renders by the
 -- SQL row stage(n): 0 is a read-only thread (a history node and a notice), 1 is an error tree with
 -- 12 widget actions, more than a 10-row pane holds. An action records its name in clicked(name).
+-- A command opens only a /forms/ or /panels/ route (hub forms.go). The renderer decides its mode
+-- from the tree, never from the route, so stage 0 is a thread frame on this form route.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 
@@ -53,7 +55,7 @@ rex.on('client_perform_requested', function(ctx, ev)
 end)
 
 hub('hub.register', {plugin = 'modelab', instance_id = instance_id,
-  commands = {{id = 'mode', title = 'Mode lab', route = '/thread/lab', user_only = 'a lab view'}}})
+  commands = {{id = 'mode', title = 'Mode lab', route = '/forms/modelab', user_only = 'a lab view'}}})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS stage (n INTEGER)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS clicked (name TEXT)'})
 rex.call('client.set_label', {label = 'lazyrex-plugin:modelab'})
