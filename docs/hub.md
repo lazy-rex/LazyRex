@@ -217,8 +217,9 @@ tracked read of its tables.
   incomplete.
 - A good, tracked render installs its change names beside its tables. Then `changed(name)` marks
   the view when its names hold that name, whatever `deps.changes` says. A render that read change
-  names and no table gets an empty table set: no SQL commit marks it. A render that read nothing
-  keeps no table set, as today.
+  names and no table gets an empty table set: after the render finishes, a commit to a table does
+  not mark it. A schema change still marks it, and so does any commit while the view is in flight.
+  A render that read nothing keeps no table set, as today.
 - The rules above for table sets apply to change names too: a view in flight is marked by every
   change; a new registration drops the names, and a render from before it installs nothing; a
   failed or untracked render clears them.
