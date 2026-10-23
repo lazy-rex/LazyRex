@@ -81,13 +81,13 @@ func retireSchema(db *sql.DB) error {
 	for _, s := range retiredSchema {
 		var n int
 		if err := db.QueryRow(s.check).Scan(&n); err != nil {
-			return err
+			return fmt.Errorf("retire schema check %q: %w", s.check, err)
 		}
 		if n == 0 {
 			continue
 		}
 		if _, err := db.Exec(s.statement); err != nil {
-			return err
+			return fmt.Errorf("retire schema %q: %w", s.statement, err)
 		}
 	}
 	return nil
