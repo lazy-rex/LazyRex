@@ -2391,18 +2391,22 @@ Each hub pulls from its peers. A hub never pushes data.
 
 | Action | Caller | Args | Result |
 |---|---|---|---|
-| `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB) | `{seq, queued}` |
+| `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB JSON-encoded) | `{seq, queued}` |
 | `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after` | `{envelopes: [{seq, plugin, key, body, created}], more}` |
 | `hub.peer.nudge` | a peer hub | `hub` | `{}` |
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
 
 - **Send.** The body is opaque to the hub. The same `(peer, plugin, key)` with the same body returns
   the first `seq`. Another body is `key_conflict`. Both rules stay after the peer acked the envelope:
-  the ack keeps the row and clears only the body. Other errors: `unknown_hub`, `too_large`,
-  `not_plugin`.
+  the ack keeps the row and clears only the body. Two sends of one key at the same time get one
+  row. Other errors: `unknown_hub`, `too_large`, `not_plugin`.
+- **Size.** The hub measures the body JSON-encoded: a control character encodes to 6 bytes. The
+  send is also `too_large` when the envelope cannot fit alone in one pull reply. So each accepted
+  envelope can be delivered.
 - **Seq.** `seq` is an AUTOINCREMENT key, so the hub never reuses a `seq`, also after a delete.
 - **Pull.** `after = N` acks every envelope up to `N`. The reply has the next envelopes: at most 100,
-  or 1 MiB of bodies (always at least one envelope).
+  and at most 1 MiB encoded (always at least one envelope). If the hub's Rex connection takes
+  smaller reply frames ("Reply size"), that smaller limit applies.
 - **Status.** Each peer row has `name`, `server`, `state` (`unknown`, `up`, `down`), `last_ok`,
   `last_error`, `outbox` (envelopes not acked), `oldest_age_s`, `after` (this hub's cursor for that
   peer) and `more`.
@@ -2415,8 +2419,10 @@ The receiver gives each envelope, in `seq` order, to its local plugin with the s
 - The plugin accepts with any result.
 - The plugin refuses with the result `{"refused": "<code>", "message": "..."}`. The hub logs the
   refusal and moves on. A refusal is a result, not an error.
-- Any error stops the pull: a failed peer call, a plugin that does not run here, a failed or lost
-  `peer.receive`. The envelope comes again on the next pull. A plugin must accept a repeat of a key.
+- A plugin that is not installed on the receiver (not in its config) gets no envelope. The hub
+  logs the envelope and moves on.
+- Any error stops the pull: a failed peer call, an installed plugin that does not run now, a failed
+  or lost `peer.receive`. The envelope comes again on the next pull. A plugin must accept a repeat of a key.
 - The cursor moves past an envelope only after the plugin answered. The cursor never moves back.
 
 The Messaging plugin uses its message ID as the key. B stores the sender as `<from>@A`. A message to
