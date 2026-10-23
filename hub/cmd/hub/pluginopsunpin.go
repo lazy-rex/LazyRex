@@ -119,6 +119,10 @@ func (h *Hub) opUnpin(ctx context.Context, op *pluginOp) error {
 		return err
 	}
 	defer release()
+	// reloadMu after the flocks (main.go): a reload reads the managed file and applies it under
+	// reloadMu, so the guards and the rename are one decision that no reload can split.
+	h.reloadMu.Lock()
+	defer h.reloadMu.Unlock()
 	delete(h.pops.busy, op.ID)
 	// The open attempt is settled first, also when the lock does not read (b is nil then): the op
 	// leaves the phase, so no later pass settles it.
