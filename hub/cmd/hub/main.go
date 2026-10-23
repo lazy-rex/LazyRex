@@ -322,7 +322,7 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
 	"hub.prompts", "hub.prompt.answer",
 	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part",
-	"hub.peer.send", "hub.peer.pull", "hub.peer.nudge"}
+	"hub.peer.send", "hub.peer.pull", "hub.peer.nudge", "hub.peer.plugins"}
 
 // hubClientActions are the actions that the hub declares on its own client (the plugin face): its
 // own actions, hubToolActions and, in test mode, the test actions. A covered read takes the render
@@ -952,6 +952,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.peerPullServe(ctx, args)
 	case "hub.peer.nudge":
 		return h.peerNudge(args)
+	case "hub.peer.plugins":
+		return h.peerPluginsServe(args)
 	case "hub.peer.status":
 		return h.peerStatus(ctx)
 	case "hub.identity.report":
