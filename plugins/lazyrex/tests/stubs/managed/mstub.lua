@@ -3,6 +3,8 @@
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 print('mstub runs with k=' .. tostring(rex.args.k))
+-- rex do decodes the arg crash=1 to the number 1.
+if rex.args.crash then error('mstub crashes on purpose (arg crash=1)') end
 local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.register', args = {plugin = 'mstub',
   instance_id = instance_id, exports = {}, commands = {{id = 'main', title = 'Mstub…', route = '/panels/main', surface = 'panel', landing = true, user_only = 'navigation'}}}, timeout_ms = 10000})
 if err or not res then error('register: ' .. tostring(err)) end

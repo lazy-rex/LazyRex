@@ -197,6 +197,9 @@ local function entry_detail(e)
   if e.state == 'stopped' and e.desired == 'stopped' then d = 'Disabled: stays stopped until you enable it' end
   if e.tag then d = d .. ' · ' .. e.tag end
   if e.commit then d = d .. ' · ' .. e.commit:sub(1, 12) end
+  -- The lock can pin another commit than the one that runs: it runs at the next explicit start.
+  if (e.pinned_commit or '') ~= '' and e.pinned_commit ~= e.commit then d = d .. ' · pinned ' .. e.pinned_commit:sub(1, 12) end
+  d = e.source .. ' · ' .. d
   if type(e.error) == 'string' and e.error ~= '' then d = d .. ' · ' .. e.error end
   if type(e.candidate) == 'table' then
     d = d .. (e.candidate.error and (' · New code refused: ' .. e.candidate.error) or ' · New code is ready: it runs at the next start')
@@ -271,8 +274,10 @@ local function entry_tree(key, render_id, view_id)
   if not e then return gone('Plugin', render_id, view_id) end
   local nodes = {widget('detail', entry_key(e) .. '\n' .. entry_detail(e)), progress_node(render_id, view_id)}
   local github = e.source:sub(1, 7) == 'github:'
-  if e.state ~= 'running' then nodes[#nodes + 1] = button('enable', 'enable', 'Enable (start)', github and navigation or op_tool) end
-  if e.name ~= 'lazyrex' and e.state == 'running' then nodes[#nodes + 1] = button('disable', 'disable', 'Disable (stop)', op_tool) end
+  -- Desired running: the hub runs it or tries to (waiting, crashing). Disable stops that too.
+  local trying = e.desired == 'running' and e.state ~= 'refused' and e.state ~= 'retained'
+  if e.state ~= 'running' and not trying then nodes[#nodes + 1] = button('enable', 'enable', 'Enable (start)', github and navigation or op_tool) end
+  if e.name ~= 'lazyrex' and e.desired == 'running' then nodes[#nodes + 1] = button('disable', 'disable', 'Disable (stop)', op_tool) end
   if e.state == 'running' then nodes[#nodes + 1] = button('restart', 'restart', 'Restart', op_tool) end
   if e.managed and github then nodes[#nodes + 1] = button('update', 'update', 'Update…', navigation) end
   if e.managed then

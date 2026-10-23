@@ -1,0 +1,1 @@
+{"name": "mdep", "main": "mdep.lua", "depends": ["mstub"]}

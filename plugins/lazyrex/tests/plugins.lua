@@ -1,27 +1,33 @@
 -- The plugin manager views (C8): Plugins… lists the entries, an entry menu sends its ops as the
--- plugins view effect, and a form that sent an op stays open and shows that op. The managed entry
--- is tests/stubs/managed (plugin mstub), written into the lab's managed file and loaded with
--- hub.plugins.reload. Agent path: hub.plugins.op on the agent face.
+-- plugins view effect, and a form that sent an op stays open and shows that op. The managed
+-- entries are tests/stubs/managed (plugin mstub; arg crash=1 makes it crash) and
+-- tests/stubs/dependent (plugin mdep, which depends on mstub), written into the lab's managed file
+-- and loaded with hub.plugins.reload. Agent path: hub.plugins.op on the agent face.
 
 local codex = agent('codex', {kind = 'codex', title = 'Codex'})
 local checkout = H.args.sdk:gsub('/sdk/lua$', '')
 local stub = checkout .. '/plugins/lazyrex/tests/stubs/managed'
+local dependent = checkout .. '/plugins/lazyrex/tests/stubs/dependent'
 local KEY = 'managed:ms'
 
 local function hex(s) return (s:gsub('.', function(c) return string.format('%02x', c:byte()) end)) end
-local function managed(args)
+-- managed writes the managed file: ms with args, and md when with_dependent, then reloads.
+local function managed(args, with_dependent)
+  local list = {{id = 'ms', source = stub, args = args}}
+  if with_dependent then list[2] = {id = 'md', source = dependent} end
   local f = assert(io.open(H.args.lab .. '/hub/plugins.json', 'w'))
-  f:write(rex.json.encode({plugins = {{id = 'ms', source = stub, args = args}}}))
+  f:write(rex.json.encode({plugins = list}))
   f:close()
   H.hub('hub.plugins.reload', {})
 end
-local function entry()
-  for _, e in ipairs(H.hub('hub.plugins', {}).entries or {}) do if e.managed == 'ms' then return e end end
+local function entry(id)
+  for _, e in ipairs(H.hub('hub.plugins', {}).entries or {}) do if e.managed == (id or 'ms') then return e end end
 end
 local function running() local e = entry(); return e and e.state == 'running' end
-local function menu(p)
-  expect(p:action('entries', 'manage', {item_id = KEY}).status).to_be('succeeded')
-  local m = user:view('/forms/plugins/entry/' .. hex(KEY), nil, p.session)
+local function menu(p, key)
+  key = key or KEY
+  expect(p:action('entries', 'manage', {item_id = key}).status).to_be('succeeded')
+  local m = user:view('/forms/plugins/entry/' .. hex(key), nil, p.session)
   return m, m:render()
 end
 local function settings_node(tree)
@@ -49,6 +55,7 @@ test('Plugins… lists the managed entry; its menu shows the settings and no ope
   for _, i in ipairs(node(tree, 'entries').items) do if i.id == KEY then item = i end end
   expect(item.label).to_be('mstub')
   expect(item.detail:find('running', 1, true) ~= nil).to_be(true)
+  expect(item.detail:find(stub, 1, true) ~= nil).to_be(true) -- the source of the managed entry
   local _, mt = menu(p)
   expect(node(mt, 'progress').text).to_be('No operation yet.')
   local s = settings_node(mt)
@@ -93,6 +100,30 @@ test('a value with a line break: the menu has no settings form', function()
   expect(settings_node(mt)).to_be(nil)
   expect(node(mt, 'settings').text:find('cannot be edited here', 1, true) ~= nil).to_be(true)
   managed({k = 'v'})
+end)
+
+-- The candidate-B refusal of an agent restart is TestPluginOpRestartAdmission (Go).
+test('an agent restarts the entry with hub.plugins.op: a new mstub instance registers', function()
+  wait('mstub runs', running)
+  local function instances()
+    local set = {}
+    for _, e in ipairs(H.hub('hub.test.events', {event = 'plugin_registered'}).events or {}) do
+      if e.plugin == 'mstub' then set[e.instance_id] = true end
+    end
+    return set
+  end
+  local before = instances()
+  local op = codex:call('hub.plugins.op', {key = 'agent-restart', op = 'restart', entry = KEY})
+  local ops
+  wait('the agent restart ends', function()
+    ops = codex:call('hub.plugins.ops', {op_id = op.op_id})
+    return ops.phase == 'done'
+  end)
+  expect(ops.error or '').to_be('')
+  wait('a new mstub instance registers', function()
+    for id in pairs(instances()) do if not before[id] then return true end end
+  end)
+  wait('mstub runs', running)
 end)
 
 test('Disable keeps the entry stopped over a hub restart; Enable starts it again', function()
@@ -149,4 +180,34 @@ test('Add plugin…: Next refuses a source with @ref and opens the version step 
   local tree = s:render()
   expect(node(tree, 'shown_source').text).to_be('github:lab/r')
   expect(node(tree, 'add').fields[1].options[1].value).to_be('latest')
+end)
+
+-- The remove left mstub's record desired stopped; an added entry of the same name keeps it.
+test('a crashing entry (desired running) has Disable and no Enable; Disable stops the retries', function()
+  managed({crash = '1'})
+  wait('ms is listed, stopped', function() local e = entry(); return e and e.state == 'stopped' end)
+  local p = user:panel('plugins')
+  local m = menu(p)
+  expect(m:action('enable', 'enable', {}, 'crash-en').status).to_be('succeeded')
+  wait('ms crashes', function() return entry().state == 'crashing' end)
+  local mt = m:render()
+  expect(node(mt, 'enable')).to_be(nil)
+  expect(node(mt, 'disable') ~= nil).to_be(true)
+  expect(m:action('disable', 'disable', {}, 'crash-dis').status).to_be('succeeded')
+  progress(m, 'stop · done')
+  wait('ms stops', function() local e = entry(); return e.state == 'stopped' and e.desired == 'stopped' end)
+  expect(node(m:render(), 'disable')).to_be(nil)
+end)
+
+test('a waiting entry (its dependency is stopped) has Disable; Disable stops it', function()
+  expect(entry().desired).to_be('stopped') -- the test above disabled ms
+  managed({k = 'v'}, true)
+  wait('md waits for mstub', function() local e = entry('md'); return e and e.state == 'waiting' end)
+  local p = user:panel('plugins')
+  local m, mt = menu(p, 'managed:md')
+  expect(node(mt, 'enable')).to_be(nil)
+  expect(node(mt, 'disable') ~= nil).to_be(true)
+  expect(m:action('disable', 'disable', {}, 'wait-dis').status).to_be('succeeded')
+  progress(m, 'stop · done')
+  wait('md stops', function() local e = entry('md'); return e.state == 'stopped' and e.desired == 'stopped' end)
 end)
