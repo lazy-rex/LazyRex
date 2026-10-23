@@ -103,8 +103,7 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   **The order rule.** Set `base = N` only when every live database is already at version N or above.
   So a base collapses only the steps that a release before it shipped: N is at most the last version
   of the previous release. New steps of the same release stay entries above the base; a later
-  release can collapse them. The release rehearsal on a copy of the live data checks that each
-  plugin starts with no refusal. The commit that collapses the steps has a test that compares the
+  release can collapse them. The commit that collapses the steps has a test that compares the
   schema from the base with the schema from the old steps 1 to N (`sqlite_master`: type, name and
   the normalized SQL). The reviewer sees it pass with the old steps, before they go.
 

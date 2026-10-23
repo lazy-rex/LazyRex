@@ -706,16 +706,12 @@ reads a socket from an env var. The one exception, `replyguard_lab_test.go` (`RE
 goes with the hub.store removal.
 
 `HARNESS_LAB=1 go test ./cmd/hub` runs the tests gated on `HARNESS_LAB` (rexLab,
-harnessBinary). The tests behind their own gates (`PALETTE_LAB`, `RELEASE_LAB`, `SHUTDOWN_LAB`,
-`SETUP_LAB` and `HUBCTL_LAB`) also start their own servers, but they skip unless their gate is set.
+harnessBinary). The tests behind their own gates (`PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and
+`HUBCTL_LAB`) also start their own servers, but they skip unless their gate is set.
 
 The main lab is the full lab that runs on hub main after each push. It sets `HARNESS_LAB`,
 `PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and `HUBCTL_LAB` (together about 40 s more on Linux).
-It sets `RELEASE_LAB` (about 26 min) only when the pushed range changes the release tool or the
-schema that it checks: a path from `git diff --name-only <before>..<after>` matches
-`hub/cmd/hub/release*` or `hub/cmd/hub/store.go`. Every release candidate tip runs `RELEASE_LAB`.
-The first lines of each main lab log name the tip, the envs, and the rule that set or left out
-`RELEASE_LAB`.
+The first lines of each main lab log name the tip and the envs.
 
 - A test that runs the hub binary uses `o.startLab` and `o.startHub` (`TestSessionRenameKeptLab`).
 - A test that runs an in-process `Hub` uses `rexLab(t)` (`rexlab_test.go`). It starts only the lab

@@ -65,13 +65,3 @@ func procArgv(pid int) ([]string, error) {
 	}
 	return strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00"), nil
 }
-
-// procArgvExact returns the exact arguments of pid (procArgv reads them exactly on Linux). An empty
-// command line (a kernel thread or a zombie) is an error.
-func procArgvExact(pid int) ([]string, error) {
-	argv, err := procArgv(pid)
-	if err == nil && len(argv) == 1 && argv[0] == "" {
-		err = fmt.Errorf("process %d has an empty command line", pid)
-	}
-	return argv, err
-}

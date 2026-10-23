@@ -196,7 +196,7 @@ func TestExpectRunDependencyStopsLab(t *testing.T) {
 	}
 }
 
-// A guarded start of a crashing plugin (the release tool's recovery of a crash): c registers and
+// A guarded start of a crashing plugin: c registers and
 // exits at once, so the hub reports it crashing with a respawn due. Its source is then fixed, and
 // hub.admin.start with expect_run starts it. A due respawn runs the selected run (the snapshot of
 // the crashing source), so only the start publishes the fixed source. The end state is one live

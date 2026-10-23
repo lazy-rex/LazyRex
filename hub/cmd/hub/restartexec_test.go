@@ -259,7 +259,11 @@ func TestRelaunchExecFailureStartsTheOldHub(t *testing.T) {
 func TestRelaunchRunsTheNewVersion(t *testing.T) {
 	dir := t.TempDir()
 	newBin := filepath.Join(dir, "new")
-	if err := copyFile(os.Args[0], newBin); err != nil {
+	b, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newBin, b, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	os.Chmod(newBin, 0o700)

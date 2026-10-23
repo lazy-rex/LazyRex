@@ -7,8 +7,8 @@
 #   bin/lazyrex-hub, bin/lazyrex-view   setup needs both in one directory
 #   sdk/lua/boot.lua, sdk/lua/lazyrex.lua   the plugin SDK; the hub finds sdk/lua above its binary
 #
-# The builds keep the Go VCS stamp (vcs.revision, vcs.modified): the release tool checks it with
-# go version -m. A version other than "dev" needs a clean checkout. TARGETS (os/arch, separated by
+# The builds keep the Go VCS stamp (vcs.revision, vcs.modified): go version -m shows it.
+# A version other than "dev" needs a clean checkout. TARGETS (os/arch, separated by
 # spaces) limits the targets.
 set -eu
 

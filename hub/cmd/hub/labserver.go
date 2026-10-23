@@ -2,8 +2,7 @@ package main
 
 // The lab Rex server of lazyrex-hub test: one isolated server in its own directory, the lab proof
 // (lab.json, checked by checkLabProof), and the processes that were started on it, tracked by pid
-// and start time and stopped without a signal to any other process. Moved from testcmd.go without
-// a change in behavior, so that lazyrex-hub release rehearse can use the same code.
+// and start time and stopped without a signal to any other process.
 
 import (
 	"context"

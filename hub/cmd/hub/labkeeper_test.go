@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -135,6 +136,15 @@ func killedBySIGKILL(err error) bool {
 	}
 	ws, ok := e.Sys().(syscall.WaitStatus)
 	return ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL
+}
+
+// exitCode is the exit status of a failed command, -1 when it did not exit.
+func exitCode(err error) int {
+	var x interface{ ExitCode() int }
+	if errors.As(err, &x) {
+		return x.ExitCode()
+	}
+	return -1
 }
 
 // EOF before "start", or another first line: exit 125, and the command never ran.
