@@ -22,23 +22,6 @@ import (
 
 const agentLabel = "lazyrex"
 
-// agentHubActions are the hub's own actions on the agent face. Their descriptors come from
-// hubToolActions, agentListActions and pluginOpActions (hub.plugins.op, so the parity check of a
-// plugin manager view action finds it; agentDispatch sends it to pluginOpAgent first).
-var agentHubActions = map[string]bool{"hub.profiles": true, "hub.spawn": true, "hub.workers": true, "hub.stop": true,
-	"hub.agents": true, "hub.agents.resolve": true, "hub.plugins.op": true, "hub.peer.status": true}
-
-var agentListActions = []map[string]any{
-	{"name": "hub.agents", "kind": "client", "title": "List agents",
-		"description": "List the agents you can message: \"user\" (the human) and each conversation (id \"<kind>:<conversation id>\", name = its tab label, state current, detached or superseded). Set all=true to include superseded conversations and the agent spawns that wait for their first report (id \"spawn:<spawn_id>\", state starting). Each entry has session_id, the Rex session of its pane (empty when unknown); set session_id to list only that session's agents.",
-		"args": map[string]any{"type": "object", "properties": map[string]any{"all": map[string]any{"type": "boolean"},
-			"session_id": map[string]any{"type": "string"}}, "additionalProperties": false}},
-	{"name": "hub.agents.resolve", "kind": "client", "title": "Resolve an agent",
-		"description": "Turn a name into an agent ID: an exact ID, an agent spawn address (\"spawn:<spawn_id>\"), a unique ID prefix (\"claude:7a18\"), or a unique tab name. An ambiguous name lists the candidates.",
-		"args": map[string]any{"type": "object", "properties": map[string]any{"to": map[string]any{"type": "string", "minLength": 1}},
-			"required": []string{"to"}, "additionalProperties": false}},
-}
-
 // agentFaceStart connects the agent face. The label is set after the first keymap, so a caller
 // that finds the label also finds the actions.
 func (h *Hub) agentFaceStart(ctx context.Context, socket string) error {
@@ -102,19 +85,6 @@ func (h *Hub) agentKeymapLoop(ctx context.Context) {
 			retry = time.After(time.Second)
 		}
 	}
-}
-
-// agentHubFace is the hub's own part of the agent face: the shared hub tools that agents may call,
-// the list actions, and the plugin manager's ops.
-func agentHubFace() []map[string]any {
-	var actions []map[string]any
-	for _, a := range hubToolActions {
-		if agentHubActions[a["name"].(string)] {
-			actions = append(actions, agentFaceAction(a))
-		}
-	}
-	actions = append(actions, agentListActions...)
-	return append(actions, pluginOpActions...)
 }
 
 // agentKeymap declares the hub's agent actions and the registered exports of every plugin that
@@ -218,7 +188,7 @@ func (h *Hub) agentAnswer(ctx context.Context, p perform) {
 const forwardTimeoutMS = 10000
 
 func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
-	if p.Action == "hub.plugins.op" || p.Action == "hub.plugins.ops" {
+	if a := actionNamed(p.Action); a != nil && a.opRoute {
 		return h.pluginOpAgent(ctx, p) // the agent face only (pluginops.go)
 	}
 	if agentHubActions[p.Action] {

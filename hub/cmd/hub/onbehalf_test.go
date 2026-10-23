@@ -51,9 +51,9 @@ func TestOnBehalfRefusals(t *testing.T) {
 // The agent face shows no on_behalf: an agent cannot use it. The plugin path keeps it.
 func TestAgentFaceHasNoOnBehalf(t *testing.T) {
 	seen := 0
-	for _, a := range hubToolActions {
-		name := a["name"].(string)
-		if !agentHubActions[name] {
+	for _, row := range hubActions {
+		a, name := row.desc, row.name
+		if a == nil || !agentHubActions[name] {
 			continue
 		}
 		face := agentFaceAction(a)

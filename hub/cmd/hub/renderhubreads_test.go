@@ -12,9 +12,9 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// hubCall makes a hub call of the plugin instance client through dispatch, with the render ID id
+// renderHubCall makes a hub call of the plugin instance client through dispatch, with the render ID id
 // ("": no render argument) and the other arguments of extra.
-func hubCall(h *Hub, client, action, id string, extra ...map[string]any) error {
+func renderHubCall(h *Hub, client, action, id string, extra ...map[string]any) error {
 	args := map[string]any{}
 	for _, e := range extra {
 		for k, v := range e {
@@ -59,7 +59,7 @@ func TestCoveredReadRules(t *testing.T) {
 	h := renderHub(t)
 	id := h.openRenderID("p", "c1", "v1", 0)
 	r := h.vs.renders[id]
-	if err := hubCall(h, "c1", "hub.agents", id); err != nil {
+	if err := renderHubCall(h, "c1", "hub.agents", id); err != nil {
 		t.Fatal(err)
 	}
 	if r.untracked || !r.changes["agents"] || len(r.changes) != 1 {
@@ -70,12 +70,12 @@ func TestCoveredReadRules(t *testing.T) {
 	closed := h.openRenderID("p", "c1", "v2", 0)
 	h.closeRenderID(closed)
 	for name, call := range map[string]func(id string){
-		"an error":            func(id string) { hubCall(h, "c1", "hub.agents.resolve", id) }, // no "to"
-		"no ID":               func(string) { hubCall(h, "c1", "hub.agents", "") },
-		"unknown ID":          func(string) { hubCall(h, "c1", "hub.agents", "r-unknown") },
-		"an older instance":   func(string) { hubCall(h, "c1", "hub.agents", h.openRenderID("p", "c0", "v2", 0)) },
-		"a closed ID":         func(string) { hubCall(h, "c1", "hub.agents", closed) },
-		"a non-covered read":  func(id string) { hubCall(h, "c1", "hub.info", id) },
+		"an error":            func(id string) { renderHubCall(h, "c1", "hub.agents.resolve", id) }, // no "to"
+		"no ID":               func(string) { renderHubCall(h, "c1", "hub.agents", "") },
+		"unknown ID":          func(string) { renderHubCall(h, "c1", "hub.agents", "r-unknown") },
+		"an older instance":   func(string) { renderHubCall(h, "c1", "hub.agents", h.openRenderID("p", "c0", "v2", 0)) },
+		"a closed ID":         func(string) { renderHubCall(h, "c1", "hub.agents", closed) },
+		"a non-covered read":  func(id string) { renderHubCall(h, "c1", "hub.info", id) },
 		"a non-string render": func(string) { h.renderCall("p", "c1", "hub.agents", map[string]any{"render": 1}) },
 	} {
 		id := h.openRenderID("p", "c1", "v1", 0)
@@ -89,7 +89,7 @@ func TestCoveredReadRules(t *testing.T) {
 
 	id = h.openRenderID("p", "c1", "v1", 0)
 	qid := h.openRenderID("q", "cq", "w", 0)
-	hubCall(h, "c1", "hub.agents", qid)
+	renderHubCall(h, "c1", "hub.agents", qid)
 	if !h.vs.renders[id].untracked || h.vs.renders[qid].untracked {
 		t.Errorf("an ID of another plugin: caller %v, owner %v", h.vs.renders[id].untracked, h.vs.renders[qid].untracked)
 	}
@@ -337,7 +337,7 @@ func TestCoveredReadsDispatchRender(t *testing.T) {
 		}
 		id := h.openRenderID("x", "client:x", "v1", 0)
 		r := h.vs.renders[id]
-		if err := hubCall(h, "client:x", action, id, a); err != nil {
+		if err := renderHubCall(h, "client:x", action, id, a); err != nil {
 			t.Errorf("%s with a render ID: %v", action, err)
 		}
 		var got []string
@@ -351,7 +351,7 @@ func TestCoveredReadsDispatchRender(t *testing.T) {
 		h.closeRenderID(id)
 	}
 	id := h.openRenderID("x", "client:x", "v1", 0)
-	err := hubCall(h, "client:x", "hub.app.select_session", id, map[string]any{"view_id": "v1"})
+	err := renderHubCall(h, "client:x", "hub.app.select_session", id, map[string]any{"view_id": "v1"})
 	if err == nil || !strings.Contains(err.Error(), `unknown field "render"`) || !h.vs.renders[id].untracked {
 		t.Errorf("an uncovered action with a render ID: %v, untracked %v", err, h.vs.renders[id].untracked)
 	}
@@ -394,12 +394,16 @@ func TestCoveredReadsAcceptRender(t *testing.T) {
 			t.Errorf("%s: the plugin face refuses render: %v", name, a["args"])
 		}
 	}
-	for _, a := range hubToolActions {
+	for _, row := range hubActions {
+		a := row.desc
+		if a == nil {
+			continue
+		}
 		props, _ := a["args"].(map[string]any)["properties"].(map[string]any)
 		if _, ok := props["render"]; ok {
 			t.Errorf("%s: the shared declaration has render", a["name"])
 		}
-		if !agentHubActions[a["name"].(string)] {
+		if row.agentOrder == 0 {
 			continue
 		}
 		props, _ = agentFaceAction(a)["args"].(map[string]any)["properties"].(map[string]any)
@@ -407,7 +411,7 @@ func TestCoveredReadsAcceptRender(t *testing.T) {
 			t.Errorf("%s: the agent face offers render", a["name"])
 		}
 	}
-	for _, a := range agentListActions {
+	for _, a := range agentHubFace() {
 		if renderArgAccepted(a) {
 			t.Errorf("%s: the agent face accepts render", a["name"])
 		}

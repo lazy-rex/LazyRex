@@ -10,7 +10,7 @@ import (
 // hub.tools listed the actions for the MCP shim, which is gone. The hub does not declare it (so Rex
 // refuses it), and dispatch refuses it too; agents use the agent face (agentface.go).
 func TestHubToolsIsGone(t *testing.T) {
-	if contains(hubActionNames, "hub.tools") {
+	if actionNamed("hub.tools") != nil {
 		t.Error("the hub still declares hub.tools")
 	}
 	h, _ := workerTestHub(t)

@@ -339,10 +339,10 @@ func TestPluginTagsLogFace(t *testing.T) {
 		return json.Unmarshal([]byte(`{"content":""}`), out)
 	})
 	for _, a := range []string{"hub.plugins.tags", "hub.plugins.log"} {
-		if !contains(hubActionNames, a) {
+		if row := actionNamed(a); row == nil || !row.plugin {
 			t.Errorf("the hub does not declare %s", a)
 		}
-		for _, d := range pluginOpActions {
+		for _, d := range agentHubFace() {
 			if d["name"] == a {
 				t.Errorf("the agent face offers %s", a)
 			}

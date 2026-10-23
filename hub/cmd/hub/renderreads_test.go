@@ -264,7 +264,7 @@ func renderWith(t *testing.T, h *Hub, steps map[string]renderStep) {
 			h.renderRead(plugin, "c1", id, nil, false)
 		}
 		for _, action := range s.hub {
-			if err := hubCall(h, "c1", action, id, s.hubArgs); err != nil {
+			if err := renderHubCall(h, "c1", action, id, s.hubArgs); err != nil {
 				t.Logf("%s: %v", action, err)
 			}
 		}

@@ -91,15 +91,8 @@ var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op"
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
 func faultableAction(name string) bool {
-	if contains(hubActionNames, name) {
-		return true
-	}
-	for _, a := range hubToolActions {
-		if a["name"] == name {
-			return true
-		}
-	}
-	return false
+	a := actionNamed(name)
+	return a != nil && a.plugin && a.caller != callerTest
 }
 
 func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {

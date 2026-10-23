@@ -39,12 +39,6 @@ import (
 // (rex-protocol.md, "Rex Lua runtime").
 const testReplyLimit = 48 << 10
 
-var testActions = []string{"hub.test.status", "hub.test.sql", "hub.test.chunk", "hub.test.notice", "hub.test.notice_renudge", "hub.test.stats",
-	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events",
-	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover",
-	"hub.test.peer.deliver", "hub.test.peer.delivery"}
-
 type testState struct {
 	mu           sync.Mutex
 	recover      chan struct{} // closed by hub.test.recover (test_hold_recovery)

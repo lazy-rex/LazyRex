@@ -32,7 +32,7 @@ func TestAgentFacePluginOp(t *testing.T) {
 // restart is on the agent face (lead-c8-b2b): the view's Restart names tool hub.plugins.op, and an
 // agent gets the same op with the same admission (TestPluginOpRestartAdmission, an agent origin).
 func TestAgentFacePluginOpRestart(t *testing.T) {
-	for _, a := range pluginOpActions {
+	for _, a := range agentHubFace() {
 		if a["name"] != "hub.plugins.op" {
 			continue
 		}

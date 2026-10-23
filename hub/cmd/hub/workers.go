@@ -1690,44 +1690,6 @@ func (h *Hub) checkProfiles() {
 	}
 }
 
-// hubToolActions are hub actions that agents may call through the agent face (agentface.go).
-var hubToolActions = []map[string]any{
-	{"name": "hub.peer.status", "kind": "client", "title": "Peer hubs",
-		"description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes waiting for it (outbox, oldest_age_s), the cursor of what this hub took from it (after) and whether it holds more. A remote agent's address is \"<agent>@<hub>\".",
-		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
-	{"name": "hub.profiles", "kind": "client", "title": "List profiles",
-		"description": "List the named commands (profiles) that can start in a new tab, with their kind (agent or accessory), their default cwd (empty: the home directory) and how many run now. args lists the named values that hub.spawn accepts for the profile (name, label, default, required).",
-		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
-	{"name": "hub.spawn", "kind": "client", "title": "Start a profile",
-		"description": "Start a profile in a new tab, beside a block, or detached, in the chosen session. An agent profile gets its own agent ID, so it can message you. Choose a key; after an unknown outcome, retry with the same key. Returns spawn_id, session_id, status (open, pending, failed or closed) and agent_id.",
-		"args": map[string]any{"type": "object", "properties": map[string]any{
-			"profile": map[string]any{"type": "string", "minLength": 1}, "key": map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
-			"title": map[string]any{"type": "string", "maxLength": 60},
-			"cwd":   map[string]any{"type": "string", "minLength": 1, "description": "An existing absolute directory to start in, for example a worktree from worktree_create. Replaces the profile's cwd."},
-			"placement": map[string]any{"type": "object", "additionalProperties": false, "description": "Default: a new tab in the work session. Choose another session, split beside a placed block, or start detached.", "properties": map[string]any{
-				"session":   map[string]any{"type": "string", "minLength": 1, "description": "Target session ID."},
-				"beside":    map[string]any{"type": "string", "minLength": 1, "description": "A placed block ID in the target session."},
-				"direction": map[string]any{"type": "string", "enum": []string{"right", "left", "above", "below"}, "description": "Requires beside. Default: right."},
-				"ratio":     map[string]any{"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1, "description": "Requires beside. Fraction for the new pane. Default: 0.5."},
-				"detached":  map[string]any{"type": "boolean", "description": "Start without a tab. Cannot be combined with beside."},
-				"focus":     spawnFocusSchema(),
-			}},
-			"args": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string", "maxLength": 16000},
-				"description": "Named values for the profile, for example {\"task\": \"Fix the login test\"}. hub.profiles lists each profile's args."},
-			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
-			"required": []string{"profile", "key"}, "additionalProperties": false}},
-	{"name": "hub.workers", "kind": "client", "title": "List workers",
-		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status. An agent worker also has identity_seen (true once its pane has had a current conversation identity), and, when open, identity: current or none, with identity_id (the current identity's ID) when current. With spawn_id: only that worker; not_found when it is closed or unknown.",
-		"args": map[string]any{"type": "object", "properties": map[string]any{
-			"spawn_id": map[string]any{"type": "string", "minLength": 1}}, "additionalProperties": false}},
-	{"name": "hub.stop", "kind": "client", "title": "Stop a worker",
-		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. Any agent can stop any worker, also one that another agent or the user started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
-		"args": map[string]any{"type": "object", "properties": map[string]any{
-			"spawn_id": map[string]any{"type": "string", "minLength": 1}, "key": map[string]any{"type": "string", "maxLength": 128},
-			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
-			"required": []string{"spawn_id"}, "additionalProperties": false}},
-}
-
 func createdAt(v string) time.Time {
 	t, _ := time.Parse(time.RFC3339Nano, v)
 	return t

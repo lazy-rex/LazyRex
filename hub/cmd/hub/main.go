@@ -306,39 +306,6 @@ func loadConfig(path string) (Config, error) {
 var pluginArgKey = regexp.MustCompile(`^[a-z0-9_]+$`)
 var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": true, "plugin_session": true, "main": true, "lazyrex_sdk": true}
 
-// hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
-var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve",
-	"hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.shutdown", "hub.admin.relaunch", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.info",
-	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
-	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
-	"hub.plugins", "hub.plugins.reload", "hub.plugins.ops", "hub.plugins.tags", "hub.plugins.log", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
-	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
-	"hub.prompts", "hub.prompt.answer",
-	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part",
-	"hub.peer.send", "hub.peer.pull", "hub.peer.nudge", "hub.peer.plugins"}
-
-// hubClientActions are the actions that the hub declares on its own client (the plugin face): its
-// own actions, hubToolActions and, in test mode, the test actions. A covered read takes the render
-// ID as well (withRenderArg); the agent face declares hubToolActions without it (agentKeymap).
-func hubClientActions(test bool) []map[string]any {
-	var actions []map[string]any
-	for _, name := range hubActionNames {
-		actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
-	}
-	for _, a := range hubToolActions {
-		if coveredReads[a["name"].(string)] != nil {
-			a = withRenderArg(a)
-		}
-		actions = append(actions, a)
-	}
-	if test {
-		for _, name := range testActions {
-			actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
-		}
-	}
-	return actions
-}
-
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
 const installedRex = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
@@ -915,103 +882,17 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.testDispatch(ctx, p, args)
 	}
 
-	switch p.Action {
-	case "hub.register":
-		return h.register(ctx, p, args)
-	case "hub.agents":
-		return h.agentsList(args), nil
-	case "hub.agents.resolve":
-		return h.resolveAgent(ctx, args)
-	case "hub.peer.send":
-		return h.peerSend(ctx, p, args)
-	case "hub.peer.pull":
-		return h.peerPullServe(ctx, args)
-	case "hub.peer.nudge":
-		return h.peerNudge(args)
-	case "hub.peer.plugins":
-		return h.peerPluginsServe(args)
-	case "hub.peer.status":
-		return h.peerStatus(ctx)
-	case "hub.identity.report":
-		return h.identityReport(ctx, p, args)
-	case "hub.digest":
-		return h.digest(p.Requester.ClientID, args)
-	case "hub.identity.list":
-		return h.identityList(ctx, args)
-	case "hub.profiles":
-		h.checkProfiles() // no loop: a second check finds the same files
-		return h.profilesList(ctx)
-	case "hub.spawn":
-		return h.spawnWorker(ctx, p, args)
-	case "hub.spawn_window":
-		return h.spawnWindow(ctx, p, args)
-	case "hub.spawn.spec":
-		return h.spawnSpec(ctx, p, args)
-	case "hub.workers":
-		spawnID, _ := args["spawn_id"].(string)
-		result, degraded, err = h.workersRead(ctx, spawnID)
+	c := &hubCall{p: p, args: args}
+	a := actionNamed(p.Action)
+	if a != nil && a.run == nil {
+		a = nil // a test row (above) or an agent face row: no h.dispatch case
+	}
+	switch {
+	case a != nil && a.caller == callerAny:
+		result, err = a.run(h, ctx, c)
+		degraded = c.degraded
 		return result, err
-	case "hub.stop":
-		return h.stop(ctx, p, args)
-	case "hub.navigate.worker":
-		return h.navigateWorker(ctx, args)
-	case "hub.navigate.agent":
-		return h.navigateAgent(ctx, args)
-	case "hub.info":
-		if len(args) > 0 {
-			return nil, bad("hub.info takes no arguments")
-		}
-		commit, modified := buildCommit()
-		return map[string]any{"state": h.cfg.State, "pid": os.Getpid(), "generation": revString(h.generation),
-			"exec": h.exec, "commit": commit, "modified": modified, "sdk": h.cfg.SDK, "view": h.cfg.View}, nil
-	case "hub.plugins":
-		return h.pluginsList(ctx)
-	case "hub.plugins.reload":
-		return h.reloadAction(ctx, p)
-	case "hub.palette.run":
-		return h.paletteRun(ctx, p, args)
-	case "hub.view.release_confirm":
-		return h.releaseConfirm(ctx, p, args)
-	case "hub.view.replacement":
-		return h.viewReplacement(ctx, p, args)
-	case "hub.view.app_action":
-		return h.viewAppAction(ctx, p, args)
-	case "hub.app.select_session":
-		return h.appSelectSession(ctx, p, args)
-	case "hub.app.remote_control":
-		if len(args) > 0 {
-			return nil, bad("hub.app.remote_control takes no arguments")
-		}
-		return h.remoteControlRead(ctx)
-	case "hub.ui.navigate":
-		return h.uiNavigate(ctx, args)
-	case "hub.ui.reload":
-		return h.uiReload(ctx, args)
-	case "hub.ui.describe":
-		return h.uiDescribe(ctx, args)
-	case "hub.view.attach":
-		return h.viewAttach(ctx, p, args)
-	case "hub.view.subscribe":
-		return h.viewSubscribe(ctx, p, args)
-	case "hub.view.get":
-		return h.viewGet(ctx, p, args)
-	case "hub.view.history":
-		return h.viewHistory(ctx, p, args)
-	case "hub.view.action":
-		return h.viewAdmit(ctx, "action", p, args)
-	case "hub.view.draft.save":
-		return h.viewAdmit(ctx, "draft", p, args)
-	case "hub.view.send":
-		return h.viewAdmit(ctx, "send", p, args)
-	case "hub.view.seen":
-		return h.viewSeen(ctx, p, args)
-	case "hub.view.close":
-		return h.viewClose(ctx, p, args)
-	case "hub.view.effect.retry":
-		return h.viewEffectRetry(ctx, p, args)
-	case "hub.view.operation":
-		return h.viewOperation(ctx, p, args)
-	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.unlock", "hub.admin.shutdown", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.relaunch":
+	case a != nil && a.caller == callerOperator:
 		if in, err := h.callerInManagedPane(pid); err != nil {
 			return nil, unverifiedCaller(err)
 		} else if in {
@@ -1021,107 +902,18 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		if h.relaunching.Load() {
 			return nil, refuse("refused", "relaunch in progress")
 		}
-		if p.Action == "hub.admin.relaunch" {
-			return h.adminRelaunch(args)
-		}
-		if p.Action == "hub.admin.unlock" {
-			return h.cwdUnlock(ctx, "", true, args)
-		}
-		if p.Action == "hub.admin.resume" {
-			return h.adminResume(ctx, args)
-		}
-		if p.Action == "hub.admin.restart" {
-			return h.adminRestart(ctx, args)
-		}
-		if p.Action == "hub.admin.restart.form" {
-			return h.adminRestartForm(ctx, p, args)
-		}
-		if p.Action == "hub.admin.shutdown" {
-			// The stop itself starts in answer, after the reply.
-			if len(args) > 0 {
-				return nil, bad("hub.admin.shutdown takes no arguments")
-			}
-			return map[string]any{"stopping": true}, nil
-		}
-		return h.adminAction(ctx, p.Action, args)
+		return a.run(h, ctx, c)
 	}
 
 	// The remaining actions are hub services for the current registered plugin instance only.
-	pl := h.pluginByClient(p.Requester.ClientID)
-	if pl == nil {
+	c.pl = h.pluginByClient(p.Requester.ClientID)
+	if c.pl == nil {
 		return nil, bad("only a registered plugin instance may call %s", p.Action)
 	}
-	ns := pl.Name
-	switch p.Action {
-	case "hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay":
-		return h.sql.dispatch(ctx, p.Action, sqlCall{plugin: ns, client: p.Requester.ClientID, args: args})
-	case "hub.reply.part":
-		return h.parts.part(p.Requester.ClientID, args)
-	case "hub.plugins.tags", "hub.plugins.log":
-		// The plugin manager views of the home plugin read the background loads (pluginloads.go).
-		h.mu.Lock()
-		home := h.homeRecordLocked(pl.Name)
-		h.mu.Unlock()
-		if !home {
-			return nil, bad("only the home plugin reads the plugin tags and logs")
-		}
-		if p.Action == "hub.plugins.tags" {
-			return h.pluginTags(p.Args)
-		}
-		return h.pluginLog(p.Args)
-	case "hub.plugins.ops":
-		// The plugins panel of the home plugin reads the plugin manager's ops (pluginops.go).
-		h.mu.Lock()
-		home := h.homeRecordLocked(pl.Name)
-		h.mu.Unlock()
-		if !home {
-			return nil, bad("only the home plugin reads the plugin operations")
-		}
-		var raw map[string]json.RawMessage
-		if len(p.Args) > 0 && string(p.Args) != "null" {
-			if err := json.Unmarshal(p.Args, &raw); err != nil {
-				return nil, bad("args must be an object")
-			}
-		}
-		return h.pluginOpsList(ctx, raw, pl.Name)
-	case "hub.grant.create":
-		return h.grantCreate(ctx, p, ns, args)
-	case "hub.grant.get":
-		return h.grantGet(ctx, ns, args)
-	case "hub.grant.revoke":
-		return h.grantRevoke(ctx, ns, args)
-	case "hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list":
-		return h.watchAction(ctx, ns, p.Action, args)
-	case "hub.prompts":
-		return h.promptsList(pl)
-	case "hub.prompt.answer":
-		return h.promptAnswer(ctx, pl, args)
-	case "hub.ui.tabs":
-		return h.uiTabs(ctx, ns, args)
-	case "hub.ui.invalidate":
-		// The plugin's own data changed outside the store (for example a scan finished): render its
-		// open views again. Fast; the view worker does the render.
-		if h.test != nil {
-			h.test.mu.Lock()
-			h.test.invalidate[ns]++
-			h.test.mu.Unlock()
-		}
-		return h.uiInvalidate(ctx, ns, args)
-	case "hub.cwd.lock":
-		return h.cwdLock(ctx, ns, args)
-	case "hub.cwd.check":
-		return h.cwdCheck(ctx, args)
-	case "hub.cwd.unlock":
-		return h.cwdUnlock(ctx, ns, false, args)
-	case "hub.session.list":
-		return h.sessionList(ctx)
-	case "hub.session.ensure":
-		return h.sessionEnsure(ctx, ns, args)
-	case "hub.identify":
-		target, _ := args["pid"].(float64)
-		return h.identify(ctx, int(target))
+	if a == nil {
+		return nil, bad("unknown action %s", p.Action)
 	}
-	return nil, bad("unknown action %s", p.Action)
+	return a.run(h, ctx, c)
 }
 
 // identify handles hub.identify {pid}. spawn_id is the agent spawn whose open block is the found
