@@ -183,6 +183,10 @@ func setEntryHash(raw json.RawMessage) (string, error) {
 
 // setEntryCanonical is the canonical JSON of one raw entry without its "review" field, and its sha256.
 func setEntryCanonical(raw json.RawMessage) ([]byte, string, error) {
+	// Check the original bytes: the decode below keeps one of two members with one name.
+	if err := noDupNames(raw); err != nil {
+		return nil, "", err
+	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	var m map[string]any
@@ -206,6 +210,9 @@ func setEntryCanonical(raw json.RawMessage) ([]byte, string, error) {
 // commits, the probes, the changes and inserts, and the review hash of each entry. An unknown field
 // is refused (4.2 has no "destructive" field).
 func parseSet(b []byte) (*relSetFile, error) {
+	if err := noDupNames(b); err != nil {
+		return nil, relFail("the set file: %v", err)
+	}
 	var raw struct {
 		Plugins []json.RawMessage `json:"plugins"`
 	}
@@ -401,6 +408,10 @@ func releaseSetHash(args []string, stdout, stderr io.Writer) int {
 	b, err := os.ReadFile(*file)
 	if err != nil {
 		fmt.Fprintf(stderr, "release set-hash: %v\n", err)
+		return relFailed
+	}
+	if err := noDupNames(b); err != nil {
+		fmt.Fprintf(stderr, "release set-hash: the set file: %v\n", err)
 		return relFailed
 	}
 	var raw struct {

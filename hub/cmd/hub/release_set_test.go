@@ -215,3 +215,43 @@ func TestReleaseSetRefused(t *testing.T) {
 		t.Fatalf("empty set: %v", err)
 	}
 }
+
+// Two members with one name in the original set bytes: the first decode would keep one value, so
+// parseSet, set-hash and the entry hash refuse them before they decode (codex-26, review of
+// e3bf8cb3).
+func TestReleaseSetDupNames(t *testing.T) {
+	entry, _ := json.Marshal(seal(t, setEntry("profiles")))
+	other, _ := json.Marshal(seal(t, setEntry("templates")))
+	dupEntry := []byte(`{"plugin":"templates",` + string(entry[1:]))                 // "plugin" twice
+	dupNested := bytes.Replace(entry, []byte(`"n":1.5`), []byte(`"n":1.5,"n":2`), 1) // in the seed args
+	dupOuter := []byte(`{"plugins":[` + string(other) + `],"plugins":[` + string(entry) + `]}`)
+	if bytes.Equal(dupNested, entry) {
+		t.Fatalf("no seed args to change in %s", entry)
+	}
+	cases := map[string][]byte{
+		"entry":  []byte(`{"plugins":[` + string(dupEntry) + `]}`),
+		"nested": []byte(`{"plugins":[` + string(dupNested) + `]}`),
+		"outer":  dupOuter,
+	}
+	dir := t.TempDir()
+	f := filepath.Join(dir, "set.json")
+	for name, b := range cases {
+		if _, err := parseSet(b); err == nil || !strings.Contains(err.Error(), "two members named") {
+			t.Errorf("%s: parseSet: %v", name, err)
+		}
+		os.WriteFile(f, b, 0o600)
+		var out, errb bytes.Buffer
+		if code := releaseMain([]string{"set-hash", "-set", f}, &out, &errb); code != relFailed || !strings.Contains(errb.String(), "two members named") || out.Len() != 0 {
+			t.Errorf("%s: set-hash code %d stdout %q stderr %q", name, code, out.String(), errb.String())
+		}
+	}
+	for name, b := range map[string][]byte{"entry": dupEntry, "nested": dupNested} {
+		if _, _, err := setEntryCanonical(b); err == nil {
+			t.Errorf("%s: setEntryCanonical accepted %s", name, b)
+		}
+	}
+	// The same bytes without the duplicate pass.
+	if _, err := parseSet([]byte(`{"plugins":[` + string(entry) + `]}`)); err != nil {
+		t.Fatal(err)
+	}
+}
