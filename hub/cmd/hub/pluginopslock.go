@@ -216,8 +216,9 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 }
 
 // lockRefusal runs the graph check twice: with the current lock and managed entries, and with the
-// lock next and the managed entries after the op. A refusal that only the second check has is the
-// op's: its text, which names what (the new lock, or the op), is the result.
+// lock next and the managed entries after the op. A refusal of the op's own entry in the second
+// check, and a refusal that only the second check has, are the op's: the text, which names what
+// (the new lock, or the op), is the result.
 func (h *Hub) lockRefusal(op *pluginOp, t opResolved, lockFile string, lock, next *pluginLock, what string) (string, error) {
 	_, list, err := readManaged(h.cfg.managedPath)
 	if err != nil {
@@ -232,6 +233,11 @@ func (h *Hub) lockRefusal(op *pluginOp, t opResolved, lockFile string, lock, nex
 		return "", fmt.Errorf("the managed entry after the operation is not valid: %v", err)
 	}
 	before, refused := h.opGraph(lockFile, list, lock), h.opGraph(lockFile, after, next)
+	// The op's own entry must pass, also when the current file already has it (C4 plan r3 A):
+	// before and after then refuse it alike, so the new-refusal check alone misses it.
+	if own := "managed:" + m.ID; refused[own] != nil {
+		return fmt.Sprintf("%s refuses %s: %v", what, own, refused[own]), nil
+	}
 	idents := make([]string, 0, len(refused))
 	for ident := range refused {
 		idents = append(idents, ident)
