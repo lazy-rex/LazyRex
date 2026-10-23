@@ -225,9 +225,10 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 	case "hub.test.chunk":
 		return h.testChunk(args)
 	case "hub.test.peer.deliver":
-		// One envelope to the plugin through peerReceive, the path of a pulled envelope. It runs
-		// after the reply, as the pull loop runs outside any request: Rex gives the hub one request
-		// at a time, so a plugin's hub call during peer.receive would wait behind this request.
+		// One envelope to the plugin through peerReceive, the path of a pulled envelope. It runs in a
+		// goroutine, and the request returns without waiting for it, as the pull loop runs outside
+		// any request: Rex gives the hub one request at a time, so a plugin's hub call during
+		// peer.receive would wait behind this request.
 		// hub.test.peer.delivery returns the outcome.
 		if err := needPlugin(); err != nil {
 			return nil, err

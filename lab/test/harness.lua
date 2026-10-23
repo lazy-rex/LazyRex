@@ -323,8 +323,9 @@ function H.notice(agent, plugin) return hub('hub.test.notice', {plugin = plugin 
 -- peer_deliver gives one envelope {from_hub, key, body} to the plugin (default: the plugin under
 -- test) through the hub's real delivery path for a pulled envelope (docs/hub.md, "Peer hubs"). It
 -- returns {reply = <the plugin's result>}, or {skipped = true} for a plugin that is stopped. A
--- plugin error, or a plugin that does not run, raises the error not_processed. The hub delivers
--- after its reply, so the plugin may call the hub in peer.receive; this call waits for the outcome.
+-- plugin error, or a plugin that does not run, raises the error not_processed. The hub's request
+-- returns without waiting for the delivery, so the plugin may call the hub in peer.receive; this
+-- call waits for the outcome.
 function H.peer_deliver(spec)
   local id = hub('hub.test.peer.deliver', {plugin = spec.plugin or A.plugin, from_hub = spec.from_hub, key = spec.key, body = spec.body}).id
   local d = wait('peer delivery ' .. id, function()
