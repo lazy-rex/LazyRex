@@ -1342,6 +1342,9 @@ func opResultText(call string, res any) string {
 	if res == nil {
 		return call + ": done"
 	}
+	if s, ok := res.(opText); ok {
+		return string(s)
+	}
 	b, _ := json.Marshal(res)
 	return call + ": " + string(b)
 }
@@ -1490,19 +1493,31 @@ func (h *Hub) opReplace(ctx context.Context, op *pluginOp, attempt string) (any,
 			return nil, fmt.Errorf("the stored target: %v", err)
 		}
 		instance = r.Instance
-	} else if pl != nil {
+	}
+	var same bool // the instance runs the pin's code under another source (hub lead, lead-caseb)
+	if op.Kind != "restart" && pl != nil {
 		h.mu.Lock()
 		owned, pending := h.ownedInstance(pl)
+		run := pl.run
 		h.mu.Unlock()
 		if !pending {
 			instance = owned
 		}
+		same = run.Commit != "" && run.Commit == x["commit"] && run.Digest == x["digest"] && run.Source != x["source"]
 	}
 	if instance == "" {
 		return nil, refuse("no_instance", "plugin %s has no instance; nothing was called", op.Name)
 	}
-	return opAdmin(ctx, h, "hub.admin.replace", map[string]any{"plugin": op.Name, "expect_instance": instance, "expect_run": x, "expect_entry": expect, "attempt": attempt})
+	res, err := opAdmin(ctx, h, "hub.admin.replace", map[string]any{"plugin": op.Name, "expect_instance": instance, "expect_run": x, "expect_entry": expect, "attempt": attempt})
+	if err == nil && same {
+		// A run belongs to its entry: the same code runs again under the new source.
+		return opText(fmt.Sprintf("replaced: the same commit %s now runs as %s", x["commit"], x["source"])), nil
+	}
+	return res, err
 }
+
+// opText is a call result that is its own end text (opResultText).
+type opText string
 
 // opStop stops the op's plugin, only while it is bound to the op's entry. An entry without a record
 // has nothing to stop.
