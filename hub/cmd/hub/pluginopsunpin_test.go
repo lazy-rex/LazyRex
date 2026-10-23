@@ -372,3 +372,36 @@ func TestPluginOpUnpinUnreadableSettles(t *testing.T) {
 		t.Fatalf("the attempt: %q %q %v", outcome, proof, err)
 	}
 }
+
+// A reload changes a loaded entry in place (updateManaged, under entriesMu and then mu, as reload does) while
+// unpinning runs.
+// unpinning reads the loaded entries under entriesMu, so the race detector finds no race.
+func TestPluginOpUnpinLoadedWriter(t *testing.T) {
+	stop, done := make(chan struct{}), make(chan struct{})
+	h, _, op := unpinUpdate(t, func(h *Hub) {
+		go func() {
+			defer close(done)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				h.entriesMu.Lock()
+				h.mu.Lock()
+				for _, e := range h.entries {
+					m := *e
+					updateManaged(e, &m)
+				}
+				h.mu.Unlock()
+				h.entriesMu.Unlock()
+			}
+		}()
+	})
+	err := h.runOp(context.Background(), op)
+	close(stop)
+	<-done
+	if err != nil || op.Phase != "done" || lockOld(t, h, op.ID)["outcome"] != "removed" {
+		t.Fatalf("the update: %+v %v, %v", op, err, lockOld(t, h, op.ID))
+	}
+}
