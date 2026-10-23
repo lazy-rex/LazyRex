@@ -4,7 +4,8 @@
  "test": {
   "plugins": [{"source": "isodep"}],
   "agents": [{"id": "alice", "name": "Alice"}],
-  "env": {"LRT_PLAIN": "plain value", "LRT_DATA": "${LAB}/data", "CODEX_THREAD_ID": "stale-thread", "CLAUDECODE": "1"},
+  "env": {"LRT_PLAIN": "plain value", "LRT_DATA": "${LAB}/data", "CODEX_THREAD_ID": "stale-thread", "CLAUDECODE": "1",
+          "LRT_OWN": "${PLUGIN}/tests/isolation.lua"},
   "args": {
    "isofix": {"name": "isofix", "marker_dir": "${LAB}/marks"},
    "isodep": {"name": "isodep", "marker_dir": "${PLUGIN}/marks"}

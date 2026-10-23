@@ -1,7 +1,8 @@
 -- The isolation probe of the plugin under test, isofix (docs/testing.md, "Isolation"). The
 -- dependency isodep has its own probe (isodep/probe.lua) with the same env file. Its plugin args
 -- name it. At load it writes what it sees to $HOME/<name>-env.json, and it writes <name>-cwd with a
--- relative path.
+-- relative path. It also records its own dir (the dir of this file) and LRT_OWN, which test.env sets
+-- to ${PLUGIN}/tests/isolation.lua, so a test can check that ${PLUGIN} is the dir it runs from.
 -- Its home view has a form whose tool is a hub action (hub.spawn), for the parity sweep.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
@@ -25,6 +26,7 @@ local seen = {
   XDG_STATE_HOME = os.getenv('XDG_STATE_HOME'), XDG_CACHE_HOME = os.getenv('XDG_CACHE_HOME'), TMPDIR = os.getenv('TMPDIR'),
   REX_SERVER = os.getenv('REX_SERVER'), secret = os.getenv('LRT_OUTER_SECRET'), plain = os.getenv('LRT_PLAIN'),
   data = os.getenv('LRT_DATA'), marker_dir = rex.args.marker_dir,
+  own = os.getenv('LRT_OWN'), own_dir = debug.getinfo(1, 'S').source:match('^@?(/.*)/[^/]*$'), instance_id = instance_id,
   home_sentinel = exists(home .. '/.lrt-sentinel'),
   config_sentinel = exists((os.getenv('XDG_CONFIG_HOME') or '') .. '/.lrt-sentinel'),
 }

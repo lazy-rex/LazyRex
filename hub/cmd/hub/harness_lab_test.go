@@ -281,7 +281,7 @@ func TestHarnessIsolation(t *testing.T) {
 	outb, err := cmd.CombinedOutput()
 	out := string(outb)
 	removeKeptLabs(t, out)
-	if err != nil || !strings.Contains(out, "tests/isolation.lua: 6 passed, 0 failed") {
+	if err != nil || !strings.Contains(out, "tests/isolation.lua: 7 passed, 0 failed") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if after := listing(); after != before {
