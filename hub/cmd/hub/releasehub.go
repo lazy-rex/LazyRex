@@ -778,6 +778,14 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 	op := "replace-" + to.Commit[:12]
 	var e *relEntryState
 	for i := 0; ; i++ {
+		// The events prove which instance the current hub registered. They must be this hub's.
+		start, after, err := hubEvents(r.cfg.state)
+		if err != nil {
+			return relFail("the hub events: %v", err)
+		}
+		if start.Client != client {
+			return relFail("the last hub_started names %q, not the hub %s: stop", start.Client, client)
+		}
 		entries, _, err := r.hubPlugins(client)
 		if err != nil {
 			return err
@@ -792,6 +800,16 @@ func (r *releaser) replacePlugin(c *relCandidate, client string, from, to relPin
 		if e.Commit == to.Commit && e.State == "running" && !e.InstancePending && (e.Registered == nil || !*e.Registered) && i < 60 {
 			r.pause(2 * time.Second)
 			continue
+		}
+		// After a hub start, the new hub lists the durable FROM row of the old hub before it
+		// spawns its own instance. The expect_instance must be the instance that this hub
+		// registered (registeredNow), not that row.
+		if e.Commit == from.Commit && e.State == "running" && !e.InstancePending && e.InstanceID != "" && !registeredNow(*e, after) {
+			if i < 60 {
+				r.pause(2 * time.Second)
+				continue
+			}
+			return relFail("%s at %s is not registered by its current instance %q after the hub start (120 s); no replace", c.Name, from.Commit, e.InstanceID)
 		}
 		break
 	}
