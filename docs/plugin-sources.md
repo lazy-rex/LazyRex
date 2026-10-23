@@ -676,6 +676,7 @@ are a malformed config, so a source names one entry. A hub restart works too.
   no pin). After a CLI update and a crash, `commit` is the running commit and `pinned_commit` the
   new pin, until the next explicit start.
 - A local run's `dir` is its snapshot, so a local candidate's source dir is not a `"dir"` change.
+  A candidate of another source is: `"dir"` gives the new source dir.
 
 Example: P runs C1. An update locks C2, and C2 fails its graph check. The hub keeps `run` = C1.
 `hub.admin.start` on a running plugin changes nothing. To apply an update, use
@@ -917,7 +918,8 @@ do not reload: a config change needs a hub restart.
 - A valid file, by managed id:
   - unchanged (the same source, args and watch roots): the entry stays;
   - changed: the hub updates the entry and keeps its bound name. A running instance runs on.
-    `hub.plugins` reports `"candidate": {"dir"}` while the new dir differs from the run's dir.
+    `hub.plugins` reports `"candidate": {"dir"}` while the new source differs from the run's
+    source (a GitHub run: while the new dir differs from the run's dir).
     `hub.admin.stop`, then `hub.admin.start`, runs the new source;
   - new: the hub adds the entry and starts it;
   - missing: the record becomes a kept record (2d part 1). Its instance runs on with its
