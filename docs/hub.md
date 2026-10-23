@@ -1771,7 +1771,7 @@ spikes/lab/server.sh /tmp/rexlab-templates-<name>
 # run the hub on that server with plugins lazyrex and templates, state in $LAB/hubstate,
 # and a profiles file with "server" (arg port, default 3000) and "watcher"
 TEMPLATES_LAB=/tmp/rexlab-templates-<name> node spikes/03-ui-framework/tests/templates-lab.mjs
-SPAWN_WINDOW_LAB_SOCKET=/tmp/rexlab-templates-<name>/rex.sock go test ./cmd/hub -run TestSpawnWindow   # from hub/
+HARNESS_LAB=1 go test ./cmd/hub -run TestSpawnWindow   # from hub/; TestSpawnWindowLab starts its own lab Rex server
 ```
 
 Passed: save (an undecided pane is refused; Leave out removes the pane and its split; a profile choice), start from a pane in another repository into a new session (exact ratios, directories under the new root, the profile's default arg), the panel. `TEMPLATES_RESTART=1` kills the hub after a start is admitted: the run stays pending, as decided (see "Not in v1" in the decision).

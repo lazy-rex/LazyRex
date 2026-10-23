@@ -31,19 +31,12 @@ func TestSpawnWindowValidation(t *testing.T) {
 	}
 }
 
-// TestSpawnWindowLab runs hub.spawn_window against an isolated Rex server. Start it with
-// spikes/lab/server.sh /tmp/rexlab-templates-<name>, then set SPAWN_WINDOW_LAB_SOCKET.
+// TestSpawnWindowLab runs hub.spawn_window against an isolated Rex server (rexLab: HARNESS_LAB=1).
 func TestSpawnWindowLab(t *testing.T) {
-	socket := os.Getenv("SPAWN_WINDOW_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set SPAWN_WINDOW_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-templates-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	r, err := rex.Dial(ctx, socket)
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +66,7 @@ func TestSpawnWindowLab(t *testing.T) {
 		if _, err := h.db.Exec(spawnWindowSchema + `DELETE FROM spawns; DELETE FROM bindings; DELETE FROM spawn_windows`); err != nil {
 			t.Fatal(err)
 		}
-		h.rex = r
+		h.rex, h.cfg.Server = r, l.server
 		h.ui = &uiState{sess: map[string]string{session(t): uiSessionKey}, kick: make(chan struct{}, 1)}
 		h.selfClosed = map[string]bool{}
 		h.vs = newViewSvc()
