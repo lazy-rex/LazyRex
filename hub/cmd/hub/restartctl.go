@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
@@ -255,18 +256,26 @@ func (v *ctlView) hubIDsCtx(ctx context.Context) ([]string, error) {
 
 // hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). The listing
 // and every hub.info share one deadline (ctlLookWait), so a look has a fixed bound, whatever the
-// number of hubs. A hub whose hub.info fails, or that the deadline cuts, is listed with an empty
-// state: unknown, never this state and never another.
+// number of hubs. The hub.info calls run at the same time, so a hub that does not answer cannot use
+// the time of the others. A hub whose hub.info fails, or that the deadline cuts, is listed with an
+// empty state: unknown, never this state and never another. The order is the listing's.
 func (v *ctlView) hubs() ([]hubClient, error) {
 	deadline := time.Now().Add(ctlLookWait)
 	ids, err := v.hubIDs(deadline)
 	if err != nil {
 		return nil, err
 	}
-	var hubs []hubClient
-	for _, id := range ids {
-		h := hubClient{ID: id}
-		if out, err := v.rexCmd(deadline, "-C", id, "do", "hub.info"); err == nil {
+	hubs := make([]hubClient, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		hubs[i].ID = id
+		wg.Add(1)
+		go func(h *hubClient) {
+			defer wg.Done()
+			out, err := v.rexCmd(deadline, "-C", h.ID, "do", "hub.info")
+			if err != nil {
+				return
+			}
 			var info struct {
 				State  string `json:"state"`
 				PID    int    `json:"pid"`
@@ -276,9 +285,9 @@ func (v *ctlView) hubs() ([]hubClient, error) {
 			if json.Unmarshal(out, &info) == nil {
 				h.State, h.PID, h.Exec, h.Commit = info.State, info.PID, info.Exec, info.Commit
 			}
-		}
-		hubs = append(hubs, h)
+		}(&hubs[i])
 	}
+	wg.Wait()
 	return hubs, nil
 }
 

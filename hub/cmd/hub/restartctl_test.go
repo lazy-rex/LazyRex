@@ -141,3 +141,37 @@ func TestLookHasOneBound(t *testing.T) {
 		t.Errorf("status %d\n%s", code, text)
 	}
 }
+
+// The hub.info calls of a look run at the same time: two hubs that never answer, listed first, do
+// not cut the hub of this state, which answers at once. The look ends within the bound.
+func TestLookIsNotStarvedByAHungHub(t *testing.T) {
+	defer func(d time.Duration) { ctlLookWait = d }(ctlLookWait)
+	ctlLookWait = time.Second
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	os.Mkdir(state, 0o700)
+	canon, err := canonicalState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := func(id string) string {
+		return `{"client_id":"` + id + `","info":{"label":"lazyrex-hub"},"connection_state":"connected"}`
+	}
+	list := `{"clients":[` + hub("h1") + `,` + hub("h2") + `,` + hub("h3") + `]}`
+	rexPath := filepath.Join(dir, "rex")
+	script := "#!/bin/sh\ncase \"$*\" in\n*'-C h3 do hub.info'*) echo '{\"state\":\"" + canon + "\",\"pid\":7}';;\n*hub.info*) exec sleep 30;;\n*) echo '" + list + "';;\nesac\n"
+	if err := os.WriteFile(rexPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	v := ctlLook(Config{Server: "unix:///nonexistent/rex.sock", State: state, Rex: rexPath})
+	if d := time.Since(start); d > ctlLookWait+time.Second {
+		t.Errorf("the look took %s, want at most about %s", d, ctlLookWait)
+	}
+	if v.own == nil || v.own.ID != "h3" || v.own.PID != 7 {
+		t.Fatalf("own %+v, want h3 (pid 7); others %+v", v.own, v.others)
+	}
+	if len(v.others) != 2 || v.others[0].ID != "h1" || v.others[1].ID != "h2" || v.others[0].State != "" || v.others[1].State != "" {
+		t.Errorf("others %+v, want h1 and h2, unknown, in listing order", v.others)
+	}
+}
