@@ -255,3 +255,20 @@ func TestPluginOpAddStartPending(t *testing.T) {
 		t.Fatalf("op %+v, proof %q", op, proof)
 	}
 }
+
+// A restart of a local plugin (codex-27's C5a finding): its stored run has the snapshot digest
+// (P1), but the expect_run of a local source is the source only. opRun drops the commit and the
+// digest of a local source, so the handler's argument check accepts it.
+func TestPluginOpRunLocalRestart(t *testing.T) {
+	b, _ := json.Marshal(opRestartTarget{Source: "/src/x", Digest: "sha256:" + strings.Repeat("d", 64), Instance: "x-1-aaaaaaaa"})
+	x, err := opRun(&pluginOp{Kind: "restart", Target: string(b)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]any{"source": "/src/x"}; !reflect.DeepEqual(x, want) {
+		t.Fatalf("opRun: %v, want %v", x, want)
+	}
+	if _, err := parseExpectRun(map[string]any{"expect_run": x}); err != nil {
+		t.Fatalf("the handler refuses it: %v", err)
+	}
+}

@@ -1389,7 +1389,8 @@ func opExpectEntry(op *pluginOp) (string, error) {
 
 // opRun is the expect_run of the op's start and replace calls (C5 plan r1 item 1): for an add or
 // an update, the pin at the target source (source, commit and digest); for a restart, its stored
-// run; for a start, its stored expect_run. A local source has no commit and no digest.
+// run; for a start, its stored expect_run. A local source has no commit and no digest: a local
+// restart drops the snapshot digest of its stored run.
 func opRun(op *pluginOp) (map[string]any, error) {
 	var x map[string]any
 	switch op.Kind {
@@ -1415,6 +1416,12 @@ func opRun(op *pluginOp) (map[string]any, error) {
 		if v == "" {
 			delete(x, k)
 		}
+	}
+	if s, _ := x["source"].(string); !strings.HasPrefix(s, "github:") {
+		// A local run stores its snapshot digest (P1), but the expect_run of a local source is the
+		// source only (parseExpectRun).
+		delete(x, "commit")
+		delete(x, "digest")
 	}
 	return x, nil
 }
