@@ -122,3 +122,9 @@ One line per item: what, its owner, and why it waits.
 - Narrow `changed(name)` for a view with no `deps.changes` and a tracked read set to the names it
   read (today every changed name marks such a view). Owner: Hub Features. Waits: an inventory of
   plugin views that read hub data outside covered calls (lead-g1b-plan).
+- A plugin spawn whose outcome stays unknown reports `running` and has no timer owner. Two cases:
+  the child read after `createBlock` fails or times out (the intent stays `sending`), and the block
+  read after the block ID is recorded fails while the child had already exited (`checkMapped`
+  logs it). The next start, reload or hub restart resolves both. Owner: Hub Fixes. Waits: the fix
+  (D-a: a `starting` state with a backoff timer) passes the lostexit series' line budget
+  (lead-lostexit-r3).

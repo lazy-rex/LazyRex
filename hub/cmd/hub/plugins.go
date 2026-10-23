@@ -800,6 +800,7 @@ func (h *Hub) resolveIntentsFor(ctx context.Context, pl *Plugin, mk func(plugin,
 		pl.respawn.spawned = h.clock() // adopted now: the base of the backoff reset
 		h.savePlugin(ctx, pl)
 		h.mu.Unlock()
+		h.checkMapped(ctx, pl, found, block) // the child may have exited after findInstanceBlock read it
 	}
 	return unresolved
 }
@@ -1003,7 +1004,27 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	h.mu.Unlock()
 	h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'created', block_id = ? WHERE instance_id = ?`, pl.BlockID, instance)
 	h.ev.emit("plugin_spawned", map[string]any{"plugin": pl.Name, "instance_id": instance, "block_id": pl.BlockID})
+	h.checkMapped(ctx, pl, sess, out.BlockID)
 	return nil
+}
+
+// checkMapped reads the child of the block that pl just recorded. A child_exited that came before
+// the record found no plugin in blockEvent and was dropped. After that exit, Rex's read shows no
+// child and gives last_exit in the event's form (lab, Rex 0.0.1792593189-g3f4a0a), so the exit
+// takes the pluginExited path now; its dedupe counts a later child_exited of the block once. A
+// failed read, or no child without a last_exit, never counts as an exit (deferred: roadmap.md,
+// "Cleanup and test debt"). The caller holds pl.lifecycle, so pluginExited runs on its own.
+func (h *Hub) checkMapped(ctx context.Context, pl *Plugin, sess, block string) {
+	c, err := h.childProcIn(ctx, sess, block)
+	if err != nil {
+		log.Printf("plugin %s: cannot read the child of block %s after recording it: %v", pl.Name, block, err)
+		return
+	}
+	if c.pid != 0 || len(c.lastExit) == 0 || string(c.lastExit) == "null" {
+		return
+	}
+	log.Printf("plugin %s: the child exited before the block was recorded", pl.Name)
+	go h.pluginExited(ctx, pl, block, c.lastExit)
 }
 
 // exitAfterSendFault writes the block-create request frame, then reports the fault, if configured.

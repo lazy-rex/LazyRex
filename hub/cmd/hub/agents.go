@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -98,6 +99,9 @@ type paneChild struct {
 	// invoked is the path given to exec (not argv0). Rex reports it only while it still resolves to
 	// path: after a symlink moves (a CLI update) it is "" (lab, 2026-10-22).
 	invoked string
+	// lastExit is the block's last child exit, in the form of its child_exited payload; null or
+	// empty while no child has exited (lab, Rex 0.0.1792593189-g3f4a0a).
+	lastExit json.RawMessage
 }
 
 // childProcIn reads a block's child process.
@@ -108,14 +112,15 @@ func (h *Hub) childProcIn(ctx context.Context, sess, blockID string) (paneChild,
 			Path    string `json:"path"`
 			Invoked string `json:"invoked_path"`
 		} `json:"child"`
+		LastExit json.RawMessage `json:"last_exit"`
 	}
 	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.process", sess, blockID, nil, &out); err != nil {
 		return paneChild{}, err
 	}
 	if out.Child == nil {
-		return paneChild{}, nil
+		return paneChild{lastExit: out.LastExit}, nil
 	}
-	return paneChild{out.Child.PID, out.Child.Path, out.Child.Invoked}, nil
+	return paneChild{out.Child.PID, out.Child.Path, out.Child.Invoked, out.LastExit}, nil
 }
 
 // paneOf finds the pane whose child process is an ancestor of pid. Agents may run in any
