@@ -119,3 +119,31 @@ func TestResumeLaunchRechecksTheIdentity(t *testing.T) {
 		t.Fatalf("targets: %v", got)
 	}
 }
+
+// A resume launch inserts a starting worker before it sends the Rex request: hub.changed
+// "workers" is delivered at the insert, before any outcome.
+func TestResumeLaunchInsertIsAWorkersChange(t *testing.T) {
+	h := resumeTestHub(t)
+	ctx := context.Background()
+	if _, err := h.db.Exec(`INSERT INTO identities VALUES ('codex:a', 'codex', 'a', 'detached', 'block:old', '', '', 't0', 't0')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.adminResume(ctx, map[string]any{"key": "k", "kind": "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	wait := changedNames(t, h)
+	old := spawnCreate
+	defer func() { spawnCreate = old }()
+	release := make(chan struct{})
+	spawnCreate = func(context.Context, *Hub, string, map[string]any, any) error {
+		<-release // no outcome until the change is seen
+		return errors.New("injected: no answer")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.resumeStep(ctx)
+	}()
+	defer func() { close(release); <-done }()
+	wait("workers")
+}
