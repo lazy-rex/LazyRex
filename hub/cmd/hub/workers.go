@@ -1071,47 +1071,14 @@ func (h *Hub) resolveNext(ctx context.Context) (next time.Time, err error) {
 	return next, nil
 }
 
-// workerBlocks keeps recovery on the session recorded before the Rex request.
-// An empty legacy session is unknown. Only an exact recorded block can recover it.
+// workerBlocks keeps recovery on the session recorded before the Rex request. A row without a
+// session is ignored: no Rex call and no write.
 func (h *Hub) workerBlocks(ctx context.Context, s *spawnRow) (map[string]rexBlock, error) {
 	if s.Status != "sending" && s.Status != "open" {
 		return nil, nil
 	}
 	if s.Session == "" {
-		if s.Block != "" {
-			var list struct {
-				Sessions []struct {
-					ID string `json:"session_id"`
-				} `json:"sessions"`
-			}
-			if err := h.rex.Call(ctx, "session.list", map[string]any{}, &list); err != nil {
-				return nil, err
-			}
-			for _, sess := range list.Sessions {
-				blocks, err := h.workerSessionBlocks(ctx, sess.ID)
-				if sessionGone(err) {
-					continue
-				}
-				if err != nil {
-					return nil, err
-				}
-				if _, ok := blocks[s.Block]; ok {
-					if _, err := h.db.ExecContext(ctx, `UPDATE spawns SET session_id = ? WHERE spawn_id = ? AND session_id = ''`, sess.ID, s.ID); err != nil {
-						return nil, err
-					}
-					s.Session = sess.ID
-					break
-				}
-			}
-		}
-		if s.Session == "" {
-			why := "outcome unknown: legacy worker session is not recorded"
-			if _, err := h.db.ExecContext(ctx, `UPDATE spawns SET error = ? WHERE spawn_id = ? AND status IN ('sending', 'open')`, why, s.ID); err != nil {
-				return nil, err
-			}
-			s.Error = why
-			return nil, nil
-		}
+		return nil, nil // every admission records the session (admitSpawn, resumeLaunch)
 	}
 	blocks, err := h.workerSessionBlocks(ctx, s.Session)
 	if sessionGone(err) {
@@ -1124,13 +1091,6 @@ func (h *Hub) workerBlocks(ctx context.Context, s *spawnRow) (map[string]rexBloc
 	if s.Status == "open" {
 		if _, ok := blocks[s.Block]; !ok {
 			return nil, h.workerGone(ctx, s, "pane gone")
-		}
-		why := ""
-		if why != s.Error {
-			if _, err := h.db.ExecContext(ctx, `UPDATE spawns SET error = ? WHERE spawn_id = ? AND status = 'open'`, why, s.ID); err != nil {
-				return nil, err
-			}
-			s.Error = why
 		}
 	}
 	return blocks, nil

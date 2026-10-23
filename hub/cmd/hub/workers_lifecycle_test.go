@@ -115,3 +115,30 @@ func TestWorkerGoneReportsAStoredCloseWhenTheReadFails(t *testing.T) {
 	}
 	wait("workers")
 }
+
+// A worker row without a recorded session is ignored: no Rex call (this hub has no Rex) and no
+// write. Every admission records the session; the live store has no row without one.
+func TestWorkerBlocksIgnoresARowWithoutASession(t *testing.T) {
+	h, s := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.workersSchemaStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"sending", "open"} {
+		if _, err := h.db.Exec(`UPDATE spawns SET status = ?, session_id = '', error = '' WHERE spawn_id = 'spawn-test'`, status); err != nil {
+			t.Fatal(err)
+		}
+		s.Status, s.Session = status, ""
+		blocks, err := h.workerBlocks(ctx, s)
+		if blocks != nil || err != nil {
+			t.Fatalf("%s: workerBlocks = %v, %v; want nothing", status, blocks, err)
+		}
+		row, err := h.spawnByID(ctx, s.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Status != status || row.Error != "" || row.Session != "" {
+			t.Fatalf("%s: the row changed: status %q, error %q, session %q", status, row.Status, row.Error, row.Session)
+		}
+	}
+}
