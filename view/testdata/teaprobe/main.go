@@ -1,9 +1,11 @@
 // teaprobe is a probe program for the thread-view facts (docs/rex-protocol.md), not part of the
 // renderer. It uses the renderer's Bubble Tea version (view/go.mod). Build: go build ./testdata/teaprobe
 //
-//	teaprobe tea [-delay 2s] [-mode inline|alt]
+//	teaprobe tea [-delay 2s] [-mode inline|alt] [-bytes FILE]
 //	  Starts in inline mode with "Connecting…", like the renderer. After -delay the first tree
-//	  arrives and the program chooses -mode. Keys: p prints one line above the live region
+//	  arrives and the program chooses -mode. With -bytes, the program puts the terminal in raw
+//	  mode itself and gives Bubble Tea a reader that first appends each read to FILE in hex (one
+//	  line per read): the bytes before the parser, beside the key messages after it. Keys: p prints one line above the live region
 //	  (tea.Println), P prints 30, a switches the alt screen, q quits. The live region shows the
 //	  size, the mode, the redraw count and the last 10 key messages.
 //	teaprobe raw
@@ -17,6 +19,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -90,6 +93,20 @@ func (m *model) View() tea.View {
 	return v
 }
 
+// tee writes each read to log in hex before the parser gets it.
+type tee struct {
+	r   io.Reader
+	log *os.File
+}
+
+func (t tee) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		fmt.Fprintf(t.log, "%s % x\n", time.Now().Format("15:04:05.000"), p[:n])
+	}
+	return n, err
+}
+
 func raw() error {
 	old, err := term.MakeRaw(os.Stdin.Fd())
 	if err != nil {
@@ -121,10 +138,27 @@ func main() {
 	fs := flag.NewFlagSet("tea", flag.ExitOnError)
 	delay := fs.Duration("delay", 2*time.Second, "time until the first tree")
 	mode := fs.String("mode", "inline", "the mode for the first tree: inline or alt")
+	bytesFile := fs.String("bytes", "", "append the input bytes to this file in hex")
 	if len(os.Args) > 1 {
 		fs.Parse(os.Args[2:])
 	}
-	p := tea.NewProgram(&model{mode: *mode})
+	var opts []tea.ProgramOption
+	if *bytesFile != "" {
+		log, err := os.OpenFile(*bytesFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer log.Close()
+		old, err := term.MakeRaw(os.Stdin.Fd())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer term.Restore(os.Stdin.Fd(), old)
+		opts = append(opts, tea.WithInput(tee{os.Stdin, log}))
+	}
+	p := tea.NewProgram(&model{mode: *mode}, opts...)
 	go func() { time.Sleep(*delay); p.Send(firstTree{}) }()
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
