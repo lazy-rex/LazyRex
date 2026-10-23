@@ -666,8 +666,10 @@ func (h *Hub) startOrWait(ctx context.Context, pl *Plugin, e *configEntry, cand 
 	}
 	if member && missing != nil {
 		// The wake starts this run (an automatic start), so it is selected before the lease ends.
+		was := pl.selected
 		pl.selected = &selectedRun{Entry: entryIdentity(e), Run: *cand}
 		if err := h.savePlugin(ctx, pl); err != nil {
+			pl.selected = was // a later save must not store the selection that this one lost
 			h.mu.Unlock()
 			return fmt.Errorf("plugin %s: the selected run is not saved: %w", pl.Name, err)
 		}
