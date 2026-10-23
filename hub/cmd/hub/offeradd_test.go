@@ -176,8 +176,8 @@ func TestOfferAddFetch(t *testing.T) {
 	}
 }
 
-// A sync that read the peer's document applies its lists also when an op admission failed (a held
-// plugin manager refuses the peer update): the new offer shows, the withdrawn offer is no longer
+// A sync that read the peer's document applies its lists also when the peer update of an entry
+// failed (the op table does not read): the new offer shows, the withdrawn offer is no longer
 // admitted, and last_error is set (claude-48, c48-offer-rev). A sync that read no document keeps
 // the last lists.
 func TestPeerSyncPartialResult(t *testing.T) {
@@ -196,11 +196,13 @@ func TestPeerSyncPartialResult(t *testing.T) {
 		}
 		return json.Marshal(map[string]any{"pins": json.RawMessage(doc), "managed": []peerManaged{{ID: "newp", Source: newp.Source}}})
 	}
-	mustExec(t, b, `INSERT INTO plugin_hold (one, release_id, acquired_at) VALUES (1, 'r1', 't1')`)
+	// The peer update of notes reads plugin_ops (peerUpdate): without the table, the read fails.
+	mustExec(t, b, `ALTER TABLE plugin_ops RENAME TO plugin_ops_away`)
 	l := b.peerLink("mac")
 	s, err := b.peerPluginsSync(ctx, l)
-	if err == nil || s == nil {
-		t.Fatalf("a held update: %+v %v", s, err)
+	mustExec(t, b, `ALTER TABLE plugin_ops_away RENAME TO plugin_ops`)
+	if err == nil || !strings.Contains(err.Error(), "plugin_ops") || s == nil {
+		t.Fatalf("a failed peer update: %+v %v", s, err)
 	}
 	b.peerSyncApply(l, s, err)
 	if got := b.peerOffered(); len(got) != 1 || got[0] != newp {
