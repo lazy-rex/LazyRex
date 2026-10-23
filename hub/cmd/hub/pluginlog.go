@@ -51,9 +51,15 @@ func pluginLogMarker(name, key string) string {
 	return "plugin " + name + " [" + key + "]: "
 }
 
-// pluginLogf writes one hub log line about a plugin. Every plugin line of the hub uses it.
+// pluginLogf writes one hub log line about a plugin. Every plugin line of the hub uses it. A
+// message that starts with "plugin <name>: " of the same name (a start error) loses that prefix
+// once, so the line does not name the plugin twice; any other text stays.
 func pluginLogf(name, key, format string, args ...any) {
-	log.Print(pluginLogMarker(name, key) + fmt.Sprintf(format, args...))
+	msg := fmt.Sprintf(format, args...)
+	if name != "" {
+		msg = strings.TrimPrefix(msg, "plugin "+name+": ")
+	}
+	log.Print(pluginLogMarker(name, key) + msg)
 }
 
 // recordLogf is pluginLogf for a record, with the key of its current entry. h.mu must not be held.
