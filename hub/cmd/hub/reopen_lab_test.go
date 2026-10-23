@@ -94,7 +94,7 @@ func TestReopenTabPaneLab(t *testing.T) {
 	}
 }
 
-// The reconcile pass leaves a reopening tab to its row (PAIR_LAB_SOCKET, real reconcile passes):
+// The reconcile pass leaves a reopening tab to its row (rexLab, real reconcile passes):
 // the pane request is lost before Rex (no pane), and the old renderer exits while the row is
 // opening. The passes open no third view and close neither view; the exit counts once. After the
 // row expires, the next passes replace the exited view: the tab is back with one open view.
@@ -150,7 +150,7 @@ func TestReopenReservationLab(t *testing.T) {
 	}
 }
 
-// Lead ruling lead-ux-fix1 (2), in a real Rex lab (PAIR_LAB_SOCKET): the split answer is lost, and
+// Lead ruling lead-ux-fix1 (2), in a real Rex lab (rexLab): the split answer is lost, and
 // the new renderer exits at once in its kept-open pane. At the bound the childless labeled pane is
 // adopted, one renderer exit is counted, the old pane closes, and the reconcile passes open a new
 // view for the tab.

@@ -15,24 +15,15 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// Transcript pairs against a real Rex lab (pair.go). Lab only: PAIR_LAB_SOCKET=/tmp/rexlab-*/rex.sock.
+// Transcript pairs against a real Rex lab (pair.go). Lab only (rexLab: HARNESS_LAB=1).
 // The "renderer" is a shell loop that keeps its arguments (the view ID and, for a
 // transcript, -transcript), so the hub's process proofs work. No plugin runs.
 func pairLabHub(t *testing.T) *Hub {
 	t.Helper()
-	socket := os.Getenv("PAIR_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set PAIR_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
-	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") && !strings.HasPrefix(real, "/tmp/rexlab-") {
-		t.Fatalf("refuse a socket that resolves outside the lab: %s %v", real, err)
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	r, err := rex.Dial(ctx, socket)
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +35,7 @@ func pairLabHub(t *testing.T) *Hub {
 			}
 		}
 	}()
-	h.rex = r
+	h.rex, h.cfg.Server = r, l.server
 	view := filepath.Join(t.TempDir(), "view.sh")
 	os.WriteFile(view, []byte("#!/bin/sh\nwhile :; do sleep 600; done\n"), 0o755)
 	h.cfg.View = view
