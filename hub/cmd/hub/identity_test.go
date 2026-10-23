@@ -124,3 +124,30 @@ func TestIdentityChangeIsAWorkersChange(t *testing.T) {
 	h.identityChildExited(ctx, "block:1")
 	wait("agents", "workers")
 }
+
+// identitySync frees h.mu for the status reads of new bindings. A program status event in that
+// window writes the old record of a kept binding, and the installed identity keeps that write.
+func TestIdentitySyncKeepsAStatusWrittenDuringTheSync(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.workersSchemaStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:1', 'session:1', 0, '', 'claude', 'claude:c1')`)
+	h.db.Exec(`INSERT INTO identities VALUES ('claude:c1', 'claude', 'c1', 'current', 'block:1', '', '', 'x', 'x')`)
+	old := &Agent{ID: "claude:c1", BlockID: "block:1", State: "working", Record: statusRecord{State: "working"}, delivered: map[string]int64{}}
+	h.idents = map[string]*Agent{"claude:c1": old}
+	real := identitySyncGap
+	t.Cleanup(func() { identitySyncGap = real })
+	identitySyncGap = func() {
+		h.mu.Lock()
+		old.setRecord(statusRecord{State: "idle"}) // as blockEvent does for program_status_changed
+		h.mu.Unlock()
+	}
+	if err := h.identitySync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.idents["claude:c1"].State; got != "idle" {
+		t.Fatalf("state after the sync = %q, want the idle written during it", got)
+	}
+}
