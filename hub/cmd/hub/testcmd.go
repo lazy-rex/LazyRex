@@ -128,16 +128,6 @@ func loadManifest(dir string) (*manifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The roster mode is gone (the identity removal): a suite's agents report identities. This
-	// check runs before the strict decode, so the refusal names the removed key.
-	var raw struct {
-		Test struct {
-			Agents json.RawMessage `json:"agents"`
-		} `json:"test"`
-	}
-	if json.Unmarshal(b, &raw) == nil && raw.Test.Agents != nil {
-		return nil, fmt.Errorf("%s: test.agents is removed: the test agents report identities (docs/testing.md, \"Agents\"); delete the key", path)
-	}
 	var m manifest
 	if err := decodeManifest(path, b, &m); err != nil {
 		return nil, err
