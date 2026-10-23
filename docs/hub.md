@@ -1190,7 +1190,8 @@ The 4.3 goal (timeout audit, 2026-10-22): every `client.perform` that the hub se
 |---|---|---|---|
 | `hub.changed` (`changed.go`), watch nudges (`watchsvc.go`) | 5 s | Nothing more: a late nudge only makes the plugin read again. Only a Rex refusal of a full queue (`client_unavailable`, "is busy") is retried (`changedRetryable`). | bounded |
 | `hub.prompt` (`promptpush.go`) | 5 s (`timeout_ms` 3000) | The agent stays dirty, and a later pass sends its state current then. That can be the same state again. The plugin's apply rule ignores a copy whose rev is not above the applied rev ("Prompt pushes"). | bounded |
-| `view.release`, `view.resume` (`panels.go`) | 6 s | The replacement slot ends, and the hub sends `view.resume`. The renderer answers a release of an ended replacement with `cancelled`. | bounded |
+| `view.release` (`panels.go`, `askRelease`) | 6 s | The replacement slot ends (cancelled), and the hub sends `view.resume`. The renderer answers a late release of an ended replacement with `cancelled`. | bounded |
+| `view.resume` (`panels.go`, `resumeOldSync`) | 6 s | Only the event (`slot_resume` with the error). No other resume: a renderer that reattaches learns the state from `hub.view.attach`. | bounded |
 | `view.changed` (`viewnotify.go`) | no hub deadline, by design | `timeout_ms` is the only bound. At most one request is outstanding for each view, role and attachment, and a close or a new attachment cancels it. | by design |
 | The view worker's calls to a plugin (`viewsvc.go`, `callPlugin`) | no hub deadline, by design | The worker is serial for each plugin, and `runOps` retries an unknown outcome. With a deadline, each retry would add one more queued call to a plugin that does not take its queue. Without one, one call waits, and the plugin is the cause. | by design |
 | `view.reload` (`ui.go`, `uiReload`) | `timeout_ms + performMargin`, 7 s | Only the event (`view_reload` with the error). No retry, as before. | bounded |
