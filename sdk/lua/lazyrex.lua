@@ -264,15 +264,28 @@ local function rex_error(err, default)
 end
 M.rex_error = rex_error
 
+-- COVERED_READS: the hub calls whose reads the hub tracks for a render (G1 part B, hub lead,
+-- lead-g1b-plan). The hub keeps the same list (coveredReads); TestCoveredReadsMatchSDK reads this line.
+local COVERED_READS = {['hub.agents'] = true, ['hub.agents.resolve'] = true, ['hub.workers'] = true, ['hub.profiles'] = true}
+
 local function hub(action, args)
   local app = S.app
   -- The hub tracks a render only when every hub call of the render reached the hub and returned without
   -- error (hub lead, lead-render-incomplete). So each failure marks the frame first, in a table field:
   -- the mark holds when the plugin catches the error, and the render replies refresh = "all". A render
-  -- call other than hub.sql.query reads hub state: it marks the frame too.
+  -- call other than hub.sql.query reads hub state: it marks the frame too, except a covered read. A
+  -- covered read carries the render ID, and the hub records its change names for the render. A
+  -- caller's own render value is kept: the hub untracks the render if that ID is not open.
   local f = S.frame
   local function failed() if f and f.state then f.state.failed = true end end
-  if action ~= 'hub.sql.query' then external() end
+  local covered = COVERED_READS[action] and f and f.in_render and f.render
+  if covered and (args == nil or (type(args) == 'table' and args.render == nil)) then
+    local a = {}
+    for k, v in pairs(args or {}) do a[k] = v end
+    a.render = f.render
+    args = a
+  end
+  if action ~= 'hub.sql.query' and not covered then external() end
   local request = {client_id = app.hub_id, action = action, args = args or {}, timeout_ms = 10000}
   -- No protected call here: hub() runs inside handlers, and in Rex Lua a finished protected call or a
   -- caught error can split the handler's locals from its closures (docs/rex-protocol.md, "Rex Lua

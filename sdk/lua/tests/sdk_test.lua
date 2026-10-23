@@ -1447,6 +1447,50 @@ end})
     'exec.start', 'block.call', 'session.view', 'server', 'lab:call', 'lab:session.view', 'lab:exec', 'lab:exec.start'})
 end)
 
+test('a covered read in a render sends the render ID and keeps the render tracked; a failed one replies refresh = "all"', function()
+  -- The covered reads (G1 part B, lead-g1b-plan): the hub records their change names for the render.
+  -- The record is a table field: Rex Lua detaches a local that a closure captured before a caught
+  -- error (LazyRex docs/rex-protocol.md, "Rex Lua runtime"), so a rebound local would stay stale.
+  local rec, fails = {seen = {}}, {}
+  local function read(action)
+    return function(a)
+      rec.seen[#rec.seen + 1] = {action = action, render = a.render, x = a.x}
+      if fails[action] then return nil, {code = 'unavailable', message = 'lost'} end
+      return {}
+    end
+  end
+  local s = plugin([[
+app.view('/c/*', {render = function(ctx)
+  local name = ctx.route:sub(4)
+  if name == 'own' then pcall(app.hub, 'hub.agents', {render = 'mine'})
+  elseif name == 'other' then app.hub('hub.thing', {})
+  elseif name == 'noargs' then app.hub('hub.workers')
+  else pcall(app.hub, name, {x = 1}) end
+  return {title = 'C', nodes = {}}
+end})
+app.action('p.read', {}, function() app.hub('hub.agents', {x = 2}); return {done = true} end)
+]], {hub = {['hub.agents'] = read('hub.agents'), ['hub.agents.resolve'] = read('hub.agents.resolve'),
+    ['hub.workers'] = read('hub.workers'), ['hub.profiles'] = read('hub.profiles'), ['hub.thing'] = function() return {} end}})
+  for _, action in ipairs({'hub.agents', 'hub.agents.resolve', 'hub.workers', 'hub.profiles'}) do
+    rec.seen = {}
+    expect(s:render('/c/' .. action, 'render-' .. action).result.refresh, action).to_be(nil)
+    expect(rec.seen, action .. ': the render ID, and the caller keeps its arguments').to_equal({{action = action, render = 'render-' .. action, x = 1}})
+    fails[action] = true
+    expect(s:render('/c/' .. action, 'render-f').result.refresh, action .. ': a failed read').to_be('all')
+    fails[action] = nil
+  end
+  rec.seen = {}
+  expect(s:render('/c/noargs', 'render-n').result.refresh, 'no arguments').to_be(nil)
+  expect(rec.seen, 'no arguments: the render ID').to_equal({{action = 'hub.workers', render = 'render-n'}})
+  rec.seen = {}
+  expect(s:render('/c/own', 'render-o').result.refresh, 'an own render value').to_be(nil)
+  expect(rec.seen, 'an own render value is kept').to_equal({{action = 'hub.agents', render = 'mine'}})
+  expect(s:render('/c/other', 'render-x').result.refresh, 'another hub call').to_be('all')
+  rec.seen = {}
+  expect(s:agent('p.read', {}).result, 'outside a render').to_equal({done = true})
+  expect(rec.seen, 'outside a render: no render ID').to_equal({{action = 'hub.agents', x = 2}})
+end)
+
 test('a wrapper passes values, nil values and errors unchanged; outside a render it marks nothing', function()
   local s = plugin([[
 app.action('p.io', {}, function()

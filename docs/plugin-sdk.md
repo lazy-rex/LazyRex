@@ -146,9 +146,11 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
 - **The SDK detects reads outside SQL.** In a render, a call of `io.open`, `io.lines`, `io.popen`,
   `os.execute`, `rex.exec`, `rex.exec.start`, `rex.call`, `rex.invoke`, `rex.wait`, `rex.server`
   (and the calls of its table), `rex.servers`, `rex.host`, `rex.block.call`, `rex.session.*`, or a
-  hub call other than an SQL query makes the render reply `refresh = "all"`: the view then renders
-  again after each SQL commit of the plugin. So does a render in which a hub call failed, also when
-  the plugin caught the error. The SDK cannot see a handle opened before the render or a native
+  hub call other than an SQL query or a covered read makes the render reply `refresh = "all"`: the
+  view then renders again after each SQL commit of the plugin. So does a render in which a hub call
+  failed, also when the plugin caught the error. The covered reads are `hub.agents`,
+  `hub.agents.resolve`, `hub.workers` and `hub.profiles`: the SDK sends the render ID with them, and
+  the hub renders the view again when that hub state changes (docs/hub.md, "Render IDs"). The SDK cannot see a handle opened before the render or a native
   module. The next render that reads only SQL is tracked again.
 - **Opt out.** `app.panel(title, fn, {refresh = 'all'})` or `app.view(route, handlers, {refresh = 'all'})`
   renders the view again after each SQL commit. In a render, `ctx.refresh_all()` does the same for
