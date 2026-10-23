@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -162,11 +161,6 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	if kept {
 		return nil, refuse("refused", "plugin %s has no config entry: stop it with hub.admin.stop, or start its entry by source", name)
 	}
-	lease, err := h.takeStartLease() // the prune lock, as in startPluginWith
-	if err != nil {
-		return nil, fmt.Errorf("plugin %s: %w", name, err)
-	}
-	defer lease.release()
 	e, cand, err := h.validateCandidate(pl)
 	if err == errKept {
 		return nil, refuse("refused", "plugin %s has no config entry: stop it with hub.admin.stop, or start its entry by source", name)
@@ -211,7 +205,7 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 		}
 		return nil, refuse("retire_failed", "plugin %s: instance %s was not retired: its block holds a process that the hub cannot verify (see the plugin_conflict event); nothing was spawned", name, owned)
 	}
-	if err := h.spawn(ctx, pl, cand, lease); err != nil {
+	if err := h.spawn(ctx, pl, cand); err != nil {
 		var se *spawnError
 		if errors.As(err, &se) && se.known && se.open != "" {
 			// No block can exist, but the store keeps the intent open: say so, as hub.plugins does.

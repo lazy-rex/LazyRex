@@ -596,7 +596,7 @@ func TestLocalSnapshot(t *testing.T) {
 }
 
 // U13: a start that fails after the publication stores no selected run: the record keeps its
-// earlier one, the lease is released, and no row names the new entry.
+// earlier one, and no row names the new entry.
 func TestLocalSnapshotLateFailure(t *testing.T) {
 	for _, c := range []string{"the source changed", "the save fails"} {
 		t.Run(c, func(t *testing.T) {
@@ -624,9 +624,6 @@ func TestLocalSnapshotLateFailure(t *testing.T) {
 			h.db.QueryRow(`SELECT selected_run, run FROM plugins WHERE name = 'p'`).Scan(&after, &run)
 			if after != before {
 				t.Fatalf("the selected run changed:\n%s\n%s", before, after)
-			}
-			if !pruneTry(t, h.cfg.State) {
-				t.Fatal("the start lease is held")
 			}
 			var fresh []string
 			for _, e := range p1Entries(t, h) {

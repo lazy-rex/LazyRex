@@ -2,7 +2,7 @@ package main
 
 // The selected run (the P1 plan r6): the run that an automatic start uses. An explicit start (hub
 // start recovery, hub.admin.start, a reload, a replace) resolves the current pin and selects its
-// run: spawn saves it with the run, and a start that waits saves it before its lease ends. An
+// run: spawn saves it with the run, and a start that waits saves it when it starts to wait. An
 // automatic start (a crash respawn, a restart after a session loss, a wake) never reads a pin: it
 // runs the selected run, so a lock change takes effect at the next explicit start.
 //
@@ -28,13 +28,12 @@ type selectedRun struct {
 // startAutomatic is the start path of an automatic start. The caller holds pl.lifecycle. The order:
 //  1. Load the row (with selected_run) and resolve the spawn intents, as startPlugin does. A kept
 //     record takes the kept path; a record that is not desired running starts nothing.
-//  2. Take the start lease: from before the run check until spawn saves the run.
-//  3. Admission: the selected run must come from the record's current entry. Else it refuses: "no
+//  2. Admission: the selected run must come from the record's current entry. Else it refuses: "no
 //     run is recorded; start it again". The current candidate and the current graph do not count.
-//  4. The run check (checkRun) and the selected graph: a cycle among the selected runs that
+//  3. The run check (checkRun) and the selected graph: a cycle among the selected runs that
 //     contains the plugin refuses, and so does a dependency that no entry gives. A refusal gives
 //     state refused, so no backoff retries it (respawnRetries).
-//  5. Retire the recorded instance, then spawn the selected run, or wait (startOrWait) while a
+//  4. Retire the recorded instance, then spawn the selected run, or wait (startOrWait) while a
 //     dependency is not registered. A refused or stopped dependency shows in the waiting text.
 func (h *Hub) startAutomatic(ctx context.Context, pl *Plugin) error {
 	pl.attempted = true
@@ -64,11 +63,6 @@ func (h *Hub) startAutomatic(ctx context.Context, pl *Plugin) error {
 	if pl.Desired != "running" {
 		return nil
 	}
-	lease, err := h.takeStartLease()
-	if err != nil {
-		return fmt.Errorf("plugin %s: %w", pl.Name, err)
-	}
-	defer lease.release()
 	h.mu.Lock()
 	e, sel := pl.entry, pl.selected
 	if e == nil {
@@ -111,7 +105,7 @@ func (h *Hub) startAutomatic(ctx context.Context, pl *Plugin) error {
 			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
 		}
 	}
-	err = h.startOrWait(ctx, pl, e, &run, lease)
+	err = h.startOrWait(ctx, pl, e, &run)
 	h.mu.Lock()
 	if pl.state == "waiting" {
 		for _, d := range pl.waiting {

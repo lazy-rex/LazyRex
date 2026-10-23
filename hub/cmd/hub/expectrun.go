@@ -95,8 +95,8 @@ func candidateChanged(name string, cand *pluginRun, x *expectRun, unchanged stri
 // a snapshot with the digest of the running run keeps the instance; neither changes the instance,
 // its state or its selected run. A new digest replaces the instance, from step 2.
 //
-// The caller holds pl.lifecycle and the start lease.
-func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive, running bool, x *expectRun, e *configEntry, cand *pluginRun, lease *startLease) error {
+// The caller holds pl.lifecycle.
+func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive, running bool, x *expectRun, e *configEntry, cand *pluginRun) error {
 	if !x.matches(cand) {
 		return candidateChanged(pl.Name, cand, x, "nothing was retired or spawned")
 	}
@@ -166,5 +166,5 @@ func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive, running b
 			return fmt.Errorf("plugin %s: the recorded instance is not retired (see the plugin_conflict or plugin_stopped event)", pl.Name)
 		}
 	}
-	return h.spawn(ctx, pl, cand, lease)
+	return h.spawn(ctx, pl, cand)
 }

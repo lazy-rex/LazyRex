@@ -3,8 +3,7 @@ package main
 // Local snapshots (the P1 plan r6, section 4). An explicit start of a local source copies the
 // source directory into <state>/plugins/local and runs the copy, as a GitHub source runs its cache
 // entry. So an automatic start runs the same files again, and an edit of the source takes effect
-// at the next explicit start. The caller holds the start lease (prunelock.go) through the copy, the
-// publication and the save of the run.
+// at the next explicit start.
 
 import (
 	"fmt"

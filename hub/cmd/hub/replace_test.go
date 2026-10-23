@@ -13,7 +13,7 @@ import (
 func TestSpawnLocalFailureStages(t *testing.T) {
 	h, _ := uiTestHub(t)
 	pl := &Plugin{Name: "p"}
-	err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
+	err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
 	var se *spawnError
 	if !errors.As(err, &se) || se.stage != "session" || !se.known {
 		t.Errorf("no work session: %#v", err)
@@ -26,7 +26,7 @@ func TestSpawnLocalFailureStages(t *testing.T) {
 	if _, err := h.db.Exec(`DROP TABLE spawn_intents`); err != nil {
 		t.Fatal(err)
 	}
-	err = h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
+	err = h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
 	if !errors.As(err, &se) || se.stage != "intent" || !se.known {
 		t.Errorf("an intent insert failure: %#v", err)
 	}
@@ -82,7 +82,7 @@ func TestSpawnKnownFailureIntents(t *testing.T) {
 				t.Fatal(err)
 			}
 			pl := &Plugin{Name: "p"}
-			err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"}, nil)
+			err := h.spawn(context.Background(), pl, &pluginRun{Name: "p"})
 			var se *spawnError
 			if !errors.As(err, &se) || !se.known || se.stage != c.stage || se.open != c.open {
 				t.Fatalf("spawn: %#v", err)
@@ -167,7 +167,7 @@ func TestExpectRunArguments(t *testing.T) {
 func TestExpectRunRemovedEntry(t *testing.T) {
 	h := &Hub{}
 	pl := &Plugin{Name: "p", Desired: "stopped"} // pl.entry is nil: the entry was removed
-	err := h.startExpected(context.Background(), pl, false, false, &expectRun{Source: "src/p"}, &configEntry{}, &pluginRun{Source: "src/p"}, nil)
+	err := h.startExpected(context.Background(), pl, false, false, &expectRun{Source: "src/p"}, &configEntry{}, &pluginRun{Source: "src/p"})
 	if err == nil || !strings.Contains(err.Error(), "refused: plugin p: its entry was removed during the start; nothing was retired or spawned") {
 		t.Fatalf("got %v", err)
 	}

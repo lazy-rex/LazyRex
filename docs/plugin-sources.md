@@ -9,7 +9,7 @@ Code:
 | Part | Files (`hub/cmd/hub`) |
 | --- | --- |
 | Config entries, resolution | `pluginconfig.go`, `sources.go` (manifest and graph rules) |
-| Lock, cache, prune lock | `pluginlock.go`, `plugincache.go`, `digest.go`, `prunelock.go` |
+| Lock, cache | `pluginlock.go`, `plugincache.go`, `digest.go` |
 | Refs, fetch, `@latest` | `pluginfetch.go`, `pluginlatest.go` |
 | `lazyrex-hub plugin` commands | `plugincmd.go`, `pinsync.go`, `pluginnew.go` |
 | Start, states, kept records | `plugins.go`, `respawn.go`, `reload.go` |
@@ -193,7 +193,8 @@ lazyrex-hub plugin sync`.
   must not delete an entry that is in use. A future prune keeps every entry that a lock names, or
   that a plugins row names in `run` or in `selected_run` (section 7, "Selected run"). A local
   snapshot (`local/<hex>.<token>`, below) has no lock, so for it the rule is `run` or
-  `selected_run`.
+  `selected_run`. It also needs a guard against a start that reads a lock file or copies a local
+  source while prune runs: the hub has none.
 - **Local snapshots** (`localsnapshot.go`). An explicit start of a local source copies the source
   directory, and only that directory (section 2), into a stage, `local/.stage-<token>/`, and
   publishes it as `local/<hex>.<token>`, where `<hex>` is the digest of the published bytes (the digest rule below). `.git` is skipped. A symlink or
@@ -219,17 +220,6 @@ lazyrex-hub plugin sync`.
 - A future prune command also removes `.stage-*` and `.tmp/*` entries older than one hour (a CLI
   fetch ended by SIGKILL, or a manager fetch whose output did not finish). Until it exists, they
   stay as unused disk state; no lock names them.
-- **The prune lock** (`prunelock.go`): the hub side of a future prune command. Each admitted start
-  opens `<state>/plugins/prune.lock` and takes a shared flock on its own descriptor. It takes it
-  before the resolution that reads the lock file (`checkStart`; `validateCandidate` in
-  `hub.admin.replace`). Spawn releases it after hub.db has saved the run.
-  Each start that ends without a spawn releases it. A waiting plugin holds nothing. Prune takes an
-  exclusive flock without waiting. An explicit start of a local source holds it through the copy,
-  the publication and the save of the run (or of the selected run for a wait). An automatic start
-  holds it from before its run check to the save of the run. So each entry that a start can use is
-  in a lock file, a stored run or a stored selected run while prune reads them. A run that hub.db cannot save stops the spawn before the
-  create request (`spawn_failed`, stage "save"): prune could not see it. The flock is advisory: a
-  hub without this rule is not protected.
 - **Digest**: sha256 over the lines `<path>\0<x|->\0<size>\0<sha256 hex of content>\n`, sorted by
   path bytes. `x` is mode 100755. The command computes it from the archive, before it changes the
   permissions. At each plugin start the hub computes it again; there `x` is "any execute bit
@@ -803,8 +793,7 @@ Rules:
   - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
 - After `lockedDir`, the hub reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
-- A hub start takes neither plugin command flock (section 6; it takes only the shared prune
-  flock, section 4). The hub reads the lock with one read. The commands and
+- A hub start takes neither plugin command flock (section 6). The hub reads the lock with one read. The commands and
   the plugin manager replace the file with a rename, so the hub reads the old lock or the new lock.
 - Tests: the commands are also Go functions (`pluginSync`, `pluginUpdate`) with `pluginCmdOpts`.
   Its `remote` option gives the fetch URL, so a test can use a local bare repository (`file://`)

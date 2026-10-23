@@ -154,7 +154,7 @@ func (h *Hub) respawnDue(ctx context.Context, pl *Plugin, gen uint64) {
 
 // respawnRetries reports whether a respawn's start error leaves no other retry owner, so that the
 // backoff schedules the next respawn. No owner: an error before the spawn intent (a store read, an
-// intent resolution or the prune lock failed, the recorded instance was not retired) and a known
+// intent resolution failed, the recorded instance was not retired) and a known
 // spawn failure whose intent was abandoned. An owner: a refusal (refused or retained: the next
 // hub.admin.start or reload; unresolved_intent: the intent resolution), and a spawn whose outcome
 // is unknown or whose intent stays open (the intent resolution).
