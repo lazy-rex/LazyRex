@@ -1251,6 +1251,36 @@ app.action('p.seen', {}, function() return {generation = seen.generation, rows =
   expect(find(plain.keymap, function(k) return k.name == 'hub.prompt' end), 'no listener, no keymap entry').to_be(nil)
 end)
 
+test('app.on peer.receive: the reply is the listener result; a refusal is final; an error rolls back and reaches the hub', function()
+  local s = plugin([[
+app.db.migrate {'CREATE TABLE inbox (key TEXT PRIMARY KEY, from_hub TEXT NOT NULL, body TEXT NOT NULL)'}
+app.on('peer.receive', function(args)
+  if args.key == 'nobody' then return {refused = 'unknown_agent', message = 'no agent bob here'} end
+  if args.key == 'bool' then return {refused = true} end
+  app.db.exec('INSERT INTO inbox (key, from_hub, body) VALUES (?, ?, ?)', args.key, args.from_hub, args.body)
+  if args.key == 'boom' then error('cannot store') end
+  if args.key == 'quiet' then return nil end
+  return {stored = args.key}
+end)
+app.action('p.inbox', {}, function() return {keys = #app.db.query('SELECT key FROM inbox')} end, {store = false})]])
+  expect(find(s.keymap, function(k) return k.name == 'peer.receive' end) ~= nil, 'the keymap lists peer.receive').to_be(true)
+  local function deliver(key, pid) return s:call('peer.receive', {from_hub = 'linux', key = key, body = '{"text":"hi"}'}, pid) end
+  expect(deliver('m1').result, 'the listener result is the reply').to_equal({stored = 'm1'})
+  expect(deliver('quiet').result, 'nil is {}').to_equal({})
+  expect(deliver('nobody').result, 'a refusal is a result').to_equal({refused = 'unknown_agent', message = 'no agent bob here'})
+  local boom = deliver('boom')
+  expect(boom.error and boom.error.message, 'the error reaches the hub').to_be('cannot store')
+  local bool = deliver('bool')
+  expect(bool.error and bool.error.message, 'a refusal that is not a code string fails').to_be('peer.receive refused must be a code string, not boolean')
+  expect(s:agent('p.inbox', {}).result, 'only m1 and quiet are stored; the error rolled back').to_equal({keys = 2})
+  expect(deliver('m2', 7).error.code, 'only the hub calls it').to_be('refused')
+  local plain = plugin([[app.action('p.x', {}, function() return {} end)]])
+  expect(find(plain.keymap, function(k) return k.name == 'peer.receive' end), 'no listener, no keymap entry').to_be(nil)
+  local two = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.on("peer.receive", function() end)\napp.on("peer.receive", function() end)'})
+  expect(two.loaded, 'a second listener fails at load').to_be(false)
+  expect(tostring(two.load_error):find('app.on("peer.receive") takes one listener', 1, true) ~= nil, tostring(two.load_error)).to_be(true)
+end)
+
 test('app.notice in a render fails clearly and opens no transaction (a render only reads)', function()
   local s = plugin([[app.panel('Note', function() app.notice('alice', true); return {} end, {id = 'note'})]])
   local before = s.sql.count('hub.sql.begin')

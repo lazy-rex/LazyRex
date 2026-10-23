@@ -839,7 +839,14 @@ function M.plugin(name)
   -- app.on(event, fn): a Rex event (fn(ev, ctx): ctx is the Rex event context, with block_id and
   -- session_id) or the hub calls hub.changed, hub.prompt and view.seen (fn(args)). An error in a hub
   -- call listener reaches the hub as the error reply (the hub then calls again).
+  -- peer.receive (federation, lead-fed-sdk3) has one listener, fn(args) with {from_hub, key, body}.
+  -- Its return value is the reply; {refused = "<code>", message = "<text>"} is a final refusal.
   function app.on(event, fn, opts)
+    if event == 'peer.receive' then
+      if listeners[event] then error('app.on("peer.receive") takes one listener', 2) end
+      listeners[event] = {{fn = fn, opts = opts or {}}}
+      return
+    end
     if event == 'hub.changed' or event == 'hub.prompt' or event == 'view.seen' then
       listeners[event] = listeners[event] or {}
       table.insert(listeners[event], {fn = fn, opts = opts or {}})
@@ -1161,6 +1168,19 @@ function M.plugin(name)
       for _, l in ipairs(listeners[ev.action] or {}) do run({tx = l.opts.tx ~= false}, l.fn, a) end
       return {}
     end
+    if ev.action == 'peer.receive' and listeners['peer.receive'] then
+      -- The check runs before the commit: a refusal that the hub cannot read fails and rolls back.
+      local l = listeners['peer.receive'][1]
+      return run({tx = l.opts.tx ~= false}, function(args)
+        local r = l.fn(args)
+        if r == nil then return {} end
+        if type(r) ~= 'table' then fail('internal', 'peer.receive must return a table or nil') end
+        if r.refused ~= nil and (type(r.refused) ~= 'string' or r.refused == '') then
+          fail('internal', 'peer.receive refused must be a code string, not ' .. type(r.refused))
+        end
+        return r
+      end, a)
+    end
     if a.user ~= 'user' then fail('refused', 'Unknown user') end
     if actions[ev.action] then return call_action(actions[ev.action], user_ctx(a), a.args or {}) end -- user_only
     if ev.action == 'view.seen' then
@@ -1240,6 +1260,8 @@ function M.plugin(name)
     for _, n in ipairs({'view.render', 'view.action', 'view.seen', 'view.draft.save', 'view.send', 'view.history', 'hub.changed'}) do hub_call(n) end
     -- hub.prompt: only a plugin that listens (the hub sends it to a plugin with the prompts grant).
     if listeners['hub.prompt'] then hub_call('hub.prompt') end
+    -- peer.receive: only a plugin that listens (federation: the hub delivers envelopes of peer hubs).
+    if listeners['peer.receive'] then hub_call('peer.receive') end
     -- Each view.* handler name of an app.view (for example view.open, view.rename).
     for _, v in ipairs(views) do
       local names = {}
