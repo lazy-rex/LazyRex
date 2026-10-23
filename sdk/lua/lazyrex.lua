@@ -1246,10 +1246,19 @@ function M.plugin(name)
     if #commands > 0 then reg.commands = commands end
     -- app.registration: the hub.register reply (for example its generation), before the start functions.
     app.registration = hub('hub.register', reg)
-    -- The reply limits (inline_max, part_bytes, max_total) have one source: the hub.
+    -- The reply limits (inline_max, part_bytes, max_total) have one source: the hub. Each is an integer
+    -- from 1 to 2^53 (the range check also refuses NaN and infinity), and inline_max is at most max_total.
     local limits = type(app.registration.limits) == 'table' and app.registration.limits or {}
+    local hint = ' (the hub is older than 4.2, or a test sandbox must answer hub.register with'
+      .. " dofile(H.args.sdk .. '/testing.lua').register_reply())"
     for _, k in ipairs({'inline_max', 'part_bytes', 'max_total'}) do
-      if type(limits[k]) ~= 'number' then fail('internal', 'The hub.register reply has no limits.' .. k) end
+      local v = limits[k]
+      if type(v) ~= 'number' or not (v >= 1 and v <= 2 ^ 53) or v ~= math.floor(v) then
+        fail('internal', 'The hub.register reply has no valid limits.' .. k .. hint)
+      end
+    end
+    if limits.inline_max > limits.max_total then
+      fail('internal', 'The hub.register reply has no valid limits: inline_max is over max_total' .. hint)
     end
     raw.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
     migrate()

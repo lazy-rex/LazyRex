@@ -948,11 +948,31 @@ test('testing.register_reply: a sandbox with its reply starts, and a reply over 
   expect(type(r.result.lazyrex_parts), '5000 bytes go in parts at inline_max 4096').to_be('table')
 end)
 
-test('a hub.register reply without limits fails the start', function()
-  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = false})
+test('a hub.register reply without valid limits fails the start, and names the limit and testing.lua', function()
+  local good = {inline_max = 4096, part_bytes = 8192, max_total = 65536}
+  local function with(k, v) local l = {}; for n, x in pairs(good) do l[n] = x end; l[k] = v; return l end
+  for name, case in pairs({
+    none = {limits = false, text = 'no valid limits.inline_max'},
+    zero = {limits = with('inline_max', 0), text = 'no valid limits.inline_max'},
+    negative = {limits = with('part_bytes', -1), text = 'no valid limits.part_bytes'},
+    fraction = {limits = with('max_total', 1.5), text = 'no valid limits.max_total'},
+    nan = {limits = with('inline_max', 0 / 0), text = 'no valid limits.inline_max'},
+    infinity = {limits = with('max_total', math.huge), text = 'no valid limits.max_total'},
+    text = {limits = with('part_bytes', '8192'), text = 'no valid limits.part_bytes'},
+    over = {limits = with('part_bytes', 2 ^ 53 + 2), text = 'no valid limits.part_bytes'},
+    order = {limits = with('inline_max', 70000), text = 'no valid limits: inline_max is over max_total'},
+  }) do
+    local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = case.limits})
+    s:start()
+    expect(s.exited, name).to_be(1)
+    local line = find(s.printed, function(l) return l:find(case.text, 1, true) ~= nil end)
+    expect(line ~= nil, name .. ': ' .. show(s.printed)).to_be(true)
+    expect(line:find('testing.lua', 1, true) ~= nil, name .. ': names testing.lua').to_be(true)
+  end
+  -- The largest integer passes.
+  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = with('max_total', 2 ^ 53)})
   s:start()
-  expect(s.exited).to_be(1)
-  expect(find(s.printed, function(l) return l:find('no limits', 1, true) ~= nil end) ~= nil, show(s.printed)).to_be(true)
+  expect(s.exited, show(s.printed)).to_be(nil)
 end)
 
 local FORM_PARTS = [[
