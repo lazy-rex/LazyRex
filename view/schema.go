@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strings"
@@ -69,6 +71,7 @@ type Node struct {
 	Before        *string   `json:"before"`
 	HasMore       bool      `json:"has_more"`
 	PageSize      int       `json:"page_size"`
+	Total         *int      `json:"total,omitempty"` // the thread's message count, when sent (v1.1)
 	DraftRevision string    `json:"draft_revision"`
 	Fields        []Field   `json:"fields"`
 	Action        *Action   `json:"action"`
@@ -97,6 +100,26 @@ type Snapshot struct {
 	// Layout is the hub's effective layout for this view: "transcript" when a transcript pane
 	// above prints the history, "" otherwise. A hub without pairs omits it.
 	Layout string `json:"layout,omitempty"`
+	// Open holds the args of the view's last reopen (thread view v1.1), or nil for none.
+	Open *OpenArgs `json:"open,omitempty"`
+}
+
+// OpenArgs are the reopen args that the hub keeps for the life of a view's pane. Full: print the
+// whole thread, not the newest 500. Any other key is invalid.
+type OpenArgs struct {
+	Full bool `json:"full"`
+}
+
+func (o *OpenArgs) UnmarshalJSON(b []byte) error {
+	type plainArgs OpenArgs
+	var args plainArgs
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&args); err != nil {
+		return fmt.Errorf("Invalid open args: %w", err)
+	}
+	*o = OpenArgs(args)
+	return nil
 }
 
 func revision(s string) (*big.Int, bool) {
@@ -129,6 +152,10 @@ func (s Snapshot) Validate(viewID, route string) error {
 		}
 		if n.Type == "history" && (n.PageSize < 1 || len(n.Messages) > n.PageSize) {
 			return fmt.Errorf("Invalid history page for %s", n.ID)
+		}
+		// Total is checked against this node only, never against what the renderer printed.
+		if n.Type == "history" && n.Total != nil && (*n.Total < 0 || *n.Total < len(n.Messages)) {
+			return fmt.Errorf("Invalid history total for %s", n.ID)
 		}
 		ids := map[string]bool{}
 		check := func(id string) error {
