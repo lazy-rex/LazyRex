@@ -1,7 +1,9 @@
 -- A plugin for the thread view mode labs (mode_lab_test.go). Its routes (/forms/modelab and the tab
 -- /thread/lab) render by the
 -- SQL row stage(n): 0 is a read-only thread (a history node and a notice), 1 is an error tree with
--- 12 widget actions, more than a 10-row pane holds. An action records its name in clicked(name).
+-- 12 widget actions, more than a 10-row pane holds, 2 is a thread with 2 widget actions and a
+-- composer with a saved draft (so Send is enabled). An action records its name in clicked(name);
+-- a send records 'send'.
 -- A command opens only a /forms/ or /panels/ route (hub forms.go). The renderer decides its mode
 -- from the tree, never from the route, so stage 0 is a thread frame on this form route.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
@@ -23,6 +25,15 @@ local function render(args)
       {id = 'history', type = 'history', page_size = 10, messages = {{id = 'm1', author = 'codex', text = 'LAB-MSG'}}},
     }}}
   end
+  if row[1] == 2 then
+    return {tree = {title = 'Mode lab', nodes = {
+      {id = 'history', type = 'history', page_size = 10, messages = {{id = 'm1', author = 'codex', text = 'LAB-MSG'}}},
+      {id = 'w1', type = 'widget', action = {name = 'do-w1', label = 'Action w1', enabled = true}},
+      {id = 'w2', type = 'widget', action = {name = 'do-w2', label = 'Action w2', enabled = true}},
+      {id = 'composer', type = 'composer', text = 'DRAFT-TEXT', draft_revision = '1',
+        save_action = {name = 'save', enabled = true}, send_action = {name = 'send', enabled = true}},
+    }}}
+  end
   local nodes = {{id = 'e', type = 'error', text = 'LAB-ERROR the hub lost the thread.'}}
   for k = 1, 12 do
     local id = string.format('w%02d', k)
@@ -42,6 +53,10 @@ rex.on('client_perform_requested', function(ctx, ev)
     if ev.action == 'view.render' then return render(ev.args) end
     if ev.action == 'view.action' then
       hub('hub.sql.exec', {sql = 'INSERT INTO clicked (name) VALUES (?)', params = {ev.args.action}})
+      return {}
+    end
+    if ev.action == 'view.send' then
+      hub('hub.sql.exec', {sql = 'INSERT INTO clicked (name) VALUES (?)', params = {'send'}})
       return {}
     end
     if ev.action:sub(1, 5) == 'view.' then return {} end

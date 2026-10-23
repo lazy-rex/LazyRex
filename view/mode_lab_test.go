@@ -95,6 +95,74 @@ func TestFocusWindowLab(t *testing.T) {
 	})
 }
 
+// TestShortPaneLab (v1.2 item 1f): a real 6-row pane in thread mode gets a tree with a history
+// node, 2 actions and a composer with a draft. Every frame is at most 5 rows. Tab and Shift+Tab
+// reach every control, and the editor row and Send are on screen together. A resize from 30 to 6
+// rows keeps the focus: Tab then Enter runs Send.
+func TestShortPaneLab(t *testing.T) {
+	l := newModeLab(t)
+	pane := l.open("lazyrex_modelab_mode")
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last screen:\n%s", last)
+		}
+	})
+	l.waitFor("the thread frame", 30*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "LAB-NOTICE")
+	})
+	l.sql("UPDATE stage SET n = 2", true)
+	l.waitFor("the composer tree", 10*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Action w2")
+	})
+	l.resize(pane, 80, 6)
+	// The renderer focuses the composer's editor first (model.apply).
+	steps := []struct{ key, want string }{
+		{"", "editor"}, {"tab", "send"}, {"tab", "Action w1"}, {"tab", "Action w2"}, {"tab", "editor"},
+		{"shift+tab", "Action w2"}, {"shift+tab", "Action w1"}, {"shift+tab", "send"}, {"shift+tab", "editor"},
+	}
+	frame := func(step, want string) {
+		t.Helper()
+		l.waitFor(step+": "+want+" on screen", 10*time.Second, func() bool {
+			last = l.screen(pane)
+			if want == "editor" || want == "send" {
+				return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Send") && !strings.Contains(last, "Action w")
+			}
+			return strings.Contains(last, want) && !strings.Contains(last, "DRAFT-TEXT")
+		})
+		rows := 0
+		for _, line := range strings.Split(last, "\n") {
+			if strings.TrimSpace(line) != "" {
+				rows++
+			}
+		}
+		if rows > 5 {
+			t.Fatalf("%s: %d rows in a 6-row pane:\n%s", step, rows, last)
+		}
+	}
+	for i, s := range steps {
+		if s.key != "" {
+			l.key(pane, s.key)
+		}
+		frame(fmt.Sprintf("step %d %s", i, s.key), s.want)
+	}
+	l.resize(pane, 80, 30)
+	l.waitFor("the tall frame", 10*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Action w1")
+	})
+	l.resize(pane, 80, 6)
+	frame("resize from 30 to 6 rows", "editor")
+	l.key(pane, "tab")
+	l.key(pane, "enter")
+	l.waitFor("Send runs", 20*time.Second, func() bool {
+		rows := l.sql("SELECT name FROM clicked", false)
+		return len(rows) == 1 && rows[0][0] == "send"
+	})
+}
+
 // tabPane waits for the plugin's open, attached tab view on route, takes its pane and sizes it.
 // It returns the pane's session and block.
 func (l *chunkLab) tabPane(route string, columns, rows int) (session, pane string) {
