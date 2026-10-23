@@ -56,6 +56,15 @@ func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
 			t.Fatalf("build %s: %v\n%s", dir, err, b)
 		}
 	}
+	if os.Getenv("VIEW_TEA_TRACE") == "1" {
+		// Each view process logs its renderer writes to <lab>/tea-<pid>.log (Bubble Tea's TEA_TRACE).
+		wrapper := filepath.Join(bin, "lazyrex-view-trace")
+		script := "#!/bin/sh\nTEA_TRACE=" + lab + "/tea-$$.log exec " + view + " \"$@\"\n"
+		if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		view = wrapper
+	}
 	rexcfg := filepath.Join(lab, "rexcfg")
 	os.MkdirAll(rexcfg, 0o755)
 	initLua := filepath.Join(rexcfg, "init.lua")
