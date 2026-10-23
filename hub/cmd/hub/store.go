@@ -55,74 +55,38 @@ func openDB(path string) (*DB, error) {
 			return nil, err
 		}
 	}
-	if err := retireSchema(db); err != nil {
+	if err := dropRetired(db); err != nil {
 		return nil, err
 	}
 	return &DB{db}, nil
 }
 
-// retiredStep is one step that removes a table or a column of hub.db.
-type retiredStep struct {
-	table, column    string // what the step removes; column "" is the whole table
-	check, statement string // the statement runs only while check counts more than 0
-}
+// dropTables and dropColumns are the hub.db tables and columns that an open removes, with their
+// rows. A commit that removes a table or a column of hub.db adds it here; the next cleanup deletes
+// the entry once the live hubs have run it. SQLite has DROP TABLE IF EXISTS, but no IF EXISTS for
+// DROP COLUMN, so a column drop runs only while pragma_table_info lists the column.
+var (
+	dropTables  []string
+	dropColumns []struct{ table, column string }
+)
 
-// retiredSchema is the list of every table and column that the hub removes from hub.db. A new drop
-// of a hub table or column goes through this list, never a bare DROP elsewhere. A step runs at most
-// once on a database, and a new database skips it. A step goes when no live hub.db needs it any more.
-var retiredSchema = []retiredStep{
-	// plugins.entry_stamp: the guard against a rollback hub's writes (coord-reset-0 ended rollback).
-	{table: "plugins", column: "entry_stamp",
-		check: `SELECT COUNT(*) FROM pragma_table_info('plugins') WHERE name = 'entry_stamp'`, statement: `ALTER TABLE plugins DROP COLUMN entry_stamp`},
-	// ui_tabs.rev_known marked the tabs closed before tab revisions existed. The live hub.db had no
-	// such row, so the column goes.
-	{table: "ui_tabs", column: "rev_known",
-		check: `SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'rev_known'`, statement: `ALTER TABLE ui_tabs DROP COLUMN rev_known`},
-	// The hub.store removal (D1): sql_returns (hub.admin.sql_return), sql_notice_plugins (the notice
-	// move), and records and ops (the old store) have no reader. Their rows go with them.
-	{table: "sql_returns",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_returns'`, statement: `DROP TABLE sql_returns`},
-	{table: "sql_notice_plugins",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_notice_plugins'`, statement: `DROP TABLE sql_notice_plugins`},
-	{table: "records",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'records'`, statement: `DROP TABLE records`},
-	{table: "ops",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ops'`, statement: `DROP TABLE ops`},
-	// The transcript pane removal: view_transcripts (the transcript role of a view) and the layout
-	// columns of views and ui_tabs ("transcript" or '') have no reader. Their rows go with them.
-	{table: "view_transcripts",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'view_transcripts'`, statement: `DROP TABLE view_transcripts`},
-	{table: "views", column: "layout",
-		check: `SELECT COUNT(*) FROM pragma_table_info('views') WHERE name = 'layout'`, statement: `ALTER TABLE views DROP COLUMN layout`},
-	{table: "ui_tabs", column: "layout",
-		check: `SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'layout'`, statement: `ALTER TABLE ui_tabs DROP COLUMN layout`},
-	// The legacy agents (the identity removal, coord-reset-0): no data is kept.
-	{table: "bindings",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'bindings'`, statement: `DROP TABLE bindings`},
-	{table: "dyn_agents",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dyn_agents'`, statement: `DROP TABLE dyn_agents`},
-	{table: "identity_aliases",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'identity_aliases'`, statement: `DROP TABLE identity_aliases`},
-	// The release hold and the operator resolve (hub.plugins.hold.*, hub.plugins.attempt.resolve)
-	// are removed: the later observation of an attempt ends unproven by itself (observeLater).
-	{table: "plugin_hold",
-		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'plugin_hold'`, statement: `DROP TABLE plugin_hold`},
-	{table: "plugin_op_attempts", column: "resolved_by",
-		check: `SELECT COUNT(*) FROM pragma_table_info('plugin_op_attempts') WHERE name = 'resolved_by'`, statement: `ALTER TABLE plugin_op_attempts DROP COLUMN resolved_by`},
-}
-
-// retireSchema runs the steps of retiredSchema that are still due.
-func retireSchema(db *sql.DB) error {
-	for _, s := range retiredSchema {
+// dropRetired runs the drops of dropTables and dropColumns.
+func dropRetired(db *sql.DB) error {
+	for _, t := range dropTables {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS ` + t); err != nil {
+			return fmt.Errorf("drop table %s: %w", t, err)
+		}
+	}
+	for _, c := range dropColumns {
 		var n int
-		if err := db.QueryRow(s.check).Scan(&n); err != nil {
-			return fmt.Errorf("retire schema check %q: %w", s.check, err)
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return fmt.Errorf("drop column %s.%s: %w", c.table, c.column, err)
 		}
 		if n == 0 {
 			continue
 		}
-		if _, err := db.Exec(s.statement); err != nil {
-			return fmt.Errorf("retire schema %q: %w", s.statement, err)
+		if _, err := db.Exec(`ALTER TABLE ` + c.table + ` DROP COLUMN ` + c.column); err != nil {
+			return fmt.Errorf("drop column %s.%s: %w", c.table, c.column, err)
 		}
 	}
 	return nil

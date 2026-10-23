@@ -27,10 +27,7 @@ hub.
   than the last `app.db.migrate` version), the start fails: the SDK runs no migration, does not
   change `user_version`, and the plugin prints "The database has schema N; this plugin knows M.
   Update the plugin or delete its database." and stops.
-- `hub.db` has no plugin records since the hub.store removal. At each open, the hub drops the tables
-  `records` and `ops` (the old store), `sql_returns` and `sql_notice_plugins`, with their rows. It
-  keeps no row and checks no plugin database first (`retiredSchema` in `store.go`;
-  `storeretire_test.go`).
+- `hub.db` has no plugin records since the hub.store removal.
 
 ## 2. Actions (built)
 
