@@ -208,7 +208,7 @@ func TestSlotConfirmSurvivesHubRestartLab(t *testing.T) {
 		for range r2.Events {
 		}
 	}()
-	h2 := &Hub{db: db, ev: ev, agents: map[string]*Agent{}, cfg: h.cfg, rex: r2, selfClosed: map[string]bool{}, vs: newViewSvc()}
+	h2 := &Hub{db: db, ev: ev, idents: map[string]*Agent{}, cfg: h.cfg, rex: r2, selfClosed: map[string]bool{}, vs: newViewSvc()}
 	if err := h2.uiStart(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -18,7 +18,7 @@ package main
 //   - Rex succeeds with one window ID and one distinct block per leaf: every leaf opens (block by
 //     position).
 //   - No answer, or a success answer of another shape: every leaf stays sending. resolveSpawns treats each leaf as it treats a sending
-//     hub.spawn row (an agent leaf opens when its agent joins from its one labeled pane). The hub
+//     hub.spawn row (an agent leaf opens when its agent reports from its one labeled pane). The hub
 //     never sends a second new_window.
 // placement {focus: {source_window_id}} (user spawns only, spawnfocus.go): on the first success
 // the hub focuses the first leaf (depth-first), only while the source tab is still active in the
@@ -293,7 +293,6 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	// Commit the intent: the window row and every leaf spawn, in one transaction.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows := make([]*spawnRow, len(leaves))
-	names := make([]string, len(leaves))
 	ids := make([]string, len(leaves))
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -312,7 +311,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 			lreq["cwd"] = l.Cwd
 		}
 		lfp, _ := json.Marshal(lreq)
-		if names[i], err = h.admitSpawn(ctx, tx, s, profs[i], l.Title, string(lfp), resolved[i]); err != nil {
+		if err = h.admitSpawn(ctx, tx, s, profs[i], l.Title, string(lfp), resolved[i]); err != nil {
 			return nil, err
 		}
 		rows[i], ids[i] = s, s.ID
@@ -336,7 +335,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	}
 	blocks := make([]map[string]any, len(rows))
 	for i, s := range rows {
-		h.spawnAdmitted(s, profs[i], names[i])
+		h.spawnAdmitted(s, profs[i])
 		opts := map[string]any{"command": spawnArgv(s, profs[i], resolved[i]), "exit": map[string]any{"on_completion": false}, "cwd": s.Cwd}
 		blocks[i] = map[string]any{"flavor": "com.superlogical.terminal.shell", "label": "lazyrex-spawn:" + s.ID, "options": opts}
 	}

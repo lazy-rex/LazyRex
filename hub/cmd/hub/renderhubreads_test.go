@@ -272,7 +272,7 @@ func TestCoveredReadEachAction(t *testing.T) {
 		if _, err := h.db.Exec(workersSchema); err != nil {
 			t.Fatal(err)
 		}
-		h.agents = map[string]*Agent{"a1": {ID: "a1"}}
+		h.idents = map[string]*Agent{"a1": {ID: "a1"}}
 		markAll(h)
 		renderWith(t, h, map[string]renderStep{"v1": {hub: []string{c.action}, hubArgs: c.args, deps: map[string]any{"changes": []any{}}}})
 		tables, changes := viewSets(h, "v1")
@@ -313,7 +313,7 @@ func TestCoveredReadsDispatchRender(t *testing.T) {
 	h.mu.Lock()
 	pl := h.plugins["x"]
 	pl.ClientID, pl.ChildPID, pl.ChildStart = "client:x", pid, startTime(pid)
-	h.agents = map[string]*Agent{"a1": {ID: "a1"}}
+	h.idents = map[string]*Agent{"a1": {ID: "a1"}}
 	h.mu.Unlock()
 	h.loads.mu.Lock()
 	h.loads.tags.run = func(context.Context, string, any) (any, bool, error) { return tagsList{}, true, nil } // no network
