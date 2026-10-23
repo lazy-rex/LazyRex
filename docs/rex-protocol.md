@@ -1028,7 +1028,8 @@ The Rex app lists `pane.insert_path` ("Insert Path…") and `pane.go_to_director
 
 ## Inline output, alt screen, resize and keys (thread-view probes)
 
-These facts support the thread view (hub lead's thread contract v1.1, points H and K). The probe
+These facts support the thread view (hub lead's thread contract v1.1, points H and K). They are
+observations only; the build rules that follow from them are in the thread contract. The probe
 program is `view/testdata/teaprobe`; the lab driver is `view/teaprobe_lab_test.go`
 (`TEAPROBE_LAB=1 go test -run TestTeaProbe` in `view/`). Each step keeps raw captures (text,
 text `--unwrap`, vt) in its lab. Two independent runs passed (claude-52 and codex-29).
@@ -1041,8 +1042,8 @@ text `--unwrap`, vt) in its lab. Two independent runs passed (claude-52 and code
   line once, in order (01 to 31), whole, above one live row.
 - Alt screen after a delayed first tree (an ordinary view). The program starts inline with
   "Connecting…" and chooses the alt screen 2 s later. After the program exits, the primary screen
-  still holds the last inline frame (the "Connecting…" row). A renderer must clear its inline row
-  before it chooses the alt screen, or the row stays in the scrollback.
+  still holds the last inline frame (the "Connecting…" row). Clearing the row before the alt
+  screen was not tested.
 - Alt screen on and off after inline output (a separate fact). After 30 inline lines, alt on shows
   only the live row. After alt off, the 30 lines are back once each, and a new line goes below them.
 - Width change. Lines printed at 80 columns (2 rows each) become 3 rows each at 50 columns and 1 row
@@ -1051,7 +1052,7 @@ text `--unwrap`, vt) in its lab. Two independent runs passed (claude-52 and code
   nothing again. Limit: the probe lines have no hard newlines inside. These facts do not cover
   rows that a renderer breaks itself.
 - A live row wider than the terminal is cut by Bubble Tea. In one run its old copy stayed as a
-  stale fragment after a resize. Keep each live row within the width.
+  stale fragment after a resize.
 - Size. `block.method resize` applies only for the block's owner, or for a block with no owner.
   Otherwise Rex remembers the size and applies it when the caller becomes the owner (the method's
   description in `rex block inspect`; not tested). `block.method size` reported the session's
