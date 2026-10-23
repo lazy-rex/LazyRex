@@ -96,13 +96,22 @@ func TestFocusWindowLab(t *testing.T) {
 }
 
 // TestShortPaneLab (v1.2 item 1f): a real 6-row pane in thread mode gets a tree with a history
-// node, 2 actions and a composer with a draft. Every frame is at most 5 rows. Tab and Shift+Tab
-// reach every control, and the editor row and Send are on screen together. A resize from 30 to 6
-// rows keeps the focus: Tab then Enter runs Send.
+// node, 2 actions and a composer with a draft. The focused control is in the last 5 rows (the
+// frame ends in the status line). Tab and Shift+Tab reach every control, and the editor row and
+// Send are on screen together. A resize from 30 to 6 rows keeps the focus: Tab then Enter runs
+// Send. The unit tests count the frame rows: block capture also returns the scrollback, and a
+// shrink moves the top rows of the tall frame there (a 6-row pane captured 25 lines, Linux lab
+// 2026-10-23).
 func TestShortPaneLab(t *testing.T) {
 	l := newModeLab(t)
 	pane := l.open("lazyrex_modelab_mode")
 	var last string
+	// bottom returns the last n rows of the screen, without the blank rows below the frame.
+	bottom := func(n int) string {
+		out, _ := l.cli("block", "capture", "-s", l.session, "-b", pane, "--trim")
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		return strings.Join(lines[max(0, len(lines)-n):], "\n")
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the last screen:\n%s", last)
@@ -126,21 +135,15 @@ func TestShortPaneLab(t *testing.T) {
 	frame := func(step, want string) {
 		t.Helper()
 		l.waitFor(step+": "+want+" on screen", 10*time.Second, func() bool {
-			last = l.screen(pane)
+			last = bottom(5)
+			if !strings.HasSuffix(strings.TrimSpace(last), "Ctrl+Q quit") {
+				return false // the frame ends in the status line
+			}
 			if want == "editor" || want == "send" {
 				return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Send") && !strings.Contains(last, "Action w")
 			}
 			return strings.Contains(last, want) && !strings.Contains(last, "DRAFT-TEXT")
 		})
-		rows := 0
-		for _, line := range strings.Split(last, "\n") {
-			if strings.TrimSpace(line) != "" {
-				rows++
-			}
-		}
-		if rows > 5 {
-			t.Fatalf("%s: %d rows in a 6-row pane:\n%s", step, rows, last)
-		}
 	}
 	for i, s := range steps {
 		if s.key != "" {
@@ -150,7 +153,7 @@ func TestShortPaneLab(t *testing.T) {
 	}
 	l.resize(pane, 80, 30)
 	l.waitFor("the tall frame", 10*time.Second, func() bool {
-		last = l.screen(pane)
+		last = bottom(29)
 		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Action w1")
 	})
 	l.resize(pane, 80, 6)
