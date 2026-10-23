@@ -50,7 +50,7 @@ func (h *rehearsal) chunkFixture() (string, error) {
 	clone := filepath.Join(h.lab, "release", "LazyRex")
 	ti := h.c.To.Commit + ":tests/sdk-parts"
 	ctx := context.Background()
-	tree, err := lsTree(ctx, clone, ti)
+	tree, err := lsTree(ctx, execGit, clone, ti)
 	if err != nil || tree["lazyrex.json"].OID == "" {
 		return "", relFail("H %s has no tests/sdk-parts with a lazyrex.json: the chunking probe needs it (%v)", h.c.To.Commit, err)
 	}
@@ -58,7 +58,7 @@ func (h *rehearsal) chunkFixture() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	files, err := archiveInto(ctx, clone, ti, tree, dir)
+	files, err := archiveInto(ctx, execGit, clone, ti, tree, dir)
 	if err != nil {
 		return "", err
 	}
