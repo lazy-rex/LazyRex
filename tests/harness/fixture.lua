@@ -369,6 +369,21 @@ local function view(action, args)
       if spec[2] == 'inline' or #rex.json.encode(reply) <= 45056 then return reply end
       return send_parts(reply, spec[2])
     end
+    -- /lazy/workers-<spawn_id> (identity_fields.lua): a covered read of one worker through the plugin
+    -- face, with the render ID. The text is "<identity_id or none> <identity_seen>", or the error.
+    local wid = args.route:match('^/lazy/workers%-(.+)$')
+    if wid then
+      local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.workers', timeout_ms = 10000,
+        args = {spawn_id = wid, render = args.render}})
+      local text
+      if err or not res then
+        text = 'error ' .. (type(err) == 'table' and tostring(err.message) or tostring(err))
+      else
+        local w = res.result.workers[1]
+        text = tostring(w.identity_id or 'none') .. ' ' .. tostring(w.identity_seen)
+      end
+      return {tree = {title = 'Workers', nodes = {{id = 'lazy', type = 'widget', text = text}}}}
+    end
     if args.route:match('^/lazy/') then return {tree = {title = 'Lazy', nodes = {{id = 'lazy', type = 'widget', text = args.route}}}} end
     return {tree = {title = 'Unknown', nodes = {{id = 'unknown', type = 'error', text = 'no route ' .. tostring(args.route)}}}}
   elseif action == 'view.action' then

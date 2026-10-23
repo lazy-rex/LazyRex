@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS identities (identity TEXT PRIMARY KEY, kind TEXT NOT 
 CREATE TABLE IF NOT EXISTS identity_aliases (legacy TEXT PRIMARY KEY, identity TEXT NOT NULL, created TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS identity_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, identity TEXT NOT NULL,
   block_id TEXT NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL);
+-- hub.workers reads identity_seen of each agent worker from the log rows of its block (paneSeen).
+CREATE INDEX IF NOT EXISTS identity_log_block ON identity_log (block_id);
 `
 
 var conversationID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
