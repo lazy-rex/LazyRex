@@ -105,48 +105,6 @@ func TestWorkerSessionLab(t *testing.T) {
 			t.Fatalf("old worker still present: %v %v", blocks, err)
 		}
 	})
-	t.Run("LegacyExactBlock", func(t *testing.T) {
-		h, p, _, s := setup(t)
-		if _, err := h.db.Exec(`UPDATE spawns SET session_id=''`); err != nil {
-			t.Fatal(err)
-		}
-		h.ui.sess = map[string]string{session(t): uiSessionKey}
-		if err := r.Call(ctx, "session.detach", map[string]any{"session_id": s.Session}, nil); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.resolveOnce(ctx); err != nil {
-			t.Fatal(err)
-		}
-		got, err := h.spawnByID(ctx, s.ID)
-		if err != nil || got.Session != s.Session || got.Block != s.Block || got.Status != "open" {
-			t.Fatalf("legacy: %+v %v", got, err)
-		}
-		if _, err := h.stop(ctx, p, map[string]any{"for": "user", "spawn_id": s.ID}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	t.Run("LegacyLateJoin", func(t *testing.T) {
-		h, _, _, s := setup(t)
-		if _, err := h.db.Exec(`UPDATE spawns SET status='sending',session_id='',block_id='',window_id=''`); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.resolveOnce(ctx); err != nil {
-			t.Fatal(err)
-		}
-		pending, err := h.spawnByID(ctx, s.ID)
-		if err != nil || pending.Session != "" || pending.Status != "sending" {
-			t.Fatalf("label adopted without join: %+v %v", pending, err)
-		}
-		// join has already proved caller ancestry before it calls this method.
-		state, err := h.adoptByJoin(ctx, pending, s.Block)
-		if err != nil || state != "open" {
-			t.Fatalf("late join: %s %v", state, err)
-		}
-		got, err := h.spawnByID(ctx, s.ID)
-		if err != nil || got.Session != s.Session || got.Block != s.Block {
-			t.Fatalf("late join identity: %+v %v", got, err)
-		}
-	})
 	t.Run("PendingPreviousSession", func(t *testing.T) {
 		h, _, _, s := setup(t)
 		if _, err := h.db.Exec(`UPDATE spawns SET status='sending',block_id='',window_id='',created='2026-10-16T00:00:00Z'`); err != nil {
@@ -169,7 +127,7 @@ func TestWorkerSessionLab(t *testing.T) {
 		}
 	})
 
-	t.Run("PendingLostAndLegacy", func(t *testing.T) {
+	t.Run("PendingLost", func(t *testing.T) {
 		h, _, _, s := setup(t)
 		if _, err := h.db.Exec(`UPDATE spawns SET status='sending',block_id='',window_id=''`); err != nil {
 			t.Fatal(err)
@@ -188,15 +146,28 @@ func TestWorkerSessionLab(t *testing.T) {
 		if err != nil || got.Status != "failed" {
 			t.Fatalf("lost pending: %+v %v", got, err)
 		}
-		if _, err := h.db.Exec(`UPDATE spawns SET status='sending',session_id='',error=''`); err != nil {
+	})
+	// A row without a session (no hub writes one) is ignored: resolveOnce writes nothing, and a
+	// join from the spawn's own pane does not adopt it.
+	t.Run("NoSessionIgnored", func(t *testing.T) {
+		h, _, _, s := setup(t)
+		if _, err := h.db.Exec(`UPDATE spawns SET status='sending',session_id='',block_id='',window_id='',error=''`); err != nil {
 			t.Fatal(err)
 		}
 		if err := h.resolveOnce(ctx); err != nil {
 			t.Fatal(err)
 		}
-		got, err = h.spawnByID(ctx, s.ID)
-		if err != nil || got.Status != "sending" || got.Session != "" || !strings.Contains(got.Error, "unknown") {
-			t.Fatalf("legacy pending: %+v %v", got, err)
+		pending, err := h.spawnByID(ctx, s.ID)
+		if err != nil || pending.Status != "sending" || pending.Session != "" || pending.Error != "" {
+			t.Fatalf("resolveOnce changed a row without a session: %+v %v", pending, err)
+		}
+		state, err := h.adoptByJoin(ctx, pending, s.Block)
+		if err != nil || state != "sending" {
+			t.Fatalf("a join adopted a row without a session: %s %v", state, err)
+		}
+		got, err := h.spawnByID(ctx, s.ID)
+		if err != nil || got.Status != "sending" || got.Session != "" || got.Block != "" {
+			t.Fatalf("the row changed: %+v %v", got, err)
 		}
 	})
 }

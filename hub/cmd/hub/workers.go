@@ -1151,21 +1151,7 @@ func (h *Hub) adoptByJoin(ctx context.Context, s *spawnRow, block string) (strin
 	if s.Status != "sending" {
 		return s.Status, nil
 	}
-	if s.Session == "" {
-		// join already proved that this caller runs in block. Recover its session by exact ID.
-		s.Session, err = h.findBlockSession(ctx, block)
-		if err != nil {
-			return "", err
-		}
-		if s.Session == "" {
-			return "sending", nil
-		}
-		blocks, err = h.workerSessionBlocks(ctx, s.Session)
-		if err != nil {
-			return "", err
-		}
-	}
-	c := spawnCandidates(blocks, s.ID)
+	c := spawnCandidates(blocks, s.ID) // none for a row without a session (workerBlocks)
 	if len(c) != 1 || c[0] != block {
 		return "sending", nil
 	}
