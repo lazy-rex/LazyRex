@@ -549,8 +549,10 @@ func TestFetchStopsWhileTheViewEnds(t *testing.T) {
 			if old.ctx.Err() == nil || m.print.fetch != nil {
 				t.Fatalf("%s did not stop the fetch (call context %v)", tc.name, old.ctx.Err())
 			}
+			// No fetch starts at all: a fetch that Update stops at once would still make its call.
+			seq := m.print.seq
 			m.Update(tree)
-			if m.print.fetch != nil {
+			if m.print.fetch != nil || m.print.seq != seq {
 				t.Fatalf("a later tree started a fetch while %s waits", tc.name)
 			}
 		})
