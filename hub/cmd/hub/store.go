@@ -8,6 +8,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,16 +20,12 @@ import (
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS records (ns TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY (ns, key));
-CREATE TABLE IF NOT EXISTS ops (ns TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY (ns, key));
 CREATE TABLE IF NOT EXISTS notices (ns TEXT NOT NULL, agent TEXT NOT NULL, pending INTEGER NOT NULL, intent_rev INTEGER NOT NULL, PRIMARY KEY (ns, agent));
 -- notice_deliveries: the last nudge the hub wrote for a notice row, and the conversation it reached
 -- (block, child pid and start). A hub restart or a shim reconnect does not write it again.
 CREATE TABLE IF NOT EXISTS notice_deliveries (ns TEXT NOT NULL, agent TEXT NOT NULL, intent_rev INTEGER NOT NULL, at INTEGER NOT NULL, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL, repeated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (ns, agent));
--- hub.sql notices (sqlnotice.go): a receipt for each applied outbox row, and the plugins whose notices moved to hub.sql.
+-- hub.sql notices (sqlnotice.go): a receipt for each applied outbox row.
 CREATE TABLE IF NOT EXISTS notice_receipts (plugin TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (plugin, seq));
-CREATE TABLE IF NOT EXISTS sql_returns (plugin TEXT PRIMARY KEY, stamp TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sql_notice_plugins (plugin TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
 -- status: prepared (request not sent), sending (outcome unknown until resolved), created, abandoned
@@ -64,6 +63,9 @@ func openDB(path string) (*DB, error) {
 	if err := retireSchema(db); err != nil {
 		return nil, err
 	}
+	if err := retireStore(db, filepath.Join(filepath.Dir(path), "sql"), log.Printf); err != nil {
+		return nil, err
+	}
 	return &DB{db}, nil
 }
 
@@ -71,11 +73,15 @@ func openDB(path string) (*DB, error) {
 // more than 0, so it runs at most once on a database, and a new database skips it. A step goes
 // when no live hub.db needs it any more.
 var retiredSchema = []struct{ check, statement string }{
-	// ui_tabs.rev_known (the 4.2 hub's column, no longer read or written; its DEFAULT 0
-	// serves every INSERT) stays until the release after 4.3, so a 4.2 rollback finds it and the 4.3
-	// rehearsal sees no dropped column. Its DROP comes back with 2d (lead-hubq2).
 	// plugins.entry_stamp: the guard against a rollback hub's writes (coord-reset-0 ended rollback).
 	{`SELECT COUNT(*) FROM pragma_table_info('plugins') WHERE name = 'entry_stamp'`, `ALTER TABLE plugins DROP COLUMN entry_stamp`},
+	// ui_tabs.rev_known marked the tabs closed before tab revisions existed. The live hub.db had no
+	// such row, so the column goes.
+	{`SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'rev_known'`, `ALTER TABLE ui_tabs DROP COLUMN rev_known`},
+	// The hub.store removal: sql_returns (hub.admin.sql_return) and sql_notice_plugins (the notice move)
+	// have no reader. records and ops go in retireStore, which checks the plugin databases first.
+	{`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_returns'`, `DROP TABLE sql_returns`},
+	{`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_notice_plugins'`, `DROP TABLE sql_notice_plugins`},
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.
@@ -93,6 +99,63 @@ func retireSchema(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// retireStore drops records and ops, the tables of the removed hub.store, when each namespace
+// with a row in either table has its hub.sql database (sqlDir/<namespace>.db). Else it keeps both
+// tables, logs one line for each namespace without a database, and tries again at the next open.
+// It is a backstop: a database file does not prove that the plugin imported its rows (D1 of the
+// hub.store removal). A database without the tables (a new one, or one after the drop) skips it.
+func retireStore(db *sql.DB, sqlDir string, logf func(string, ...any)) error {
+	var tables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('records', 'ops')`).Scan(&tables); err != nil {
+		return fmt.Errorf("retire store check: %w", err)
+	}
+	if tables == 0 {
+		return nil
+	}
+	if tables != 2 {
+		return fmt.Errorf("retire store: hub.db has only one of records and ops")
+	}
+	rows, err := db.Query(`SELECT ns FROM records UNION SELECT ns FROM ops ORDER BY ns`)
+	if err != nil {
+		return fmt.Errorf("retire store namespaces: %w", err)
+	}
+	var missing []string
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			rows.Close()
+			return fmt.Errorf("retire store namespaces: %w", err)
+		}
+		st, err := os.Stat(filepath.Join(sqlDir, ns+".db"))
+		if err != nil || !st.Mode().IsRegular() {
+			missing = append(missing, ns)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("retire store namespaces: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("retire store namespaces: %w", err)
+	}
+	if len(missing) > 0 {
+		for _, ns := range missing {
+			logf("hub.store tables kept: namespace %q has rows and no %s", ns, filepath.Join(sqlDir, ns+".db"))
+		}
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("retire store: %w", err)
+	}
+	defer tx.Rollback()
+	for _, s := range []string{`DROP TABLE records`, `DROP TABLE ops`} {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("retire store %q: %w", s, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // nextRev returns a fresh revision from the database-wide counter. Revisions never reset.

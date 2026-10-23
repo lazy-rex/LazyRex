@@ -15,9 +15,9 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	return n > 0
 }
 
-// A 4.2 hub.db keeps ui_tabs.rev_known at open (4.3 drops no column; lead-hubq2), keeps its rows,
-// and takes the 4.3 hub's INSERT, which does not name the column.
-func TestRetireSchemaKeepsRevKnown(t *testing.T) {
+// A hub.db with ui_tabs.rev_known loses the column at open, keeps its rows, and takes an INSERT
+// that does not name the column. A second open finds nothing to do.
+func TestRetireSchemaDropsRevKnown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hub.db")
 	db, err := openDB(path)
 	if err != nil {
@@ -40,8 +40,8 @@ func TestRetireSchemaKeepsRevKnown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open %d: %v", i+1, err)
 		}
-		if !columnExists(t, db.DB, "ui_tabs", "rev_known") {
-			t.Fatalf("open %d: ui_tabs.rev_known is gone", i+1)
+		if columnExists(t, db.DB, "ui_tabs", "rev_known") {
+			t.Fatalf("open %d: ui_tabs.rev_known is still there", i+1)
 		}
 		var closed string
 		var suppressed bool
