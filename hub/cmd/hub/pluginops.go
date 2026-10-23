@@ -467,10 +467,11 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	if (origin.Kind == "peer" && !peerUpdate) || (len(req.Target) > 0 && !peerUpdate && !offerAdd) {
 		return nil, bad("invalid: only a peer sync gives target (an update with no input), and a user's add of an offer")
 	}
-	// An agent add or update is a request that the user confirms (B9). Until B9, the code is
-	// user_only, and the text names what the agent can do (P1; docs/hub.md).
-	if origin.Kind == "agent" && (req.Op == "add" || req.Op == "update") {
-		return nil, refuse("user_only", "add and update need the user: ask the user to open LazyRex: Plugins…")
+	// An agent add is user_only: the user confirms a new source, and the text names what the agent
+	// can do (P1; docs/hub.md). An agent update is admitted (B9 removed for update by the user's
+	// decision of 2026-10-23).
+	if origin.Kind == "agent" && req.Op == "add" {
+		return nil, refuse("user_only", "add needs the user: ask the user to open LazyRex: Plugins…")
 	}
 	if req.Op == "add" {
 		return h.addAdmission(op, req)
@@ -545,7 +546,7 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 			return nil, bad("invalid: %v", err)
 		}
 		if !updateTarget(in.To) {
-			return nil, bad(`invalid: to must be "latest" or a tag name; a branch or a commit is not accepted`)
+			return nil, bad(`invalid: to must be "@", "latest" or a tag name; a branch or a commit is not accepted`)
 		}
 		b, _ := json.Marshal(in)
 		op.Input = string(b)
@@ -577,17 +578,20 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		}
 	}
 	if req.Op == "update" {
-		// The keys that the resolve can choose (opResolveTarget): latest, or the two spellings of a tag.
+		// The keys that the resolve can choose (opResolveTarget): latest, or the two spellings of a
+		// tag; a refresh ("@") keeps the source, so its key is the old key.
 		var in opUpdateInput
 		var base managedFileEntry
 		json.Unmarshal([]byte(op.Input), &in)
 		json.Unmarshal([]byte(op.Base), &base)
 		var keys []string
-		if op.Target != "" {
+		switch {
+		case op.Target != "":
 			var t opResolved
 			json.Unmarshal([]byte(op.Target), &t)
 			keys = []string{t.Source}
-		} else {
+		case in.To == "@":
+		default:
 			keys = []string{opNewSource(base.Source, in.To, false)}
 			if in.To != "latest" {
 				keys = append(keys, opNewSource(base.Source, in.To, true))
@@ -1920,15 +1924,22 @@ var settingsSchema = map[string]any{"type": "object", "additionalProperties": fa
 	"args":        map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
 	"watch_roots": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}}
 
+// opInputSchema is the agent-face schema of the input: settings {args, watch_roots}, or update
+// {to}. Admission decodes the input of each op strictly.
+var opInputSchema = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+	"args":        settingsSchema["properties"].(map[string]any)["args"],
+	"watch_roots": settingsSchema["properties"].(map[string]any)["watch_roots"],
+	"to":          map[string]any{"type": "string", "minLength": 1}}}
+
 // pluginOpActions are hub.plugins.op and hub.plugins.ops on the agent face (agentKeymap).
 var pluginOpActions = []map[string]any{
 	{"name": "hub.plugins.op", "kind": "client", "title": "Run a plugin operation",
-		"description": "Start, stop, restart, remove or change the settings of a plugin entry. restart replaces the running instance with the same run; it is refused (and stops nothing) when the plugin does not run or has a new candidate (use update for new code). entry is \"managed:<id>\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=<op_id>. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
+		"description": "Start, stop, restart, remove, update or change the settings of a plugin entry. restart replaces the running instance with the same run; it is refused (and stops nothing) when the plugin does not run or has a new candidate (use update for new code). entry is \"managed:<id>\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". update (a managed GitHub entry) takes input {to}: \"@\" fetches the entry's own ref again (a branch gives its tip, latest the newest release, a tag no change), \"latest\" moves the entry to the newest release, and a tag name moves it to that tag; an entry already at the target ends done with result \"already at <source> <commit>\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=<op_id>. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
 			"key":    map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
-			"op":     map[string]any{"type": "string", "enum": []string{"start", "stop", "restart", "settings", "remove"}},
+			"op":     map[string]any{"type": "string", "enum": []string{"start", "stop", "restart", "settings", "remove", "update"}},
 			"entry":  map[string]any{"type": "string", "minLength": 1},
-			"input":  settingsSchema,
+			"input":  opInputSchema,
 			"expect": settingsSchema,
 		}, "required": []string{"key", "op", "entry"}, "additionalProperties": false}},
 	{"name": "hub.plugins.ops", "kind": "client", "title": "List plugin operations",

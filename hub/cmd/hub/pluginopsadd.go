@@ -26,7 +26,8 @@ type opAddInput struct {
 	WatchRoots []string          `json:"watch_roots"`
 }
 
-// opUpdateInput is the input of an update: "latest", or a tag name.
+// opUpdateInput is the input of an update: "@" (a refresh of the entry's own ref), "latest", or a
+// tag name.
 type opUpdateInput struct {
 	To string `json:"to"`
 }
@@ -42,11 +43,13 @@ type opRestartTarget struct {
 
 func (t *opRestartTarget) run() *expectRun { return &expectRun{t.Source, t.Commit, t.Digest} }
 
-// updateTarget reports whether to is "latest" or a tag name. A branch and a commit are not
-// targets of an update: a full ref (refs/...) or 40 hex is refused here, and the resolve reads
-// refs/tags/<to> only, so a branch name with no tag is refused there.
+// updateTarget reports whether to is "@", "latest" or a tag name. "@" keeps the entry's source and
+// resolves its own ref again: a branch gives its tip, latest the newest release, and a tag the same
+// commit. A branch and a commit are not targets of an update: a full ref (refs/...) or 40 hex is
+// refused here, and the resolve reads refs/tags/<to> only, so a branch name with no tag is refused
+// there.
 func updateTarget(to string) bool {
-	if to == "latest" {
+	if to == "@" || to == "latest" {
 		return true
 	}
 	if to == "" || len(to) > 200 || strings.HasPrefix(to, "refs/") || commitID.MatchString(to) || strings.ContainsAny(to, " \t\n@^~:?*[\\") {
@@ -225,8 +228,11 @@ func (h *Hub) opResolveTarget(ctx context.Context, op *pluginOp) (opResolved, er
 			return opResolved{}, err
 		}
 		source, to = base.Source, in.To
-		if to == "latest" {
+		switch to {
+		case "latest":
 			source = opNewSource(source, "latest", false)
+		case "@":
+			to = "" // the entry's own ref, as an add resolves it
 		}
 	default:
 		return opResolved{}, fmt.Errorf("%s has no resolve", op.Kind)

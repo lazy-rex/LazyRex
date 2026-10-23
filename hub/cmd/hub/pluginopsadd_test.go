@@ -67,13 +67,19 @@ func TestPluginOpAddAdmission(t *testing.T) {
 	if op := opsOf(t, h, mustLastOp(t, h)); op.Entry != "managed:deep" {
 		t.Fatalf("the default id of a subdir: %+v", op)
 	}
-	// An agent add and an agent update are user_only (until B9), and the text tells the agent what
-	// to do (P1).
-	for _, req := range []opRequest{{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/x@v1"})},
-		{Op: "update", Entry: "managed:tools", Input: rawJSON(map[string]any{"to": "latest"})}} {
-		_, err := opsAdmit(t, h, "a1", "agent-"+req.Op, req)
-		if !isRefusal(err, "user_only") || !strings.HasSuffix(err.Error(), ": add and update need the user: ask the user to open LazyRex: Plugins…") {
-			t.Errorf("agent %s: %v", req.Op, err)
+	// An agent add is user_only, and the text tells the agent what to do (P1). An agent update is
+	// admitted (B9 removed for update, the user's decision of 2026-10-23).
+	_, err = opsAdmit(t, h, "a1", "agent-add", opRequest{Op: "add", Input: rawJSON(map[string]any{"source": "github:acme/x@v1"})})
+	if !isRefusal(err, "user_only") || !strings.HasSuffix(err.Error(), ": add needs the user: ask the user to open LazyRex: Plugins…") {
+		t.Errorf("agent add: %v", err)
+	}
+	for _, to := range []string{"latest", "@"} {
+		v, err := opsAdmit(t, h, "a1", "agent-update-"+to, opRequest{Op: "update", Entry: "managed:tools", Input: rawJSON(map[string]any{"to": to})})
+		if err != nil {
+			t.Fatalf("agent update to %q: %v", to, err)
+		}
+		if op := opsOf(t, h, v["op_id"].(string)); op.Kind != "update" || op.Origin != (opOrigin{"agent", "a1"}) || op.Phase != "queued" {
+			t.Errorf("agent update to %q: %+v", to, op)
 		}
 	}
 }
@@ -105,6 +111,13 @@ func TestPluginOpUpdateAdmission(t *testing.T) {
 		if err := update("managed:tools", to); err == nil || !strings.Contains(err.Error(), "latest") {
 			t.Errorf("to %q: %v", to, err)
 		}
+	}
+	// A refresh ("@") keeps the source: its lock base is the old key only.
+	if err := update("managed:tools", "@"); err != nil {
+		t.Fatalf("to @: %v", err)
+	}
+	if op := opsOf(t, h, mustLastOp(t, h)); op.Input != `{"to":"@"}` || op.LockBase != `{"github:acme/tools@v1.0.0":"absent"}` {
+		t.Errorf("the refresh op: %+v", op)
 	}
 	for _, to := range []string{"latest", "v1.2.0", "release/2"} {
 		if err := update("managed:tools", to); err != nil {
@@ -264,11 +277,14 @@ func TestPluginOpResolveTargets(t *testing.T) {
 	r.git("tag", "both")
 	h, _, dir := opsTestHub(t, "")
 	h.pops.cmd = pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
-	writeManaged(t, dir, `{"plugins":[{"id":"tools","source":"github:acme/tools/sub@v1.0.0"}]}`)
+	writeManaged(t, dir, `{"plugins":[{"id":"tools","source":"github:acme/tools/sub@v1.0.0"},{"id":"br","source":"github:acme/br@main"},{"id":"lt","source":"github:acme/lt@latest"}]}`)
 	opsLoadEntries(t, h)
 	add := func(src string) opRequest { return opRequest{Op: "add", Input: rawJSON(map[string]any{"source": src})} }
 	update := func(to string) opRequest {
 		return opRequest{Op: "update", Entry: "managed:tools", Input: rawJSON(map[string]any{"to": to})}
+	}
+	refresh := func(id string) opRequest {
+		return opRequest{Op: "update", Entry: "managed:" + id, Input: rawJSON(map[string]any{"to": "@"})}
 	}
 	for i, c := range []struct {
 		req  opRequest
@@ -282,6 +298,11 @@ func TestPluginOpResolveTargets(t *testing.T) {
 		{update("v1.1.0"), opResolved{Source: "github:acme/tools/sub@v1.1.0", RefKind: "tag", Commit: c2, FetchRef: "refs/tags/v1.1.0"}},
 		// A tag that a branch also has: the full tag ref, so a CLI sync reads the tag.
 		{update("both"), opResolved{Source: "github:acme/tools/sub@refs/tags/both", RefKind: "tag", Commit: c2, FetchRef: "refs/tags/both"}},
+		// A refresh resolves the entry's own ref: a tag gives its commit, a branch its tip, latest
+		// the newest release. The source does not change.
+		{refresh("tools"), opResolved{Source: "github:acme/tools/sub@v1.0.0", RefKind: "tag", Commit: v1, FetchRef: "refs/tags/v1.0.0"}},
+		{refresh("br"), opResolved{Source: "github:acme/br@main", RefKind: "branch", Commit: c2, FetchRef: "refs/heads/main"}},
+		{refresh("lt"), opResolved{Source: "github:acme/lt@latest", RefKind: "latest", Tag: "v1.1.0", Commit: c2, FetchRef: "refs/tags/v1.1.0"}},
 	} {
 		op, err := resolveOp(t, h, fmt.Sprintf("res-%d", i), c.req)
 		var got opResolved

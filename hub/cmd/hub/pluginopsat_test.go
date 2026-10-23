@@ -160,3 +160,29 @@ func TestPluginOpFetchSkip(t *testing.T) {
 		t.Fatalf("another commit in the lock: %+v, want a fetch that fails", op2)
 	}
 }
+
+// An agent's refresh ("@", B9 removed for update) runs like any update: an entry at a tag that is
+// already at its pin ends done in fetching, "already at", and writes nothing.
+func TestPluginOpAgentRefreshAlreadyAt(t *testing.T) {
+	h, _, commit, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	ctx := context.Background()
+	lockBytes, _ := os.ReadFile(opLockFile(h))
+	v, err := opsAdmit(t, h, "a1", "refresh", opRequest{Op: "update", Entry: "managed:notes", Input: rawJSON(map[string]any{"to": "@"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := opsOf(t, h, v["op_id"].(string))
+	op.Phase = "resolving"
+	if err := h.opResolve(ctx, op); err != nil || op.Phase != "fetching" {
+		t.Fatalf("the resolve: %+v %v", op, err)
+	}
+	if err := h.opFetch(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("already at github:acme/notes@v1.0.0 %s", commit); op.Phase != "done" || op.Result != want {
+		t.Fatalf("the refresh: %+v, want done %q", op, want)
+	}
+	if b, _ := os.ReadFile(opLockFile(h)); string(b) != string(lockBytes) {
+		t.Error("the refresh wrote the lock")
+	}
+}

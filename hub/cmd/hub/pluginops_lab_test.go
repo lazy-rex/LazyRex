@@ -136,6 +136,12 @@ func TestPluginOpsLab(t *testing.T) {
 	}
 	s.same("m", m0, mStart)
 
+	// The face passes an agent's update with input {to: "@"} to admission (B9 removed for update):
+	// a local entry is refused there, not user_only.
+	if _, err := s.agentDo(alice, "hub.plugins.op", map[string]any{"key": "up-m", "op": "update", "entry": "managed:m", "input": map[string]any{"to": "@"}}); err == nil || !strings.Contains(err.Error(), "update needs a GitHub source") {
+		t.Errorf("an agent update of a local entry: %v", err)
+	}
+
 	// The same key with another request; a caller outside every pane.
 	if _, err := s.agentDo(alice, "hub.plugins.op", map[string]any{"key": "rm-d", "op": "stop", "entry": "managed:m"}); err == nil || !strings.Contains(err.Error(), "operation_conflict") {
 		t.Errorf("a reused key: %v", err)
