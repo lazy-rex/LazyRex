@@ -254,11 +254,7 @@ func (h *Hub) restartFormCall(ctx context.Context, action string, args any, out 
 	}
 	var se *storeError
 	if errors.As(err, &se) {
-		code := se.code
-		if code == "" {
-			code = "refused"
-		}
-		return &rex.RexError{Code: code, Message: se.msg}
+		return &rex.RexError{Code: storeErrorCode(se), Message: se.msg}
 	}
 	if err != nil {
 		return err // not an answer: the view service tries again

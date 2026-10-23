@@ -89,6 +89,16 @@ func refuse(code, format string, args ...any) error {
 	return &storeError{msg: code + ": " + fmt.Sprintf(format, args...), code: code}
 }
 
+// storeErrorCode is the error code of a hub error in a reply: its own code, or "refused" for an
+// untyped bad(). Every reply path that answers a hub error uses it (answer, agentAnswer and the
+// restart form), so a caller gets the same code on each face.
+func storeErrorCode(se *storeError) string {
+	if se.code == "" {
+		return "refused"
+	}
+	return se.code
+}
+
 // checkValue accepts JSON objects, arrays, strings, finite numbers and booleans. No null.
 func checkValue(v any) error {
 	switch t := v.(type) {

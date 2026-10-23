@@ -1243,6 +1243,7 @@ Discover actions with `rex -S "$REX_SERVER" --autostart=false -C lazyrex actions
 Call an action with `rex -S "$REX_SERVER" --autostart=false -C lazyrex do messaging.read`.
 Rex supplies descriptions, schemas, argument validation, and the caller PID.
 The hub forwards registered plugin actions through `hub.forward`.
+An error reply keeps its code, as on the plugin face: a hub error has its own code (for example `invalid_input` or `outcome_unknown`), or `refused` when it has none; a plugin's own error passes as the plugin gave it; any other error is `failed` (`agentReplyError`, `storeErrorCode`).
 A plugin accepts that assertion only from its registered hub client.
 Direct plugin calls and MCP tools keep their existing caller attribution.
 

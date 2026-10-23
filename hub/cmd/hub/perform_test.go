@@ -227,6 +227,9 @@ func forwardHub(t *testing.T) (*Hub, map[string]chan struct{}) {
 			Args struct{ Tag string }
 		}
 		json.Unmarshal(c.Args, &a)
+		if a.Args.Tag == "conflict" {
+			return nil, "conflict" // the plugin's own error
+		}
 		if ch := release[a.Args.Tag]; ch != nil {
 			select {
 			case <-ch:

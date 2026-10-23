@@ -28,7 +28,8 @@ type performRex struct {
 	Socket  string
 	mu      sync.Mutex
 	calls   []performCall
-	methods []string // every request method, in arrival order
+	methods []string          // every request method, in arrival order
+	replies []json.RawMessage // the payload of each client.reply, in arrival order
 }
 
 func newPerformRex(t *testing.T, answer func(c performCall) (result any, code string)) *performRex {
@@ -76,6 +77,11 @@ func newPerformRex(t *testing.T, answer func(c performCall) (result any, code st
 			}
 			fr.mu.Lock()
 			fr.methods = append(fr.methods, f.Method)
+			if f.Method == "client.reply" {
+				var raw struct{ Payload json.RawMessage }
+				json.Unmarshal(data, &raw)
+				fr.replies = append(fr.replies, raw.Payload)
+			}
 			fr.mu.Unlock()
 			if f.Method != "client.perform" {
 				write(map[string]any{"type": "response", "id": f.ID, "payload": map[string]any{}})

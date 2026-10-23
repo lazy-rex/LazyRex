@@ -175,21 +175,28 @@ func (h *Hub) agentKeymap(ctx context.Context) error {
 	return nil
 }
 
+// agentReplyError is the error of an agent call's reply. A hub error keeps its code
+// (storeErrorCode), as on the plugin face. A plugin's own error passes as the plugin gave it.
+// Anything else is "failed".
+func agentReplyError(err error) *rex.RexError {
+	var se *storeError
+	var re *rex.RexError
+	switch {
+	case errors.As(err, &se):
+		return &rex.RexError{Code: storeErrorCode(se), Message: err.Error()}
+	case errors.As(err, &re):
+		return re
+	default:
+		return &rex.RexError{Code: "failed", Message: err.Error()}
+	}
+}
+
 // agentAnswer runs one agent call and replies on the agent face.
 func (h *Hub) agentAnswer(ctx context.Context, p perform) {
 	result, err := h.agentDispatch(ctx, p)
 	reply := map[string]any{"call_id": p.CallID}
 	if err != nil {
-		var se *storeError
-		var re *rex.RexError
-		switch {
-		case errors.As(err, &se):
-			reply["error"] = &rex.RexError{Code: "refused", Message: err.Error()}
-		case errors.As(err, &re):
-			reply["error"] = re // a plugin's own error, as the plugin gave it
-		default:
-			reply["error"] = &rex.RexError{Code: "failed", Message: err.Error()}
-		}
+		reply["error"] = agentReplyError(err)
 	} else {
 		reply["result"] = result
 	}

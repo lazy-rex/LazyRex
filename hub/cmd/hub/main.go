@@ -761,10 +761,7 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 		var se *storeError
 		code := "failed"
 		if errors.As(err, &se) {
-			code = "refused"
-			if se.code != "" {
-				code = se.code
-			}
+			code = storeErrorCode(se)
 		}
 		reply["error"] = &rex.RexError{Code: code, Message: err.Error()}
 	} else {
