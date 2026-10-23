@@ -291,7 +291,7 @@ func (h *Hub) setSlotState(ctx context.Context, r *slotRow, to string) error {
 		// replacement of the view is active: that one can hold it (a loser's cancel must not undo the
 		// winner's claim). The rule is the same as in slotStart.
 		h.db.ExecContext(ctx, `UPDATE views SET attach_state = 'never' WHERE view_id = ? AND attach_state = 'claimed' AND view_id NOT IN
-			(SELECT old_view FROM ui_replacements WHERE state IN ('releasing', 'confirming', 'opening', 'closing'))`, r.Old)
+			(SELECT old_view FROM ui_replacements WHERE state IN `+activeStates+`)`, r.Old)
 	}
 	return nil
 }
@@ -804,7 +804,7 @@ func (h *Hub) releaseConfirm(ctx context.Context, p perform, args map[string]any
 func (h *Hub) slotAttachState(ctx context.Context, viewID, repl string) map[string]any {
 	var id, state, title string
 	err := h.db.QueryRowContext(ctx, `SELECT repl_id, state, next_title FROM ui_replacements
-		WHERE old_view = ? AND state IN ('releasing', 'confirming', 'opening', 'closing') ORDER BY created DESC LIMIT 1`, viewID).Scan(&id, &state, &title)
+		WHERE old_view = ? AND state IN `+activeStates+` ORDER BY created DESC LIMIT 1`, viewID).Scan(&id, &state, &title)
 	if err != nil && repl != "" {
 		id = repl
 		if h.db.QueryRowContext(ctx, `SELECT state, next_title FROM ui_replacements WHERE repl_id = ? AND old_view = ?`, repl, viewID).Scan(&state, &title) != nil {
@@ -858,7 +858,7 @@ func (h *Hub) slotStart(ctx context.Context) error {
 	// A claim whose replacement ended (also by the cancel above, or before a crash) is undone. The
 	// query is the same at every start, so a repeat changes nothing.
 	_, err = h.db.ExecContext(ctx, `UPDATE views SET attach_state = 'never' WHERE attach_state = 'claimed' AND view_id NOT IN
-		(SELECT old_view FROM ui_replacements WHERE state IN ('releasing', 'confirming', 'opening', 'closing'))`)
+		(SELECT old_view FROM ui_replacements WHERE state IN `+activeStates+`)`)
 	return err
 }
 

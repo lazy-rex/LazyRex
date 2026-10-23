@@ -25,7 +25,7 @@ func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 	if !strings.HasPrefix(socket, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
 		t.Fatal("refuse a non-lab socket")
 	}
-	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") {
+	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") && !strings.HasPrefix(real, "/tmp/rexlab-") {
 		t.Fatalf("refuse a socket that resolves outside the lab: %s %v", real, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -43,7 +43,7 @@ func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 	h.selfClosed = map[string]bool{}
 	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}} // closeViewRow forgets the view's render state
 	view := filepath.Join(t.TempDir(), "view.sh")
-	os.WriteFile(view, []byte("#!/bin/sh\nexec sleep 600\n"), 0o755)
+	os.WriteFile(view, []byte("#!/bin/sh\nwhile :; do sleep 600; done\n"), 0o755) // no exec: the shell keeps the argv with the view ID (the hub's proof)
 	h.cfg.View = view
 	if err := h.uiStart(ctx); err != nil {
 		t.Fatal(err)

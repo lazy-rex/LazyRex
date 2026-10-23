@@ -24,7 +24,7 @@ func replyLabSocket(t *testing.T) string {
 	if !strings.HasPrefix(socket, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
 		t.Fatal("refuse a non-lab socket")
 	}
-	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") {
+	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") && !strings.HasPrefix(real, "/tmp/rexlab-") {
 		t.Fatalf("refuse a socket that resolves outside the lab: %s %v", real, err)
 	}
 	return socket
