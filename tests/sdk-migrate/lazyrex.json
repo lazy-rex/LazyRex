@@ -1,1 +1,1 @@
-{"name": "sm", "main": "main.lua", "sdk": "0", "test": {"agents": [{"id": "alice", "name": "Alice"}]}}
+{"name": "sm", "main": "main.lua", "sdk": "0"}
