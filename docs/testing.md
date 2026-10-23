@@ -679,11 +679,13 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
   limits, injections, assertions). Run `lazyrex-hub test tests/harness`.
 - `tests/harness-identity/`: a plugin with no actions and no `test.agents`, so its tests run the
   identity mode of `agent`. Run `lazyrex-hub test tests/harness-identity`.
-- `tests/harness-fail/`: files that must fail, each for the reason in its first line. Its main
-  file loads `tests/harness/fixture.lua` with `dofile`.
+- `tests/harness-fail/`: files that must fail, each for the reason in its first line. Its plugin
+  (`fixture.lua`) is a small plugin of its own with only what these files use: a plugin loads only
+  files inside its own directory (docs/plugin-sources.md, section 2).
 - `tests/isolation/`: a probe plugin as the plugin under test, a smaller probe of its own as a
   dependency (`isodep/`, which loads no source outside its directory), and a spawned worker. They
-  report their environment, args and working directory. The tests also check the test-mode profile refusals.
+  report their environment, args and working directory. The tests also check the test-mode
+  profile refusals.
 - `TestHarnessIsolation` runs `tests/isolation` with an outer `HOME` and `XDG_CONFIG_HOME` in a
   temporary dir (never the real home) that hold a sentinel, and an outer secret variable. No lab
   process finds the sentinel through `HOME` or `XDG_CONFIG_HOME` or gets the secret. The outer
