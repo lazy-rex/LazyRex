@@ -385,7 +385,14 @@ func main() {
 	}
 	cfg.Real = *realServer
 	cfg.Test = *testMode
-	cfg.SDK = findSDK(*sdkDir)
+	// The SDK and the view are resolved once, here (findSDK, resolveView): a later switch of a link
+	// in either path changes nothing for this hub, its plugin respawns or its renderers.
+	if cfg.SDK, err = findSDK(*sdkDir); err != nil {
+		log.Fatal(err)
+	}
+	if cfg.View, err = resolveView(cfg.View); err != nil {
+		log.Fatal(err)
+	}
 	if !cfg.Test && len(cfg.TestRoots) > 0 {
 		log.Fatal("test_roots needs -test")
 	}
@@ -904,7 +911,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 		}
 		commit, modified := buildCommit()
 		return map[string]any{"state": h.cfg.State, "pid": os.Getpid(), "generation": revString(h.generation),
-			"exec": h.exec, "commit": commit, "modified": modified}, nil
+			"exec": h.exec, "commit": commit, "modified": modified, "sdk": h.cfg.SDK, "view": h.cfg.View}, nil
 	case "hub.plugins":
 		return h.pluginsList(ctx)
 	case "hub.plugins.reload":
@@ -1184,29 +1191,55 @@ func sdkLogLine(dir string) string {
 	return "sdk: " + dir
 }
 
-// findSDK returns the SDK directory: the -sdk value, else sdk/lua in a directory above this
-// binary (a hub built in its checkout). A directory without boot.lua is no SDK: the hub logs it,
-// and plugins that declare sdk cannot start.
-func findSDK(flagValue string) string {
-	var candidates []string
+// findSDK returns the SDK directory with every symlink resolved, so a later switch of a link
+// changes nothing for this hub. The -sdk value must resolve to a directory with boot.lua, else the
+// hub does not start. Without -sdk: sdk/lua in a directory above this binary's resolved path (a
+// hub built in its checkout, or versions/<commit>/ of an install); none found is "" (plugins that
+// declare sdk cannot start).
+func findSDK(flagValue string) (string, error) {
 	if flagValue != "" {
-		candidates = []string{flagValue}
-	} else if self, err := os.Executable(); err == nil {
-		for d := filepath.Dir(self); d != "/" && d != "."; d = filepath.Dir(d) {
-			candidates = append(candidates, filepath.Join(d, "sdk", "lua"))
+		dir, err := filepath.EvalSymlinks(flagValue)
+		if err == nil {
+			dir, err = filepath.Abs(dir)
 		}
+		if err != nil {
+			return "", fmt.Errorf("-sdk %s cannot be resolved: %v", flagValue, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "boot.lua")); err != nil {
+			return "", fmt.Errorf("-sdk %s has no boot.lua", flagValue)
+		}
+		return dir, nil
 	}
-	for _, c := range candidates {
+	self, err := os.Executable()
+	if err == nil {
+		self, err = filepath.EvalSymlinks(self)
+	}
+	if err != nil {
+		return "", nil
+	}
+	for d := filepath.Dir(self); d != "/" && d != "."; d = filepath.Dir(d) {
+		c := filepath.Join(d, "sdk", "lua")
 		if _, err := os.Stat(filepath.Join(c, "boot.lua")); err == nil {
-			if abs, err := filepath.Abs(c); err == nil {
-				return abs
+			if dir, err := filepath.EvalSymlinks(c); err == nil {
+				return dir, nil
 			}
 		}
 	}
-	if flagValue != "" {
-		log.Printf("-sdk %s has no boot.lua: plugins that declare sdk cannot start", flagValue)
+	return "", nil
+}
+
+// resolveView returns the configured renderer path (absolute after loadConfig) with every symlink
+// resolved, so a crashed renderer is replaced by the same file. A path that cannot be resolved
+// stops the start. "" (no view) stays "".
+func resolveView(view string) (string, error) {
+	if view == "" {
+		return "", nil
 	}
-	return ""
+	v, err := filepath.EvalSymlinks(view)
+	if err != nil {
+		return "", fmt.Errorf("view %s cannot be resolved: %v", view, err)
+	}
+	return v, nil
 }
 
 // currentClient reports whether client is the registered instance of plugin.

@@ -99,11 +99,13 @@ func TestSignalReady(t *testing.T) {
 	signalReady(-1, "/x") // must not panic
 }
 
-// hub.info: the canonical state, the pid, the generation, the wrapper's exec count and the build
-// commit, for any client; an argument is refused.
+// hub.info: the canonical state, the pid, the generation, the wrapper's exec count, the build
+// commit, and the SDK and view paths that the hub resolved at its start, for any client; an
+// argument is refused.
 func TestHubInfo(t *testing.T) {
 	h, _ := workerTestHub(t)
 	h.exec = 2
+	h.cfg.SDK, h.cfg.View = "/v1/sdk/lua", "/v1/lazyrex-view"
 	call := func(args string) (any, error) {
 		var p perform
 		json.Unmarshal([]byte(fmt.Sprintf(`{"action":"hub.info","args":%s,"requester":{"client_id":"c9","principal":{"pid":40}}}`, args)), &p)
@@ -111,7 +113,7 @@ func TestHubInfo(t *testing.T) {
 	}
 	commit, modified := buildCommit()
 	want := map[string]any{"state": h.cfg.State, "pid": os.Getpid(), "generation": revString(h.generation),
-		"exec": 2, "commit": commit, "modified": modified}
+		"exec": 2, "commit": commit, "modified": modified, "sdk": "/v1/sdk/lua", "view": "/v1/lazyrex-view"}
 	if out, err := call(`{}`); err != nil || !reflect.DeepEqual(out, want) {
 		t.Fatalf("%v, %v; want %v", out, err, want)
 	}

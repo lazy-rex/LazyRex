@@ -21,6 +21,11 @@ import (
 //  4. The link names a file that cannot run; restart -expect-exec 1: the exec fails, the old
 //     version runs again at exec 1 in a new hub process: exit 1 with the exec error.
 //  5. lazyrex-hub stop: stopped, and the wrapper exits 0.
+//
+// H1: each copy has its own sdk/lua and view, and the config names the view through a link. The
+// hub resolves both once at its start: after both links switch, the running hub still reports the
+// old copy's paths; the new hub reports the new copy's paths, and so does the old version after the
+// failed exec.
 func TestRestartCommandLab(t *testing.T) {
 	if os.Getenv("SHUTDOWN_LAB") != "1" {
 		t.Skip("set SHUTDOWN_LAB=1 to run the restart command lab test (it starts its own lab server)")
@@ -32,17 +37,28 @@ func TestRestartCommandLab(t *testing.T) {
 	tmp := t.TempDir()
 	v1, v2 := filepath.Join(tmp, "v1", "lazyrex-hub"), filepath.Join(tmp, "v2", "lazyrex-hub")
 	for _, p := range []string{v1, v2} {
-		os.MkdirAll(filepath.Dir(p), 0o700)
+		os.MkdirAll(filepath.Join(filepath.Dir(p), "sdk", "lua"), 0o700)
+		os.WriteFile(filepath.Join(filepath.Dir(p), "sdk", "lua", "boot.lua"), nil, 0o600)
+		os.WriteFile(filepath.Join(filepath.Dir(p), "view.sh"), []byte("#!/bin/sh\n"), 0o700)
 		if out, err := exec.Command("go", "build", "-o", p, ".").CombinedOutput(); err != nil {
 			t.Fatalf("build: %v\n%s", err, out)
 		}
+	}
+	rexBin, err := exec.LookPath("rex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1real, err := filepath.EvalSymlinks(filepath.Dir(v1))
+	if err != nil {
+		t.Fatal(err)
 	}
 	v2real, err := filepath.EvalSymlinks(v2) // ps shows the resolved path (/var is a link on macOS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(tmp, "current")
+	link, viewLink := filepath.Join(tmp, "current"), filepath.Join(tmp, "view")
 	os.Symlink(v1, link)
+	os.Symlink(filepath.Join(filepath.Dir(v1), "view.sh"), viewLink)
 	lab, err := os.MkdirTemp("/tmp", "rexlab-restartcmd-")
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +67,7 @@ func TestRestartCommandLab(t *testing.T) {
 	startLabServer(t, root, lab)
 	state := filepath.Join(tmp, "state")
 	cfg := filepath.Join(tmp, "hub.json")
-	b, _ := json.Marshal(map[string]any{"server": "unix://" + lab + "/rex.sock", "state": state,
+	b, _ := json.Marshal(map[string]any{"server": "unix://" + lab + "/rex.sock", "state": state, "view": viewLink,
 		"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
 	if err := os.WriteFile(cfg, b, 0o600); err != nil {
 		t.Fatal(err)
@@ -72,6 +88,26 @@ func TestRestartCommandLab(t *testing.T) {
 		n, _ := strconv.Atoi(m[1])
 		return n
 	}
+	// paths is the sdk and view that the hub of this config reports (hub.info).
+	paths := func() (string, string) {
+		_, out := ctl("status")
+		m := regexp.MustCompile(`\(client ([^)]+)\)`).FindStringSubmatch(out)
+		if m == nil {
+			t.Fatalf("status:\n%s", out)
+		}
+		info, err := exec.Command(rexBin, "-S", "unix://"+lab+"/rex.sock", "--autostart=false", "-C", m[1], "do", "hub.info").Output()
+		var p struct{ SDK, View string }
+		if err != nil || json.Unmarshal(info, &p) != nil {
+			t.Fatalf("hub.info: %v\n%s", err, info)
+		}
+		return p.SDK, p.View
+	}
+	wantPaths := func(when, dir string) {
+		t.Helper()
+		if sdk, view := paths(); sdk != filepath.Join(dir, "sdk", "lua") || view != filepath.Join(dir, "view.sh") {
+			t.Errorf("%s: sdk %s, view %s; want those of %s", when, sdk, view, dir)
+		}
+	}
 	exe := func(pid int) string {
 		out, _ := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 		return strings.TrimSpace(string(out))
@@ -79,6 +115,7 @@ func TestRestartCommandLab(t *testing.T) {
 
 	// 1. Another exec count: nothing sent.
 	old := hubPID()
+	wantPaths("at the start", v1real)
 	if code, out := ctl("restart", "-expect-exec", "1"); code != 1 || !strings.Contains(out, "runs exec 0, not 1") || !strings.Contains(out, "nothing was sent") {
 		t.Fatalf("-expect-exec 1 at exec 0: exit %d\n%s", code, out)
 	}
@@ -89,6 +126,9 @@ func TestRestartCommandLab(t *testing.T) {
 	// 2. A relaunch onto the new copy.
 	os.Remove(link)
 	os.Symlink(v2, link)
+	os.Remove(viewLink)
+	os.Symlink(filepath.Join(filepath.Dir(v2), "view.sh"), viewLink)
+	wantPaths("after the link switch, before the restart", v1real)
 	code, out := ctl("restart", "-expect-exec", "0")
 	want := fmt.Sprintf("restart wrapper pid %d", wrapper.Process.Pid)
 	if code != 0 || !strings.Contains(out, "restarted: hub pid") || !strings.Contains(out, "exec 1") || !strings.Contains(out, want) {
@@ -98,6 +138,7 @@ func TestRestartCommandLab(t *testing.T) {
 	if pid == old || !strings.HasPrefix(exe(pid), v2real) {
 		t.Errorf("after the restart: hub pid %d (old %d) runs %q, want a new process of %s", pid, old, exe(pid), v2real)
 	}
+	wantPaths("after the restart", filepath.Dir(v2real))
 
 	// 3. The same command again: refused before the send.
 	if code, out := ctl("restart", "-expect-exec", "0"); code != 1 || !strings.Contains(out, "runs exec 1, not 0") || !strings.Contains(out, "nothing was sent") {
@@ -120,6 +161,7 @@ func TestRestartCommandLab(t *testing.T) {
 	if again := hubPID(); again == pid || !strings.HasPrefix(exe(again), v2real) {
 		t.Errorf("after the failed exec: hub pid %d (before %d) runs %q, want a new process of %s", again, pid, exe(again), v2real)
 	}
+	wantPaths("after the failed exec", filepath.Dir(v2real))
 
 	// 5. stop ends the hub and the wrapper.
 	if code, out := ctl("stop"); code != 0 || !strings.Contains(out, "stopped") {
