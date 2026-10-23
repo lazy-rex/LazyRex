@@ -1184,13 +1184,20 @@ Tests: `TestNoticeOnceUntilRead`, `TestNoticeOpForms`, `TestNoticeDue`, `TestNot
 
 ## Hub calls to clients
 
-Rule: every `client.perform` that the hub sends to a client has a deadline, except a documented exception. The hub waits `timeout_ms + performMargin` (2 s, `hub/cmd/hub/perform.go`). This does not bound Rex's queue: `timeout_ms` starts at delivery, so Rex can still deliver a call after the hub stopped waiting (rex-protocol.md), and the outcome of a call that the hub's wait cut is unknown. After such a cut, the hub never sends the same request again by itself. It retries only after a failure that Rex reports.
+The 4.3 goal (timeout audit, 2026-10-22): every `client.perform` that the hub sends to a client has a hub deadline, or this table names why it has none. No hub deadline bounds Rex's queue: `timeout_ms` starts at delivery, so Rex can still deliver a call after the hub stopped waiting (rex-protocol.md). The outcome of a call that the hub's own wait cut is unknown. What the hub does after such a cut is different for each call, and the table says it. Where a row says `timeout_ms + performMargin`, the hub waits that long (`performMargin` is 2 s, `hub/cmd/hub/perform.go`).
 
-| Call | Hub wait | After the hub's wait cuts it |
-|---|---|---|
-| `view.reload` (`ui.go`, `uiReload`) | 7 s | Only the event (`view_reload` with the error). No retry, as before. |
-| `view.retire` (`ui.go`, `retireLegacy`) | 7 s | No other `view.retire` to that attachment. A new attachment gets one. A failure that Rex reports is retried after 10 s, as before. |
-| The view worker's calls to a plugin (`viewsvc.go`, `callPlugin`) | no deadline, by design | The worker is serial for each plugin, and `runOps` retries an unknown outcome. With a deadline, each retry would add one more queued call to a plugin that does not take its queue. Without one, one call waits, and the plugin is the cause. |
+| Call | Hub wait | After the hub's own cut | Status |
+|---|---|---|---|
+| `hub.changed` (`changed.go`), watch nudges (`watchsvc.go`) | 5 s | Nothing more: a late nudge only makes the plugin read again. Only a Rex refusal of a full queue (`client_unavailable`, "is busy") is retried (`changedRetryable`). | bounded |
+| `hub.prompt` (`promptpush.go`) | 5 s (`timeout_ms` 3000) | The agent stays dirty, and a later pass sends its state current then. That can be the same state again. The plugin's apply rule ignores a copy whose rev is not above the applied rev ("Prompt pushes"). | bounded |
+| `view.release`, `view.resume` (`panels.go`) | 6 s | The replacement slot ends, and the hub sends `view.resume`. The renderer answers a release of an ended replacement with `cancelled`. | bounded |
+| `view.changed` (`viewnotify.go`) | no hub deadline, by design | `timeout_ms` is the only bound. At most one request is outstanding for each view, role and attachment, and a close or a new attachment cancels it. | by design |
+| The view worker's calls to a plugin (`viewsvc.go`, `callPlugin`) | no hub deadline, by design | The worker is serial for each plugin, and `runOps` retries an unknown outcome. With a deadline, each retry would add one more queued call to a plugin that does not take its queue. Without one, one call waits, and the plugin is the cause. | by design |
+| `view.reload` (`ui.go`, `uiReload`) | `timeout_ms + performMargin`, 7 s | Only the event (`view_reload` with the error). No retry, as before. | bounded |
+| `view.retire` (`ui.go`, `retireLegacy`) | `timeout_ms + performMargin`, 7 s | This hub process sends no other `view.retire` to that attachment. A new attachment gets one, and so can a new hub process (the mark is in memory). A failure that Rex reports is retried after 10 s, as before. | bounded |
+| `view.close_request` (`pair.go`) | none yet | | audit row 12, to do |
+| App calls: `pane.insert_path`, `session.select` (`appaction.go`, `ui.go`) | none yet | | audit row 13, to do |
+| `hub.forward` (`agentface.go`) | none yet | | audit row 8, to do |
 
 Tests: `TestViewReloadHasADeadline`, `TestViewRetireAfterACut` (`perform_test.go`).
 
