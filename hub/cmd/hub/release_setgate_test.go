@@ -213,7 +213,7 @@ func TestReleaseSetGate(t *testing.T) {
 			f.hub = &relHub{PID: f.hub.PID, Start: f.hub.Start, Client: f.hub.Client, Seq: 2}
 		}, "is not the H hub that the hub run started"},
 		"lock metadata": {func(t *testing.T, f *setGateFixture) {
-			writeLock(f.r.cfg.lock, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{"gh:o/beta": {Name: "beta", Commit: setFrom, Digest: sgB}}})
+			writeLock(f.r.cfg.lock, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{"gh:o/beta": {lockPin: lockPin{Name: "beta", Commit: setFrom, Digest: sgB}}}})
 			f.c.LockPins, _ = lockPinsHash(f.r.cfg.lock)
 		}, "the lock (without cache dirs) of the frozen candidate"},
 		"no verify": {func(t *testing.T, f *setGateFixture) {
