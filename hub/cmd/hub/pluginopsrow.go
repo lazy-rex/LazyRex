@@ -84,9 +84,10 @@ func (c *pluginRowCols) free() bool {
 // row are one transaction, so the outcome is never unknown and there is no attempt row. The guard:
 // no row, or a free row (free); no spawn intent of name that is prepared or sending; no unsettled
 // attempt (no proof and not resolved) of an op on name; no open bound handler of an op on name
-// (bound_at set, outcome empty), even when proof or an operator settles its attempt. The graph
-// check of the writing phase covers "no entry gives name". A failed guard is conflict, and nothing
-// more is written.
+// (bound_at set, outcome empty), even when proof or an operator settles its attempt. The add's own
+// attempts do not count. The graph check of the writing phase covers "no entry gives name". A
+// failed guard is conflict, and nothing more is written. The same transaction stores the name in
+// the op (op.Name), so the guard of a later add sees this add's attempts.
 //   - Insert: desired stopped, the entry identity and a fresh entry_stamp.
 //   - Reuse: desired stopped, the entry identity and a fresh entry_stamp; instance_id stays (the
 //     retired instance: an earlier op's stop observation of it needs the earlier identity, which
@@ -120,7 +121,7 @@ func (h *Hub) addRow(ctx context.Context, op *pluginOp, name, identity string) (
 	}
 	var busy int
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM spawn_intents WHERE plugin = ? AND status IN ('prepared', 'sending'))
-		+ (SELECT COUNT(*) FROM plugin_op_attempts a JOIN plugin_ops o ON o.op_id = a.op_id WHERE o.name = ? AND (a.proof = '' AND a.resolved_by = '' OR a.bound_at != '' AND a.outcome = ''))`, name, name).Scan(&busy); err != nil {
+		+ (SELECT COUNT(*) FROM plugin_op_attempts a JOIN plugin_ops o ON o.op_id = a.op_id WHERE o.name = ? AND o.op_id != ? AND (a.proof = '' AND a.resolved_by = '' OR a.bound_at != '' AND a.outcome = ''))`, name, name, op.ID).Scan(&busy); err != nil {
 		return true, err
 	}
 	if busy > 0 || c != nil && !c.free() {
@@ -143,13 +144,15 @@ func (h *Hub) addRow(ctx context.Context, op *pluginOp, name, identity string) (
 		return true, err
 	}
 	b, _ := json.Marshal(p)
-	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET row_prior = ?, updated = ? WHERE op_id = ?`, string(b), time.Now().UnixMilli(), op.ID); err != nil {
+	// The op takes the manifest name in the same transaction (codex-27's C5 note): the guard of a
+	// later add then sees this add's attempts by name, and its start goes to the plugin name.
+	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET row_prior = ?, name = ?, updated = ? WHERE op_id = ?`, string(b), name, time.Now().UnixMilli(), op.ID); err != nil {
 		return true, err
 	}
 	if err := tx.Commit(); err != nil {
 		return true, err
 	}
-	op.RowPrior = string(b)
+	op.RowPrior, op.Name = string(b), name
 	if h.opFault("plugin-op-after-row") {
 		return true, errOpCrash
 	}
