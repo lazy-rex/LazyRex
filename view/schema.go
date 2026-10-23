@@ -110,15 +110,28 @@ type OpenArgs struct {
 	Full bool `json:"full"`
 }
 
+// UnmarshalJSON accepts only an object whose only key is full, with true or false. encoding/json
+// decodes null into a bool without an error, so the value is checked as raw JSON. An absent or
+// null open never reaches this method (the pointer stays nil).
 func (o *OpenArgs) UnmarshalJSON(b []byte) error {
-	type plainArgs OpenArgs
-	var args plainArgs
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&args); err != nil {
-		return fmt.Errorf("Invalid open args: %w", err)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil || raw == nil {
+		return fmt.Errorf("Invalid open args: not an object")
 	}
-	*o = OpenArgs(args)
+	args := OpenArgs{}
+	for key, value := range raw {
+		if key != "full" {
+			return fmt.Errorf("Invalid open args: unknown key %q", key)
+		}
+		switch string(bytes.TrimSpace(value)) {
+		case "true":
+			args.Full = true
+		case "false":
+		default:
+			return fmt.Errorf("Invalid open args: full is not a boolean")
+		}
+	}
+	*o = args
 	return nil
 }
 
