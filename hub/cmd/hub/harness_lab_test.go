@@ -481,9 +481,11 @@ func TestLabKeeperMainRunsNoHub(t *testing.T) {
 // table (msg-parity-red-4f6d). Each -run pattern matches no test, so only the sweep runs, and the
 // run ends with "matched no test". The cases: the home plugin (/forms/launch, rendered by its
 // fixture), and copies of tests/harness whose manifest lists /forms/fix (a palette command, so the
-// sweep renders it), the same with the command opening /forms/fix?mode=q (a route with a query
-// counts by its path, as the Worktrees forms are rendered), and then also /forms/chain (only an
-// action opens it, so no render reaches it). The last case fails, so a list that the runner drops
+// sweep renders it). With the command opening /forms/fix?mode=q, the manifest lists /forms/fix
+// (a route with no query is checked by its path, as the Worktrees forms are rendered) and
+// /forms/fix?mode=q (a route with a query is checked by exactly that route, as the Automations
+// forms are declared). Two cases fail: /forms/fix?mode=other (no render has that query), and
+// /forms/chain (only an action opens it, so no render reaches it). So a list that the runner drops
 // does not pass.
 func TestHarnessParityRoutesLab(t *testing.T) {
 	bin, root := harnessBinary(t)
@@ -519,7 +521,9 @@ func TestHarnessParityRoutesLab(t *testing.T) {
 	}{
 		{"home plugin", func(*testing.T) string { return filepath.Join(root, "plugins", "lazyrex") }, true, ""},
 		{"rendered route", func(t *testing.T) string { return harness(t, false, "/forms/fix") }, true, ""},
-		{"route with a query", func(t *testing.T) string { return harness(t, true, "/forms/fix") }, true, ""},
+		{"route with a query", func(t *testing.T) string { return harness(t, true, "/forms/fix", "/forms/fix?mode=q") }, true, ""},
+		{"other query", func(t *testing.T) string { return harness(t, true, "/forms/fix", "/forms/fix?mode=other") }, false,
+			"unchecked contextual route (the fixture did not render it): /forms/fix?mode=other"},
 		{"unrendered route", func(t *testing.T) string { return harness(t, false, "/forms/fix", "/forms/chain") }, false,
 			"unchecked contextual route (the fixture did not render it): /forms/chain"},
 	}
