@@ -236,6 +236,7 @@ type testOpts struct {
 	timeout                               time.Duration
 	m                                     *manifest
 	restartFn                             func(ctx context.Context, l *lab, mode string) error // tests only; default restartHub
+	serverArgs                            []string                                             // tests only: more lab server options
 }
 
 // fileResult is the outcome of one test file.
@@ -446,7 +447,7 @@ func (o *testOpts) startLab(ctx context.Context) (*lab, error) {
 			return l, err
 		}
 	}
-	return l, l.startServer(ctx, o.self, o.rexBin)
+	return l, l.startServer(ctx, o.self, o.rexBin, o.serverArgs...)
 }
 
 // waitRunner reads the runner's result lines until the runner exits, or until fctx ends. Every

@@ -51,7 +51,7 @@ func newNonce() string {
 // startServer starts the Rex server of the lab in l.dir (rex.sock, state, blocks), with l.env and
 // the working directory l.home(), under its keeper (self in the keeper role, labkeeper.go), writes
 // the lab proof, and waits until the server answers (10 s).
-func (l *lab) startServer(ctx context.Context, self, rexBin string) error {
+func (l *lab) startServer(ctx context.Context, self, rexBin string, args ...string) error {
 	// Lab panes inherit REX_SERVER from the server. Without it, a hook in a lab pane uses Rex's
 	// default endpoint, which is the user's real server (hook.go; the hub lead, 2026-10-22). The
 	// keeper gives the server l.env without the keeper's own variables (keeperEnv).
@@ -63,8 +63,8 @@ func (l *lab) startServer(ctx context.Context, self, rexBin string) error {
 		return err
 	}
 	defer logf.Close() // the started keeper has its own copy
-	l.srv, err = startKept(self, "lab server", []string{rexBin, "-v", "server", "run", "--listen", l.server,
-		"--state-dir", filepath.Join(l.dir, "state"), "--block-dir", filepath.Join(l.dir, "blocks"), "--config", "/dev/null"},
+	l.srv, err = startKept(self, "lab server", append([]string{rexBin, "-v", "server", "run", "--listen", l.server,
+		"--state-dir", filepath.Join(l.dir, "state"), "--block-dir", filepath.Join(l.dir, "blocks"), "--config", "/dev/null"}, args...),
 		l.env, l.home(), logf, logf)
 	if err != nil {
 		return err
