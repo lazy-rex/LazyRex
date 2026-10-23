@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -21,26 +20,6 @@ func messagingLab(t *testing.T, dir, root string, serverArgs ...string) *startLa
 	}
 	s.args = append(s.args, "-sdk", filepath.Join(root, "sdk", "lua"))
 	return s
-}
-
-// messagingFederates reports whether a Lua file at the top of the Messaging checkout dir registers
-// the peer.receive listener.
-func messagingFederates(t *testing.T, dir string) bool {
-	t.Helper()
-	files, err := filepath.Glob(filepath.Join(dir, "*.lua"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("MESSAGING_DIR %s: no Lua files (%v)", dir, err)
-	}
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(b), "app.on('peer.receive'") || strings.Contains(string(b), `app.on("peer.receive"`) {
-			return true
-		}
-	}
-	return false
 }
 
 // agentID is the agent ID that hub.agents.resolve gives for name on s's hub.
@@ -93,17 +72,11 @@ func (s *startLab) agentRead(agent, what string) map[string]any {
 // TCP, as in TestPeerHubsLab). Agent x on a sends to y@b; y reads it from x@a and replies; x reads
 // the reply from y@b with reply_to the first message. Then both hubs' outboxes and both Messaging
 // peer_outbox tables are empty. MESSAGING_DIR names the Messaging plugin checkout (skipped without
-// it). TEMPORARY (lead-pml-skip): a Messaging checkout without a peer.receive listener (Messaging
-// before federation) is skipped, as its hub would retry each envelope and the test could only time
-// out. The check reads file text, not what the plugin declares; remove it when Messaging main has
-// federation, so that a Messaging without the listener fails this test.
+// it). A Messaging without the peer.receive listener fails: y never gets the message.
 func TestPeerMessagingLab(t *testing.T) {
 	dir := os.Getenv("MESSAGING_DIR")
 	if dir == "" {
 		t.Skip("set MESSAGING_DIR to a Messaging plugin checkout")
-	}
-	if !messagingFederates(t, dir) {
-		t.Skipf("MESSAGING_DIR %s has no app.on('peer.receive') listener: Messaging without federation; remove this skip when Messaging main has federation (lead-pml-skip)", dir)
 	}
 	_, root := harnessBinary(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
