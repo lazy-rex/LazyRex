@@ -238,6 +238,18 @@ local function settings_text(e)
 end
 local function settings_id(render_id, a, w) return 'settings/' .. digest16(render_id, a .. '\0' .. w) end
 local function start_id(render_id, x) return 'start/' .. digest16(render_id, x.source .. '\0' .. (x.commit or '') .. '\0' .. (x.digest or '')) end
+-- An offer (hub.plugins "offered"): a GitHub source that the plugins_from peer pins and this hub
+-- does not have. offer_id binds the complete offer, a fixed field list (docs/hub.md "Plugin sync").
+local function offer_of(list, source)
+  for _, o in ipairs(list.offered or {}) do if o.source == source then return o end end
+end
+local function offer_id(render_id, o)
+  local p = o.pin
+  return 'offer/' .. digest16(render_id, table.concat({o.peer, o.id, o.source, p.ref, p.ref_kind, p.tag or '', p.commit, p.digest}, '\0'))
+end
+local function offer_pin_text(p)
+  return p.ref .. ' (' .. p.ref_kind .. ((p.tag or '') ~= '' and (', release ' .. p.tag) or '') .. ')'
+end
 local function lines_of(text)
   local out = {}
   for line in (text .. '\n'):gmatch('(.-)\r?\n') do if line ~= '' then out[#out + 1] = line end end
@@ -264,6 +276,12 @@ local function plugins_panel(render_id)
     items[#items + 1] = {id = 'kept:' .. k.name, label = k.name, detail = 'Kept record with no entry · ' .. (k.state or 'unknown') .. ((k.error or '') ~= '' and (' · ' .. k.error) or '')}
   end
   nodes[#nodes + 1] = {id = 'entries', type = 'list', label = 'Plugins', items = items}
+  local offered = {}
+  for _, o in ipairs(list.offered or {}) do
+    offered[#offered + 1] = {id = o.source, label = o.id ~= '' and o.id or o.source, action = action('review', 'Review…', navigation),
+      detail = 'Offered by ' .. o.peer .. ' · ' .. o.source .. ' · pinned by the peer at ' .. offer_pin_text(o.pin) .. ' · ' .. o.pin.commit:sub(1, 12)}
+  end
+  if #offered > 0 then nodes[#nodes + 1] = {id = 'offered', type = 'list', label = 'Offered by a peer hub', items = offered} end
   nodes[#nodes + 1] = button('add', 'add', 'Add plugin…', navigation)
   return {title = 'Plugins', nodes = nodes}
 end
@@ -300,7 +318,32 @@ local function entry_tree(key, render_id, view_id)
   return {title = e.name or key, menu = true, nodes = nodes}
 end
 
+-- offer_tree confirms the add of an offer: the form names the complete offer, and its Add binds it.
+local function offer_tree(source, render_id, view_id)
+  local list = read(render_id, 'hub.plugins')
+  local o = offer_of(list, source)
+  local nodes = {}
+  if not o then
+    nodes[1] = widget('gone', 'This offer is no longer listed.')
+  elseif o.id == '' then
+    nodes[1] = widget('no_id', o.peer .. ' has ' .. o.source .. ' in its config file, so it offers no id. Add it with Add plugin….')
+  else
+    local used
+    for _, e in ipairs(list.entries or {}) do if e.managed == o.id then used = e end end
+    if used then
+      nodes[1] = widget('id_used', 'This hub already has managed:' .. o.id .. ' (' .. used.source .. '), so the offer cannot be added with its id. Remove that entry first.')
+    else
+      nodes[1] = widget(offer_id(render_id, o), 'Add managed:' .. o.id .. ' from ' .. o.peer .. '? Source ' .. o.source .. ', pinned by the peer at ' .. offer_pin_text(o.pin) ..
+        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs code from GitHub on this computer.', action('add', 'Add', confirmation))
+    end
+  end
+  nodes[#nodes + 1] = progress_node(render_id, view_id)
+  nodes[#nodes + 1] = cancel_node('Close')
+  return {title = 'Add Offered Plugin', nodes = nodes}
+end
+
 local function confirm_tree(what, key, render_id, view_id)
+  if what == 'offer' then return offer_tree(key, render_id, view_id) end
   local e = entry_of(read(render_id, 'hub.plugins'), key)
   if not e then return gone('Confirm', render_id, view_id) end
   local nodes = {}
@@ -381,6 +424,11 @@ local function manager_action(args, input)
   local values = type(input.values) == 'table' and input.values or {}
   if route == '/panels/plugins' then
     if args.node_id == 'add' then return {form = '/forms/plugins/add'} end
+    if args.node_id == 'offered' then
+      local o = offer_of(hub('hub.plugins'), input.item_id)
+      if not o then fail('not_found', 'The selected offer is no longer available. Refresh the view.') end
+      return {form = '/forms/plugins/confirm/offer/' .. hex(o.source)}
+    end
     local e = entry_of(hub('hub.plugins'), input.item_id)
     if args.node_id ~= 'entries' or not e then fail('not_found', 'The selected item is no longer available. Refresh the view.') end
     return {form = '/forms/plugins/entry/' .. hex(entry_key(e))}
@@ -404,6 +452,13 @@ local function manager_action(args, input)
     if type(values.version) ~= 'string' or values.version == '' then fail('invalid_input', 'Select a version') end
     local id = type(values.id) == 'string' and values.id ~= '' and values.id or nil
     return {plugins = {op = 'add', input = {source = key .. '@' .. values.version, id = id}}}
+  end
+  if kind == 'confirm/offer' then
+    -- The press reads the offer again: another or a withdrawn offer sends no op. The hub compares
+    -- the complete offer again at admission (target).
+    local o = offer_of(hub('hub.plugins'), key)
+    if not o or o.id == '' or offer_id(nil, o) ~= args.node_id then fail('conflict', 'The offered code changed since it was shown. Read the new text, then add again.') end
+    return {plugins = {op = 'add', input = {source = o.source, id = o.id}, target = o}}
   end
   local list = hub('hub.plugins')
   local e = entry_of(list, key)
@@ -568,7 +623,7 @@ end
 local routes = {['/panels/agents'] = true, ['/forms/stop'] = true, ['/forms/launch'] = true,
   ['/panels/plugins'] = true, ['/forms/plugins/add'] = true}
 local manager_routes = {'^/forms/plugins/entry/%x+$', '^/forms/plugins/add/%x+$', '^/forms/plugins/update/%x+$',
-  '^/forms/plugins/confirm/start/%x+$', '^/forms/plugins/confirm/remove/%x+$', '^/panels/plugins/log/%x+$'}
+  '^/forms/plugins/confirm/start/%x+$', '^/forms/plugins/confirm/remove/%x+$', '^/forms/plugins/confirm/offer/%x+$', '^/panels/plugins/log/%x+$'}
 local function known_route(route)
   if type(route) ~= 'string' then return false end
   if routes[route] or route:match('^/forms/worker/.+$') then return true end
