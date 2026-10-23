@@ -335,3 +335,33 @@ func TestPluginOpUnpinCrashAfterStore(t *testing.T) {
 		t.Fatalf("%d unpinning attempts, %v", n, lockOld(t, h, op.ID))
 	}
 }
+
+// A crash before the rename, and then the lock does not read (here, a directory): the replay keeps
+// the key, and it first settles the open attempt (no sent_at: not_applied), so no op attempt stays
+// open after unpinning.
+func TestPluginOpUnpinUnreadableSettles(t *testing.T) {
+	h, _, op := unpinUpdate(t, nil)
+	h.pops.fault = func(p string) bool { return p == "plugin-op-before-lock-old-rename" }
+	if err := h.runOp(context.Background(), op); !errors.Is(err, errOpCrash) {
+		t.Fatalf("the crash: %v", err)
+	}
+	h.pops.fault = nil
+	lockFile := lockPath(h.cfg.path, h.cfg.Lock)
+	if err := os.Remove(lockFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(lockFile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	op = opsOf(t, h, op.ID)
+	if err := h.runOp(context.Background(), op); err != nil || op.Phase != "done" {
+		t.Fatalf("the replay: %+v %v", op, err)
+	}
+	if r := lockOld(t, h, op.ID); r["outcome"] != "kept" || !strings.Contains(r["reason"].(string), "does not read") {
+		t.Fatalf("the record %v", r)
+	}
+	var outcome, proof string
+	if err := h.db.QueryRow(`SELECT outcome, proof FROM plugin_op_attempts WHERE op_id = ? AND call = 'write:lock-old'`, op.ID).Scan(&outcome, &proof); err != nil || outcome == "" || !strings.HasPrefix(proof, "not_applied") {
+		t.Fatalf("the attempt: %q %q %v", outcome, proof, err)
+	}
+}
