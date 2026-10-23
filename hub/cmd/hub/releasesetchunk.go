@@ -102,6 +102,13 @@ func (h *rehearsal) chunkProbe(when, digest string) error {
 	if err := os.WriteFile(labCfg.managed, added, 0o600); err != nil {
 		return err
 	}
+	// The stop at the end of an earlier probe leaves the plugins row of sp with desired "stopped",
+	// and a reload keeps that desire. Then this probe starts sp explicitly.
+	stopped, err := h.chunkPluginStopped()
+	if err != nil {
+		restore()
+		return relFail("%s: %v", when, err)
+	}
 	var client string
 	reload := func(lr *releaser) error {
 		hub, err := lr.currentHub()
@@ -115,6 +122,15 @@ func (h *rehearsal) chunkProbe(when, digest string) error {
 	if err := h.withLab(reload); err != nil {
 		restore()
 		return relFail("%s: hub.plugins.reload with %s: %v", when, relChunkPlugin, err)
+	}
+	if stopped {
+		if err := h.withLab(func(lr *releaser) error {
+			_, err := lr.hubDo(client, "hub.admin.start", map[string]any{"plugin": relChunkPlugin})
+			return err
+		}); err != nil {
+			restore()
+			return relFail("%s: hub.admin.start %s after the reload: %v", when, relChunkPlugin, err)
+		}
 	}
 	inst, err := h.waitPluginState(relChunkPlugin, true)
 	if err != nil {
@@ -391,4 +407,19 @@ func (h *rehearsal) stopChunkPlugin(client string) (int, error) {
 		}
 	}
 	return pid, nil
+}
+
+// chunkPluginStopped tells whether the lab hub.db has a plugins row of sp with desired "stopped":
+// the trace of the stop at the end of an earlier probe.
+func (h *rehearsal) chunkPluginStopped() (bool, error) {
+	db, err := h.hubDB(true)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM plugins WHERE name = ? AND desired = 'stopped'", relChunkPlugin).Scan(&n); err != nil {
+		return false, relFail("the plugins row of %s: %v", relChunkPlugin, err)
+	}
+	return n > 0, nil
 }
