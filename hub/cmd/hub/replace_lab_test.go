@@ -68,7 +68,7 @@ func TestReplaceLab(t *testing.T) {
 	}
 	id, _ := r["instance_id"].(string)
 	run, _ := r["run"].(map[string]any)
-	if r["previous_instance"] != aRun.InstanceID || id == "" || id == aRun.InstanceID || run["source"] != "src/a" || run["dir"] != filepath.Join(s.src, "a") || run["commit"] != nil {
+	if r["previous_instance"] != aRun.InstanceID || id == "" || id == aRun.InstanceID || run["source"] != "src/a" || !s.snapshot(run["dir"]) || run["commit"] != nil {
 		t.Errorf("replace result: %v", r)
 	}
 	s.registeredAs("a", id)
