@@ -51,9 +51,6 @@ func newRenderID() string {
 func (h *Hub) openRenderID(plugin, client, viewID string, epoch int64) string {
 	id := newRenderID()
 	h.vs.mu.Lock()
-	if h.vs.renders == nil {
-		h.vs.renders = map[string]*openRender{}
-	}
 	h.vs.renders[id] = &openRender{plugin: plugin, client: client, viewID: viewID, epoch: epoch, tables: map[string]bool{}}
 	h.vs.mu.Unlock()
 	return id
@@ -82,9 +79,6 @@ func (vs *viewSvc) untrackLocked(plugin string) {
 // runs. A hub.sql.query with an open render ID of the same instance records its reads later
 // (renderRead); every other call makes the plugin's open renders untracked.
 func (h *Hub) renderCall(plugin, client, action string, args map[string]any) {
-	if h.vs == nil {
-		return
-	}
 	h.vs.mu.Lock()
 	defer h.vs.mu.Unlock()
 	if action == "hub.sql.query" {
@@ -167,7 +161,6 @@ func (h *Hub) markSQL(plugin string, marks []string) {
 		all = all || m == "*"
 	}
 	h.vs.mu.Lock()
-	h.vs.initLocked()
 	for _, st := range h.vs.views[plugin] {
 		if all || st.inFlight || st.tables == nil || readsAny(st.tables, marks) {
 			st.dirty |= causeCommit
