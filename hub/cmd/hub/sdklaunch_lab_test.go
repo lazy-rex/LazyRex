@@ -60,7 +60,10 @@ func TestPluginSDKLaunchLab(t *testing.T) {
 		t.Fatalf("the SDK plugin process has no main=%s", main)
 	}
 	plainSnap, _ := s.entry("plain")["dir"].(string)
-	if plainSnap == "" || argvHas(plain.ChildPID, "main="+filepath.Join(plainSnap, "main.lua")) {
+	if plainSnap == "" {
+		t.Fatal("hub.plugins gives no run dir for the entry of plain")
+	}
+	if argvHas(plain.ChildPID, "main="+filepath.Join(plainSnap, "main.lua")) {
 		t.Fatal("a plugin without sdk started through the launcher")
 	}
 }
