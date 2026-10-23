@@ -24,13 +24,3 @@ type lsplit struct {
 	Before    *lnode  `json:"before"`
 	After     *lnode  `json:"after"`
 }
-
-func (n *lnode) leaves(out []string) []string {
-	if n == nil {
-		return out
-	}
-	if n.Split != nil {
-		return n.Split.After.leaves(n.Split.Before.leaves(out))
-	}
-	return append(out, n.BlockID)
-}

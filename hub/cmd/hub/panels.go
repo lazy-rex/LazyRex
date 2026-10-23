@@ -638,11 +638,6 @@ func (h *Hub) skipReturn(ctx context.Context, r *slotRow, why string) error {
 	return nil
 }
 
-// slotDirect is a slotPane call without a test hook.
-func slotDirect(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
-	return h.rex.Call(ctx, method, args, out)
-}
-
 func (h *Hub) slotRefused(ctx context.Context, r *slotRow, cause error) error {
 	h.closeViewRow(ctx, r.New, "abandoned")
 	if err := h.setSlotState(ctx, r, "cancelled"); err != nil && !errors.Is(err, errSlotMoved) {
