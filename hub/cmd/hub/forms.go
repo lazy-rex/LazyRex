@@ -705,7 +705,13 @@ type viewEffects struct {
 }
 
 func (e viewEffects) any() bool {
-	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel || e.Reopen.set || e.plugins()
+	return e.endsForm() || e.plugins()
+}
+
+// endsForm reports whether the effects end the form that ran the action. A plugins op alone does
+// not: the form stays open and shows the progress of its op (hub.plugins.ops origin_view, C8).
+func (e viewEffects) endsForm() bool {
+	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel || e.Reopen.set
 }
 
 func (e viewEffects) plugins() bool {
@@ -891,8 +897,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 		if err := h.closeForm(ctx, viewID, "action"); err != nil {
 			return fail(err)
 		}
-	case isForm && !fc.Panel && e.any():
-		// The form ended: the panel it replaced takes its place again (panels.go).
+	case isForm && !fc.Panel && e.endsForm():
 		// The form ended. The panel it replaced takes its place again (panels.go); the replacement
 		// closes the form after the release, so a dirty form is not closed while the user decides.
 		if took, err := h.formEnded(ctx, viewID, fc, true, key); err != nil {
