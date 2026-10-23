@@ -46,11 +46,17 @@ func TestPluginSDKLaunchLab(t *testing.T) {
 	s.start()
 	sdk, _ := s.startRun("sdkp")
 	plain, _ := s.startRun("plain")
-	main, _ := filepath.EvalSymlinks(filepath.Join(s.src, "sdkp", "main.lua"))
-	if !argvHas(sdk.ChildPID, "main="+main) && !argvHas(sdk.ChildPID, "main="+filepath.Join(s.src, "sdkp", "main.lua")) {
+	// The run's main is in its local snapshot (localsnapshot.go).
+	snap, _ := s.entry("sdkp")["dir"].(string)
+	if !s.snapshot(snap) {
+		t.Fatalf("the run of sdkp is not a local snapshot: %q", snap)
+	}
+	main, _ := filepath.EvalSymlinks(filepath.Join(snap, "main.lua"))
+	if !argvHas(sdk.ChildPID, "main="+main) && !argvHas(sdk.ChildPID, "main="+filepath.Join(snap, "main.lua")) {
 		t.Fatalf("the SDK plugin process has no main=%s", main)
 	}
-	if argvHas(plain.ChildPID, "main="+filepath.Join(s.src, "plain", "main.lua")) {
+	plainSnap, _ := s.entry("plain")["dir"].(string)
+	if plainSnap == "" || argvHas(plain.ChildPID, "main="+filepath.Join(plainSnap, "main.lua")) {
 		t.Fatal("a plugin without sdk started through the launcher")
 	}
 }
