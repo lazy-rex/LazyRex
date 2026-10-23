@@ -111,19 +111,45 @@ func TestSpawnAddressBindsFirstReport(t *testing.T) {
 	}
 }
 
-// A spawn that a pane's current identity adopts later binds at the next report of that same
-// identity: the unchanged path also binds.
+// A pending spawn that the next report of a pane's current identity adopts binds at that report:
+// the unchanged path also binds.
 func TestSpawnAddressBindsUnchangedReport(t *testing.T) {
 	h, label := spawnAddrHub(t)
+	mustExec(t, h, `UPDATE spawns SET status = 'sending', window_id = '', block_id = '' WHERE spawn_id = 'spawn-test'`)
 	label.Store("")
-	reportAs(t, h, "c1", "startup") // the pane has no spawn label yet
-	label.Store("lazyrex-spawn:spawn-test")
+	reportAs(t, h, "c1", "startup") // the pane has no spawn label yet: no spawn to adopt
 	if got := boundIdentity(t, h); got != "" {
-		t.Fatalf("before the second report: identity %q, want none", got)
+		t.Fatalf("before the adoption: identity %q, want none", got)
 	}
-	reportAs(t, h, "c1", "resume")
+	label.Store("lazyrex-spawn:spawn-test")
+	if r := reportAs(t, h, "c1", "resume"); r["agent_id"] != "spawn:spawn-test" {
+		t.Fatalf("the adopting report's agent_id: %v", r["agent_id"])
+	}
+	s, err := h.spawnByID(context.Background(), "spawn-test")
+	if err != nil || s.Status != "open" || s.Block != "b" {
+		t.Fatalf("the spawn after the adoption: %+v %v", s, err)
+	}
 	if got := boundIdentity(t, h); got != "claude:c1" {
 		t.Fatalf("after the unchanged report: identity %q, want claude:c1", got)
+	}
+}
+
+// A spawn that is already open in the pane binds at the first report also when the pane has no
+// spawn label: its recorded block names it (codex-24's review). A later /clear with the label
+// back does not rebind.
+func TestSpawnAddressBindsOpenSpawnWithoutLabel(t *testing.T) {
+	h, label := spawnAddrHub(t)
+	label.Store("")
+	if r := reportAs(t, h, "c1", "startup"); r["agent_id"] != "spawn:spawn-test" {
+		t.Fatalf("the report's agent_id: %v", r["agent_id"])
+	}
+	if got := boundIdentity(t, h); got != "claude:c1" {
+		t.Fatalf("after the first report: identity %q, want claude:c1", got)
+	}
+	label.Store("lazyrex-spawn:spawn-test")
+	reportAs(t, h, "c2", "clear")
+	if got := boundIdentity(t, h); got != "claude:c1" {
+		t.Fatalf("after a /clear: identity %q, want claude:c1", got)
 	}
 }
 
@@ -210,4 +236,42 @@ func listedIDs(h *Hub, all bool) []string {
 		ids = append(ids, e.(map[string]any)["id"].(string))
 	}
 	return ids
+}
+
+// A load whose read is older than a change of the addresses reads again: an admission in the gap
+// stays a recipient, and a newer load's state (a bind) is not replaced by the older read
+// (codex-24's review).
+func TestSpawnAddressLoadKeepsConcurrentChanges(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.spawnAddrsLoad(ctx); err != nil {
+		t.Fatal(err)
+	}
+	old := spawnAddrsLoadGap
+	t.Cleanup(func() { spawnAddrsLoadGap = old })
+	once := true
+	spawnAddrsLoadGap = func() {
+		if !once {
+			return
+		}
+		once = false
+		mustExec(t, h, `INSERT INTO spawns (spawn_id,caller,key,request,profile,title,agent_id,parent,status,created)
+			VALUES ('spawn-new','user','k-new','{}','agent','Agent 2','spawn:spawn-new','user','sending','x')`)
+		h.spawnAdmitted(&spawnRow{ID: "spawn-new", Agent: "spawn:spawn-new", Title: "Agent 2"}, Profile{ID: "agent"})
+		mustExec(t, h, `UPDATE spawns SET identity = 'claude:x' WHERE spawn_id = 'spawn-test'`)
+		if err := h.spawnAddrsLoad(ctx); err != nil { // a newer load in the gap
+			t.Error(err)
+		}
+	}
+	if err := h.spawnAddrsLoad(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.roster()["spawn:spawn-new"] {
+		t.Error("the address admitted in the gap left the roster")
+	}
+	if sa := h.spawnAddrs["spawn:spawn-test"]; sa == nil || sa.identity != "claude:x" {
+		t.Errorf("the older read replaced the newer bind: %+v", sa)
+	}
 }
