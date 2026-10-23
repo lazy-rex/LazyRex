@@ -55,12 +55,12 @@ The renderer decides its mode once per process (thread view v1.2, item 1; view/m
 
 - Neutral: before the first tree with content. Loading and error nodes do not decide.
   The renderer draws inline and prints nothing. The first frame is "Connecting to the hub…".
-- Thread: the first tree with a history node, no list or form node, and a layout other than `transcript`.
+- Thread: the first tree with a history node and no list or form node.
   The renderer stays on the primary screen for the life of the process, without mouse reporting.
   The terminal owns the scrollback and the pointer, so Page Up, Page Down, Ctrl+T and mouse events do nothing.
   This applies to every inline frame: neutral, thread, and the wait before alt-on.
-- Alt: the first tree with any other content, a history node beside a list or form, or a paired composer
-  (layout `transcript`). The renderer uses the alt screen as before.
+- Alt: the first tree with any other content, or a history node beside a list or form.
+  The renderer uses the alt screen as before.
 
 No route decides the mode. A form route is neutral until its first tree.
 
@@ -85,7 +85,6 @@ This applies to thread mode and alt mode, because the mode is not decided at sta
 A renderer restarted in the same pane (a reload, or a respawn after an output failure) would otherwise print the thread history a second time below the old copy.
 In a new pane, the clear removes nothing.
 If the clear's write fails, the process exits with status 1 before it starts Bubble Tea or connects to the hub.
-The `-transcript` printer keeps its own clear at its first rebuild.
 
 ### Printed messages (thread mode)
 
@@ -488,17 +487,6 @@ Observed on an Apple M2 Max, 2026-10-18: the 84-message synthetic fixture matche
 `BenchmarkLargeConversationMotionFrame` took a median 10.950 µs before this change and 11.060 µs after it.
 Both runs used 1577 bytes and 18 allocations per event. Unchanged select motion took about 18 ns with zero allocations.
 These benchmarks measure model updates and frames. They do not measure terminal input latency.
-
-Full history in the transcript pane: a view tree from a Lua plugin must fit in one 64 KiB Rex
-control message (rex-protocol.md, "Rex Lua runtime"). The messaging plugin sends the newest
-messages within that budget and sets `has_more` when older ones exist. The transcript pane then
-calls `hub.view.history {before}` with the ID of its oldest message, page by page, until
-`has_more` is false. It prints the whole thread once, into native scrollback. Later snapshots
-append to the merged thread. When a snapshot's oldest message is unknown (a burst of messages),
-the pane fetches the pages again. A failed fetch leaves the newest messages and the older marker.
-`hub.view.history` answers `{status: "pending"}` until the page is ready: a hub handler never
-waits for a plugin. The pane asks again every 100 ms, for at most 20 s. Lab (2026-10-18): a
-287-message thread loaded in two pages (105 and 78 messages) within one second.
 
 A `menu` node has a label and an action. The renderer shows no button.
 Ctrl+O or right-click invokes the first menu's action. The footer shows `Ctrl+O menu`.

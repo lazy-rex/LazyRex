@@ -523,17 +523,6 @@ func TestPrintModes(t *testing.T) {
 			t.Fatalf("no alt screen: %q", r.term.String())
 		}
 	})
-	t.Run("v: a paired tree decides alt", func(t *testing.T) {
-		r := startPrint(t, &testTerm{})
-		paired := threadTree(msgs(1))
-		paired.Layout = "transcript"
-		r.p.Send(paired)
-		s := r.wait("alt", func(s probeState) bool { return s.mode == viewAlt })
-		r.stop()
-		if len(s.printed) != 0 {
-			t.Fatalf("the paired composer printed: %+v", s)
-		}
-	})
 }
 
 const (

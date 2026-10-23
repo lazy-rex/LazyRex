@@ -13,10 +13,10 @@ import (
 // The renderer decides its mode once per process (thread view v1.2, item 1):
 //   - neutral: before the first tree with content. Loading and error nodes do not decide. The
 //     renderer draws inline and prints nothing;
-//   - thread: the first tree with a history node, no list or form node, and a layout other than
-//     "transcript". The primary screen for the life of the process;
-//   - alt: the first tree with any other content, a history node beside a list or form, or a
-//     paired composer (layout "transcript"). The alt screen, as before v1.2.
+//   - thread: the first tree with a history node and no list or form node. The primary screen for
+//     the life of the process;
+//   - alt: the first tree with any other content, or a history node beside a list or form. The alt
+//     screen, as before v1.2.
 type viewMode int
 
 const (
@@ -62,8 +62,6 @@ func decideViewMode(s Snapshot) (viewMode, string) {
 	switch {
 	case history && listOrForm:
 		return viewAlt, noteHistoryBesideListForm
-	case history && s.Layout == "transcript":
-		return viewAlt, ""
 	case history:
 		return viewThread, ""
 	case content:
@@ -93,7 +91,7 @@ func (m *model) decide() {
 		if mode != viewNeutral {
 			m.client.decideSeen(mode == viewThread) // seen stays closed until the decision
 		}
-	} else if m.mode == viewAlt && treeHasHistory(m.snapshot) && m.snapshot.Layout != "transcript" {
+	} else if m.mode == viewAlt && treeHasHistory(m.snapshot) {
 		note = noteHistoryInAlt
 	}
 	if note != "" && !m.defectNoted {

@@ -32,13 +32,12 @@ const (
 	causeAttach
 	causeSnapshot
 	causeStatus
-	causeLayout
 	causeChanged
 	causeOperation
 	causeTest
 )
 
-var causeNames = []string{"commit", "invalidate", "register", "attach", "snapshot", "status", "layout", "changed", "operation", "test"}
+var causeNames = []string{"commit", "invalidate", "register", "attach", "snapshot", "status", "changed", "operation", "test"}
 
 // changeNames are the names that changed() uses, and that deps.changes can list.
 var changeNames = []string{"agents", "plugins", "workers", "profiles"}
