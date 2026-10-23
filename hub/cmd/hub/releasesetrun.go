@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // relSetState is the set of one rehearsal and what it found.
@@ -477,7 +479,7 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 			cerr = h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil)
 		}
 		if cerr == nil && tv != "" {
-			cerr = waitClientGone(c, tv, 10*time.Second)
+			cerr = waitClientGone(inspectClient(c, tv), tv, 10*time.Second)
 		}
 		if cerr != nil && err == nil {
 			err = relFail("closing the source pane: %v", cerr)
@@ -606,25 +608,41 @@ func (h *rehearsal) viewOperation(ctx context.Context, c *helperConn, tv string,
 	}
 }
 
-// waitClientGone waits until the client is not connected (client.inspect).
-func waitClientGone(c *helperConn, client string, wait time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
-	defer cancel()
-	state := ""
-	for {
+// inspectClient gives the connection state of a client (client.inspect).
+func inspectClient(c *helperConn, client string) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
 		var ins struct {
 			Client struct {
 				ConnectionState string `json:"connection_state"`
 			} `json:"client"`
 		}
-		if err := c.r.Call(ctx, "client.inspect", map[string]any{"client_id": client}, &ins); err != nil {
-			state = err.Error()
-		} else if state = ins.Client.ConnectionState; state != "connected" {
+		err := c.r.Call(ctx, "client.inspect", map[string]any{"client_id": client}, &ins)
+		return ins.Client.ConnectionState, err
+	}
+}
+
+// waitClientGone waits until the client is not connected. Rex forgets a client after its
+// disconnect: client.inspect then refuses with not_found, which also counts as gone.
+func waitClientGone(inspect func(context.Context) (string, error), client string, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	last := ""
+	for {
+		state, err := inspect(ctx)
+		var re *rex.RexError
+		switch {
+		case errors.As(err, &re) && re.Code == "not_found":
 			return nil
+		case err != nil:
+			last = err.Error()
+		case state != "connected":
+			return nil
+		default:
+			last = state
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("the renderer %s is still connected after %s (%s)", client, wait, state)
+			return fmt.Errorf("the renderer %s did not disconnect in %s (the last state: %s)", client, wait, last)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

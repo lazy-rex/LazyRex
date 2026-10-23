@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // The coordinator ruling c49-kit-option-a and its review (codex-26): an until item repeats the same
@@ -470,5 +472,38 @@ func TestReleaseSetViewWaitsForAction(t *testing.T) {
 	if _, err := waitViewAction(ctx3, wrong, "/forms/start-accessory", "dir_choices", "default"); err == nil ||
 		!strings.Contains(err.Error(), `at "/other", not /forms/start-accessory`) {
 		t.Fatalf("a wrong route: %v", err)
+	}
+}
+
+// LAB15: after its disconnect, Rex forgets the renderer client, and client.inspect refuses with
+// not_found. That is gone, as a state other than connected is. A client that stays connected, or an
+// inspect that keeps failing in another way, fails with the last state.
+func TestReleaseSetWaitClientGone(t *testing.T) {
+	seq := func(states ...any) func(context.Context) (string, error) {
+		i := 0
+		return func(context.Context) (string, error) {
+			s := states[min(i, len(states)-1)]
+			i++
+			if err, ok := s.(error); ok {
+				return "", err
+			}
+			return s.(string), nil
+		}
+	}
+	notFound := &rex.RexError{Code: "not_found", Message: "client client:x not found"}
+	for name, inspect := range map[string]func(context.Context) (string, error){
+		"not_found": seq("connected", notFound), "disconnected": seq("connected", "connected", "disconnected"),
+	} {
+		if err := waitClientGone(inspect, "client:x", 2*time.Second); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if err := waitClientGone(seq("connected"), "client:x", 300*time.Millisecond); err == nil ||
+		!strings.Contains(err.Error(), "did not disconnect") || !strings.Contains(err.Error(), "the last state: connected") {
+		t.Fatalf("still connected: %v", err)
+	}
+	other := &rex.RexError{Code: "unavailable", Message: "the server is busy"}
+	if err := waitClientGone(seq(other), "client:x", 300*time.Millisecond); err == nil || !strings.Contains(err.Error(), "the server is busy") {
+		t.Fatalf("another error: %v", err)
 	}
 }
