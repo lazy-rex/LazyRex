@@ -63,6 +63,17 @@ func newHomeLab(t *testing.T) *homeLab {
 	h.rex, h.cfg.Server = r, l.server
 	h.selfClosed = map[string]bool{}
 	h.vs = newViewSvc() // closeViewRow forgets the view's render state
+	// An inert worker channel: a kick (navigation focus, layout, status) is recorded, and no view
+	// worker runs. This fixture has no view_ops schema, and nothing stops a worker before the DB
+	// closes. The cleanup checks that no other worker started.
+	h.vs.workers["formprobe"] = make(chan struct{}, 1)
+	t.Cleanup(func() {
+		h.vs.mu.Lock()
+		defer h.vs.mu.Unlock()
+		if len(h.vs.workers) != 1 {
+			t.Errorf("view workers %v, want only the inert formprobe channel", h.vs.workers)
+		}
+	})
 	view := filepath.Join(t.TempDir(), "view.sh")
 	os.WriteFile(view, []byte("#!/bin/sh\nwhile :; do sleep 600; done\n"), 0o755) // no exec: the shell keeps the argv with the view ID
 	h.cfg.View = view
@@ -398,6 +409,13 @@ func TestHomeTabLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.until("the navigation focuses the home tab", 20*time.Second, func() bool { return l.view(H).Active == v2.Window })
+	vs := l.h.vs
+	vs.mu.Lock()
+	seen := vs.seen["formprobe"]["/"]
+	vs.mu.Unlock()
+	if seen != "focus" {
+		t.Fatalf("the navigation queued view.seen %q, want focus", seen)
+	}
 
 	// 4. Dropping the home moves the tab to the app session; the view in H goes. The view in H
 	// retires (retireLegacy): a real renderer gets view.retire and exits; this one never attaches,
@@ -463,8 +481,9 @@ func TestHomeTabLab(t *testing.T) {
 	// 7. In the replacement session the tab is at home: a renderer exit is a crash, not a legacy
 	// retirement; a user close is a user close; the revision rules hold there.
 	l.call("session.attach", map[string]any{"session_id": v6.Session, "event_scope": "session"})
-	// The exit event reaches the hub before any pass, as it does in a running hub: a pass first
-	// would close the row as "renderer exited unseen" and count no crash.
+	// This case exercises event-first crash classification: the test feeds the exit event before
+	// any pass. A running hub does not guarantee that order; a pass first closes the row as
+	// "renderer exited unseen" and counts no crash (the Hub UX fix lead-unseen-crash).
 	l.kill(v6.ID)
 	waitFor(t, "Rex's child_exited of the renderer", 10*time.Second, func() bool { return l.childExited(v6.Block) })
 	l.drain()
