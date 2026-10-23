@@ -13,9 +13,14 @@ import (
 )
 
 // hubCall makes a hub call of the plugin instance client through dispatch, with the render ID id
-// ("": no render argument).
-func hubCall(h *Hub, client, action, id string) error {
+// ("": no render argument) and the other arguments of extra.
+func hubCall(h *Hub, client, action, id string, extra ...map[string]any) error {
 	args := map[string]any{}
+	for _, e := range extra {
+		for k, v := range e {
+			args[k] = v
+		}
+	}
 	if id != "" {
 		args["render"] = id
 	}
@@ -246,5 +251,50 @@ func TestCoveredReadsMatchSDK(t *testing.T) {
 	slices.Sort(hub)
 	if !slices.Equal(sdk, hub) {
 		t.Errorf("SDK COVERED_READS %v, hub coveredReads %v", sdk, hub)
+	}
+}
+
+// Each covered action, called with success in a render, installs exactly its change names: a
+// changed() of each name marks the view although deps.changes is empty, another name does not, and
+// a commit to a table does not.
+func TestCoveredReadEachAction(t *testing.T) {
+	for _, c := range []struct {
+		action string
+		args   map[string]any
+		names  []string
+	}{
+		{"hub.agents", nil, []string{"agents"}},
+		{"hub.agents.resolve", map[string]any{"to": "a1"}, []string{"agents"}},
+		{"hub.workers", nil, []string{"workers"}},
+		{"hub.profiles", nil, []string{"profiles", "workers"}},
+	} {
+		h := renderHub(t)
+		if _, err := h.db.Exec(workersSchema); err != nil {
+			t.Fatal(err)
+		}
+		h.agents = map[string]*Agent{"a1": {ID: "a1"}}
+		markAll(h)
+		renderWith(t, h, map[string]renderStep{"v1": {hub: []string{c.action}, hubArgs: c.args, deps: map[string]any{"changes": []any{}}}})
+		tables, changes := viewSets(h, "v1")
+		var got []string
+		for n := range changes {
+			got = append(got, n)
+		}
+		slices.Sort(got)
+		if tables == nil || len(tables) != 0 || !slices.Equal(got, c.names) {
+			t.Errorf("%s: tables %v, changes %v, want names %v", c.action, tables, got, c.names)
+			continue
+		}
+		marked(h, "v1", ^renderCause(0))
+		h.markSQL("p", []string{"t"})
+		if marked(h, "v1", causeCommit) {
+			t.Errorf("%s: a commit to t marked the view", c.action)
+		}
+		for _, n := range changeNames {
+			h.markChanged("p", n)
+			if got, want := marked(h, "v1", causeChanged), slices.Contains(c.names, n); got != want {
+				t.Errorf("%s: changed(%s) marked %v, want %v", c.action, n, got, want)
+			}
+		}
 	}
 }

@@ -236,10 +236,11 @@ func renderHub(t *testing.T) *Hub {
 // tables; nil: an untokened read), the refresh value of the reply, and an error.
 type renderStep struct {
 	reads    []map[string]bool
-	failRead bool     // after the reads, a tokened query that fails before it runs
-	hub      []string // after the reads, covered hub reads with the render ID, through dispatch
-	deps     any      // the deps field of the reply; nil: no field
-	refresh  any      // nil: no field
+	failRead bool           // after the reads, a tokened query that fails before it runs
+	hub      []string       // after the reads, covered hub reads with the render ID, through dispatch
+	hubArgs  map[string]any // the other arguments of each hub read
+	deps     any            // the deps field of the reply; nil: no field
+	refresh  any            // nil: no field
 	err      error
 	during   func() // runs after the reads, before the reply
 }
@@ -263,7 +264,9 @@ func renderWith(t *testing.T, h *Hub, steps map[string]renderStep) {
 			h.renderRead(plugin, "c1", id, nil, false)
 		}
 		for _, action := range s.hub {
-			hubCall(h, "c1", action, id)
+			if err := hubCall(h, "c1", action, id, s.hubArgs); err != nil {
+				t.Logf("%s: %v", action, err)
+			}
 		}
 		if s.during != nil {
 			s.during()
