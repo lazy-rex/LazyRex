@@ -106,3 +106,21 @@ func TestIdentityReportRefusesSourceMCP(t *testing.T) {
 		t.Fatalf("source mcp: %v", err)
 	}
 }
+
+// A pane identity change is a worker change too: hub.workers shows each open agent worker's pane
+// identity (workerIdentity). The process exit clears the identity, and hub.changed carries both
+// names.
+func TestIdentityChangeIsAWorkersChange(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.workersSchemaStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.db.Exec(`UPDATE spawns SET status = 'open', block_id = 'block:1', session_id = 'session:1' WHERE spawn_id = 'spawn-test'`)
+	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:1', 'session:1', 0, '', 'claude', 'claude:c1')`)
+	h.db.Exec(`INSERT INTO identities VALUES ('claude:c1', 'claude', 'c1', 'current', 'block:1', '', '', 'x', 'x')`)
+	h.idents = map[string]*Agent{}
+	wait := changedNames(t, h)
+	h.identityChildExited(ctx, "block:1")
+	wait("agents", "workers")
+}
