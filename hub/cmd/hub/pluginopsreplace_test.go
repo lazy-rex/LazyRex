@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -290,5 +291,73 @@ func TestPluginOpUpdateCaseA(t *testing.T) {
 		if strings.HasPrefix(s, "hub.admin.replace ") && !strings.Contains(s, `"commit":"`+pin.Commit+`"`) {
 			t.Fatalf("the replace does not name v2: %s", s)
 		}
+	}
+}
+
+// Step 4 plan r2 B, case B, with the hub lead's ruling (lead-caseb): v1.0.0 and v1.1.0 name one
+// commit, and the entry is @latest at v1.1.0. The update to v1.0.0 writes the source @v1.0.0 and
+// that key's pin with its tag metadata; the @latest pin stays. A run belongs to its entry, so the
+// instance of @latest is replaced: the new run is @v1.0.0 with the same commit and digest, and the
+// end text says so.
+func TestPluginOpUpdateCaseB(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	r.commit(map[string]string{"lazyrex.json": manifestJSON("notes"), "main.lua": "return 1\n"})
+	r.git("tag", "v1.0.0")
+	r.git("tag", "v1.1.0")
+	h, rec := fetchTestHubCalls(t, r)
+	const latest, target = "github:acme/notes@latest", "github:acme/notes@v1.0.0"
+	seed := lockedAdd(t, h, "seed", latest)
+	var p lockEntry
+	json.Unmarshal([]byte(seed.Pin), &p)
+	if p.RefKind != "latest" || p.Tag != "v1.1.0" {
+		t.Fatalf("the @latest pin: %+v", p)
+	}
+	os.WriteFile(h.cfg.managedPath, []byte(`{"plugins":[{"id":"notes","source":"`+latest+`"}]}`), 0o600)
+	opsLoadEntries(t, h)
+	pl := &Plugin{Name: "notes", entry: opsEntry(t, h, "managed:notes")}
+	h.plugins["notes"] = pl
+	if err := h.loadPluginRow(ctx, pl); err != nil {
+		t.Fatal(err)
+	}
+	pl.Desired, pl.InstanceID, pl.BlockID, pl.ClientID = "running", "notes-1-aaaaaaaa", "block:1", "client:notes"
+	pl.ChildPID, pl.ChildStart = os.Getpid(), startTime(os.Getpid())
+	pl.run = pluginRun{Name: "notes", Source: latest, Commit: p.Commit, Digest: p.Digest}
+	reload := opReload
+	opReload = func(ctx context.Context, h *Hub) (any, error) {
+		res, err := reload(ctx, h)
+		e := opsEntry(t, h, "managed:notes") // the reload binds the record to the new entry
+		h.mu.Lock()
+		pl.entry = e
+		h.mu.Unlock()
+		return res, err
+	}
+	var replaced map[string]any
+	rec.reply = func(action string, args map[string]any) (any, error) {
+		if action == "hub.admin.replace" {
+			replaced, _ = args["expect_run"].(map[string]any)
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	op, err := resolveOp(t, h, "case-b", opRequest{Op: "update", Entry: "managed:notes", Input: rawJSON(map[string]any{"to": "v1.0.0"})})
+	if err != nil || op.Phase != "fetching" {
+		t.Fatalf("resolve: %+v %v", op, err)
+	}
+	if err := h.runOp(ctx, op); err != nil || op.Phase != "done" {
+		t.Fatalf("the update: %+v %v; calls %v", op, err, rec.list())
+	}
+	want := map[string]any{"source": target, "commit": p.Commit, "digest": p.Digest}
+	if strings.Join(callNames(rec), " ") != "replace" || !reflect.DeepEqual(replaced, want) {
+		t.Fatalf("calls %v; the replace's run %v, want %v", rec.list(), replaced, want)
+	}
+	if text := "replaced: the same commit " + p.Commit + " now runs as " + target; op.Result != text {
+		t.Fatalf("the end text %q, want %q", op.Result, text)
+	}
+	lock := readTestLock(t, h)
+	if le := lock.Plugins[target]; le == nil || le.Commit != p.Commit || le.RefKind != "tag" || le.Ref != "v1.0.0" || lock.Plugins[latest] == nil {
+		t.Fatalf("the lock: %+v", lock.Plugins)
+	}
+	if managedSource(t, h, "notes") != target {
+		t.Fatalf("the managed source: %s", managedText(t, h))
 	}
 }
