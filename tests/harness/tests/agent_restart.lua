@@ -94,15 +94,16 @@ local function write_block(sess, block, data)
   if err ~= nil then error('write: ' .. tostring(err), 0) end
 end
 
--- exec_sleep makes the fake exec /bin/sleep in its pid, and waits until Rex reports the new path. Rex
--- reports the resolved path: /usr/bin/sleep where /bin is a link to /usr/bin (Linux with merged /usr).
+-- exec_sleep makes the fake exec /bin/sleep in its pid, and waits for the same pid with a new path
+-- whose base name is sleep. Rex reports the resolved path: /usr/bin/sleep where /bin is a link to
+-- /usr/bin (Linux with merged /usr), so the wait names no directory.
 local function exec_sleep(sess, block)
   local before = pane_child(sess, block)
   write_block(sess, block, 'hello\r')
   write_block(sess, block, 'exec\r')
   H.wait('the exec', function()
     local c = pane_child(sess, block)
-    return c and c.pid == before.pid and c.path ~= before.path
+    return c and c.pid == before.pid and c.path ~= before.path and c.path:match('/sleep$') ~= nil
   end)
 end
 

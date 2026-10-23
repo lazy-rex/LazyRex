@@ -122,6 +122,14 @@ and `argv0`:
 - The CLIs: Codex 0.163.0 reports `invoked_path` `/opt/homebrew/bin/codex` and `path` its Caskroom
   version; Claude 2.1.307 reports `.../bin/claude` and `path` `.../versions/2.1.307`. Neither execs
   itself again. macOS `/bin/sh` does: its `invoked_path` is `/bin/bash`, its `argv0` `/bin/sh`.
+- An exec in the same pid updates `path`, `invoked_path` and `argv0` (and `name`). On Linux with a
+  merged /usr (`/bin` is a link to `/usr/bin`), `path` is the resolved executable and the other two
+  keep the invoked path: `sh -c 'read x; exec /bin/sleep 600'` reports `path` `/usr/bin/dash`,
+  `invoked_path` `/usr/bin/sh` before the exec, and `path` `/usr/bin/sleep`, `invoked_path` and
+  `argv0` `/bin/sleep` after it. So a test names a base name, not a directory (Linux lab host,
+  Rex 0.0.1792593189-g3f4a0a, 2026-10-22; that host's Rex build is not the Mac's).
+- On that Linux host `/bin/sh` is dash, which has no `exec -a` (`exec: -a: not found`, exit 127).
+  A fixture that forges argv0 runs `/bin/bash`.
 
 The hub records `path` and `invoked_path` at an identity report, and agent restart compares them
 (docs/hub.md, "Agent restart").
