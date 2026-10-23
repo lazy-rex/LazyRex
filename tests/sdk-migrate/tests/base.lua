@@ -3,12 +3,13 @@
 
 local alice = agent('alice')
 -- exits counts the exits with code 1 of plugin sm in the lab hub log (no test helper reports them).
+-- The hub writes the plugin line as "plugin sm [<dir>]: exited: {...}".
 local function exits()
   local f = io.open(H.args.lab .. '/hub.log', 'r')
   if not f then return 0 end
   local text, n = f:read('*a'), 0
   f:close()
-  for _ in text:gmatch('plugin sm exited: {"exit_code":1') do n = n + 1 end
+  for _ in text:gmatch('plugin sm [^\n]-exited: {"exit_code":1') do n = n + 1 end
   return n
 end
 
