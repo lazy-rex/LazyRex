@@ -21,9 +21,10 @@ const (
 	loadsAtOnce = 4
 )
 
-// loadFunc runs one load of key. accept false: the result is stale (the record changed during the
-// load), and the entry goes back to idle with no value.
-type loadFunc func(ctx context.Context, key string) (value any, accept bool, err error)
+// loadFunc runs one load of key for the record stamp (the request's; nil for a cache whose results
+// have no record). accept false: the result is stale (the record is not stamp, or it changed
+// during the load), and the entry goes back to idle with no value.
+type loadFunc func(ctx context.Context, key string, stamp any) (value any, accept bool, err error)
 
 // loadEntry is one key of a cache. The fields are guarded by pluginLoads.mu.
 type loadEntry struct {
@@ -33,6 +34,7 @@ type loadEntry struct {
 	readAt    time.Time // the end of the last load that was kept; zero: none
 	value     any       // the last good result
 	errText   string    // the error of the last kept load; "" after a success
+	stamp     any       // the record of the last kept load (a success or a failure); see loadRequest
 }
 
 // loadReply is what a request returns: state idle, loading, ready or failed.
@@ -87,10 +89,13 @@ func (l *pluginLoads) cache(name string, fresh time.Duration, run loadFunc) *loa
 
 // loadRequest returns the entry of key, and starts a load when the entry is not fresh, or for a
 // refresh, unless a load runs. Each state change of the load sends hub.changed {what = "plugins"}.
-// stale (nil: none) reports whether a kept value belongs to an earlier record of the key: such a
-// value is not fresh, whatever its age.
-func (h *Hub) loadRequest(c *loadCache, key string, refresh bool, stale func(value any) bool) (loadReply, error) {
-	return h.loads.requestNotify(c, key, refresh, stale, func() { h.changed("plugins") })
+// stamp is the key's current record (nil for a cache whose results have no record). A load runs
+// for the stamp of the request that starts it, and its result, a success or a failure, keeps that
+// stamp. A request with another stamp drops the kept result, with its error and time, and starts
+// a load. So a failure is fresh for its own record, and a request in that time starts no load
+// (the hub lead, lead-c7cache and lead-c7fail).
+func (h *Hub) loadRequest(c *loadCache, key string, refresh bool, stamp any) (loadReply, error) {
+	return h.loads.requestNotify(c, key, refresh, stamp, func() { h.changed("plugins") })
 }
 
 // request is loadRequest with no notice (the tests of the cache).
@@ -98,7 +103,7 @@ func (l *pluginLoads) request(c *loadCache, key string, refresh bool) (loadReply
 	return l.requestNotify(c, key, refresh, nil, func() {})
 }
 
-func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, stale func(any) bool, notify func()) (loadReply, error) {
+func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, stamp any, notify func()) (loadReply, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -120,25 +125,27 @@ func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, stal
 		c.entries[key] = e
 	}
 	e.requested = now
-	old := e.value != nil && stale != nil && stale(e.value)
-	if !e.running && (refresh || old || e.readAt.IsZero() || now.Sub(e.readAt) >= c.fresh) {
+	if !e.readAt.IsZero() && e.stamp != stamp {
+		e.value, e.errText, e.readAt, e.stamp = nil, "", time.Time{}, nil
+	}
+	if !e.running && (refresh || e.readAt.IsZero() || now.Sub(e.readAt) >= c.fresh) {
 		e.running = true
 		e.gen++
 		l.goroutines.Add(1)
-		go l.runLoad(c, key, e.gen, notify)
+		go l.runLoad(c, key, e.gen, stamp, notify)
 	}
 	return e.reply(), nil
 }
 
 // runLoad waits for the semaphore, runs the load, and keeps its result if the entry is still the
 // entry of that load.
-func (l *pluginLoads) runLoad(c *loadCache, key string, gen uint64, notify func()) {
+func (l *pluginLoads) runLoad(c *loadCache, key string, gen uint64, stamp any, notify func()) {
 	defer l.goroutines.Done()
 	var value any
 	accept, err := true, error(nil)
 	select {
 	case l.sem <- struct{}{}:
-		value, accept, err = c.run(l.ctx, key)
+		value, accept, err = c.run(l.ctx, key, stamp)
 		<-l.sem
 	case <-l.ctx.Done():
 		err = l.ctx.Err()
@@ -152,11 +159,14 @@ func (l *pluginLoads) runLoad(c *loadCache, key string, gen uint64, notify func(
 	e.running = false
 	switch {
 	case !accept:
-		e.value, e.errText, e.readAt = nil, "", time.Time{}
+		e.value, e.errText, e.readAt, e.stamp = nil, "", time.Time{}, nil
 	case err != nil:
-		e.errText, e.readAt = err.Error(), l.now()
+		if stamp != e.stamp { // a failure never keeps the value of another record
+			e.value = nil
+		}
+		e.errText, e.readAt, e.stamp = err.Error(), l.now(), stamp
 	default:
-		e.value, e.errText, e.readAt = value, "", l.now()
+		e.value, e.errText, e.readAt, e.stamp = value, "", l.now(), stamp
 	}
 	l.mu.Unlock()
 	notify()
