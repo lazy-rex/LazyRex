@@ -85,7 +85,7 @@ func (h *Hub) ensureSession(ctx context.Context, call rexCall, plugin string, ar
 	case err != nil:
 		return nil, err
 	case saved != name:
-		return nil, refuse("conflict", "key %q was used with another name", key)
+		return nil, refuse("operation_conflict", "key %q was used with another name", key)
 	case state == "sending":
 		return nil, refuse("outcome_unknown", "an earlier create for this key has an unknown outcome; choose an existing session")
 	case state == "done":

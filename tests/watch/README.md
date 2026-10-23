@@ -17,7 +17,7 @@ The fixture plugin `watchfix` (`fixture.lua`) may watch `LAB/watched` (manifest
 | --- | --- |
 | Refusals: outside the roots, missing path, `recursive`, a bad key | watch.lua |
 | created, changed, removed; the baseline file hidden until it changes | watch.lua |
-| ensure is idempotent; another spec is `watch_conflict` | watch.lua |
+| ensure is idempotent; another spec is `operation_conflict` | watch.lua |
 | An atomic save gives one row; hidden temp files give none | watch.lua |
 | Many writes give one row | watch.lua |
 | glob | watch.lua |

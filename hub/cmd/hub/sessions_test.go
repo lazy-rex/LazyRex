@@ -63,7 +63,7 @@ func TestEnsureSessionOncePerKey(t *testing.T) {
 	if err != nil || b.(map[string]any)["session_id"] != a.(map[string]any)["session_id"] || f.creates != 1 {
 		t.Fatalf("repeat: %v %v, creates %d", b, err, f.creates)
 	}
-	if _, err := h.ensureSession(ctx, f.call, "messaging", map[string]any{"key": "k1", "name": "Other"}); codeOf(err) != "conflict" {
+	if _, err := h.ensureSession(ctx, f.call, "messaging", map[string]any{"key": "k1", "name": "Other"}); codeOf(err) != "operation_conflict" {
 		t.Fatalf("other name: %v", err)
 	}
 	// Another plugin's key is separate.

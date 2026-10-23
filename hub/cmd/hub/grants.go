@@ -179,7 +179,7 @@ func (h *Hub) grantCreate(ctx context.Context, p perform, plugin string, args ma
 			return nil, err
 		}
 		if !same || prevEntries != string(stored) {
-			return nil, refuse("conflict", "the grant key %q was used for another agent or other requests", key)
+			return nil, refuse("operation_conflict", "the grant key %q was used for another agent or other requests", key)
 		}
 		return map[string]any{"grant_id": prevID, "state": state}, nil
 	}

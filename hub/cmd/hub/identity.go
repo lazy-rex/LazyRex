@@ -1087,7 +1087,7 @@ func (h *Hub) callerKeyRow(ctx context.Context, table, cols, caller, key string)
 		return nil, err
 	}
 	if len(owners) > 1 {
-		return nil, refuse("conflict", "key %q was used by %s before they became one identity; use a new key", key, strings.Join(owners, " and by "))
+		return nil, refuse("operation_conflict", "key %q was used by %s before they became one identity; use a new key", key, strings.Join(owners, " and by "))
 	}
 	return h.db.QueryRowContext(ctx, `SELECT `+cols+` FROM `+table+` WHERE key = ? AND caller IN (`+in+`)`, params...), nil
 }

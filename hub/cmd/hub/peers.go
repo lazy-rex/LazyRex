@@ -24,7 +24,7 @@ import (
 )
 
 // peerSchema is in openDB. peer_outbox keeps a row after its ack (acked 1, body NULL), so a send
-// with the same key keeps its answer: the first seq, or key_conflict. AUTOINCREMENT never reuses a
+// with the same key keeps its answer: the first seq, or operation_conflict. AUTOINCREMENT never reuses a
 // seq, also after the outbox is empty. peer_inbox is the receiver's cursor for each peer.
 const peerSchema = `
 CREATE TABLE IF NOT EXISTS peer_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, plugin TEXT NOT NULL,
@@ -170,7 +170,7 @@ func (h *Hub) resolveQualified(to string) (local string, result map[string]any, 
 }
 
 // peerSend is hub.peer.send: a plugin queues an envelope for a peer. The same (peer, plugin, key)
-// with the same body returns the first seq, also after the ack; another body is key_conflict.
+// with the same body returns the first seq, also after the ack; another body is operation_conflict.
 func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any, error) {
 	pl := h.pluginByClient(p.Requester.ClientID)
 	if pl == nil {
@@ -208,7 +208,7 @@ func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any
 		case err == nil && old == hash:
 			return map[string]any{"seq": seq, "queued": true}, nil
 		case err == nil:
-			return nil, refuse("key_conflict", "key %q was sent to %s with another body", key, peer)
+			return nil, refuse("operation_conflict", "key %q was sent to %s with another body", key, peer)
 		case !errors.Is(err, sql.ErrNoRows):
 			return nil, err
 		}
