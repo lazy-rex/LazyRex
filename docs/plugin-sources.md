@@ -216,7 +216,10 @@ lazyrex-hub plugin sync`.
   and each dir must be in `test_roots`; a release rehearsal refuses it in a live config. A start
   of a listed source runs from the source dir: no snapshot, and the run has no `entry` and no
   `digest`. `lazyrex-hub test` lists only the plugin under test (section 9), so `${PLUGIN}` is the
-  dir it runs from. The home plugin and the `test.plugins` dependencies run from snapshots.
+  dir it runs from. The home plugin and the `test.plugins` dependencies run from snapshots. Two
+  test-only limits follow from the missing digest: `hub.admin.start` of a running source-run
+  plugin keeps the instance (there is no digest to compare, section 14), and the run check's
+  refusal text has an empty run identity (`run  is no longer available`).
 - A future prune command also removes `.stage-*` and `.tmp/*` entries older than one hour (a CLI
   fetch ended by SIGKILL, or a manager fetch whose output did not finish). Until it exists, they
   stay as unused disk state; no lock names them.
