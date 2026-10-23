@@ -169,7 +169,9 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   `max_total` fails with `too_large` before any part goes. A reply to a caller that is not the hub
   stays whole. A result that is an object with the one key `lazyrex_parts` fails with
   `reserved_result`. A keyed reply that went in parts is saved whole: a same-key retry gets it again.
-  The SDK fails at start if the `hub.register` reply has no limits.
+  The SDK fails at start if the `hub.register` reply has no limits. A test sandbox that answers
+  `hub.register` itself uses `dofile(H.args.sdk .. '/testing.lua').register_reply()`: small test
+  limits (4096, 8192, 65536), not the hub's, so a sandbox test reaches the parts with small replies.
 - **Callers.** `ctx.agent` is the calling agent (`nil` for the user). An action that only the user may
   run: `app.action(name, schema, fn, {user_only = true})`.
 - **Retries.** A UI action that the user's renderer sends again runs once. An agent gives a `key` in

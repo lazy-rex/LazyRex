@@ -930,6 +930,24 @@ app.action('p.big', {}, function() app.db.exec('INSERT INTO todos (text) VALUES 
   expect(sets, 'the candidate set and the delivered set').to_be(2)
 end)
 
+test('testing.register_reply: a sandbox with its reply starts, and a reply over its small inline_max goes in parts', function()
+  local testing = dofile(sdk_dir .. '/testing.lua')
+  local reg = testing.register_reply()
+  expect(reg.generation).to_be('1')
+  expect(reg.limits).to_equal({inline_max = 4096, part_bytes = 8192, max_total = 65536})
+  reg.limits.inline_max = 1
+  expect(testing.LIMITS.inline_max, 'a copy').to_be(4096)
+  expect(testing.register_reply({generation = '7'}).limits.max_total, 'fields keep the limits').to_be(65536)
+  expect(testing.register_reply({generation = '7'}).generation).to_be('7')
+  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n'
+    .. "app.panel('Mid', function() return {app.ui.text('t', string.rep('x', 5000))} end, {id = 'mid'})",
+    limits = testing.register_reply().limits})
+  s:start()
+  expect(s.exited, show(s.printed)).to_be(nil)
+  local r = s:render('/panels/mid', 'render-1')
+  expect(type(r.result.lazyrex_parts), '5000 bytes go in parts at inline_max 4096').to_be('table')
+end)
+
 test('a hub.register reply without limits fails the start', function()
   local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")', limits = false})
   s:start()

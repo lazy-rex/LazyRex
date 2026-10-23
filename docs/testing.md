@@ -344,7 +344,7 @@ does not hide the result.
 | `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared, sql_tracked, last_call_ms}`, in `view_id` order. `last_call_ms` is the time of the last `view.render` call, with its reply parts. `declared` is the declaration that the view has now (`{prefixes, changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
 | `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
 | `H.args.lab` | The lab dir. |
-| `H.args.sdk` | The SDK directory that the hub gets (`<checkout>/sdk/lua`), for a sandbox test that loads the SDK itself. |
+| `H.args.sdk` | The SDK directory that the hub gets (`<checkout>/sdk/lua`), for a sandbox test that loads the SDK itself. Its `testing.lua` has `register_reply(fields)`, a `hub.register` reply with test limits for such a sandbox. |
 | `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |
 | `operation(key)` | A view operation's durable state. |
 | `advance_rev(n)` | Moves the store revision counter forward (never back). |
