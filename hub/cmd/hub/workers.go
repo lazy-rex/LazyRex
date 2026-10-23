@@ -1192,9 +1192,17 @@ func (h *Hub) windowOf(ctx context.Context, sess, block string) string {
 // workersList reports every spawn that is not closed, with its state: starting, running, exited
 // or failed. A failed spawn stays in the list, with its error, until hub.stop dismisses it.
 func (h *Hub) workersList(ctx context.Context) (any, error) {
+	list, _, err := h.workersRead(ctx)
+	return list, err
+}
+
+// workersRead is hub.workers. degraded: a Rex read of a pane's process or program status failed,
+// so a state or a status in the list may be wrong ("exited", no status). A render that reads such a
+// list stays untracked (docs/hub.md, "Hub reads in a render").
+func (h *Hub) workersRead(ctx context.Context) (result any, degraded bool, err error) {
 	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('prepared', 'sending', 'open', 'failed') ORDER BY created`)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var list []*spawnRow
 	for rows.Next() {
@@ -1207,7 +1215,7 @@ func (h *Hub) workersList(ctx context.Context) (any, error) {
 	for _, s := range list {
 		blocks, err := h.workerBlocks(ctx, s)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if s.Status == "closed" {
 			continue
@@ -1218,12 +1226,15 @@ func (h *Hub) workersList(ctx context.Context) (any, error) {
 			state = "failed"
 		}
 		if s.Status == "open" && blocks != nil {
-			if pid, err := h.childPIDIn(ctx, s.Session, s.Block); err == nil && pid > 0 {
+			pid, err := h.childPIDIn(ctx, s.Session, s.Block)
+			if err == nil && pid > 0 {
 				state = "running"
 			} else {
 				state = "exited"
 			}
-			status = h.rootStatus(ctx, s.Session, s.Block)
+			var serr error
+			status, serr = h.rootStatus(ctx, s.Session, s.Block)
+			degraded = degraded || err != nil || serr != nil
 		}
 		w := map[string]any{"spawn_id": s.ID, "profile": s.Profile, "title": s.Title, "parent": s.Parent,
 			"state": state, "status": status, "session_id": s.Session, "cwd": s.Cwd}
@@ -1232,7 +1243,7 @@ func (h *Hub) workersList(ctx context.Context) (any, error) {
 		}
 		// Read after this worker's recovery (workerBlocks): two workers are not one snapshot.
 		if id, err := h.workerIdentity(ctx, s); err != nil {
-			return nil, err
+			return nil, false, err
 		} else if id != "" {
 			w["identity"] = id
 		}
@@ -1244,11 +1255,12 @@ func (h *Hub) workersList(ctx context.Context) (any, error) {
 		}
 		out = append(out, w)
 	}
-	return map[string]any{"workers": out}, nil
+	return map[string]any{"workers": out}, degraded, nil
 }
 
-// rootStatus returns the block's OSC 7501 root record as {state, msg}, or nil.
-func (h *Hub) rootStatus(ctx context.Context, sess, block string) any {
+// rootStatus returns the block's OSC 7501 root record as {state, msg}, or nil when it has none. err:
+// the read failed.
+func (h *Hub) rootStatus(ctx context.Context, sess, block string) (any, error) {
 	var st struct {
 		Records []struct {
 			ID    string `json:"id"`
@@ -1256,15 +1268,15 @@ func (h *Hub) rootStatus(ctx context.Context, sess, block string) any {
 			Msg   string `json:"msg"`
 		} `json:"records"`
 	}
-	if h.rex.BlockCall(ctx, "com.superlogical.terminal.program_status", sess, block, nil, &st) != nil {
-		return nil
+	if err := h.rex.BlockCall(ctx, "com.superlogical.terminal.program_status", sess, block, nil, &st); err != nil {
+		return nil, err
 	}
 	for _, r := range st.Records {
 		if r.ID == "" {
-			return map[string]any{"state": r.State, "msg": r.Msg}
+			return map[string]any{"state": r.State, "msg": r.Msg}, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (h *Hub) spawnByID(ctx context.Context, id string) (*spawnRow, error) {
