@@ -136,6 +136,28 @@ func TestWorkerIdentityFieldsOtherRows(t *testing.T) {
 	}
 }
 
+// A resume opens a new spawn in a new pane (resume.go): identity_seen of the new spawn is false
+// until its own pane reports, also when the resumed identity was seen in the old pane; the old
+// spawn keeps true.
+func TestWorkerIdentityFieldsResumeNewSpawn(t *testing.T) {
+	h := identityFieldsHub(t, nil, false)
+	mustExec(t, h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start)
+		VALUES ('b', 's', 1, '1.0', 'claude', 'claude:c1', '')`)
+	mustExec(t, h, `INSERT INTO identity_log (at, identity, block_id, event, detail) VALUES ('x', 'claude:c1', 'b', 'started', '{}')`)
+	// The resume: the conversation leaves the old pane (current ""), and a new spawn opens in pane b3.
+	mustExec(t, h, `UPDATE identity_panes SET current = '' WHERE block_id = 'b'`)
+	mustExec(t, h, `INSERT INTO spawns (spawn_id, caller, key, request, profile, title, agent_id, parent, status, created, session_id, window_id, block_id, resume_of)
+		VALUES ('spawn-new', 'user', 'key3', '{}', 'agent', 'Agent 1', 'agent-1', 'user', 'open', '2026-10-16T23:00:02Z', 's', 'w', 'b3', 'spawn-test')`)
+	wantFields(t, "the new spawn before its pane reports", readWorker(t, h, "spawn-new"), "none", nil, false)
+	wantFields(t, "the old spawn after the resume", readWorker(t, h, "spawn-test"), "none", nil, true)
+
+	mustExec(t, h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start)
+		VALUES ('b3', 's', 2, '2.0', 'claude', 'claude:c1', '')`)
+	mustExec(t, h, `INSERT INTO identity_log (at, identity, block_id, event, detail) VALUES ('y', 'claude:c1', 'b3', 'resumed', '{}')`)
+	wantFields(t, "the new spawn after its report", readWorker(t, h, "spawn-new"), "current", "claude:c1", true)
+	wantFields(t, "the old spawn after the new report", readWorker(t, h, "spawn-test"), "none", nil, true)
+}
+
 // A failed read fails the call: never an absent identity_id or a false identity_seen.
 func TestWorkerIdentityFieldsReadFails(t *testing.T) {
 	h := identityFieldsHub(t, nil, false)
