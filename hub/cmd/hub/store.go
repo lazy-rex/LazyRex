@@ -6,10 +6,8 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -132,36 +130,6 @@ func storeErrorCode(se *storeError) string {
 	return se.code
 }
 
-// checkValue accepts JSON objects, arrays, strings, finite numbers and booleans. No null.
-func checkValue(v any) error {
-	switch t := v.(type) {
-	case nil:
-		return bad("null is not supported")
-	case string, bool:
-		return nil
-	case float64:
-		if math.IsInf(t, 0) || math.IsNaN(t) {
-			return bad("numbers must be finite")
-		}
-		return nil
-	case []any:
-		for _, e := range t {
-			if err := checkValue(e); err != nil {
-				return err
-			}
-		}
-		return nil
-	case map[string]any:
-		for _, e := range t {
-			if err := checkValue(e); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return bad("unsupported value type %T", v)
-}
-
 // asList accepts a JSON array, or {} from Rex Lua for an empty list.
 func asList(v any) ([]any, bool) {
 	switch t := v.(type) {
@@ -175,198 +143,9 @@ func asList(v any) ([]any, bool) {
 	return nil, false
 }
 
-func parseRev(v any) (int64, error) {
-	s, ok := v.(string)
-	if !ok {
-		return 0, bad("revisions are decimal strings")
-	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n < 0 || strconv.FormatInt(n, 10) != s {
-		return 0, bad("bad revision %q", s)
-	}
-	return n, nil
-}
-
 func revString(n int64) string { return strconv.FormatInt(n, 10) }
 
-// storeScan handles hub.store.scan {prefix?, after?, limit?}: the caller's records in key order,
-// one snapshot per page. Only the caller's namespace. next is the last key when more records exist.
-// A page ends at limit records or at scanPageBytes of encoded records, whichever comes first.
-func (db *DB) storeScan(ctx context.Context, ns string, args map[string]any) (any, error) {
-	prefix, _ := args["prefix"].(string)
-	after, _ := args["after"].(string)
-	limit := 500
-	if v, ok := args["limit"].(float64); ok {
-		if v < 1 || v > 500 || v != float64(int(v)) {
-			return nil, bad("limit is an integer from 1 to 500")
-		}
-		limit = int(v)
-	}
-	// Keys are compared as SQLite text (byte order). The prefix range ends before prefix+0xFF.
-	rows, err := db.QueryContext(ctx, `SELECT key, value, rev FROM records WHERE ns = ? AND key > ? AND substr(key, 1, ?) = ?
-		ORDER BY key LIMIT ?`, ns, after, len(prefix), prefix, limit+1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	records := map[string]any{}
-	var keys []string
-	size, full := 0, false
-	for rows.Next() {
-		var key, value string
-		var rev int64
-		if err := rows.Scan(&key, &value, &rev); err != nil {
-			return nil, err
-		}
-		if len(keys) == limit {
-			keys = append(keys, key) // only to show that more records exist
-			break
-		}
-		record := map[string]any{"value": json.RawMessage(value), "rev": revString(rev)}
-		n := scanRecordBytes(key, record)
-		if len(keys) > 0 && size+n > scanPageBytes {
-			full = true // this record starts the next page
-			break
-		}
-		size += n
-		keys = append(keys, key)
-		records[key] = record
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := map[string]any{"records": records}
-	if full || len(keys) > limit {
-		out["next"] = keys[len(records)-1]
-	}
-	return out, nil
-}
-
-// storeOpsScan handles hub.store.ops_scan {after?, limit?}: the caller's saved operation records
-// {key, fingerprint, result} in key order, one snapshot per page, with the page rules of
-// storeScan. A plugin that moves to hub.sql uses it once, to import its saved replies.
-func (db *DB) storeOpsScan(ctx context.Context, ns string, args map[string]any) (any, error) {
-	for k := range args {
-		if k != "after" && k != "limit" {
-			return nil, bad("hub.store.ops_scan takes after and limit, not %s", k)
-		}
-	}
-	after, _ := args["after"].(string)
-	limit := 500
-	if v, ok := args["limit"].(float64); ok {
-		if v < 1 || v > 500 || v != float64(int(v)) {
-			return nil, bad("limit is an integer from 1 to 500")
-		}
-		limit = int(v)
-	}
-	rows, err := db.QueryContext(ctx, `SELECT key, fingerprint, result FROM ops WHERE ns = ? AND key > ? ORDER BY key LIMIT ?`, ns, after, limit+1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ops := []any{}
-	size, more := 0, false
-	for rows.Next() {
-		var key, fp, result string
-		if err := rows.Scan(&key, &fp, &result); err != nil {
-			return nil, err
-		}
-		if len(ops) == limit {
-			more = true
-			break
-		}
-		op := map[string]any{"key": key, "fingerprint": fp, "result": json.RawMessage(result)}
-		b, _ := json.Marshal(op)
-		if len(ops) > 0 && size+len(b) > scanPageBytes {
-			more = true // this record starts the next page
-			break
-		}
-		size += len(b)
-		ops = append(ops, op)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := map[string]any{"ops": ops}
-	if more {
-		out["next"] = ops[len(ops)-1].(map[string]any)["key"]
-	}
-	return out, nil
-}
-
-// scanPageBytes bounds the encoded records of one hub.store.scan page, so that a page of large
-// records stays far below the reply limit (Rex's max_message_bytes, about 1 MiB). A page can
-// therefore hold fewer than limit records; callers follow next. A page always holds at least one
-// record, so a scan never stops at a large record. The hub has no record size limit of its own: a
-// record comes from one hub.store.batch, and a Lua plugin sends at most 64 KiB in one request
-// (rex-protocol.md). The reply encoder writes '<', '>' and '&' as 6 bytes, so such a record
-// encodes to at most about 384 KiB. A client with a larger message limit (a Go client gets 1 MiB)
-// can write a record that no reply can carry; nothing guards that case.
-const scanPageBytes = 512 << 10
-
-// scanRecordBytes is the encoded size of one record in a scan result: its key, its value and rev,
-// and the separators. It uses the encoder that writes the reply, so escapes are counted.
-func scanRecordBytes(key string, record map[string]any) int {
-	k, _ := json.Marshal(key)
-	v, _ := json.Marshal(record)
-	return len(k) + len(v) + 2 // ':' and ','
-}
-
-func (db *DB) storeGet(ctx context.Context, ns string, args map[string]any) (any, error) {
-	keys, ok := asList(args["keys"])
-	if !ok {
-		return nil, bad("keys must be a list")
-	}
-	tx, err := db.BeginTx(ctx, nil) // one snapshot for every key
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	records := map[string]any{}
-	for _, k := range keys {
-		key, ok := k.(string)
-		if !ok || key == "" {
-			return nil, bad("keys are nonempty strings")
-		}
-		var value string
-		var rev int64
-		err := tx.QueryRowContext(ctx, `SELECT value, rev FROM records WHERE ns = ? AND key = ?`, ns, key).Scan(&value, &rev)
-		if errors.Is(err, sql.ErrNoRows) {
-			records[key] = map[string]any{"rev": "0"}
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		records[key] = map[string]any{"value": json.RawMessage(value), "rev": revString(rev)}
-	}
-	return map[string]any{"records": records}, nil
-}
-
-func (db *DB) storeOp(ctx context.Context, ns string, args map[string]any) (any, error) {
-	key, _ := args["key"].(string)
-	if key == "" {
-		return nil, bad("key is a nonempty string")
-	}
-	var fp, result string
-	err := db.QueryRowContext(ctx, `SELECT fingerprint, result FROM ops WHERE ns = ? AND key = ?`, ns, key).Scan(&fp, &result)
-	if errors.Is(err, sql.ErrNoRows) {
-		return map[string]any{"found": false}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"found": true, "fingerprint": fp, "result": json.RawMessage(result)}, nil
-}
-
-type recordOp struct {
-	key    string
-	value  string // JSON; "" for delete
-	delete bool
-	ifRev  *int64
-}
-
-// noticeOp is one notify op: {agent, pending}, {agent, pending: true, once: true} (a new revision
+// noticeOp is one notice of a hub.sql commit: {agent, pending}, {agent, pending: true, once: true} (a new revision
 // only if the row is not pending or the agent read since the last one), or {agent, read: true}
 // (the agent read; pending does not change).
 type noticeOp struct {
@@ -374,14 +153,14 @@ type noticeOp struct {
 	pending, once, read bool
 }
 
-// parseNotice reads the fields of a notify op of agent. hub.sql.commit notices use it too.
+// parseNotice reads the fields of a notice of agent (hub.sql.commit notices).
 func parseNotice(agent string, nm map[string]any) (noticeOp, error) {
 	op := noticeOp{agent: agent}
 	_, hasPending := nm["pending"]
 	_, hasOnce := nm["once"]
 	if r, hasRead := nm["read"]; hasRead {
 		if r != true || hasPending || hasOnce {
-			return op, bad("a read is {notify: {agent, read: true}}, with no pending or once")
+			return op, bad("a read notice is {agent, read: true}, with no pending or once")
 		}
 		op.read = true
 		return op, nil
@@ -389,14 +168,14 @@ func parseNotice(agent string, nm map[string]any) (noticeOp, error) {
 	pending, okP := nm["pending"].(bool)
 	once, okO := nm["once"].(bool)
 	if !okP || (hasOnce && (!okO || !pending)) {
-		return op, bad("notify needs a boolean pending; once is true or false, and only with pending: true")
+		return op, bad("a notice needs a boolean pending; once is true or false, and only with pending: true")
 	}
 	op.pending, op.once = pending, once
 	return op, nil
 }
 
-// applyNotice applies one notify op in tx. rev is the new intent revision, or 0 when the op made
-// none. hub.sql outbox rows use it too (applySQLNotices).
+// applyNotice applies one notice in tx (for the hub.sql outbox rows: applySQLNotices). rev is the
+// new intent revision, or 0 when the notice made none.
 func applyNotice(ctx context.Context, tx *sql.Tx, ns string, n noticeOp) (rev int64, err error) {
 	switch {
 	case n.read:
@@ -428,220 +207,6 @@ func applyNotice(ctx context.Context, tx *sql.Tx, ns string, n noticeOp) (rev in
 		_, err := tx.ExecContext(ctx, `UPDATE notices SET pending = 0 WHERE ns = ? AND agent = ?`, ns, n.agent)
 		return 0, err
 	}
-}
-
-type batchOutcome struct {
-	result    any
-	committed bool
-	opKey     string
-	revs      map[string]string
-	notices   []noticeOp
-	intentRev map[string]int64 // agent -> new intent revision, for pending notices
-}
-
-// storeBatch validates the whole batch, then applies it in one transaction (README section 3).
-// noticed reports whether ns has a notice in its manifest: without one, a notify op fails with code
-// no_notice and nothing in the batch is written (docs/plugin-sources.md, section 10).
-func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, roster map[string]bool, noticed bool) (*batchOutcome, error) {
-	rawOps, ok := asList(args["ops"])
-	if !ok {
-		return nil, bad("ops must be a list")
-	}
-	var recs []recordOp
-	var notes []noticeOp
-	seenKey, seenAgent := map[string]bool{}, map[string]bool{}
-	for _, r := range rawOps {
-		m, ok := r.(map[string]any)
-		if !ok {
-			return nil, bad("each op is an object")
-		}
-		if n, isNotice := m["notify"]; isNotice {
-			if !noticed {
-				return nil, refuse("no_notice", "plugin %s has no notice in its manifest", ns)
-			}
-			nm, ok := n.(map[string]any)
-			if !ok || len(m) != 1 {
-				return nil, bad("a notify op is {notify: {agent, pending}}, {notify: {agent, pending: true, once: true}} or {notify: {agent, read: true}}")
-			}
-			agent, _ := nm["agent"].(string)
-			if !roster[agent] {
-				return nil, bad("notify needs a roster agent")
-			}
-			op, err := parseNotice(agent, nm)
-			if err != nil {
-				return nil, err
-			}
-			if seenAgent[agent] {
-				return nil, bad("agent %q appears twice", agent)
-			}
-			seenAgent[agent] = true
-			notes = append(notes, op)
-			continue
-		}
-		key, _ := m["key"].(string)
-		if key == "" {
-			return nil, bad("a record op needs a nonempty key")
-		}
-		if seenKey[key] {
-			return nil, bad("key %q appears twice", key)
-		}
-		seenKey[key] = true
-		op := recordOp{key: key}
-		del, hasDel := m["delete"]
-		val, hasVal := m["value"]
-		switch {
-		case hasDel && hasVal, !hasDel && !hasVal:
-			return nil, bad("op %q needs exactly one of value and delete", key)
-		case hasDel:
-			if del != true {
-				return nil, bad("delete must be true")
-			}
-			op.delete = true
-		default:
-			if err := checkValue(val); err != nil {
-				return nil, err
-			}
-			b, _ := json.Marshal(val)
-			op.value = string(b)
-		}
-		if iv, ok := m["if_rev"]; ok {
-			n, err := parseRev(iv)
-			if err != nil {
-				return nil, err
-			}
-			op.ifRev = &n
-		}
-		for k := range m {
-			if k != "key" && k != "value" && k != "delete" && k != "if_rev" {
-				return nil, bad("unknown field %q in op", k)
-			}
-		}
-		recs = append(recs, op)
-	}
-	var opKey, opFP, opResult string
-	// op.result_revs {field: record key}: the committed revision of each record goes into
-	// the saved result under field, in the same transaction. A replay then returns the
-	// revisions that the first execution produced.
-	var resultRevs map[string]string
-	if o, ok := args["op"]; ok {
-		om, ok := o.(map[string]any)
-		if !ok {
-			return nil, bad("op is {key, fingerprint, result}")
-		}
-		opKey, _ = om["key"].(string)
-		opFP, _ = om["fingerprint"].(string)
-		if opKey == "" || opFP == "" {
-			return nil, bad("op key and fingerprint are nonempty strings")
-		}
-		if err := checkValue(om["result"]); err != nil {
-			return nil, err
-		}
-		b, _ := json.Marshal(om["result"])
-		opResult = string(b)
-		if rr, ok := om["result_revs"].(map[string]any); ok && len(rr) > 0 {
-			if _, isMap := om["result"].(map[string]any); !isMap {
-				return nil, bad("op result_revs needs an object result")
-			}
-			resultRevs = map[string]string{}
-			for field, k := range rr {
-				key, _ := k.(string)
-				found := false
-				for _, r := range recs {
-					found = found || r.key == key
-				}
-				if !found {
-					return nil, bad("op result_revs %q names a key that this batch does not write", field)
-				}
-				resultRevs[field] = key
-			}
-		}
-	}
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	out := &batchOutcome{opKey: opKey}
-	// A saved op is checked before any revision condition, so a retry succeeds with stale revisions.
-	if opKey != "" {
-		var fp, result string
-		err := tx.QueryRowContext(ctx, `SELECT fingerprint, result FROM ops WHERE ns = ? AND key = ?`, ns, opKey).Scan(&fp, &result)
-		switch {
-		case err == nil && fp == opFP:
-			out.result = map[string]any{"op_exists": map[string]any{"fingerprint": fp, "result": json.RawMessage(result)}}
-			return out, nil
-		case err == nil:
-			out.result = map[string]any{"conflict": map[string]any{"kind": "operation", "key": opKey}}
-			return out, nil
-		case !errors.Is(err, sql.ErrNoRows):
-			return nil, err
-		}
-	}
-	for _, r := range recs {
-		if r.ifRev == nil {
-			continue
-		}
-		var cur int64
-		err := tx.QueryRowContext(ctx, `SELECT rev FROM records WHERE ns = ? AND key = ?`, ns, r.key).Scan(&cur)
-		if errors.Is(err, sql.ErrNoRows) {
-			cur = 0
-		} else if err != nil {
-			return nil, err
-		}
-		if cur != *r.ifRev {
-			out.result = map[string]any{"conflict": map[string]any{"kind": "revision", "key": r.key, "rev": revString(cur)}}
-			return out, nil
-		}
-	}
-	revs := map[string]string{}
-	for _, r := range recs {
-		if r.delete {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM records WHERE ns = ? AND key = ?`, ns, r.key); err != nil {
-				return nil, err
-			}
-			revs[r.key] = "0"
-			continue
-		}
-		rev, err := nextRev(tx)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO records VALUES (?, ?, ?, ?) ON CONFLICT (ns, key) DO UPDATE SET value = excluded.value, rev = excluded.rev`, ns, r.key, r.value, rev); err != nil {
-			return nil, err
-		}
-		revs[r.key] = revString(rev)
-	}
-	out.intentRev = map[string]int64{}
-	for _, n := range notes {
-		rev, err := applyNotice(ctx, tx, ns, n)
-		if err != nil {
-			return nil, err
-		}
-		if rev != 0 {
-			out.intentRev[n.agent] = rev
-		}
-	}
-	if opKey != "" {
-		if len(resultRevs) > 0 {
-			var m map[string]any
-			json.Unmarshal([]byte(opResult), &m)
-			for field, key := range resultRevs {
-				m[field] = revs[key]
-			}
-			b, _ := json.Marshal(m)
-			opResult = string(b)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ops VALUES (?, ?, ?, ?)`, ns, opKey, opFP, opResult); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	out.committed, out.revs, out.notices = true, revs, notes
-	out.result = map[string]any{"revs": revs}
-	return out, nil
 }
 
 // noticeConv names the conversation that a nudge reached: the agent's pane and its child process.
@@ -732,10 +297,10 @@ func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge 
 	}
 	return true, true, time.Time{}
 }
+
 // applySQLNotices applies hub.sql outbox rows of plugin (sqlnotice.go) in seq order, in one
 // transaction with a receipt for each row. A row with a receipt was applied before (a crash after
-// the apply and before the outbox delete): it is skipped. The rules are those of a notify op of
-// hub.store.batch.
+// the apply and before the outbox delete): it is skipped.
 func (db *DB) applySQLNotices(ctx context.Context, plugin string, rows []outboxRow) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -764,18 +329,4 @@ func (db *DB) applySQLNotices(ctx context.Context, plugin string, rows []outboxR
 func (db *DB) dropNoticeReceipts(ctx context.Context, plugin string, seq int64) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM notice_receipts WHERE plugin = ? AND seq <= ?`, plugin, seq)
 	return err
-}
-
-// moveNotices records that plugin sends its notices through hub.sql: from now on its
-// hub.store.batch notify ops are refused (notices_moved). The caller holds the store fence
-// exclusively (admitSQLNotices), so the two paths cannot reorder.
-func (db *DB) moveNotices(ctx context.Context, plugin string) error {
-	_, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO sql_notice_plugins VALUES (?)`, plugin)
-	return err
-}
-
-func (db *DB) noticesMoved(ctx context.Context, plugin string) (bool, error) {
-	var n int
-	err := db.QueryRowContext(ctx, `SELECT count(*) FROM sql_notice_plugins WHERE plugin = ?`, plugin).Scan(&n)
-	return n > 0, err
 }

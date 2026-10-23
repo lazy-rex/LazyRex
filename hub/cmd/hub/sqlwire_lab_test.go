@@ -127,20 +127,4 @@ func TestSQLWireLab(t *testing.T) {
 	if r := s.sqlCall("sq", "hub.sql.query", `{"sql":"SELECT count(*) FROM t WHERE a = ?", "params":["k9"]}`); r.Error == "" {
 		t.Fatalf("the action fault for k9: %+v", r)
 	}
-	// The rollback: hub.admin.sql_return refuses a running plugin; after a stop it moves the file
-	// aside, and the next start has a new, empty file.
-	if _, err := s.call("hub.admin.sql_return", map[string]any{"plugin": "sq"}); err == nil || !strings.Contains(err.Error(), "stop it first") {
-		t.Fatalf("a return of a running plugin: %v", err)
-	}
-	s.must("hub.admin.stop", map[string]any{"plugin": "sq"})
-	ret := s.must("hub.admin.sql_return", map[string]any{"plugin": "sq"})
-	dest, _ := ret["returned"].(string)
-	if _, err := os.Stat(filepath.Join(dest, "sq.db")); err != nil {
-		t.Fatalf("the returned file: %v (%v)", err, ret)
-	}
-	s.must("hub.admin.start", map[string]any{"plugin": "sq"})
-	s.registered("sq")
-	if r := s.sqlCall("sq", "hub.sql.query", `{"sql":"SELECT count(*) FROM t"}`); !strings.Contains(r.Error, "no such table") {
-		t.Fatalf("the file after the return: %+v", r)
-	}
 }

@@ -20,36 +20,6 @@ func TestStartBefore(t *testing.T) {
 	}
 }
 
-func TestStoreScanPagesOneNamespace(t *testing.T) {
-	h, _ := workerTestHub(t)
-	ctx := context.Background()
-	for _, r := range [][2]string{{"a", "mail/L/1"}, {"a", "mail/L/2"}, {"a", "mail/L/3"}, {"a", "mailx"}, {"b", "mail/L/9"}} {
-		if _, err := h.db.Exec(`INSERT INTO records VALUES (?, ?, '1', 1)`, r[0], r[1]); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got := map[string]bool{}
-	after := ""
-	for page := 0; page < 5; page++ {
-		out, err := h.db.storeScan(ctx, "a", map[string]any{"prefix": "mail/", "after": after, "limit": float64(2)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		m := out.(map[string]any)
-		for k := range m["records"].(map[string]any) {
-			got[k] = true
-		}
-		next, _ := m["next"].(string)
-		if next == "" {
-			break
-		}
-		after = next
-	}
-	if len(got) != 3 || !got["mail/L/1"] || !got["mail/L/3"] || got["mailx"] || got["mail/L/9"] {
-		t.Fatalf("scan = %v", got)
-	}
-}
-
 // A new identity record inherits the delivery suppression of the legacy agent in its pane, so the
 // alias redirect does not write the same notice to the same pane twice.
 func TestIdentitySyncInheritsLegacyDelivery(t *testing.T) {

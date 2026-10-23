@@ -159,32 +159,21 @@ func TestPluginEntriesResolveAgain(t *testing.T) {
 	}
 }
 
-// A notify op from a plugin without a manifest notice fails with code no_notice, and nothing in
-// the batch is written (section 10).
+// A notice from a plugin without a manifest notice fails with code no_notice (section 10). The hub
+// checks the notices of a hub.sql commit before the commit (admitNotices), so the commit writes
+// nothing.
 func TestNoNotice(t *testing.T) {
-	db, err := openDB(filepath.Join(t.TempDir(), "hub.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	ops := map[string]any{"ops": []any{
-		map[string]any{"key": "k", "value": "v"},
-		map[string]any{"notify": map[string]any{"agent": "alice", "pending": true}},
-	}}
-	_, err = db.storeBatch(context.Background(), "p", ops, map[string]bool{"alice": true}, false)
+	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p"}, "q": {Name: "q", run: pluginRun{Name: "q", Notice: "x"}}},
+		agents: map[string]*Agent{"alice": {ID: "alice"}}}
+	notes := []noticeOp{{agent: "alice", pending: true}}
+	err := h.admitSQLNotices("p", notes)
 	var se *storeError
 	if !errors.As(err, &se) || se.code != "no_notice" || !strings.Contains(err.Error(), "plugin p has no notice in its manifest") {
 		t.Fatalf("got %v", err)
 	}
-	var n int
-	db.QueryRow(`SELECT (SELECT count(*) FROM records) + (SELECT count(*) FROM notices)`).Scan(&n)
-	if n != 0 {
-		t.Errorf("%d rows written", n)
-	}
-	if out, err := db.storeBatch(context.Background(), "p", ops, map[string]bool{"alice": true}, true); err != nil || !out.committed {
+	if err := h.admitSQLNotices("q", notes); err != nil {
 		t.Errorf("with a notice: %v", err)
 	}
-	h := &Hub{plugins: map[string]*Plugin{"p": {Name: "p"}, "q": {Name: "q", run: pluginRun{Name: "q", Notice: "x"}}}}
 	if h.noticed("p") || !h.noticed("q") || h.noticed("none") {
 		t.Error("noticed")
 	}

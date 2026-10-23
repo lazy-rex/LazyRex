@@ -18,18 +18,32 @@ func noticeTestDB(t *testing.T) *DB {
 	return db
 }
 
-// notify runs one store batch with a single notify op for agent a and reports whether it made a
-// new intent revision (a new nudge).
-func notify(t *testing.T, db *DB, op map[string]any) bool {
+// noticeSeq numbers the outbox rows of the notice tests: a row with a seq that has a receipt is
+// skipped.
+var noticeSeq int64
+
+// notifyIn applies one hub.sql outbox row of ns with the notice op for agent a, and reports whether
+// it made a new intent revision (a new nudge).
+func notifyIn(t *testing.T, db *DB, ns string, op map[string]any) bool {
 	t.Helper()
-	op["agent"] = "a"
-	out, err := db.storeBatch(context.Background(), "messaging", map[string]any{"ops": []any{map[string]any{"notify": op}}}, map[string]bool{"a": true}, true)
+	n, err := parseNotice("a", op)
 	if err != nil {
-		t.Fatalf("notify %v: %v", op, err)
+		t.Fatalf("notice %v: %v", op, err)
 	}
-	_, nudge := out.intentRev["a"]
-	return nudge
+	rev := func() int64 {
+		var r int64
+		db.QueryRow(`SELECT intent_rev FROM notices WHERE ns = ? AND agent = 'a'`, ns).Scan(&r)
+		return r
+	}
+	before := rev()
+	noticeSeq++
+	if err := db.applySQLNotices(context.Background(), ns, []outboxRow{{noticeSeq, n}}); err != nil {
+		t.Fatalf("notice %v: %v", op, err)
+	}
+	return rev() != before
 }
+
+func notify(t *testing.T, db *DB, op map[string]any) bool { return notifyIn(t, db, "messaging", op) }
 
 // One nudge until a read (the user's rule, 2026-10-22): a once send makes a new revision only if
 // the row is not pending or the agent read since the last revision. A plain pending:true keeps
@@ -59,9 +73,7 @@ func TestNoticeOnceUntilRead(t *testing.T) {
 		t.Fatal("a once send after a plain send (no read): want no revision")
 	}
 	// A read for an agent with no row is accepted and does nothing.
-	if _, err := db.storeBatch(context.Background(), "other", map[string]any{"ops": []any{map[string]any{"notify": map[string]any{"agent": "a", "read": true}}}}, map[string]bool{"a": true}, true); err != nil {
-		t.Fatal(err)
-	}
+	notifyIn(t, db, "other", map[string]any{"read": true})
 	var n int
 	db.QueryRow(`SELECT COUNT(*) FROM notices WHERE ns = 'other'`).Scan(&n)
 	if n != 0 {
@@ -70,7 +82,6 @@ func TestNoticeOnceUntilRead(t *testing.T) {
 }
 
 func TestNoticeOpForms(t *testing.T) {
-	db := noticeTestDB(t)
 	for _, op := range []map[string]any{
 		{"read": true, "pending": true},
 		{"read": false},
@@ -80,8 +91,7 @@ func TestNoticeOpForms(t *testing.T) {
 		{"read": true, "once": true},
 		{},
 	} {
-		op["agent"] = "a"
-		if _, err := db.storeBatch(context.Background(), "messaging", map[string]any{"ops": []any{map[string]any{"notify": op}}}, map[string]bool{"a": true}, true); !isBad(err) {
+		if _, err := parseNotice("a", op); !isBad(err) {
 			t.Errorf("%v: %v, want a malformed-request error", op, err)
 		}
 	}

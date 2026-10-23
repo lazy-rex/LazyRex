@@ -102,7 +102,7 @@ func (h *Hub) viewsStart(ctx context.Context) error {
 
 // kickViews wakes the plugin's view worker. A cause renders every open view of the plugin again,
 // whatever its declaration; 0 only wakes the worker (operations and effects). markView,
-// markCommit and markChanged (renderdeps.go) mark fewer views.
+// markChanged (renderdeps.go) and markSQL (renderreads.go) mark fewer views.
 func (h *Hub) kickViews(plugin string, cause renderCause) {
 	h.vs.mu.Lock()
 	if cause != 0 {

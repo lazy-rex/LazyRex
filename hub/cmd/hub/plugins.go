@@ -492,7 +492,6 @@ func (h *Hub) dropInstance(ctx context.Context, pl *Plugin, sess, reason string)
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
-	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_session_gone", map[string]any{"plugin": pl.Name, "block_id": old, "session_id": sess, "reason": reason})
 }
 
@@ -969,7 +968,6 @@ func (h *Hub) retire(ctx context.Context, pl *Plugin) (bool, error) {
 	pl.clearInstance()
 	h.savePlugin(ctx, pl)
 	h.mu.Unlock()
-	h.fenceStoreWrites(pl)
 	h.sql.fence(pl.Name) // the old instance's SQL transaction rolls back before the retirement returns
 	if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": sess, "block_id": old}, nil); err != nil {
 		log.Printf("close old plugin block %s: %v", old, err)
@@ -1051,7 +1049,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	h.mu.Unlock()
 	lease.release()
 	h.ev.emit("plugin_spawn_intent", map[string]any{"plugin": pl.Name, "instance_id": instance})
-	if f := h.faults.take("block-create", "exit-before", ""); f != nil {
+	if f := h.faults.take("block-create", "exit-before"); f != nil {
 		h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "instance_id": instance})
 		exitNow()
 	}
@@ -1155,7 +1153,7 @@ func (h *Hub) checkMapped(ctx context.Context, pl *Plugin, sess, block string) {
 
 // exitAfterSendFault writes the block-create request frame, then reports the fault, if configured.
 func (h *Hub) exitAfterSendFault(ctx context.Context, req map[string]any, instance string) bool {
-	f := h.faults.take("block-create", "exit-after", "")
+	f := h.faults.take("block-create", "exit-after")
 	if f == nil {
 		return false
 	}
@@ -1194,7 +1192,6 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 	if !current {
 		return
 	}
-	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_exited", map[string]any{"plugin": pl.Name, "instance_id": instance, "block_id": blockID})
 	h.recordLogf(pl, "exited: %s", payload)
 	// child_exited means the process ended in a block that is still open (a pane close sends
@@ -1231,7 +1228,6 @@ func (h *Hub) markStopped(ctx context.Context, pl *Plugin, reason string) {
 	h.savePlugin(ctx, pl)
 	h.dropKept(pl) // a stopped kept record owns nothing more
 	h.mu.Unlock()
-	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_stopped", map[string]any{"plugin": pl.Name, "block_id": block, "reason": reason})
 	h.changed("plugins")
 }
@@ -1278,7 +1274,6 @@ func (h *Hub) blockClosed(ctx context.Context, blockID string) {
 		pl.ClientID = ""
 		h.kickAgentKeymap()
 		h.mu.Unlock()
-		h.fenceStoreWrites(pl)
 		go h.classifyClose(pl, blockID, sess)
 		return
 	}

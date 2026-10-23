@@ -24,7 +24,7 @@ const summaryEvery = time.Minute
 // routineReads are the actions whose fast, successful calls get no line. Every other action keeps
 // its line, also a future one: a call that changes state for another party (admin, register,
 // spawn, acting as the user) is the only process-side record of who called what.
-var routineReads = map[string]bool{"hub.store.get": true, "hub.store.scan": true, "hub.sql.query": true}
+var routineReads = map[string]bool{"hub.sql.query": true}
 
 type callLog struct {
 	mu      sync.Mutex

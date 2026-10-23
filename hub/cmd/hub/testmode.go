@@ -39,9 +39,9 @@ import (
 // (rex-protocol.md, "Rex Lua runtime").
 const testReplyLimit = 48 << 10
 
-var testActions = []string{"hub.test.status", "hub.test.store", "hub.test.sql", "hub.test.chunk", "hub.test.notice", "hub.test.notice_renudge", "hub.test.stats", "hub.test.rev",
+var testActions = []string{"hub.test.status", "hub.test.sql", "hub.test.chunk", "hub.test.notice", "hub.test.notice_renudge", "hub.test.stats",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
-	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events", "hub.test.write", "hub.test.op.put",
+	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events",
 	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
 
 type testState struct {
@@ -49,7 +49,6 @@ type testState struct {
 	recover      chan struct{} // closed by hub.test.recover (test_hold_recovery)
 	recoverOnce  sync.Once
 	injections   []*injection
-	batches      map[string]int                      // plugin -> hub.store.batch calls, including refused and conflicting ones
 	invalidate   map[string]int                      // plugin -> hub.ui.invalidate calls
 	renderReq    map[string]int64                    // view_id -> the latest requested render generation
 	renderOut    map[string]map[int64]*renderOutcome // view_id -> requested generation -> its final outcome
@@ -65,23 +64,13 @@ type testState struct {
 type injection struct {
 	ID       int
 	Plugin   string
-	OpKey    string // match: the batch's op.key equals this
-	OpPrefix string // match: the batch's op.key starts with this
-	Writes   string // match: the batch writes or deletes this record key
-	Updates  string // match: the batch writes this record key with an if_rev other than "0"
-	// Reads: match a hub.store.get whose keys include this record key (test read hook). The hub
-	// builds the get reply first, then commits Ops, then returns that reply: the next read sees
-	// the change. It never matches a batch.
-	Reads    string
-	Ops      []any  // committed before the matching batch (no if_rev)
-	Replay   bool   // commit a copy of the matching batch first
-	Fail     string // then fail the matching batch with this message; it commits nothing
+	Fail     string // fail the matching commit with this message
 	FailCode string // the error code of that failure (default injected_failure)
 	Times    int    // -1: always
-	Skip     int    // the first Skip matching batches pass unchanged (Skipped counts them)
+	Skip     int    // the first Skip matching commits pass unchanged (Skipped counts them)
 	Skipped  int
 	Consumed int
-	// A window hold (match {window = key}, hold = true) matches no batch. It holds one
+	// A window hold (match {window = key}, hold = true) matches no commit. It holds one
 	// hub.spawn_window call of the plugin with this key (and this caller, if set) after Rex
 	// created the window and before the hub records it: the leaves stay sending, as after a
 	// crash at that point. The held call waits until the injection is cancelled (then it goes on
@@ -94,7 +83,7 @@ type injection struct {
 
 	// SQLCommitWrites: match a hub.sql commit (a handler commit, an exec or a batch alone) that
 	// changed this table (lower case). Only Fail applies; with After the commit happens first and
-	// the caller gets the error, as after a lost reply. It never matches a store batch.
+	// the caller gets the error, as after a lost reply.
 	SQLCommitWrites string
 	After           bool
 	// SQLParam: with SQLCommitWrites, match only a commit whose transaction ran a statement with
@@ -121,7 +110,7 @@ type renderedTree struct {
 }
 
 func newTestState() *testState {
-	return &testState{batches: map[string]int{}, invalidate: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
+	return &testState{invalidate: map[string]int{}, renderReq: map[string]int64{}, renderOut: map[string]map[int64]*renderOutcome{},
 		trees: map[string]*renderedTree{}, apps: map[string]*testFakeApp{}, recover: make(chan struct{}),
 		calls: map[string][]testCall{}, callsDropped: map[string]int64{}, renders: map[string]*renderCount{}}
 }
@@ -218,28 +207,13 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		return h.testRenders(plugin), nil
 	case "hub.test.app.close":
 		return h.testAppClose(args)
-	case "hub.test.store":
-		if err := needPlugin(); err != nil {
-			return nil, err
-		}
-		return h.testStore(ctx, plugin, args)
 	case "hub.test.sql":
 		if err := needPlugin(); err != nil {
 			return nil, err
 		}
 		return h.sql.test(ctx, plugin, args)
 	case "hub.test.chunk":
-		return h.testChunk(ctx, args)
-	case "hub.test.write":
-		if err := needPlugin(); err != nil {
-			return nil, err
-		}
-		return h.testWrite(ctx, plugin, args)
-	case "hub.test.op.put":
-		if err := needPlugin(); err != nil {
-			return nil, err
-		}
-		return h.testOpPut(ctx, plugin, args)
+		return h.testChunk(args)
 	case "hub.test.notice":
 		agent, _ := args["agent"].(string)
 		var pending bool
@@ -264,19 +238,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 	case "hub.test.stats":
 		h.test.mu.Lock()
 		defer h.test.mu.Unlock()
-		return map[string]any{"batches": h.test.batches[plugin], "invalidates": h.test.invalidate[plugin]}, nil
-	case "hub.test.rev":
-		at, err := parseRevArg(args["at"])
-		if err != nil {
-			return nil, err
-		}
-		// Only forward: revisions never reset (store.go, nextRev).
-		if _, err := h.db.ExecContext(ctx, `UPDATE meta SET v = ? WHERE k = 'rev' AND v < ?`, at, at); err != nil {
-			return nil, err
-		}
-		var cur int64
-		h.db.QueryRowContext(ctx, `SELECT v FROM meta WHERE k = 'rev'`).Scan(&cur)
-		return map[string]any{"rev": revString(cur)}, nil
+		return map[string]any{"invalidates": h.test.invalidate[plugin]}, nil
 	case "hub.test.tabs":
 		rows, err := h.db.QueryContext(ctx, `SELECT tab, title, route, status, session_id, revision FROM ui_tabs WHERE plugin = ? ORDER BY pos`, plugin)
 		if err != nil {
@@ -446,19 +408,6 @@ func orEmpty(l []any) []any {
 	return l
 }
 
-func parseRevArg(v any) (int64, error) {
-	switch t := v.(type) {
-	case string:
-		return parseRev(t)
-	case float64:
-		if t < 1 || t != float64(int64(t)) {
-			return 0, bad("invalid: at must be a positive integer")
-		}
-		return int64(t), nil
-	}
-	return 0, bad("invalid: at must be a decimal string or an integer")
-}
-
 // boundReply refuses a reply that would not reach a Lua test client.
 func boundReply(v any) (any, error) {
 	b, err := json.Marshal(v)
@@ -496,98 +445,24 @@ func orEmptyStrings(l []string) []string {
 	return l
 }
 
-// testStore reads records in key order until the encoded reply reaches the limit. A record that
-// alone does not fit comes back in too_large with its size and revision.
-func (h *Hub) testStore(ctx context.Context, plugin string, args map[string]any) (any, error) {
-	keys, ok := asList(args["keys"])
-	if !ok {
-		return nil, bad("invalid: keys must be a list")
-	}
-	records := map[string]any{}
-	tooLarge := map[string]any{}
-	size := 64
-	var rest []any
-	for i, k := range keys {
-		key, _ := k.(string)
-		if key == "" {
-			return nil, bad("invalid: keys must be nonempty strings")
-		}
-		value, rev, err := h.db.recordText(ctx, plugin, key)
-		if err != nil {
-			return nil, err
-		}
-		rec := map[string]any{"rev": revString(rev)}
-		if rev != 0 {
-			rec["value"] = json.RawMessage(value)
-		}
-		b, _ := json.Marshal(rec)
-		n := len(b) + len(key)*6 + 8 // the key, escaped at worst, plus punctuation
-		if n > testReplyLimit-256 {
-			tooLarge[key] = map[string]any{"bytes": len(value), "rev": revString(rev)}
-			continue
-		}
-		if size+n > testReplyLimit-256 {
-			rest = keys[i:]
-			break
-		}
-		size += n
-		records[key] = rec
-	}
-	out := map[string]any{"records": records, "too_large": tooLarge}
-	if len(rest) > 0 {
-		out["rest"] = rest
-	}
-	return boundReply(out)
-}
-
-// recordText returns a record's stored JSON text and revision (0: absent).
-func (db *DB) recordText(ctx context.Context, ns, key string) (string, int64, error) {
-	var value string
-	var rev int64
-	err := db.QueryRowContext(ctx, `SELECT value, rev FROM records WHERE ns = ? AND key = ?`, ns, key).Scan(&value, &rev)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", 0, nil
-	}
-	return value, rev, err
-}
-
-// testChunk returns a slice of a large JSON text: a record (source "record", with its revision) or
-// a rendered tree (source "render", with the render generation). If the text changed since the
-// first chunk, the read fails with changed: the test starts again. Slices end on UTF-8 boundaries,
+// testChunk returns a slice of a large JSON text: a rendered tree (source "render", with the render
+// generation). If the text changed since the first chunk, the read fails with changed: the test
+// starts again. Slices end on UTF-8 boundaries,
 // and each encoded reply stays under the limit, escaping included.
-func (h *Hub) testChunk(ctx context.Context, args map[string]any) (any, error) {
-	source, _ := args["source"].(string)
-	offset, _ := args["offset"].(float64)
-	var text string
-	switch source {
-	case "record":
-		plugin, _ := args["plugin"].(string)
-		key, _ := args["key"].(string)
-		want, err := parseRevArg(args["rev"])
-		if err != nil {
-			return nil, err
-		}
-		value, rev, err := h.db.recordText(ctx, plugin, key)
-		if err != nil {
-			return nil, err
-		}
-		if rev != want {
-			return nil, bad("changed: record %q is at revision %d, not %d; read it again", key, rev, want)
-		}
-		text = value
-	case "render":
-		view, _ := args["view_id"].(string)
-		gen, _ := args["generation"].(float64)
-		h.test.mu.Lock()
-		out := h.test.renderOut[view][int64(gen)]
-		h.test.mu.Unlock()
-		if out == nil || !out.ok {
-			return nil, bad("changed: view %q has no successful render of generation %v; render again", view, args["generation"])
-		}
-		text = string(out.tree)
-	default:
-		return nil, bad("invalid: source must be record or render")
+func (h *Hub) testChunk(args map[string]any) (any, error) {
+	if source, _ := args["source"].(string); source != "render" {
+		return nil, bad("invalid: source must be render")
 	}
+	offset, _ := args["offset"].(float64)
+	view, _ := args["view_id"].(string)
+	gen, _ := args["generation"].(float64)
+	h.test.mu.Lock()
+	out := h.test.renderOut[view][int64(gen)]
+	h.test.mu.Unlock()
+	if out == nil || !out.ok {
+		return nil, bad("changed: view %q has no successful render of generation %v; render again", view, args["generation"])
+	}
+	text := string(out.tree)
 	start := int(offset)
 	if start < 0 || start > len(text) || offset != float64(start) {
 		return nil, bad("invalid: offset %v is outside the text (%d bytes)", args["offset"], len(text))
@@ -617,58 +492,10 @@ func (in *injection) remaining() any {
 	return in.Times - in.Consumed
 }
 
-func (in *injection) matches(plugin string, args map[string]any) bool {
-	if in.Window != "" || in.Reads != "" || in.SQLCommitWrites != "" || in.SQLBegin || in.Plugin != plugin || in.Times >= 0 && in.Consumed >= in.Times {
-		return false
-	}
-	opKey := ""
-	if op, ok := args["op"].(map[string]any); ok {
-		opKey, _ = op["key"].(string)
-	}
-	if in.OpKey != "" && opKey != in.OpKey {
-		return false
-	}
-	if in.OpPrefix != "" && !strings.HasPrefix(opKey, in.OpPrefix) {
-		return false
-	}
-	if in.Writes != "" {
-		found := false
-		ops, _ := asList(args["ops"])
-		for _, o := range ops {
-			if m, ok := o.(map[string]any); ok && m["key"] == in.Writes {
-				found = true
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	if in.Updates != "" {
-		found := false
-		ops, _ := asList(args["ops"])
-		for _, o := range ops {
-			if m, ok := o.(map[string]any); ok && m["key"] == in.Updates {
-				if rev, ok := m["if_rev"].(string); ok && rev != "0" {
-					found = true
-				}
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
 func (h *Hub) testInject(args map[string]any) (any, error) {
 	plugin, _ := args["plugin"].(string)
 	match, _ := args["match"].(map[string]any)
 	in := &injection{Plugin: plugin, Times: 1}
-	in.OpKey, _ = match["op_key"].(string)
-	in.OpPrefix, _ = match["op_prefix"].(string)
-	in.Writes, _ = match["writes"].(string)
-	in.Updates, _ = match["updates"].(string)
-	in.Reads, _ = match["reads"].(string)
 	in.SQLCommitWrites, _ = match["sql_commit_writes"].(string)
 	keys := 1 // sql_commit_writes, and sql_param if set
 	if v, ok := match["sql_param"]; ok {
@@ -692,24 +519,14 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 	if in.After && in.SQLCommitWrites == "" {
 		return nil, bad("invalid: after needs match {sql_commit_writes = table}")
 	}
-	if _, ok := match["reads"]; ok && (in.Reads == "" || len(match) != 1) {
-		return nil, bad("invalid: match.reads must be a nonempty record key, alone in match")
-	}
 	if _, ok := match["window"]; ok {
 		return h.testWindowInject(in, match, args)
 	}
-	if in.OpKey == "" && in.OpPrefix == "" && in.Writes == "" && in.Updates == "" && in.Reads == "" && in.SQLCommitWrites == "" {
-		return nil, bad("invalid: match needs op_key, op_prefix, writes, updates, reads, sql_commit_writes or window")
+	if in.SQLCommitWrites == "" {
+		return nil, bad("invalid: match needs sql_commit_writes, sql_begin or window")
 	}
 	if _, ok := args["hold"]; ok {
 		return nil, bad("invalid: hold needs match {window = key}")
-	}
-	if ops, ok := args["ops"]; ok {
-		list, ok := asList(ops)
-		if !ok {
-			return nil, bad("invalid: ops must be a list")
-		}
-		in.Ops = list
 	}
 	if v, ok := args["skip"]; ok {
 		n, ok := v.(float64)
@@ -718,7 +535,6 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 		}
 		in.Skip = int(n)
 	}
-	in.Replay, _ = args["replay"].(bool)
 	in.Fail, _ = args["fail"].(string)
 	if v, ok := args["fail_code"]; ok {
 		code, _ := v.(string)
@@ -727,14 +543,13 @@ func (h *Hub) testInject(args map[string]any) (any, error) {
 		}
 		in.FailCode = code
 	}
-	if in.SQLCommitWrites != "" && (len(in.Ops) > 0 || in.Replay || in.Fail == "") {
-		return nil, bad("invalid: a sql_commit_writes injection needs fail, and has no ops or replay")
+	for _, k := range []string{"ops", "replay"} {
+		if _, ok := args[k]; ok {
+			return nil, bad("invalid: a sql_commit_writes injection has no %s", k)
+		}
 	}
-	if len(in.Ops) == 0 && !in.Replay && in.Fail == "" {
-		return nil, bad("invalid: an injection needs ops, replay or fail")
-	}
-	if in.Reads != "" && (len(in.Ops) == 0 || in.Replay || in.Fail != "") {
-		return nil, bad("invalid: a reads injection needs ops, and has no replay or fail")
+	if in.Fail == "" {
+		return nil, bad("invalid: a sql_commit_writes injection needs fail")
 	}
 	switch t := args["times"].(type) {
 	case nil:
@@ -809,151 +624,6 @@ func (h *Hub) testWindowHold(p perform, caller, key string) <-chan struct{} {
 		}
 	}
 	return nil
-}
-
-// testBeforeBatch counts a plugin's batch and commits the first matching injection before it.
-// Injected commits call storeBatch directly, so they never match an injection themselves.
-// testAfterGet runs a read hook after a plugin's hub.store.get built its reply. The caller keeps
-// that reply and returns it after this commit, so the reply holds only the old state and the next
-// request sees the new one: Rex delivers one hub request at a time. A get counts once for one
-// injection, however many of its keys match. A commit that fails fails the get with
-// injection_failed and is not counted.
-func (h *Hub) testAfterGet(ctx context.Context, ns string, args map[string]any) error {
-	keys, _ := asList(args["keys"])
-	h.test.mu.Lock()
-	var in *injection
-	for _, c := range h.test.injections {
-		if c.Reads == "" || c.Plugin != ns || c.Times >= 0 && c.Consumed >= c.Times {
-			continue
-		}
-		found := false
-		for _, k := range keys {
-			found = found || k == c.Reads
-		}
-		if !found {
-			continue
-		}
-		if c.Skipped < c.Skip {
-			c.Skipped++
-			break // this get passes; no other injection matches it
-		}
-		in = c
-		break
-	}
-	h.test.mu.Unlock()
-	if in == nil {
-		return nil
-	}
-	b, _ := json.Marshal(in.Ops)
-	var ops []any
-	json.Unmarshal(b, &ops)
-	out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster(), h.noticed(ns))
-	if err == nil && !out.committed {
-		err = fmt.Errorf("did not commit: %v", out.result)
-	}
-	if err != nil {
-		return refuse("injection_failed", "injection %d: %v", in.ID, err)
-	}
-	h.test.mu.Lock()
-	in.Consumed++
-	h.test.mu.Unlock()
-	h.afterCommit(ns, out)
-	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": ns, "reads": in.Reads})
-	return nil
-}
-
-func (h *Hub) testBeforeBatch(ctx context.Context, ns string, args map[string]any) error {
-	h.test.mu.Lock()
-	h.test.batches[ns]++
-	var in *injection
-	for _, c := range h.test.injections {
-		if c.matches(ns, args) {
-			if c.Skipped < c.Skip {
-				c.Skipped++
-				break // this batch passes; no other injection matches it
-			}
-			in = c
-			c.Consumed++
-			break
-		}
-	}
-	h.test.mu.Unlock()
-	if in == nil {
-		return nil
-	}
-	if in.Replay {
-		b, _ := json.Marshal(args)
-		var dup map[string]any
-		json.Unmarshal(b, &dup)
-		out, err := h.db.storeBatch(ctx, ns, dup, h.roster(), h.noticed(ns))
-		if err != nil {
-			return fmt.Errorf("injection %d: replay: %w", in.ID, err)
-		}
-		h.afterCommit(ns, out)
-	}
-	if len(in.Ops) > 0 {
-		b, _ := json.Marshal(in.Ops)
-		var ops []any
-		json.Unmarshal(b, &ops)
-		out, err := h.db.storeBatch(ctx, ns, map[string]any{"ops": ops}, h.roster(), h.noticed(ns))
-		if err != nil {
-			return fmt.Errorf("injection %d: %w", in.ID, err)
-		}
-		if !out.committed {
-			return fmt.Errorf("injection %d did not commit: %v", in.ID, out.result)
-		}
-		h.afterCommit(ns, out)
-	}
-	h.ev.emit("test_injection", map[string]any{"id": in.ID, "plugin": ns})
-	if in.Fail != "" {
-		code := in.FailCode
-		if code == "" {
-			code = "injected_failure"
-		}
-		return refuse(code, "%s", in.Fail)
-	}
-	return nil
-}
-
-// testWrite commits store ops in a plugin's namespace now, as another writer would: {key, value}
-// or {key, delete = true}, without if_rev. It never matches an injection.
-func (h *Hub) testWrite(ctx context.Context, plugin string, args map[string]any) (any, error) {
-	list, ok := asList(args["ops"])
-	if !ok || len(list) == 0 {
-		return nil, bad("invalid: ops must be a nonempty list")
-	}
-	out, err := h.db.storeBatch(ctx, plugin, map[string]any{"ops": list}, h.roster(), h.noticed(plugin))
-	if err != nil {
-		return nil, err
-	}
-	if !out.committed {
-		// A stale if_rev: a test that read a record and writes it back must not overwrite a newer
-		// plugin commit, and it needs a code that it can tell from a malformed write.
-		if c, _ := out.result.(map[string]any)["conflict"].(map[string]any); c["kind"] == "revision" {
-			return nil, refuse("conflict", "the write did not commit: record %v is at rev %v", c["key"], c["rev"])
-		}
-		return nil, bad("invalid: the write did not commit: %v", out.result)
-	}
-	h.afterCommit(plugin, out)
-	return out.result, nil
-}
-
-// testOpPut saves an operation record {key, fingerprint, result}, as an older plugin version
-// saved it. It replaces a record with the same key.
-func (h *Hub) testOpPut(ctx context.Context, plugin string, args map[string]any) (any, error) {
-	key, _ := args["key"].(string)
-	fp, _ := args["fingerprint"].(string)
-	if key == "" || fp == "" {
-		return nil, bad("invalid: key and fingerprint are required")
-	}
-	result, err := json.Marshal(args["result"])
-	if err != nil || args["result"] == nil {
-		return nil, bad("invalid: result is required")
-	}
-	if _, err := h.db.ExecContext(ctx, `INSERT OR REPLACE INTO ops VALUES (?, ?, ?, ?)`, plugin, key, fp, string(result)); err != nil {
-		return nil, err
-	}
-	return map[string]any{"ok": true}, nil
 }
 
 // testRender asks for a new render of one view and returns its generation. The production render

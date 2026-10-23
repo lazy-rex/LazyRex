@@ -304,7 +304,7 @@ local function chunked(source, fields)
   return table.concat(parts)
 end
 
--- json_decode decodes text, read at what (a store key, a render, a runner arg). rex.json.decode
+-- json_decode decodes text, read at what (a render, a runner arg). rex.json.decode
 -- does not raise: invalid JSON returns nil and an error, and JSON null returns nil alone (Rex
 -- 0.0.1792158932-g88fd41). The error and its wording are the SDK's app.json.decode.
 function H.json_decode(text, what)
@@ -318,25 +318,7 @@ function H.json_decode(text, what)
   return v
 end
 
--- store returns {value, rev} of one record of the plugin (default: the plugin under test). An
--- absent record is {rev = '0'}. A large record is read in chunks of one revision; if it changes
--- during the read, the read starts again.
-function H.store(key, plugin)
-  plugin = plugin or A.plugin
-  for _ = 1, 5 do
-    local out = hub('hub.test.store', {plugin = plugin, keys = {key}})
-    if out.records and out.records[key] then return out.records[key] end
-    local big = out.too_large and out.too_large[key]
-    if not big then fail('store: no answer for ' .. show(key), 2) end
-    local ok, text = pcall(chunked, 'record', {plugin = plugin, key = key, rev = big.rev})
-    if ok then return {value = H.json_decode(text, 'store ' .. key), rev = big.rev} end
-    if not (H.is_error(text) and text.code == 'changed') and not tostring(text):find('changed') then error(text, 0) end
-  end
-  fail('store: ' .. key .. ' kept changing during a chunked read', 2)
-end
-
 function H.notice(agent, plugin) return hub('hub.test.notice', {plugin = plugin or A.plugin, agent = agent}) end
-function H.batches(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).batches end
 
 -- invalidates counts the plugin's hub.ui.invalidate calls. A count that stays the same over an
 -- interval proves only that the plugin made no such call in that interval.
@@ -354,13 +336,12 @@ function H.calls(action, opts)
 end
 -- renders returns the render counts of each view of the plugin (hub.test.renders): {view_id,
 -- route, attempts, ok, failed, transient, causes = {commit, invalidate, ...}, declared}, in view_id
--- order. declared is the declaration that the view has now ({prefixes, changes}), nil for none.
+-- order. declared is the declaration that the view has now ({changes}), nil for none.
 function H.renders(plugin)
   local v = hub('hub.test.renders', {plugin = plugin or A.plugin}).views
   if v == nil or v == rex.json.null then return {} end
   return v
 end
-function H.advance_rev(at) return hub('hub.test.rev', {at = tostring(at)}).rev end
 
 function H.tabs(plugin)
   local t = hub('hub.test.tabs', {plugin = plugin or A.plugin}).tabs
@@ -380,9 +361,8 @@ end
 
 function H.operation(key, plugin) return hub('hub.test.operation', {plugin = plugin or A.plugin, operation_key = key}) end
 
--- inject commits ops (store.batch ops) before the plugin's next batch that matches match
--- ({op_key=}, {op_prefix=} or {writes=key}). spec: {match, ops, replay, times}. Returns its ID.
--- match {sql_commit_writes = table} fails the plugin's next hub.sql commit that changed that
+-- inject arms an injection (docs/testing.md, "Concurrent writes") and returns its ID. match
+-- {sql_commit_writes = table} fails the plugin's next hub.sql commit that changed that
 -- table: spec.fail (and fail_code); with after = true the commit happens, and the plugin gets the
 -- error (a lost reply).
 function H.inject(spec)
@@ -391,7 +371,7 @@ function H.inject(spec)
   return hub('hub.test.inject', a).id
 end
 function H.injection(id) return hub('hub.test.injection', {id = id}) end
--- cancel_injection ends an injection (for example times = 'always'): it matches no later batch.
+-- cancel_injection ends an injection (for example times = 'always'): it matches no later call.
 function H.cancel_injection(id) return hub('hub.test.inject.cancel', {id = id}) end
 
 -- fault arms a one-shot hub fault (docs/testing.md, "Faults"): {point = 'spawn-create', mode, op}
@@ -407,18 +387,14 @@ function H.fault_fired(id) return hub('hub.test.fault_state', {id = id}).fired e
 -- closed at the end of the file fails the file.
 function H.fault_release(id) return hub('hub.test.fault_release', {id = id}) end
 
--- with_injection runs fn with an injection and checks that exactly n batches consumed it.
+-- with_injection runs fn with an injection and checks that exactly n calls consumed it.
 function H.with_injection(spec, n, fn)
   local id = H.inject(spec)
   local r = table.pack and table.pack(fn()) or {fn()}
   local got = H.injection(id).consumed
-  if got ~= n then fail(string.format('injection %d: expected %d matching batches, got %d', id, n, got), 2) end
+  if got ~= n then fail(string.format('injection %d: expected %d matching calls, got %d', id, n, got), 2) end
   return (unpack or table.unpack)(r)
 end
-
--- write commits store ops in the plugin's namespace now, as another writer: {key, value} or
--- {key, delete = true}, each with an optional if_rev (a stale one fails with the code conflict).
-function H.write(ops, plugin) return hub('hub.test.write', {plugin = plugin or A.plugin, ops = ops}) end
 
 -- sql_rows turns a hub.sql query reply into rows keyed by column name: NULL is nil, {int} is a
 -- decimal string, {blob} stays a {blob = base64} table.
@@ -446,11 +422,6 @@ end
 -- fixtures). It returns {changes, id}. The plugin's views render again.
 function H.sql_write(sql, params, plugin)
   return hub('hub.test.sql', {plugin = plugin or A.plugin, sql = sql, params = params or {}, write = true})
-end
-
--- put_operation saves an operation record {key, fingerprint, result}, as an older plugin saved it.
-function H.put_operation(op, plugin)
-  return hub('hub.test.op.put', {plugin = plugin or A.plugin, key = op.key, fingerprint = op.fingerprint, result = op.result})
 end
 
 -- write_profiles replaces the hub's profile file (LAB/profiles.json; it is the only target).

@@ -128,3 +128,7 @@ One line per item: what, its owner, and why it waits.
   (and any other found by a grep for `rex.Call`/`BlockCall` on `h.ctx`). Owner: Hub Fixes. Waits:
   one audit for all; the lostexit series (900e3f0c, `pluginChildRead`) bounds only the plugin
   child read.
+- A lab fault after a `hub.sql` commit and before its reply (exit or pause), as `store-commit` was
+  for `hub.store.batch` before the hub.store removal. Today no lab test ends the hub between a SQL
+  commit and its reply. Owner: Hub Fixes. Waits: no test in this repository used `store-commit`,
+  so the removal does not add the SQL point; a plugin test that needs it asks for it.

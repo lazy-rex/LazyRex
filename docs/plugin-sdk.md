@@ -354,8 +354,7 @@ errors and the transaction rules above.
 
 Action options: `title`, `description`, `user_only`, `tx = false` (each SQL call alone),
 `store = false` (no saved reply: the plugin keeps its own operations table), `fingerprint`.
-A plugin that keeps its data in hub.store until it moves to SQL passes `store = false` on each
-action and `app.view`: with a key, `store = true` reads `hub.sql.replay` first.
+`app.view` takes `store` too: with a key, `store = true` reads `hub.sql.replay` first.
 The schema is the short form (`{text = 'string', note = 'string?'}`, or a JSON Schema for a property)
 or a full JSON Schema. The SDK adds an optional `key`; the handler gets it as `ctx.key`, not in args.
 

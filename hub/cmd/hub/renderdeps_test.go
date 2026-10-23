@@ -15,39 +15,29 @@ func depsHub() *Hub {
 	return &Hub{vs: vs}
 }
 
-// The marks of commits and changes: a matching prefix, no prefixes, an explicit empty list, a view
-// in flight; a change name in the list, missing, empty, and a name that no list can hold.
+// The marks of changes: a change name in the list, no declaration, an explicit empty list, a view
+// in flight, and a name that no list can hold.
 func TestRenderDepsMarks(t *testing.T) {
 	h := depsHub()
 	h.vs.mu.Lock()
 	match := h.vs.stateLocked("p", "match")
-	match.deps = &viewDeps{prefixes: []string{"thread/a"}, changes: []string{"workers"}}
+	match.deps = &viewDeps{changes: []string{"workers"}}
 	none := h.vs.stateLocked("p", "none")
 	empty := h.vs.stateLocked("p", "empty")
-	empty.deps = &viewDeps{prefixes: []string{}, changes: []string{}}
+	empty.deps = &viewDeps{changes: []string{}}
 	flight := h.vs.stateLocked("p", "flight")
-	flight.deps, flight.inFlight = &viewDeps{prefixes: []string{}, changes: []string{}}, true
+	flight.deps, flight.inFlight = &viewDeps{changes: []string{}}, true
 	h.vs.mu.Unlock()
 
-	h.markCommit("p", []string{"thread/a/1"})
-	h.markCommit("q", []string{"x"}) // another plugin
+	h.markChanged("p", "workers")
+	h.markChanged("q", "workers") // another plugin
 	for name, c := range map[string]struct {
 		st   *viewState
 		want bool
 	}{"match": {match, true}, "none": {none, true}, "empty": {empty, false}, "flight": {flight, true}} {
-		if got := c.st.dirty&causeCommit != 0; got != c.want {
-			t.Errorf("commit, %s: marked %v", name, got)
+		if got := c.st.dirty&causeChanged != 0; got != c.want {
+			t.Errorf("changed workers, %s: marked %v", name, got)
 		}
-	}
-	match.dirty, none.dirty, empty.dirty, flight.dirty = 0, 0, 0, 0
-	h.markCommit("p", []string{"thread/b"})
-	if match.dirty != 0 || empty.dirty != 0 || none.dirty == 0 {
-		t.Errorf("an unrelated commit: match %v, empty %v, none %v", match.dirty, empty.dirty, none.dirty)
-	}
-	match.dirty, none.dirty, empty.dirty, flight.dirty = 0, 0, 0, 0
-	h.markChanged("p", "workers")
-	if match.dirty == 0 || none.dirty == 0 || empty.dirty != 0 || flight.dirty == 0 {
-		t.Errorf("changed workers: match %v, none %v, empty %v, flight %v", match.dirty, none.dirty, empty.dirty, flight.dirty)
 	}
 	match.dirty, none.dirty, empty.dirty, flight.dirty = 0, 0, 0, 0
 	h.markChanged("p", "agents")
@@ -58,8 +48,8 @@ func TestRenderDepsMarks(t *testing.T) {
 	if h.vs.all["p"]&causeChanged == 0 {
 		t.Error("a name that no list can hold must mark every view")
 	}
-	if h.vs.loose["p"]&causeCommit == 0 {
-		t.Error("a view without state gets the commit cause")
+	if h.vs.loose["p"]&causeChanged == 0 {
+		t.Error("a view without state gets the changed cause")
 	}
 }
 
@@ -74,7 +64,7 @@ func TestRenderFinishedLifetime(t *testing.T) {
 	}
 	defer ev.f.Close()
 	h.ev = ev
-	d := &viewDeps{prefixes: []string{"a/"}}
+	d := &viewDeps{changes: []string{"agents"}}
 
 	h.vs.mu.Lock()
 	st := h.vs.stateLocked("p", "v")
@@ -88,7 +78,7 @@ func TestRenderFinishedLifetime(t *testing.T) {
 
 	st.inFlight = true
 	h.clearDeclarations("p")
-	h.renderFinished("p", "v", "/r", st, epoch, &viewDeps{prefixes: []string{"old/"}}, true, "", nil, nil)
+	h.renderFinished("p", "v", "/r", st, epoch, &viewDeps{changes: []string{"workers"}}, true, "", nil, nil)
 	if st.deps != nil {
 		t.Errorf("an old instance's result after a registration installed %+v", st.deps)
 	}
@@ -107,20 +97,19 @@ func TestRenderFinishedLifetime(t *testing.T) {
 	st = h.vs.stateLocked("p", "w")
 	st.inFlight, st.deps = true, d
 	h.vs.mu.Unlock()
-	h.markCommit("p", []string{"z/1"}) // in flight: marked without the filter
+	h.markChanged("p", "workers") // in flight: marked without the filter (d lists only agents)
 	h.renderFinished("p", "w", "/r", st, epoch, nil, false, "", nil, nil)
-	if st.deps != nil || st.dirty&causeCommit == 0 || !h.vs.dirty["p"] {
-		t.Errorf("a failed render with a commit during it: %+v, pass %v", st, h.vs.dirty["p"])
+	if st.deps != nil || st.dirty&causeChanged == 0 || !h.vs.dirty["p"] {
+		t.Errorf("a failed render with a change during it: %+v, pass %v", st, h.vs.dirty["p"])
 	}
 }
 
 func TestParseDeps(t *testing.T) {
 	for raw, want := range map[string]string{
 		``: "none", `null`: "none",
-		`{}`:                           "prefixes=nil changes=nil",
-		`{"prefixes":{}}`:              "prefixes=[] changes=nil",
-		`{"prefixes":[],"changes":{}}`: "prefixes=[] changes=[]",
-		`{"prefixes":["a/",""],"changes":["plugins"]}`: "prefixes=[a/ ] changes=[plugins]",
+		`{}`:                      "changes=nil",
+		`{"changes":{}}`:          "changes=[]",
+		`{"changes":["plugins"]}`: "changes=[plugins]",
 	} {
 		d, err := parseDeps(json.RawMessage(raw))
 		if err != nil {
@@ -129,16 +118,13 @@ func TestParseDeps(t *testing.T) {
 		}
 		got := "none"
 		if d != nil {
-			got = fmtList("prefixes", d.prefixes) + " " + fmtList("changes", d.changes)
+			got = fmtList("changes", d.changes)
 		}
 		if got != want {
 			t.Errorf("%s: %s, want %s", raw, got, want)
 		}
 	}
-	big := make([]string, depsMaxPrefixes+1)
-	bigRaw, _ := json.Marshal(map[string]any{"prefixes": big})
-	longRaw, _ := json.Marshal(map[string]any{"prefixes": []string{string(make([]byte, depsMaxPrefixLen+1))}})
-	for _, raw := range []string{`"x"`, `[]`, `{"prefixes":"a"}`, `{"prefixes":{"a":1}}`, `{"prefixes":[1]}`, `{"changes":["tabs"]}`, `{"other":[]}`, string(bigRaw), string(longRaw)} {
+	for _, raw := range []string{`"x"`, `[]`, `{"changes":"a"}`, `{"changes":{"a":1}}`, `{"changes":[1]}`, `{"changes":["tabs"]}`, `{"other":[]}`} {
 		if _, err := parseDeps(json.RawMessage(raw)); err == nil {
 			t.Errorf("%.60s: no error", raw)
 		}
@@ -189,5 +175,16 @@ func TestRenderPruneKeepsALateAttach(t *testing.T) {
 	}
 	if _, ok := h.vs.views["p"]["closed"]; ok {
 		t.Error("a state with no causes and no target stays")
+	}
+}
+
+// The prefixes of the removed hub.store are a malformed declaration: the view gets
+// view_deps_invalid and renders on every trigger (D3 of the hub.store removal).
+func TestParseDepsRefusesPrefixes(t *testing.T) {
+	for _, raw := range []string{`{"prefixes":[]}`, `{"prefixes":["a/"],"changes":["plugins"]}`} {
+		_, err := parseDeps(json.RawMessage(raw))
+		if err == nil || !strings.Contains(err.Error(), `unknown field "prefixes"`) {
+			t.Errorf("%s: %v, want the unknown field prefixes", raw, err)
+		}
 	}
 }

@@ -169,7 +169,7 @@ func TestRenderReadRules(t *testing.T) {
 		"untokened query":  func(string) { h.renderCall("p", "c1", "hub.sql.query", map[string]any{}) },
 		"unknown ID":       func(string) { query("c1", "r-unknown") },
 		"another instance": func(id string) { query("c2", id) },
-		"hub.store.get":    func(string) { h.renderCall("p", "c1", "hub.store.get", map[string]any{"keys": []any{"k"}}) },
+		"hub.identify":     func(string) { h.renderCall("p", "c1", "hub.identify", map[string]any{"pid": 1.0}) },
 		"hub.agents":       func(string) { h.renderCall("p", "c1", "hub.agents", map[string]any{}) },
 		"a failed query":   func(id string) { h.renderRead("p", "c1", id, nil, false) },
 		"sqlite_sequence": func(id string) {
@@ -199,7 +199,7 @@ func TestRenderReadRules(t *testing.T) {
 
 	// A call with no open render changes nothing; a closed ID used during the next render makes
 	// that render untracked.
-	h.renderCall("p", "c1", "hub.store.get", map[string]any{})
+	h.renderCall("p", "c1", "hub.identify", map[string]any{})
 	old, _ := open()
 	h.closeRenderID(old)
 	_, r = open()
@@ -422,7 +422,7 @@ func TestRenderTrackedOtherTriggers(t *testing.T) {
 	}
 	h.vs.mu.Lock()
 	st := h.vs.views["p"]["v1"]
-	st.deps = &viewDeps{prefixes: []string{}, changes: []string{"workers"}}
+	st.deps = &viewDeps{changes: []string{"workers"}}
 	h.vs.mu.Unlock()
 	dirty := func() renderCause {
 		h.vs.mu.Lock()

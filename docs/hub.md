@@ -76,8 +76,8 @@ If no snapshot exists, it returns a tree with a loading node and schedules plugi
 Plugin output replaces the snapshot only if it belongs to the current view and attachment generation.
 The hub schedules this work outside the Rex request handler.
 The plugin can then call hub storage without a nested call cycle.
-After a store commit in its namespace, the hub renders the plugin's open views again: every view,
-or only the views whose declared dependencies match ("Render dependencies", below).
+After a SQL commit of the plugin, the hub renders the plugin's open views again: every view, or
+only the views that read a changed table ("SQL read tracking", below).
 A plugin calls `hub.ui.invalidate {routes?}` for changes outside storage.
 
 The hub calls `view.changed {view_id, attachment, revision}` on the renderer after a snapshot changes.
@@ -97,26 +97,18 @@ It resolves the current hub and repeats attachment, subscription, and fetch when
 
 ### Render dependencies
 
-A `view.render` reply can add `"deps": {"prefixes": [...], "changes": [...]}` beside `tree`
-(renderdeps.go). The hub then renders the view again only for the triggers that it declares.
+A `view.render` reply can add `"deps": {"changes": [...]}` beside `tree` (renderdeps.go). The hub
+then renders the view again for a change only when it declares that change.
 
-- `prefixes`: a committed key (written or deleted, from `hub.store.batch`) marks the view when it
-  starts with a prefix. `""` matches every key. Missing (or no `deps`): every commit of the plugin
-  marks the view. An empty list: no commit marks it. A batch without record writes (notices only)
-  marks only the views without prefixes. A conflict and a replay of a saved op commit nothing.
 - `changes`: a subset of `agents`, `plugins`, `workers` and `profiles`. The hub renders every view
   of every registered plugin on such a change. Missing: as that. An empty list: no change marks the
   view. The plugin still gets `hub.changed {what}`, so it can call `hub.ui.invalidate {routes}`.
 - Rex Lua encodes an empty table as `{}`: the hub reads `{}` as the empty list, so
-  `deps = {prefixes = {}}` is the explicit empty list.
-- Malformed deps (not an object; a list that is not strings; more than 64 prefixes; a prefix over
-  512 bytes; an unknown name in `changes`; an unknown field) count as no declaration. The tree is
+  `deps = {changes = {}}` is the explicit empty list.
+- Malformed deps (not an object; a list that is not strings; an unknown name in `changes`; an
+  unknown field, also `prefixes`, which went with hub.store) count as no declaration. The tree is
   shown, and the event `view_deps_invalid {plugin, view_id, route, error}` comes when the error text
   changes.
-- What to declare: each key that the render reads with `hub.store.get` (a key as a prefix also
-  matches longer keys: only extra renders), and the prefix of each `hub.store.scan` (a scan without
-  a prefix needs `""`). A missing prefix gives a stale view until another trigger. `calls()` in a test
-  shows the reads (testing.md).
 
 The other triggers do not use the declaration:
 
@@ -180,7 +172,7 @@ Read tracking is the default. A `view.render` reply can add `"refresh"` beside `
 A render is tracked when the hub knows each table that it read. It is untracked when, while it is
 open, the plugin makes any hub call that is not a `hub.sql.query` with the open render ID of the
 same plugin instance (for example a query without `render`, a closed or unknown ID, another
-plugin's ID, `hub.store.get`, `hub.store.scan`, `hub.store.ops_scan`, `hub.agents`). Each such
+plugin's ID, `hub.agents` without `render`, `hub.identify`). Each such
 call makes every open render of the plugin untracked; the views of renders that ended keep their
 tables. A new hub action counts as such a call unless it is a `hub.sql.query` with `render`. A
 render is also untracked after a query with its ID fails with an error other than `conflict`,
@@ -195,8 +187,8 @@ Marks and races (the rules of "Render dependencies" apply):
   again after it. A schema change marks every view of the plugin.
 - A new registration clears every table set of the plugin; a render from before it installs
   nothing. A closed view loses its set. A failed or transient render clears the set.
-- The table set and the store `deps` are separate inputs: the set filters SQL commits only, and
-  `deps.prefixes` filters store commits only. The other triggers do not use the set.
+- The table set filters SQL commits only, and `deps.changes` filters changes only. The other
+  triggers use neither.
 - `hub.test.renders` shows `sql_tracked` (true when the view has a table set) for each view. It
   shows no table names.
 
@@ -656,7 +648,6 @@ Each plugin row records the session of its instance (`plugins.session_id`, and `
 - A spawn intent for a session that is gone is abandoned. An intent for a live session is searched for in that session, and stays unresolved until found. A legacy intent is searched for in every session. An unresolved intent stops every start of the plugin, also `hub.admin.start` (code `unresolved_intent`). There is no override (plugin-sources.md, section 7).
 - A plugin whose dependency is not registered waits (state `waiting`, with the names). An accepted `hub.register`, a `hub.admin.start` or `hub.admin.stop` of any plugin, and a refusal start each waiting plugin again. `hub.admin.start` of such a plugin answers `{"desired": "running", "state": "waiting", "waiting": [names]}`. A dependency that stops, crashes or is refused later does not stop its dependents (plugin-sources.md, section 7).
 - `hub.plugins.reload` reads the managed file again (plugin-sources.md, section 13). An operator or the registered current instance of an entry-backed plugin may call it. A removed entry's instance runs on as a kept record until `hub.admin.stop`; a re-add with the same name and source keeps a registered instance that passes the start check. `hub.admin.start` of a retained instance runs the start check again.
-- The store fence: a `hub.store.batch` of a plugin instance checks its caller again under a per-plugin lock, and each path that clears the instance's client ID (a retirement, a stop, an exit, a session loss) takes that lock after the clear. A batch that passed the first caller check before the clear then fails with `stale_instance` and writes nothing; a batch that already holds the lock commits before the retirement continues. After a replace returns, no store write of the old instance commits. Unit tests: `TestStoreWriteFence`, `TestStoreWriteFenceWaits`.
 - `hub.admin.replace {plugin, expect_instance}` replaces the running instance with a new instance from the current candidate (plugin-sources.md, section 14). The admin guard applies. After a refusal before the retirement, the replace has retired nothing and spawned nothing; the reconciliation of the spawn intents can still change the owned instance. `spawn_unknown` keeps the intent open. A `spawn_failed` whose intent the hub could not abandon reports that intent as open. `hub.plugins` entries report `instance_id`, `instance_pending`, `desired` and `registered`.
 - The crash backoff (lead-hf-queue item 2; `respawn.go`). An instance that exits (`child_exited`) while its entry is desired running respawns from its selected run (plugin-sources.md, section 7, "Selected run") after a delay: 1 s, then twice the last delay, at most 60 s. An instance that ran 60 s or more from its spawn starts the delays again at 1 s. `hub.plugins` state `crashing`: desired running; the recorded instance has exited; a respawn is due at `respawn_at`. It is not `stopped` and not `running`, and it is not registered. The record keeps the exited `instance_id` until the respawn retires it. While crashing, the entry also reports `respawn_at` (RFC 3339) and `respawn_delay_ms`; in every other state these keys are absent. From the first exit in this hub process, the entry reports `last_exit`: `{at, detail, ran_ms}`. `detail` is the hub's text of the exit (the `child_exited` error, else the exit code): one line, at most 200 bytes. `ran_ms` is absent when the hub did not record the spawn. A stop (`hub.admin.stop`, a user close of the block) cancels the respawn and resets the delay. A start that passes its refusals cancels it and keeps the delay; a refused start leaves it. A respawn whose start enters `waiting`, an unresolved intent or a refusal leaves the next start to that state; only a start error with no such owner (for example no work session, or a Rex refusal of the block) schedules the next respawn. The backoff is in memory: a hub restart starts it again. A plugin that exits during its start gets `plugin_exited` and the crash backoff: when the exit comes before the hub has recorded the block, the hub reads the block after it records it and takes the exit from that read. A respawn is not a plugin op attempt: it writes no `plugin_op_attempts` row. Events: `plugin_respawn_scheduled` `{plugin, instance_id, delay_ms}` (with `reason` after a failed respawn), `plugin_respawn` `{plugin, delay_ms}`.
 - `hub.admin.replace` and `hub.admin.start` take an optional `expect_run {source, commit, digest}` (commit and digest only for a GitHub source). Inside admission, before any retirement or spawn, the candidate must be that exact run, else code `candidate_changed` and nothing changes. A start with `expect_run` sets the desired state only when it starts, and never waits: a dependency that is not registered is `dependency_not_ready` (plugin-sources.md, section 14). On a running local plugin, a local `expect_run` start compares the snapshot digest of the current source: the same digest keeps the instance, a new digest replaces it, and a failed snapshot refuses with no change. A plain start of a running plugin changes nothing.
@@ -682,7 +673,6 @@ Each plugin row records the session of its instance (`plugins.session_id`, and `
   - replace: the row read; the binding; `sent_at`; the row insert; the resolution of earlier intents; the refusals; the retire; the spawn, with the intent and its `intent_id` in one transaction. The resolution of earlier intents belongs to those intents, not to this attempt. A replace refusal after it says that this replace retired and spawned nothing. When the resolution changes the instance or the block from the bound target, the replace refuses `instance_changed`.
   The refusals before any effect (before `sent_at`): `invalid_input`, the other argument errors, an unknown plugin, `attempt_bound`, `entry_changed` (start, stop and replace), the refusal of a kept record (start), and `candidate_changed` of a running plugin (start). The refusals after `sent_at` and before the attempt's own effect: start: `refused`, `candidate_changed`, `dependency_not_ready`, `unresolved_intent`; replace: `unresolved_intent`, `no_instance`, `instance_changed`, `refused`, `candidate_changed`, `dependency_not_ready`; stop: none. A code that a call also returns after its own effect is not in its list: replace returns `stopped` before its retire and after it, so a `stopped` replace after `sent_at` is unresolved. A new refusal code must say on which side of `sent_at` it comes.
 - The admin guard (`hub.admin.*`, and `hub.plugins.reload` from a caller that is not a registered instance) refuses a caller in an agent or plugin pane. It walks the caller's process ancestry from the Rex-attested pid. Three outcomes: a match (refused), a complete walk to pid 1 without a match (allowed: an operator), and an incomplete walk (refused): the caller has no pid (a missing pid, or a TCP caller: TCP has no pid), a process information read failed, a process in the chain ended, a parent is 0 before pid 1, or the walk passed 64 processes. Only a walk that reaches pid 1 is complete. Text: `cannot check the caller's process ancestry: <error>; admin actions need a verified caller`. A match found before the walk fails still counts. The guard checks the call, not the keys in a view: an action that a view offers runs from its renderer pane (residual risk: "Restart form"). Checks that allow only on a match (registration, view ownership, `hub.identify`) treat an incomplete walk as no match, so they refuse too.
-- `hub.admin.sql_return {plugin}` takes a stopped plugin back from hub.sql to its store version: it moves the plugin's SQL file aside and gives the notice path back to `hub.store.batch` (sql.md, section 11). The admin guard applies.
 - Plugin operations (option C, the user's decision of 2026-10-19).
   - Status (checkpoint 1, the hub lead's condition 4): main has the op service, the hold, the lock writer, the update and remove phases, and the tags and log loads. The manager views (the home plugin's "Plugins…", C8) and their real-view labs (C6) come in a later checkpoint, and the legacy sweep (C9) after them. Until C8, no home view sends the `plugins` effect, so add and update (user only) have no caller, nothing calls `hub.plugins.tags` or `hub.plugins.log`, and an agent start that is `user_confirmation_required` has no panel where the user confirms it (until C8 the refusal is final for that request).
   - Agents do not pass the admin guard. They start, stop, remove and change the settings of plugin entries through `hub.plugins.op {key, op, entry, input?, expect?}` on the agent face (`lazyrex`) only. The caller must be a joined agent or a current conversation, so a plugin process is refused. `entry` is `managed:<id>` or the exact source of a config entry; `settings` (`input {args, watch_roots}`) and `remove` change only managed entries. `settings` takes an optional `expect {args, watch_roots}` (from an agent or the user's panel): the values that the caller read. If the managed entry has other values at admission, the hub refuses with code `conflict` and the text "the settings changed since they were shown", and stores nothing. An input equal to the current values ends the op at admission: `done`, result `no change`, with no write and no reload. A missing field and an empty one are equal. Only `start` and `settings` have `expect`; an agent gives it for `settings` only. The home plugin entry cannot be stopped or removed. The same key with another request is `operation_conflict`; the same request returns the existing op. An agent's `add` and `update` are refused with code `user_only` and the text "add and update need the user: ask the user to open LazyRex: Plugins…" (until B9, the request that the user confirms).
@@ -1091,10 +1081,10 @@ Tests: `TestRestartTokenChanged`, `TestRestartFormStaleRevision`, `TestRestartFo
 
 The hub writes one line for each answered call (`Hub.answer`, `hub/cmd/hub/calllog.go`): `<action> from <client> pid <pid> -> <error or <nil>> in <ms>`. One exception: a fast, successful routine read gets no line.
 
-- The routine reads are `hub.store.get`, `hub.store.scan` and `hub.sql.query`. Before Messaging f60a990 (2026-10-21), the live Messaging plugin made tens of thousands of them a minute, and a line for each made the log grow by about 1 GB. After f60a990, it makes about 500 to 1,000 a minute.
+- The routine read is `hub.sql.query` (`hub.store.get` and `hub.store.scan` were routine reads until the hub.store removal). Before Messaging f60a990 (2026-10-21), the live Messaging plugin made tens of thousands of them a minute, and a line for each made the log grow by about 1 GB. After f60a990, it makes about 500 to 1,000 a minute.
 - A routine read keeps its line when it fails, when its reply was not delivered, or when it takes 250 ms or longer.
 - Every other action keeps its line, also an action that is added later. A call that changes state for another party (admin, register, spawn, acting as the user) needs its line.
-- The hub counts the skipped calls. The first call one minute or more after the count started writes one summary line before its own line, then the count starts again: `routine calls without a line since 15:00:00: hub.store.get 3 (max 12.0ms), hub.store.scan 1 (max 40.0ms)`. A minute without skipped calls writes no summary. No goroutine writes the summary: the first call after the minute writes it. After a burst of reads with no later call, the counts wait for the next call. So a missing summary line does not mean that no reads occurred.
+- The hub counts the skipped calls. The first call one minute or more after the count started writes one summary line before its own line, then the count starts again: `routine calls without a line since 15:00:00: hub.sql.query 4 (max 40.0ms)`. A minute without skipped calls writes no summary. No goroutine writes the summary: the first call after the minute writes it. After a burst of reads with no later call, the counts wait for the next call. So a missing summary line does not mean that no reads occurred.
 - `events.jsonl` does not change: the hub events stay in that file.
 - Where the lines go: under `-restart`, to `<state>/hub.log`, size-bounded (see "Restart wrapper", "Log"). With dev.sh, to its redirect `<state>/dev/hub.log`, which has no size bound. A crash trace goes to the same place as the lines.
 
@@ -1310,29 +1300,27 @@ The three focused hub checks also passed on that version.
 Observed on Rex `0.0.1792158932-g88fd41`: the real-hub test passed with an owned shared clone of restty.
 Creation completed in 657 ms in that run. This measurement is not a performance guarantee.
 
-## Notices (notify ops)
+## Notices
 
-A plugin with a `notice` in its manifest sets a pending notice for an agent with a `notify` op in
-`hub.store.batch`. The hub writes the notice text into the agent's pane when the agent is ready (see
-"Profiles and workers"). The ops:
+A plugin with a `notice` in its manifest sets a pending notice for an agent with a notice in
+`hub.sql.commit {notices = [...]}` (sql.md, section 7). The hub writes the notice text into the
+agent's pane when the agent is ready (see "Profiles and workers"). The forms:
 
-- `{notify: {agent, pending: true}}`: a pending notice with a new revision. Each one gives one
+- `{agent, pending: true}`: a pending notice with a new revision. Each one gives one
   nudge (one pane write), also while an earlier nudge is unread.
-- `{notify: {agent, pending: true, once: true}}`: one nudge until a read (the user's rule,
+- `{agent, pending: true, once: true}`: one nudge until a read (the user's rule,
   2026-10-22). The revision is new only if the row is not pending, or the agent read since the last
   revision. Otherwise the row stays as it is and no nudge follows.
-- `{notify: {agent, read: true}}`: the agent read. The next `once` op gives a nudge again. The
+- `{agent, read: true}`: the agent read. The next `once` notice gives a nudge again. The
   read also ends the nudge of the current revision: one not written yet is not written, and the
   repeat (below) is cancelled. `pending` does not change. A read for an agent with no row does
   nothing. `read` takes no `pending` and no `once`.
-- `{notify: {agent, pending: false}}`: no pending notice.
+- `{agent, pending: false}`: no pending notice.
 
-`once` is a boolean, and only with `pending: true`. Any other form is a malformed request, and
-nothing in the batch is written. A hub before this change ignores `once`, and refuses
-`{agent, read: true}` because it has no `pending`. So a plugin sends the new forms only after the
-hub release that has them.
+`once` is a boolean, and only with `pending: true`. Any other form is malformed: the commit fails
+and writes nothing.
 
-For every op form, the hub stores each nudge that it writes (`notice_deliveries`: the revision, the
+For every form, the hub stores each nudge that it writes (`notice_deliveries`: the revision, the
 time, and the conversation: the block, the child pid and its start time). A hub restart, a shim
 reconnect or a rebind does not write it again. Another child process in the pane (a new
 conversation, a spawn, a resume or a restart) gets it again: that conversation never saw it. A
@@ -1960,7 +1948,7 @@ intermediate changes.
 
 ### Actions
 
-The caller is the registered plugin client. The namespace is the plugin name, as for `hub.store`.
+The caller is the registered plugin client. The namespace is the plugin name, as for `hub.sql`.
 Sequence values and cursors are decimal strings.
 
 - `hub.watch.ensure {key, path, glob?, settle_ms?, emit_existing?}` returns

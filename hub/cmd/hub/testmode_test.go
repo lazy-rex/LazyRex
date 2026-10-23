@@ -35,7 +35,7 @@ func TestParityProblem(t *testing.T) {
 		{"hub tool on the face", actionDesc{Name: "x", Tool: "hub.spawn", toolSet: true}, ""},
 		{"hub tool not on the face", actionDesc{Name: "x", Tool: "hub.stop", toolSet: true}, "hub tool \"hub.stop\" is not on the agent face"},
 		{"unknown hub name", actionDesc{Name: "x", Tool: "hub.nope", toolSet: true}, "not an export"},
-		{"hub action that agents cannot call", actionDesc{Name: "x", Tool: "hub.test.write", toolSet: true}, "not an export"},
+		{"hub action that agents cannot call", actionDesc{Name: "x", Tool: "hub.test.sql", toolSet: true}, "not an export"},
 	}
 	for _, c := range cases {
 		got := parityProblem(c.d, exports, face, hubFace)
