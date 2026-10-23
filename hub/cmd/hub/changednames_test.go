@@ -34,7 +34,7 @@ func changedNames(t *testing.T, h *Hub) (wait func(want ...string)) {
 	}
 	h.plugins["p"] = &Plugin{Name: "p", ClientID: "client:p"}
 	if h.vs == nil {
-		h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
+		h.vs = newViewSvc()
 	}
 	h.vs.workers["p"] = make(chan struct{}, 1) // no view worker runs
 	return func(want ...string) {
