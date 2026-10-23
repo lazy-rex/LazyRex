@@ -144,7 +144,6 @@ with a new Rex client at `2026-10-16T20:57:38.516623Z`. The composer restored
 Tests verify that reload waits for a save result, a generic action result, and
 connection recovery. Tests also verify that conflicts, removed controls, and dirty
 text or choice fields prevent reload. These tests pass with the Go race detector.
-A full lab reload during an uncertain operation remains untested.
 
 ### Renderer retirement
 
@@ -165,7 +164,7 @@ Model tests cover blocked retirement, draft saves, pending actions, and reload
 priority. Protocol fixture tests cover admission and hub, view, and attachment
 checks. Full migration with the real hub remains untested by these tests.
 
-### Modern layout and read notices
+### Layout and read notices
 
 The renderer uses Lip Gloss for layout and colors, Bubbles for the textarea and
 viewport, and Glamour `v2.0.1` for message Markdown. The Go module proxy reported

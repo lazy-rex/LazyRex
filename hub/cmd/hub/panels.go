@@ -8,7 +8,7 @@ package main
 // (hub.view.close). A command with surface "panel" opens a panel; a view action can open one with
 // the effect {panel: {command} | {route} | {plugin, command}}.
 //
-// Opening into a slot that holds a view replaces it (contract agreed with Codex, 2026-10-17):
+// Opening into a slot that holds a view replaces it:
 //   - The hub asks the old renderer view.release {replacement_id}. "released": the renderer froze
 //     its input. "confirm": unsaved input; the renderer asks the user (Keep editing / Discard and
 //     replace) and answers with hub.view.release_confirm.
@@ -167,7 +167,7 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 	}
 	if req.ExpectEmpty {
 		// A return opens only into an empty slot: a view the user opened after the form closed
-		// (or one still opening) keeps it (Codex's review). The window lock makes this exact.
+		// (or one still opening) keeps it. The window lock makes this exact.
 		var n int
 		h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE window_id = ? AND state = 'opening'`, req.Ctx.WindowID).Scan(&n)
 		if old, _, _, err := h.slotOccupant(ctx, req.Ctx.WindowID); err != nil {
@@ -177,7 +177,7 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 		}
 	}
 	// An unresolved row of this window is superseded. Its old renderer is frozen for it: the hub
-	// resumes it with the old ID before it asks for a new release (Codex's review).
+	// resumes it with the old ID before it asks for a new release.
 	prevRows, err := h.db.QueryContext(ctx, `SELECT repl_id FROM ui_replacements WHERE window_id = ? AND state = 'opening'`, req.Ctx.WindowID)
 	if err != nil {
 		return nil, err
@@ -375,7 +375,7 @@ func (h *Hub) askRelease(ctx context.Context, r *slotRow) error {
 	return err
 refused:
 	// The terminal state is durable before the renderer resumes, so a reattach or a
-	// release_confirm never sees releasing (Codex's review).
+	// release_confirm never sees releasing.
 	if serr := h.setSlotState(ctx, r, "cancelled"); serr != nil && !errors.Is(serr, errSlotMoved) {
 		return serr
 	}
@@ -644,7 +644,7 @@ func (h *Hub) slotRefused(ctx context.Context, r *slotRow, cause error) error {
 		return err
 	}
 	if r.Old != "" && r.State == "cancelled" {
-		h.resumeOld(r) // after the durable state (Codex's review)
+		h.resumeOld(r) // after the durable state
 	}
 	return fmt.Errorf("open %s: %w", r.Route, cause)
 }
@@ -774,7 +774,7 @@ func (h *Hub) releaseConfirm(ctx context.Context, p perform, args map[string]any
 
 // slotAttachState is the replacement an attaching renderer must follow: {replacement_id, state,
 // next_title}, from the durable row. The active replacement of the view comes first, also when the
-// renderer names no ID (a restarted renderer lost it; Codex's review). A named ID the hub does not
+// renderer names no ID (a restarted renderer lost it). A named ID the hub does not
 // know for this view is cancelled. nil: nothing to follow.
 func (h *Hub) slotAttachState(ctx context.Context, viewID, repl string) map[string]any {
 	var id, state, title string
@@ -830,7 +830,7 @@ func (h *Hub) slotStart(ctx context.Context) error {
 }
 
 // slotOldClosed records the user's close of a view that a replacement waits on: the row is
-// user_closed, so a late new pane is closed and never kept (Codex's review).
+// user_closed, so a late new pane is closed and never kept.
 func (h *Hub) slotOldClosed(ctx context.Context, viewID string) {
 	h.db.ExecContext(ctx, `UPDATE ui_replacements SET state = 'user_closed' WHERE old_view = ? AND state IN ('releasing', 'confirming', 'opening')`, viewID)
 }
@@ -841,11 +841,11 @@ func (h *Hub) slotOldClosed(ctx context.Context, viewID string) {
 // owns the form's pane (also when it was refused or the user kept editing; the form stays and err
 // says why); false, no return, and the caller closes the form. A closed form's return opens only
 // into an empty slot. In split mode it never takes the focus: the hub does not know where the user
-// was (Codex's review). In layer mode an unfocused layer would cover the user's pane, so the return
+// was. In layer mode an unfocused layer would cover the user's pane, so the return
 // opens with the focus, and only while the focus is still on the form's under block; otherwise it
 // is skipped (form_return_skipped).
 // opKey is the operation key of the action that ended an open form: a new submit after Keep
-// editing gets a new return row; a replay gets the same one (Codex's review).
+// editing gets a new return row; a replay gets the same one.
 func (h *Hub) formEnded(ctx context.Context, viewID string, fc formContext, open bool, opKey string) (bool, error) {
 	if fc.Panel || fc.Return == nil {
 		return false, nil

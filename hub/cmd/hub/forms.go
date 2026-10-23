@@ -504,7 +504,7 @@ func (h *Hub) paletteRun(ctx context.Context, p perform, args map[string]any) (a
 		fc.SourceViewID, fc.SourceRoute = src.ID, src.Route
 	} else if err == nil && src != nil {
 		// Run from a side panel or form: the source is that view's own source, not the side pane
-		// (its cwd is the renderer's, and the replacement closes it) (Worktrees Codex's review).
+		// (its cwd is the renderer's, and the replacement closes it).
 		if prev, ok := h.formOf(ctx, src.ID); ok {
 			fc.SourceViewID, fc.SourceRoute, fc.SourceBlock = prev.SourceViewID, prev.SourceRoute, prev.SourceBlock
 		}
@@ -842,7 +842,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 		sc := fc
 		sc.Panel, sc.Return = panel, nil
 		// The new view takes the source form's place. The source is still asked to release, so
-		// input typed after the submit is not lost (Codex's review).
+		// input typed after the submit is not lost.
 		req := slotRequest{ReplID: formEffectID(plugin, key), Plugin: target, Route: route, Ctx: sc, Focus: true, NextTitle: title}
 		if isForm && !fc.Panel {
 			req.ExpectOld = viewID
