@@ -713,3 +713,25 @@ func TestSelectedRunWaitSaveFails(t *testing.T) {
 		t.Fatalf("the failed selection was stored:\n%s\n%s", before, after)
 	}
 }
+
+// The byte bound counts the bytes that the copy wrote: a file that grows after its stat still
+// refuses the start, and no stage is left (codex-27, plugins-p1-deviations-source-review).
+func TestLocalSnapshotGrowingFile(t *testing.T) {
+	h, pl, src := p1Local(t)
+	n, hook := localSnapshotBytes, localCopyHook
+	localSnapshotBytes = 100
+	localCopyHook = func(p string) {
+		if filepath.Base(p) == "p.lua" {
+			p1Edit(t, src, "p.lua", strings.Repeat("x", 200))
+		}
+	}
+	t.Cleanup(func() { localSnapshotBytes, localCopyHook = n, hook })
+	err := p1Start(t, h, pl)
+	state, refusal, _ := p1State(h, pl)
+	if want := "plugin p: the source " + src + " is over the copy bound (10000 files, 100 bytes)"; codeOf(err) != "refused" || refusal != want {
+		t.Fatalf("%v; state %s, refusal %q", err, state, refusal)
+	}
+	if m, _ := filepath.Glob(filepath.Join(h.cfg.State, "plugins", "local", "*")); len(m) != 0 {
+		t.Fatalf("left: %v", m)
+	}
+}
