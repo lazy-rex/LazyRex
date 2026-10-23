@@ -2,6 +2,12 @@
 -- only their target, and leave durable state that a same-key retry recovers. The fixture's
 -- fix.hub calls a hub action as the plugin and returns the hub's answer as data.
 
+-- kv returns the decoded value of the fixture's kv row key (nil: no row).
+local function kv(key)
+  local row = sql('SELECT value FROM kv WHERE key = ?', {key})[1]
+  return row and rex.json.decode(row.value)
+end
+
 local alice = agent('alice')
 local lockdir = H.args.lab .. '/tmp' -- not the cwd of any worker pane (workers start in HOME)
 
@@ -167,22 +173,23 @@ test('fail_code: an action fault fails with the chosen code; the default stays f
   hubcall('hub.cwd.unlock', {path = lockdir, key = 'fc'})
 end)
 
-test('fail_code on an injection: a batch fails with the chosen code; the default stays injected_failure', function()
-  local batch = {ops = {{key = 'fc/x', value = 1}}}
-  expect_error(function() inject({match = {writes = 'fc/x'}, ops = {{key = 'fc/y', value = 1}}, fail_code = 'unavailable'}) end, 'needs fail')
-  expect_error(function() inject({match = {writes = 'fc/x'}, fail = 'x', fail_code = ''}) end, 'nonempty')
+test('fail_code on an injection: a commit fails with the chosen code; the default stays injected_failure', function()
+  local write = {sql = 'INSERT INTO kv VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value', params = {'fc/x', '1'}}
+  local match = {sql_commit_writes = 'kv', sql_param = 'fc/x'}
+  expect_error(function() inject({match = match, fail_code = 'unavailable'}) end, 'needs fail')
+  expect_error(function() inject({match = match, fail = 'x', fail_code = ''}) end, 'nonempty')
   local e
-  with_injection({match = {writes = 'fc/x'}, fail = 'definite'}, 1, function() e = hubcall('hub.store.batch', batch).error end)
+  with_injection({match = match, fail = 'definite'}, 1, function() e = hubcall('hub.sql.exec', write).error end)
   expect(e.code, 'the default code').to_be('injected_failure')
-  with_injection({match = {writes = 'fc/x'}, fail = 'transient', fail_code = 'unavailable'}, 1, function() e = hubcall('hub.store.batch', batch).error end)
+  with_injection({match = match, fail = 'transient', fail_code = 'unavailable'}, 1, function() e = hubcall('hub.sql.exec', write).error end)
   expect(e.code).to_be('unavailable')
   expect(e.message).to_match('transient')
-  expect(store('fc/x').rev, 'a failed batch commits nothing').to_be('0')
-  expect(hubcall('hub.store.batch', batch).result, 'the retry commits').to_be_truthy()
-  expect(store('fc/x').value).to_be(1)
-  local iid = inject({match = {writes = 'fc/z'}, fail = 'fraction'})
+  expect(kv('fc/x'), 'a failed commit commits nothing').to_be(nil)
+  expect(hubcall('hub.sql.exec', write).result, 'the retry commits').to_be_truthy()
+  expect(kv('fc/x')).to_be(1)
+  local iid = inject({match = {sql_commit_writes = 'kv', sql_param = 'fc/z'}, fail = 'fraction'})
   expect_error(function() injection(iid + 0.5) end, 'no injection')
-  expect(hubcall('hub.store.batch', {ops = {{key = 'fc/z', value = 1}}}).error.code).to_be('injected_failure')
+  expect(hubcall('hub.sql.exec', {sql = 'INSERT INTO kv VALUES (?, ?)', params = {'fc/z', '1'}}).error.code).to_be('injected_failure')
 end)
 
 test('nth: the fault fires on the n-th matching call', function()
@@ -198,25 +205,25 @@ test('nth: the fault fires on the n-th matching call', function()
 end)
 
 test('gate: matching calls get unavailable until the release; a retrying caller then passes', function()
-  expect_error(function() fault({point = 'action', action = 'hub.store.batch', when = 'after', mode = 'gate'}) end, 'needs when before')
+  expect_error(function() fault({point = 'action', action = 'hub.sql.exec', when = 'after', mode = 'gate'}) end, 'needs when before')
   local plain = fault({point = 'action', action = 'hub.cwd.lock', when = 'before', mode = 'fail', key = 'gate-plain'})
   expect_error(function() fault_release(plain) end, 'not a closed gate')
   hubcall('hub.cwd.lock', {path = lockdir, key = 'gate-plain'})
   user:command('fix_form')
   local form = user:view('/forms/fix')
   form:render()
-  local id = fault({point = 'action', action = 'hub.store.batch', when = 'before', mode = 'gate'})
+  local id = fault({point = 'action', action = 'hub.sql.exec', when = 'before', mode = 'gate'})
   -- A view operation: the hub retries an unavailable outcome every 500 ms.
   local _, key = form:admit('action', {node_id = 'form', action = 'submit', input = {values = {value = 'gated'}}, revision = form.revision})
   wait('the gate refuses a retry too', function() return H.hub('hub.test.fault_state', {id = id}).gated >= 2 end)
   expect(operation(key).status, 'the operation waits at the gate').to_be('pending')
-  expect(store('form').rev, 'nothing committed').to_be('0')
-  expect(hubcall('hub.store.batch', {ops = {{key = 'gate/x', value = 1}}}).error.code, 'a direct call is refused too').to_be('unavailable')
+  expect(kv('form'), 'nothing committed').to_be(nil)
+  expect(hubcall('hub.sql.exec', {sql = 'INSERT INTO kv VALUES (?, ?)', params = {'gate/x', '1'}}).error.code, 'a direct call is refused too').to_be('unavailable')
   local r = fault_release(id)
   expect(r.released).to_be(true)
   expect_error(function() fault_release(id) end, 'not a closed gate')
   expect(form:settle(key).status, 'the retry after the release succeeds').to_be('succeeded')
-  expect(store('form').value).to_equal({value = 'gated'})
+  expect(kv('form')).to_equal({value = 'gated'})
 end)
 
 test('gate: a gate that has not fired cannot be released', function()

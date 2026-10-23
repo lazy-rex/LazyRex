@@ -1,11 +1,17 @@
 -- Tab rename (hub/cmd/hub/tabrename.go): the user renames a plugin view's Rex tab, and the plugin
--- gets view.rename. The fixture keeps the title literally and declares it again; the record
+-- gets view.rename. The fixture keeps the title literally and declares it again; the kv row
 -- renames lists every title it got. A label that the hub writes (from a declared title) is never a
 -- rename.
 
+-- kv returns the decoded value of the fixture's kv row key (nil: no row).
+local function kv(key)
+  local row = sql('SELECT value FROM kv WHERE key = ?', {key})[1]
+  return row and rex.json.decode(row.value)
+end
+
 local alice = agent('alice')
 
-local function renames() return store('renames').value or {} end
+local function renames() return kv('renames') or {} end
 local function events() return #(H.hub('hub.test.events', {event = 'tab_rename'}).events or {}) end
 local function title() return H.tab('home').title end
 

@@ -2,6 +2,9 @@
 -- declaration calls the hub during view.open, so a hub handler that waits for view.open stalls
 -- for the full call timeout (rex-protocol.md, "The hub has one request queue").
 
+-- opens counts the fixture's view.open calls (its table opens).
+local function opens() return tonumber(sql('SELECT count(*) AS n FROM opens')[1].n) end
+
 -- committed returns the tabs of the committed navigations, oldest first.
 local function committed()
   local out = {}
@@ -36,14 +39,14 @@ test('an undeclared tab answers at once and opens', function()
 end)
 
 test('a tab that view.open does not declare fails, and polling does not open again', function()
-  local before = store('opens').value or 0
+  local before = opens()
   local ok, r = navigate('nope/x')
   expect(ok, tostring(r)).to_be(true)
   expect(r.status).to_be('pending')
   expect(H.hub('hub.ui.navigate', {navigation_id = r.navigation_id}).status).to_be('pending')
   local done = poll(r)
   expect(done.error and tostring(done.error) or '').to_match('has no tab')
-  expect(store('opens').value).to_be(before + 1)
+  expect(opens()).to_be(before + 1)
 end)
 
 test('an older navigation that finishes late does not replace a newer one', function()

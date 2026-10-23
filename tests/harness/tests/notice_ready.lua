@@ -27,8 +27,8 @@ end
 
 -- notify sets a pending notice of the plugin under test for the agent id.
 local function notify(a, id)
-  local r = a:call('fix.hub', {action = 'hub.store.batch', args = {ops = {{notify = {agent = id, pending = true}}}}})
-  expect(r.error, 'the notify batch').to_be(nil)
+  local r = a:call('fix.notify', {notices = {{agent = id, pending = true}}})
+  expect(r.error, 'the notice commit').to_be(nil)
 end
 
 -- far makes a pane in a new session, reports it as the identity claude:<conv>, and returns it.

@@ -1,6 +1,6 @@
 -- A small plugin that tests the Lua test harness itself (docs/testing.md, "Harness self-tests").
--- Its behavior is set by records in its own store namespace, so a test changes it through the
--- real hub:
+-- Its behavior is set by rows of its own SQL table kv(key, value), so a test changes it through the
+-- real hub (value is JSON text):
 --   mode = 'fail'  /home renders an error
 --   mode = 'big'   /home renders a tree larger than one control message
 --   mode = 'noparity'  /home has an action with neither tool nor user_only
@@ -18,14 +18,15 @@ local function hub(action, args)
   return res.result
 end
 
-local function get(key)
-  local out = hub('hub.store.get', {keys = {key}})
-  local r = out.records[key]
-  return r and r.value, r and r.rev or '0'
+-- get reads the kv row key. A render passes its render ID, so that the view tracks the table kv.
+local function get(key, render)
+  local row = hub('hub.sql.query', {sql = 'SELECT value FROM kv WHERE key = ?', params = {key}, render = render}).rows[1]
+  return row and rex.json.decode(row[1])
 end
 
-local function put(key, value, if_rev)
-  return hub('hub.store.batch', {ops = {{key = key, value = value, if_rev = if_rev}}})
+local function put(key, value)
+  return hub('hub.sql.exec', {sql = 'INSERT INTO kv VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+    params = {key, rex.json.encode(value)}})
 end
 
 -- send_parts sends a reply in parts, as the SDK does (docs/hub.md "Reply parts"), and returns the
@@ -69,8 +70,8 @@ local function filler(kb)
 end
 
 local obj = {type = 'object'}
-local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.op', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub',
-  'fix.measure', 'fix.register', 'fix.big', 'fix.saved'}
+local exports = {'fix.put', 'fix.get', 'fix.who', 'fix.fill', 'fix.echo', 'fix.invalidate', 'fix.spawn', 'fix.grant', 'fix.hub',
+  'fix.measure', 'fix.register', 'fix.big', 'fix.saved', 'fix.notify'}
 local actions = {
   {name = 'hub.forward', kind = 'client', title = 'Forwarded agent call', args = obj},
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
@@ -80,18 +81,19 @@ local actions = {
   {name = 'view.rename', kind = 'client', title = 'The user renamed a tab', args = obj},
   {name = 'fix.title', kind = 'client', title = 'Declare a tab with a new title, as an unread count does',
     args = {type = 'object', properties = {key = {type = 'string'}, title = {type = 'string'}}, required = {'key', 'title'}}},
-  {name = 'fix.put', kind = 'client', title = 'Put a record', description = 'Write {key, value}.',
+  {name = 'fix.put', kind = 'client', title = 'Put a kv row', description = 'Write {key, value}.',
     args = {type = 'object', properties = {key = {type = 'string'}, value = {}}, required = {'key', 'value'}}},
-  {name = 'fix.get', kind = 'client', title = 'Get a record', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
+  {name = 'fix.get', kind = 'client', title = 'Get a kv row', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
   {name = 'fix.who', kind = 'client', title = 'Who is calling', args = obj},
-  {name = 'fix.fill', kind = 'client', title = 'Write a record of n copies of text',
+  {name = 'fix.fill', kind = 'client', title = 'Write a kv row of n copies of text',
     args = {type = 'object', properties = {key = {type = 'string'}, text = {type = 'string'}, n = {type = 'integer'}}, required = {'key', 'text', 'n'}}},
   {name = 'fix.echo', kind = 'client', title = 'Echo', args = obj},
   {name = 'fix.big', kind = 'client', title = 'A reply of kb KiB, sent in parts',
     args = {type = 'object', properties = {kb = {type = 'integer'}}, required = {'kb'}}},
   {name = 'fix.saved', kind = 'client', title = 'A keyed write with a saved reply of kb KiB, and its replays',
     args = {type = 'object', properties = {kb = {type = 'integer'}, key = {type = 'string'}, step = {type = 'string'}}, required = {'kb', 'key', 'step'}}},
-  {name = 'fix.op', kind = 'client', title = 'Read a saved operation', args = {type = 'object', properties = {key = {type = 'string'}}, required = {'key'}}},
+  {name = 'fix.notify', kind = 'client', title = 'Commit notices with hub.sql.commit; returns {} or {error = {code, message}}',
+    args = {type = 'object', properties = {notices = {type = 'array'}}, required = {'notices'}}},
   {name = 'fix.invalidate', kind = 'client', title = 'Call hub.ui.invalidate', args = obj},
   {name = 'fix.grant', kind = 'client', title = 'Make a grant for the caller (on_behalf = as_pid or the caller pid)',
     args = {type = 'object', properties = {key = {type = 'string'}, entries = {type = 'array'}, as_pid = {type = 'integer'}}, required = {'key', 'entries'}}},
@@ -101,7 +103,7 @@ local actions = {
   {name = 'fix.grant_get', kind = 'client', title = 'hub.grant.get', args = obj},
   {name = 'fix.ensure', kind = 'client', title = 'hub.session.ensure', args = obj},
   {name = 'fix.select', kind = 'client', title = 'hub.app.select_session', args = obj},
-  {name = 'fix.window_later', kind = 'client', title = 'hub.spawn_window for the user from rex.after; the outcome goes to record window/<key>', args = obj},
+  {name = 'fix.window_later', kind = 'client', title = 'hub.spawn_window for the user from rex.after; the outcome goes to the kv row window/<key>', args = obj},
   {name = 'fix.spawn', kind = 'client', title = 'Start a shell on behalf of the caller (on_behalf = as_pid or the caller pid)',
     args = {type = 'object', properties = {key = {type = 'string'}, as_pid = {type = 'integer'}}, required = {'key'}}},
   {name = 'fix.hub', kind = 'client', title = 'Call a hub action as the plugin', description = 'Returns {result} or {error = {code, message}}.',
@@ -127,11 +129,10 @@ end
 
 local function domain(action, args, pid)
   if action == 'fix.put' then
-    local r = put(args.key, args.value, args.if_rev)
-    return {ok = true, by = who(pid), conflict = r.conflict and true or nil}
+    put(args.key, args.value)
+    return {ok = true, by = who(pid)}
   elseif action == 'fix.get' then
-    local v, rev = get(args.key)
-    return {value = v, rev = rev}
+    return {value = get(args.key)}
   elseif action == 'fix.who' then
     return {agent = who(pid)}
   elseif action == 'fix.fill' then
@@ -139,8 +140,6 @@ local function domain(action, args, pid)
     return {ok = true}
   elseif action == 'fix.echo' then
     return args
-  elseif action == 'fix.op' then
-    return hub('hub.store.op', {key = args.key})
   elseif action == 'fix.invalidate' then
     return hub('hub.ui.invalidate', {})
   elseif action == 'fix.grant' then
@@ -196,6 +195,16 @@ local function domain(action, args, pid)
       return out
     end
     return send_parts(r.reply)
+  elseif action == 'fix.notify' then
+    -- Notices go in a hub.sql.commit (docs/sql.md, section 7). The commit's answer as data.
+    local tx = hub('hub.sql.begin', {}).tx
+    local _, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.sql.commit', args = {tx = tx, notices = args.notices}, timeout_ms = 10000})
+    if err then
+      local text = type(err) == 'table' and (err.message or '') or tostring(err)
+      local code = type(err) == 'table' and err.code or text:match('code=([%w_%-%.]+)%)%s*$')
+      return {error = {code = code, message = text}}
+    end
+    return {}
   elseif action == 'fix.register' then
     register()
     return {}
@@ -267,12 +276,12 @@ end
 -- Lazy tabs (/lazy/<name>) are declared on view.open, as the messaging plugin declares an empty
 -- direct thread. The declaration calls the hub while the hub waits for view.open: the case of
 -- rex-protocol.md, "The hub has one request queue". /lazy/slow waits 2 s first; /nope/* declares
--- nothing. view.open counts its calls in the record opens.
+-- nothing. view.open counts its calls in the table opens (one row for each call), not in kv: a
+-- view of /lazy/deps-<x> tracks kv.
 local tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}
 
 local function view_open(args)
-  local opens = get('opens') or 0
-  put('opens', opens + 1)
+  hub('hub.sql.exec', {sql = 'INSERT INTO opens VALUES (?)', params = {args.route}})
   local gated = args.route:match('^/gated/(.+)$')
   if gated and get('gate') then
     tabs[#tabs + 1] = {key = 'gated/' .. gated, title = 'Gated ' .. gated, route = args.route}
@@ -300,7 +309,7 @@ end
 local function view(action, args)
   if action == 'view.open' then return view_open(args) end
   -- view.rename: the plugin keeps the user's title literally and declares it again, as the messaging
-  -- plugin does. The record renames lists every title in order.
+  -- plugin does. The kv row renames lists every title in order.
   if action == 'view.rename' then
     for _, t in ipairs(tabs) do
       if t.route == args.route then t.title = args.title end
@@ -315,19 +324,20 @@ local function view(action, args)
   if action == 'view.render' then
     if args.route == '/home' then return {tree = home_tree()} end
     if args.route == '/forms/fix' or args.route == '/forms/chain' then return {tree = form_tree()} end
-    -- /lazy/deps-<x> (render_deps.lua): the record spec/deps-<x> is the deps declaration of the
-    -- reply ('fail' fails the render); the text shows the record data/deps-<x>.
+    -- /lazy/deps-<x> (render_deps.lua): the kv row spec/deps-<x> is the deps declaration of the
+    -- reply ('fail' fails the render); the text shows the kv row data/deps-<x>. The reads carry
+    -- the render ID, so the view tracks the table kv.
     local dname = args.route:match('^/lazy/(deps%-.+)$')
     if dname then
-      local spec = get('spec/' .. dname)
+      local spec = get('spec/' .. dname, args.render)
       if spec == 'fail' then error({code = 'render_error', message = 'spec is fail'}) end
-      return {tree = {title = 'Deps', nodes = {{id = 'lazy', type = 'widget', text = tostring(get('data/' .. dname)),
+      return {tree = {title = 'Deps', nodes = {{id = 'lazy', type = 'widget', text = tostring(get('data/' .. dname, args.render)),
         action = {name = 'poke', label = 'Poke', enabled = true, user_only = 'changes nothing'}}}}, deps = spec}
     end
     -- /lazy/reads-<x> (render_reads.lua): the SQL row reads_spec(<x>) gives the refresh value of the
     -- reply and the mode of the data read: 'tokened' (the query carries args.render), 'untokened'
-    -- (no render), 'store' (a tokened query, then a hub.store.get), 'refused' (a tokened query, then a
-    -- tokened query with tx that the hub refuses). The text counts the rows of the table reads_<x>.
+    -- (no render), 'other' (a tokened query, then another hub action), 'refused' (a tokened query,
+    -- then a tokened query with tx that the hub refuses). The text counts the rows of the table reads_<x>.
     local rname = args.route:match('^/lazy/reads%-(%w+)$')
     if rname then
       local function query(sql, tokened)
@@ -338,7 +348,7 @@ local function view(action, args)
       local spec = query('SELECT refresh, mode FROM reads_spec WHERE name = ?', true) or {}
       local refresh, mode = spec[1], spec[2]
       local n = query('SELECT count(*) FROM reads_' .. rname .. ' WHERE ? IS NOT NULL', mode ~= 'untokened')
-      if mode == 'store' then get('reads/' .. rname) end
+      if mode == 'other' then hub('hub.identify', {pid = 0}) end
       if mode == 'refused' then
         -- A tokened query that the hub refuses (tx with render). rex.call returns the error; the
         -- render goes on and still answers refresh: the hub must untrack it.
@@ -440,5 +450,7 @@ rex.on('client_perform_requested', function(ctx, ev)
 end)
 
 register()
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)'})
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS opens (route TEXT NOT NULL)'})
 hub('hub.ui.tabs', {tabs = tabs})
 rex.call('client.set_label', {label = 'lazyrex-plugin:harnessfix'})

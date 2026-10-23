@@ -678,8 +678,9 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
 
 - `plugins/lazyrex/`: the home plugin and its tests, with a messaging stub (`tests/stubs/messaging/`)
   and the harness fixture in `test.plugins`. Run `lazyrex-hub test plugins/lazyrex`.
-- `tests/harness/`: a fixture plugin and tests of the harness itself (agents, views, effects,
-  limits, injections, assertions). Run `lazyrex-hub test tests/harness`.
+- `tests/harness/`: a fixture plugin (its state is the SQL table `kv(key, value)`, JSON values)
+  and tests of the harness itself (agents, views, effects, limits, injections, assertions). Run
+  `lazyrex-hub test tests/harness`.
 - `tests/harness-identity/`: a plugin with no actions and no `test.agents`, so its tests run the
   identity mode of `agent`. Run `lazyrex-hub test tests/harness-identity`.
 - `tests/harness-fail/`: files that must fail, each for the reason in its first line. Its plugin

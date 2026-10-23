@@ -6,6 +6,12 @@
 -- held, the hub gets no other request until the held call's caller times out (10 s here). So a
 -- test sees a hold through Rex (the labeled panes of the new window), not through the hub.
 
+-- kv returns the decoded value of the fixture's kv row key (nil: no row).
+local function kv(key)
+  local row = sql('SELECT value FROM kv WHERE key = ?', {key})[1]
+  return row and rex.json.decode(row.value)
+end
+
 local layout = {split = {direction = 'horizontal', ratio = 0.5,
   before = {leaf = {profile = 'shell'}}, after = {leaf = {profile = 'shell'}}}}
 
@@ -27,7 +33,7 @@ local function spawn_panes(s)
 end
 local function later(a, key, s) return a:direct('fix.window_later', {key = key, session = s, layout = layout}) end
 local function outcome(key)
-  return wait('the outcome of ' .. key, function() return store('window/' .. key).value end, 30)
+  return wait('the outcome of ' .. key, function() return kv('window/' .. key) end, 30)
 end
 local function statuses(r)
   local list = {}
@@ -55,7 +61,7 @@ test('a hold stops only its own key; cancel lets the held call record the window
   cancel_injection(id)
   local r = wait('the recorded window', function()
     later(alice, 'h/held', s)
-    local v = store('window/h/held').value
+    local v = kv('window/h/held')
     return v and v.result and v.result.status == 'open' and v.result or nil
   end, 20)
   expect(statuses(r)).to_equal({'open', 'open'})
@@ -85,12 +91,12 @@ test('a crash during a hold leaves the leaves pending with one candidate pane ea
   -- The crash came before the held call timed out for the fixture. A timeout would have let the
   -- fixture record the error in window/h/crash; the crash ended the fixture (a hub plugin) with
   -- the hub, so nothing is recorded.
-  expect(store('window/h/crash').value).to_be(nil)
+  expect(kv('window/h/crash')).to_be(nil)
   -- The restart ended the hold. The leaves are still unrecorded: the resolver never adopts an
   -- accessory pane by its label, so they stay pending with their candidates.
   local r = wait('the resolver', function()
     later(alice, 'h/crash', s)
-    local v = store('window/h/crash').value
+    local v = kv('window/h/crash')
     local res = v and v.result
     if not res or not res.leaves[1].error or not res.leaves[2].error then return nil end
     return res

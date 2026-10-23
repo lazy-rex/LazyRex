@@ -74,7 +74,7 @@ test('with all, or untracked: every SQL commit renders the view', function()
   local views = {
     all = open('c', 'all'),
     untokened = open('f', nil, 'untokened'),
-    store = open('g', nil, 'store'),
+    other = open('g', nil, 'other'),
     refused = open('i', nil, 'refused'),
   }
   settle()
