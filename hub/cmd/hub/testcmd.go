@@ -38,9 +38,6 @@ type testFile struct {
 	Args map[string]map[string]string `json:"args"`
 	// Prompts replaces test.prompts for this file: a list of plugin names, or false for none.
 	Prompts filePrompts `json:"prompts"`
-	// Home is the hub config "home" for this file: a plugin of the lab that the hub treats as the
-	// home plugin (default: lazyrex). For hub tests of the home rules with the harness fixture.
-	Home string `json:"home"`
 }
 
 // filePrompts is test.files.<file>.prompts. set is false when the file has no prompts entry.
@@ -214,7 +211,7 @@ func (m *manifest) checkPluginGraph(home *testDep) error {
 type testOpts struct {
 	fileArgs                              map[string]map[string]string // test.files args of the file that runs now
 	filePrompts                           filePrompts                  // test.files prompts of the file that runs now (promptGrant)
-	fileHome                              string                       // test.files home of the file that runs now
+	fileHome                              string                       // the hub config home of the lab (a Go lab test sets it)
 	dir, lazyrex, self, rexBin, run, file string
 	home                                  *testDep // the home plugin; nil when it is the plugin under test
 	keep, verbose                         bool
@@ -642,7 +639,6 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 		f := o.m.Test.Files[filepath.Base(file)]
 		o.fileArgs = f.Args
 		o.filePrompts = f.Prompts
-		o.fileHome = f.Home
 	}
 	l, err := o.startLab(ctx)
 	if l != nil {
