@@ -13,7 +13,7 @@ calls to the hub, the storage, the transactions and the view refresh for you.
 `lazyrex.json`:
 
 ```json
-{"name": "todo", "main": "main.lua", "sdk": "0", "test": {"agents": [{"id": "alice", "name": "Alice"}]}}
+{"name": "todo", "main": "main.lua", "sdk": "0"}
 ```
 
 - `"sdk": "0"` makes the hub start the plugin through the SDK launcher (`sdk/lua/boot.lua`), so
@@ -23,7 +23,9 @@ calls to the hub, the storage, the transactions and the view refresh for you.
   later switch of a link changes nothing for that hub or its plugin respawns. A `-sdk` value that
   cannot be resolved, or that has no `boot.lua`, stops the start. Its log says which at each start:
   `sdk: <directory>`, or `sdk: none` (then such plugins cannot start); `hub.info` reports it as `sdk`.
-- `test.agents` lists the agents that the lab tests can open with `agent('alice')`.
+- The lab tests open agents with `agent('alice')`. A test agent reports the conversation identity
+  `<kind>:<name>` (`claude:alice` here; `kind` is `claude` unless the test sets it), and `alice.id`
+  is that identity (docs/testing.md, "Agents").
 
 `main.lua`:
 
@@ -228,7 +230,7 @@ The test functions:
 
 | Call | What it does |
 |---|---|
-| `agent(id)` | An agent from `test.agents`. `a:call(action, args)` calls an action as that agent. |
+| `agent(name, opts)` | A test agent pane; `a.id` is its identity `<kind>:<name>` (`kind` is `claude` unless `opts.kind` sets it). `a:call(action, args)` calls an action as that agent. |
 | `session(name)` | A new lab session; it returns its id. |
 | `user:command(id, {session, block})` | Runs a palette command from that pane, as the user does. |
 | `user:view(route, plugin, session)` | The open view of that route. |
