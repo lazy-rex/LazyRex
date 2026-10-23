@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -126,7 +127,20 @@ func TestHubRefusesABadSDKLab(t *testing.T) {
 // its snapshot. TestPluginSDKRefusedWithoutSDKLab proves that it sees one.
 func (s *startLab) pluginProcs() []string {
 	s.t.Helper()
-	snaps := filepath.Join(s.state(), "plugins", "local")
+	// The hub reports the canonical state (symlinks resolved). The state dir may not exist (a hub
+	// that stopped before it made the dir), so resolve its parent, the lab dir.
+	var c Config
+	b, _ := os.ReadFile(s.cfg)
+	json.Unmarshal(b, &c)
+	abs, err := filepath.Abs(c.State)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	snaps := filepath.Join(parent, filepath.Base(abs), "plugins", "local")
 	ps, err := exec.Command("ps", "-axww", "-o", "command=").Output()
 	if err != nil {
 		s.t.Fatal(err)
