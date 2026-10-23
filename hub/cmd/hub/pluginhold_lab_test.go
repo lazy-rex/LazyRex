@@ -284,7 +284,8 @@ var oldSteps = []oldStep{
 }
 
 // afterOld is the schema s with oldSteps applied as SQLite stores an ADD COLUMN: the definition
-// goes before the last ")" of the CREATE text, and the column comes last in its table.
+// goes right after the last column definition of the CREATE text (before a table constraint such
+// as PRIMARY KEY (...)), and the column comes last in its table.
 func afterOld(s []map[string]string) []map[string]string {
 	out := append([]map[string]string{}, s...)
 	for _, st := range oldSteps {
@@ -292,7 +293,13 @@ func afterOld(s []map[string]string) []map[string]string {
 		for i, e := range out {
 			if e["type"] == "table" && e["name"] == st.table {
 				sql := e["sql"]
-				if k := strings.LastIndex(sql, ")"); k >= 0 {
+				k := strings.LastIndex(sql, ")")
+				for _, c := range []string{", PRIMARY KEY", ", UNIQUE", ", CHECK", ", FOREIGN KEY", ", CONSTRAINT"} {
+					if i := strings.Index(sql, c); i >= 0 && i < k {
+						k = i
+					}
+				}
+				if k >= 0 {
 					sql = sql[:k] + ", " + st.column + " " + st.def + sql[k:]
 				}
 				c := map[string]string{}
