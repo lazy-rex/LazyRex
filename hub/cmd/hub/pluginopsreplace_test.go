@@ -135,7 +135,7 @@ func TestPluginOpUpdateReplacing(t *testing.T) {
 		}, calls: "replace", phase: "conflict", result: "nothing was called"},
 		{name: "fallback finds a live run", setup: func(h *Hub, pl *Plugin) { live(pl, upOld) }, reply: func(h *Hub, pl *Plugin, action string) error {
 			return refuse("no_instance", "plugin y has no instance; use hub.admin.start")
-		}, calls: "replace", phase: "done", result: "y runs " + upSource + " at " + upOld[:12]},
+		}, calls: "replace", phase: "done", result: "the next explicit start runs " + upSource},
 		{name: "stopped after sent_at", setup: func(h *Hub, pl *Plugin) { live(pl, upOld) }, reply: func(h *Hub, pl *Plugin, action string) error {
 			// The handler's state after its retire saw the block closed (replace.go).
 			notLive(pl)
