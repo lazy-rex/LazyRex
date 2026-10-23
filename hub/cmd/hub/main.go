@@ -1212,6 +1212,7 @@ func findSDK(flagValue string) (string, error) {
 	}
 	self, err := os.Executable()
 	if err == nil {
+		// A guard: os.Executable already resolves on macOS and Linux, so no test here proves it.
 		self, err = filepath.EvalSymlinks(self)
 	}
 	if err != nil {
