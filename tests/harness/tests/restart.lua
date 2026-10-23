@@ -130,3 +130,13 @@ test('a failed subscribe is tried again on the same hub', function()
   form:render()
   expect(form:action('form', 'submit', {values = {value = 'after a failed subscribe'}}).status).to_be('succeeded')
 end)
+
+-- hub:restart() returns only when each plugin is reachable by its label, as agent.direct needs: a
+-- registered plugin can set its label later (the fixture's slow_label delays it by 3 s).
+test('a direct call right after a restart reaches the plugin', function()
+  local alice = agent('alice')
+  alice:call('fix.put', {key = 'slow_label', value = 3})
+  hub:restart()
+  sql_write('DELETE FROM kv WHERE key = ?', {'slow_label'})
+  expect(alice:direct('fix.echo', {text = 'after'}).text).to_be('after')
+end)
