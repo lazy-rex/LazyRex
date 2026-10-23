@@ -954,7 +954,8 @@ A reload keeps `run` and unresolved spawn intents when an entry changes or disap
 
 **Orphaned lock entries.** A lock entry whose source is in neither the config nor the managed
 file never starts a plugin. `plugin status` reports it as `orphaned`. `plugin sync` removes it.
-For example, a cancelled add of the manager can leave one.
+For example, a cancelled add of the manager can leave one. A manager op removes the lock entry of the
+source that it stopped naming (update, remove); `plugin sync` removes other orphans.
 
 **Size bounds.** The hub refuses a `lazyrex.json` over 64 KiB (`maxManifestBytes`, `sources.go`),
 for config and managed entries and for the harness. The text: `<dir>/lazyrex.json is <n> bytes,

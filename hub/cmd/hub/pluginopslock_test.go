@@ -368,7 +368,7 @@ func TestPluginOpLockBaseBothSpellings(t *testing.T) {
 			}
 			op := opsOf(t, h, v["op_id"].(string))
 			var snap map[string]string
-			if err := json.Unmarshal([]byte(op.LockBase), &snap); err != nil || len(snap) != 2 || snap["github:acme/notes@v1.1.0"] != "absent" || snap["github:acme/notes@refs/tags/v1.1.0"] != "absent" {
+			if err := json.Unmarshal([]byte(op.LockBase), &snap); err != nil || len(snap) != 3 || snap["github:acme/notes@v1.0.0"] != "absent" || snap["github:acme/notes@v1.1.0"] != "absent" || snap["github:acme/notes@refs/tags/v1.1.0"] != "absent" {
 				t.Fatalf("the admission snapshot %q %v", op.LockBase, err)
 			}
 			cli := otherLockEntry()
