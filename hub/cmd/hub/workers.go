@@ -1520,8 +1520,10 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		item := e.ref()
 		item["pinned_commit"] = ""
-		if le := snap.lock.Plugins[e.Source]; e.github && snap.err == nil && le != nil {
-			item["pinned_commit"] = le.Commit
+		if e.github && snap.err == nil { // a lock that does not read has no pins (snap.lock is nil)
+			if le := snap.lock.Plugins[e.Source]; le != nil {
+				item["pinned_commit"] = le.Commit
+			}
 		}
 		if pl := h.plugins[e.name]; e.name != "" && pl != nil {
 			name, state = e.name, pl.reportedState()
