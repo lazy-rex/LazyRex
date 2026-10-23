@@ -587,8 +587,9 @@ func TestLateMessageLab(t *testing.T) {
 }
 
 // TestComposerGrowLab (lead-comp2): a real 80x24 pane in thread mode with the stage 2 composer.
-// Seven typed lines grow the input to its 6 rows (the frame grows), and deleting them shrinks it
-// again. After each change the capture (scrollback and screen) holds each live node and each typed
+// Seven typed lines grow the input, and deleting them shrinks it again. The two stage 2 actions
+// share the 10-row bound, so the input grows from 1 to 2 rows here (the frame grows by one row);
+// TestComposerGrowsWithItsText covers the 6-row cap. After each change the capture (scrollback and screen) holds each live node and each typed
 // line at most once, and after the delete no typed line stays: the live region's height change
 // leaves no stale rows.
 func TestComposerGrowLab(t *testing.T) {
