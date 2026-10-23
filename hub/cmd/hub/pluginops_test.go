@@ -292,6 +292,69 @@ func TestPluginOpStartAuthorization(t *testing.T) {
 	}
 }
 
+// settings takes an optional expect {args, watch_roots}, the values that the form showed (C8 D). A
+// difference from the managed entry at admission is a conflict, and nothing is stored. An input
+// that equals the current values ends the op done with "no change": no write and no reload. A
+// missing field and an empty one are equal. Only start and settings have expect; an agent can give
+// it for settings only.
+func TestPluginOpSettingsExpect(t *testing.T) {
+	h, c, dir := opsTestHub(t, "")
+	pd := t.TempDir()
+	plugDir(t, pd, "x", `{"name":"x","main":"m.lua"}`, "m.lua")
+	file := `{"plugins":[{"id":"x","source":"` + filepath.Join(pd, "x") + `","args":{"a":"1"}}]}`
+	writeManaged(t, dir, file)
+	opsLoadEntries(t, h)
+	h.plugins["x"] = &Plugin{Name: "x", entry: opsEntry(t, h, "managed:x")}
+	req := func(expect, input string) opRequest {
+		r := opRequest{Op: "settings", Entry: "managed:x", Input: json.RawMessage(input)}
+		if expect != "" {
+			r.Expect = json.RawMessage(expect)
+		}
+		return r
+	}
+	for _, x := range []string{`{"args":{"a":"2"}}`, `{"args":{}}`, `{"args":{"a":"1"},"watch_roots":["/w"]}`} {
+		_, err := opsAdmit(t, h, "a1", "stale"+x, req(x, `{"args":{"b":"1"}}`))
+		if err == nil || !strings.Contains(err.Error(), "conflict: the settings changed since they were shown") {
+			t.Errorf("expect %s: %v", x, err)
+		}
+	}
+	if _, err := opsAdmit(t, h, "a1", "bad", req(`{"args":{"a":"1"},"grants":true}`, `{"args":{}}`)); err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("an expect with an unknown field: %v", err)
+	}
+	var n int
+	h.db.QueryRow(`SELECT COUNT(*) FROM plugin_ops`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d ops stored after the refusals", n)
+	}
+	for name, r := range map[string]opRequest{
+		"same, with expect":    req(`{"args":{"a":"1"},"watch_roots":[]}`, `{"args":{"a":"1"}}`),
+		"same, without expect": req("", `{"args":{"a":"1"},"watch_roots":[]}`),
+	} {
+		id := opsMust(t, h, name, r)
+		if op := opsOf(t, h, id); op.Phase != "done" || op.Result != "no change" {
+			t.Errorf("%s: phase %s, result %q", name, op.Phase, op.Result)
+		}
+	}
+	h.opsRun(context.Background())
+	if got := c.list(); len(got) != 0 || opsFile(t, h.cfg.managedPath) != file {
+		t.Errorf("no change: calls %v, file %s", got, opsFile(t, h.cfg.managedPath))
+	}
+	id := opsMust(t, h, "empty", req(`{"args":{"a":"1"}}`, `{"args":{"a":"1","b":""}}`))
+	h.opsRun(context.Background())
+	list, err := parseManaged(h.cfg.managedPath)
+	if op := opsOf(t, h, id); op.Phase != "done" || err != nil || list[0].Args["b"] != "" || len(list[0].Args) != 2 {
+		t.Errorf("an empty value: %+v, file %s, %v", op, opsFile(t, h.cfg.managedPath), err)
+	}
+	if _, err := opsAdmit(t, h, "a1", "stop", opRequest{Op: "stop", Entry: "managed:x", Expect: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), "only start and settings have expect") {
+		t.Errorf("a stop with expect: %v", err)
+	}
+	var args map[string]json.RawMessage
+	json.Unmarshal([]byte(`{"key":"k","op":"settings","entry":"managed:x","expect":{"args":{"a":"1"}},"input":{"args":{}}}`), &args)
+	if _, r, err := agentOpRequest(args); err != nil || string(r.Expect) != `{"args":{"a":"1"}}` {
+		t.Errorf("an agent settings request with expect: %+v, %v", r, err)
+	}
+}
+
 // The "plugins" effect: only the home plugin's registered instance, and only for a user view
 // action stored in view_ops. A result that is not a user's view action (for example the home
 // plugin's answer to an agent's forwarded call) admits nothing.

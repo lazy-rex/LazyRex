@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -310,15 +311,12 @@ func (h *Hub) pluginOpAgent(ctx context.Context, p perform) (any, error) {
 	return h.admitOp(ctx, opOrigin{"agent", agent}, "agent:"+agent, key, req)
 }
 
-// agentOpRequest reads the key and the request of an agent's hub.plugins.op. An agent never gives
-// expect: only the user's panel names the run that it showed.
+// agentOpRequest reads the key and the request of an agent's hub.plugins.op. An agent gives expect
+// only for settings: only the user's panel names the run that it showed.
 func agentOpRequest(args map[string]json.RawMessage) (string, opRequest, error) {
 	var key string
 	if json.Unmarshal(args["key"], &key) != nil || key == "" || len(key) > 128 {
 		return "", opRequest{}, bad("invalid: key must be a string of 1 to 128 characters")
-	}
-	if _, ok := args["expect"]; ok {
-		return "", opRequest{}, bad("invalid: expect is set only by the user's panel")
 	}
 	rest := map[string]json.RawMessage{}
 	for k, v := range args {
@@ -328,6 +326,9 @@ func agentOpRequest(args map[string]json.RawMessage) (string, opRequest, error) 
 	}
 	b, _ := json.Marshal(rest)
 	req, err := decodeOpRequest(b)
+	if err == nil && len(req.Expect) > 0 && req.Op != "settings" {
+		return "", opRequest{}, bad("invalid: expect is set only by the user's panel, except for settings")
+	}
 	return key, req, err
 }
 
@@ -417,13 +418,16 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 	op.ID = hex.EncodeToString(b)
 	ob, _ := json.Marshal(origin)
 	now := time.Now().UnixMilli()
+	if op.Phase == "" {
+		op.Phase = "queued"
+	}
 	// OR IGNORE: a second admission of the same key in a race finds the first one. The hold check
 	// and the insert are one BEGIN IMMEDIATE transaction (pluginhold.go): under a hold, no op is
 	// inserted.
 	if err := h.admitUnderHold(ctx, func(c *sql.Conn) error {
-		_, err := c.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, base, entry_identity, lock_base, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
-			op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Base, op.EntryIdentity, op.LockBase, now, now)
+		_, err := c.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, result, base, entry_identity, lock_base, created, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Phase, op.Result, op.Base, op.EntryIdentity, op.LockBase, now, now)
 		return err
 	}); err != nil {
 		return nil, err
@@ -431,7 +435,7 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 	if id, err = find(); err != nil {
 		return nil, err
 	}
-	h.ev.emit("plugin_op", map[string]any{"op_id": id, "kind": op.Kind, "entry": op.Entry, "origin": origin, "phase": "queued"})
+	h.ev.emit("plugin_op", map[string]any{"op_id": id, "kind": op.Kind, "entry": op.Entry, "origin": origin, "phase": op.Phase})
 	h.kickOps()
 	h.changed("plugins")
 	return h.opView(ctx, id)
@@ -443,8 +447,8 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	if _, ok := pluginOpPhases[req.Op]; !ok {
 		return nil, bad("invalid: op must be start, stop, settings, remove, add, update or restart")
 	}
-	if len(req.Expect) > 0 && req.Op != "start" {
-		return nil, bad("invalid: only start has expect")
+	if len(req.Expect) > 0 && req.Op != "start" && req.Op != "settings" {
+		return nil, bad("invalid: only start and settings have expect")
 	}
 	if len(req.Input) > 0 && req.Op != "settings" && req.Op != "add" && req.Op != "update" {
 		return nil, bad("invalid: only settings, add and update have input")
@@ -544,6 +548,11 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 			return nil, refuse("refused", "%s is not in the managed file now; reload first", req.Entry)
 		}
 		op.Base = canonicalEntry(m)
+		if req.Op == "settings" {
+			if err := settingsAdmission(op, req, m); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if req.Op == "update" {
 		// The keys that the resolve can choose (opResolveTarget): latest, or the two spellings of a tag.
@@ -575,6 +584,30 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		}
 	}
 	return op, nil
+}
+
+// settingsAdmission checks the settings op's expect against the managed entry m: a difference is a
+// conflict. An input that equals m's values ends the op at admission: done, "no change". A missing
+// field and an empty one are equal.
+func settingsAdmission(op *pluginOp, req opRequest, m *configEntry) error {
+	same := func(s opSettings) bool {
+		return maps.Equal(s.Args, m.Args) && slices.Equal(s.WatchRoots, m.WatchRoots)
+	}
+	if len(req.Expect) > 0 {
+		var x opSettings
+		if err := decodeManifest("expect", req.Expect, &x); err != nil {
+			return bad("invalid: %v", err)
+		}
+		if !same(x) {
+			return refuse("conflict", "the settings changed since they were shown")
+		}
+	}
+	var in opSettings
+	json.Unmarshal([]byte(op.Input), &in)
+	if same(in) {
+		op.Phase, op.Result = "done", "no change"
+	}
+	return nil
 }
 
 // startTarget is the run that a start op may start. An agent: a local entry's source, or a GitHub
@@ -1769,17 +1802,21 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 	return left
 }
 
+// settingsSchema is the agent-face schema of the settings input and of its expect.
+var settingsSchema = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+	"args":        map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
+	"watch_roots": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}}
+
 // pluginOpActions are hub.plugins.op and hub.plugins.ops on the agent face (agentKeymap).
 var pluginOpActions = []map[string]any{
 	{"name": "hub.plugins.op", "kind": "client", "title": "Run a plugin operation",
-		"description": "Start, stop, remove or change the settings of a plugin entry. entry is \"managed:<id>\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=<op_id>. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
+		"description": "Start, stop, remove or change the settings of a plugin entry. entry is \"managed:<id>\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=<op_id>. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
 			"key":   map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
 			"op":    map[string]any{"type": "string", "enum": []string{"start", "stop", "settings", "remove"}},
 			"entry": map[string]any{"type": "string", "minLength": 1},
-			"input": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-				"args":        map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
-				"watch_roots": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}},
+			"input":  settingsSchema,
+			"expect": settingsSchema,
 		}, "required": []string{"key", "op", "entry"}, "additionalProperties": false}},
 	{"name": "hub.plugins.ops", "kind": "client", "title": "List plugin operations",
 		"description": "The plugin operations: one by op_id, or the 50 newest. Each has op, entry, origin, phase (queued, a working phase, then done, failed, conflict or unknown), result and error.",
