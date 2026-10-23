@@ -52,7 +52,8 @@ func TestHubWithoutTestModeHasNoFaults(t *testing.T) {
 	var cfg map[string]any
 	b, _ := os.ReadFile(cfgPath)
 	json.Unmarshal(b, &cfg)
-	delete(cfg, "test_roots") // a hub without -test refuses it
+	delete(cfg, "test_roots") // a hub without -test refuses test_roots and test_source_runs
+	delete(cfg, "test_source_runs")
 	b, _ = json.Marshal(cfg)
 	os.WriteFile(cfgPath, b, 0o600)
 	logf, _ := os.Create(filepath.Join(l.dir, "hub.log"))
