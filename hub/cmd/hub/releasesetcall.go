@@ -372,6 +372,11 @@ func (h *rehearsal) batchSession(name, dir, script string) (string, string, erro
 	if s.ID == "" {
 		return "", "", fmt.Errorf("session.create returned no session_id")
 	}
+	// Rex refuses list_blocks and block calls on a session that the connection has not attached
+	// ("stream is not attached", lab), as in sessionBlocksIn.
+	if err := h.l.r.Call(ctx, "session.attach", map[string]any{"session_id": s.ID, "event_scope": "session"}, nil); err != nil {
+		return s.ID, "", fmt.Errorf("session.attach %s: %v", s.ID, err)
+	}
 	if err := h.l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": s.ID}, &out); err != nil {
 		return s.ID, "", fmt.Errorf("session.list_blocks %s: %v", s.ID, err)
 	}
