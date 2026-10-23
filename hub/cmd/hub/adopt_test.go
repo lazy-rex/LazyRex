@@ -7,23 +7,32 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // adoptRex is a fake Rex for the adoption by identity report: session.list_blocks answers the
 // blocks of the session, and fail makes the list_blocks call with that number fail (1 = first).
+// While hold is open, list_blocks waits for it: a Rex that does not answer.
 type adoptRex struct {
 	mu     sync.Mutex
 	blocks []rexBlock
 	fail   map[int]bool
 	lists  int
+	hold   chan struct{}
 }
 
 func (a *adoptRex) answer(method string, _ json.RawMessage) (any, string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if method != "session.list_blocks" {
 		return map[string]any{}, ""
 	}
+	a.mu.Lock()
+	hold := a.hold
+	a.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.lists++
 	if a.fail[a.lists] {
 		return nil, "failed"
@@ -189,5 +198,38 @@ func TestAdoptReportedOpenSpawn(t *testing.T) {
 	}
 	if strings.Contains(adoptEvents(t, h), "spawn_adopted") || kicked(h) {
 		t.Fatal("an open spawn was adopted again")
+	}
+}
+
+// A Rex that does not answer holds the report at most adoptReportWait: the check ends as an
+// adoption error, the spawn stays sending, and the next report adopts it.
+func TestAdoptReportedHasABound(t *testing.T) {
+	old := adoptReportWait
+	adoptReportWait = 200 * time.Millisecond
+	t.Cleanup(func() { adoptReportWait = old })
+	h, ar := adoptTestHub(t, "sending", labeled("block:b1", "spawn-test"))
+	hold := make(chan struct{})
+	ar.mu.Lock()
+	ar.hold = hold
+	ar.mu.Unlock()
+	t.Cleanup(func() { close(hold) })
+	done := make(chan string, 1)
+	go func() { done <- h.adoptReported(context.Background(), "session:s1", "block:b1") }()
+	select {
+	case got := <-done:
+		if got != "" {
+			t.Fatalf("agent = %q, want none", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer from Rex: the adoption check did not end within 5 s")
+	}
+	if st, _ := spawnStatus(t, h, "spawn-test"); st != "sending" {
+		t.Fatalf("spawn %s", st)
+	}
+	ar.mu.Lock()
+	ar.hold = nil
+	ar.mu.Unlock()
+	if got := h.adoptReported(context.Background(), "session:s1", "block:b1"); got != "agent-1" {
+		t.Fatalf("the next report: agent = %q", got)
 	}
 }

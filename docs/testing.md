@@ -479,6 +479,10 @@ a record (`plugstart_lab_test.go`). A hub without `-test` refuses the key.
   restarts the hub when it reads that line. Only the hub's own process group gets a signal, and
   only while its waiter has not reaped it.
 - Processes that the old hub left stay tracked: the lab cleanup checks them at the end.
+- After `hub:restart({crash = true})`, Rex keeps the lost hub client for a while. A call to the
+  client name `lazyrex-hub` alone (`-C lazyrex-hub`, as `fake-agent.sh` reports) then fails:
+  `client target "lazyrex-hub" is ambiguous`. The real hook and `lazyrex-hub testagent cli` pick
+  the connected hub client (spawn_adopt.lua).
 - The old hub log stays as `hub.<n>.log`.
 - Agents and views are lab panes: they stay. What the hub does with plugins and views at a restart
   is the hub's own behavior, which the test checks.

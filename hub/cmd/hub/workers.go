@@ -1171,12 +1171,18 @@ func (h *Hub) adoptSpawn(ctx context.Context, s *spawnRow, block, via string) (s
 	return "open", nil
 }
 
+// adoptReportWait bounds the Rex reads of one adoption check, so that a slow Rex cannot hold an
+// identity report without a limit. A cut is an adoption error. A test shortens it.
+var adoptReportWait = 5 * time.Second
+
 // adoptReported adopts the pending agent spawn of the pane that reported an identity: the pane's
 // label "lazyrex-spawn:<id>" names the one spawn to check (lead-idd-adopt). The reporter's PID
 // ancestry proved the pane. An error is only logged: the report never fails because of the
 // adoption, and the next report from the pane tries again. It returns the agent of the spawn that
 // is open in this pane (also one that another opener opened), or "".
 func (h *Hub) adoptReported(ctx context.Context, sess, block string) string {
+	ctx, cancel := context.WithTimeout(ctx, adoptReportWait)
+	defer cancel()
 	blocks, err := h.blocksIn(ctx, sess)
 	if err != nil {
 		log.Printf("identity report: adoption check of %s: %v", block, err)
