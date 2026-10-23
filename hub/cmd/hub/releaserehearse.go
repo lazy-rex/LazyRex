@@ -98,6 +98,8 @@ type rehearsal struct {
 	set        *relSetState          // rehearse -set: the plugin set, nil for a hub-only rehearsal
 	chunks     []relChunkCheck       // rehearse -set: the chunking probe windows
 	spDigest   string                // rehearse -set: the digest of the sp fixture (tests/sdk-parts of H)
+	retired    []retiredEntry        // the retired schema of the H binary (its -retired-schema export)
+	retiredRec *relRetiredRec        // the record of that export; nil until it is read
 }
 
 func (h *rehearsal) say(format string, args ...any) { h.r.say(format, args...) }
@@ -673,7 +675,11 @@ func (h *rehearsal) checkLabAgents() error {
 // <table>: <sql>": tables with their constraints, indexes, triggers and views). After "before"
 // (OLD's own schema), a column of OLD that changed or went fails: OLD cannot run on it. Every
 // other difference is a reason for the full tier (schemaChanges).
-func (h *rehearsal) schema(phase string) error {
+func (h *rehearsal) schema(phase string) error { return h.schemaAt(phase, false) }
+
+// schemaAt is schema for a forward phase (back false) or a phase that ended with a rollback or a
+// resume (back true).
+func (h *rehearsal) schemaAt(phase string, back bool) error {
 	db, err := h.hubDB(true)
 	if err != nil {
 		return err
@@ -981,7 +987,7 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 	if err != nil {
 		return err
 	}
-	rec := &relRehearsal{Pass: true, At: h.r.now().UTC().Format(time.RFC3339), Bound: bound, Tier: tier, TierReasons: reasons, Phases: h.phases, Lab: h.lab, Mirrors: h.mirrors, Commits: h.commits, SDK: h.sdk}
+	rec := &relRehearsal{Pass: true, At: h.r.now().UTC().Format(time.RFC3339), Bound: bound, Tier: tier, TierReasons: reasons, Phases: h.phases, Lab: h.lab, Mirrors: h.mirrors, Commits: h.commits, SDK: h.sdk, Retired: h.retiredRec}
 	if h.set != nil {
 		rec.Set = h.set.checks
 		rec.Chunks = h.chunks

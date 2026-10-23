@@ -161,7 +161,7 @@ func (h *rehearsal) back(name string) error {
 	if err := h.checkSDK(name, "", h.c.From.Commit); err != nil {
 		return err
 	}
-	if err := h.schema(name); err != nil {
+	if err := h.schemaAt(name, true); err != nil {
 		return err
 	}
 	if err := h.checkFileProbes(name); err != nil {
