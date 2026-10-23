@@ -44,12 +44,13 @@ const pluginOpsSchema = `
 -- pin: add and update: the fetched lock entry (JSON), stored before the lock write.
 -- lock_base: add and update: the lock entry of each key that the target can use, at admission
 -- (JSON: key -> lockBase); the lock write compares against it.
+-- row_prior: add: the record of its plugins row write (JSON opRowPrior, pluginopsrow.go), '' before it.
 CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NULL, key TEXT NOT NULL,
   fingerprint TEXT NOT NULL, origin TEXT NOT NULL, kind TEXT NOT NULL, entry TEXT NOT NULL, name TEXT NOT NULL,
   expect TEXT NOT NULL, input TEXT NOT NULL, target TEXT NOT NULL, phase TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 1,
   confirmed TEXT NOT NULL DEFAULT '', base TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', entry_identity TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL,
-  pin TEXT NOT NULL DEFAULT '', lock_base TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
+  pin TEXT NOT NULL DEFAULT '', lock_base TEXT NOT NULL DEFAULT '', row_prior TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
 -- run; the manager observes its result and never calls again.
 -- bound_at: the handler bound the attempt (with target_instance, target_block, target_session) before its first
@@ -157,6 +158,7 @@ type pluginOp struct {
 	Target                       string // start: the expect_run JSON; restart: the run and instance; add, update: the resolved target
 	Pin                          string // add, update: the fetched lock entry (JSON)
 	LockBase                     string // add, update: the admission snapshot of the lock (lock_base)
+	RowPrior                     string // add: the record of its plugins row write (row_prior), '' before it
 	Base, Output                 string
 	EntryIdentity                string // entryIdentity of the entry at admission ("" in no admitted op)
 	Result, Error                string
@@ -601,8 +603,8 @@ func (h *Hub) startTarget(origin opOrigin, req opRequest, name, source string, g
 func (h *Hub) loadOp(ctx context.Context, id string) (*pluginOp, error) {
 	op := &pluginOp{ID: id}
 	var origin string
-	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin, lock_base FROM plugin_ops WHERE op_id = ?`, id).
-		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin, &op.LockBase)
+	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin, lock_base, row_prior FROM plugin_ops WHERE op_id = ?`, id).
+		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin, &op.LockBase, &op.RowPrior)
 	if err != nil {
 		return nil, err
 	}
@@ -760,16 +762,25 @@ func (h *Hub) opFault(point string) bool {
 	return h.pops.fault != nil && h.pops.fault(point)
 }
 
-// setPhase stores the op's next phase, with its result or error text, then tells observers.
+// setPhase stores the op's next phase, with its result or error text, then tells observers. An
+// add that wrote its plugins row and ends without done ends through endAddRow (pluginopsrow.go).
 func (h *Hub) setOpPhase(ctx context.Context, op *pluginOp, phase, result, errText string) error {
+	if opFinal[phase] && phase != "done" && op.Kind == "add" && op.RowPrior != "" {
+		return h.endAddRow(ctx, op, phase, result, errText)
+	}
 	if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET phase = ?, result = ?, error = ?, updated = ? WHERE op_id = ?`,
 		phase, result, errText, time.Now().UnixMilli(), op.ID); err != nil {
 		return err
 	}
+	h.opPhaseStored(op, phase, result, errText)
+	return nil
+}
+
+// opPhaseStored sets the op's stored phase and texts in op, then tells observers.
+func (h *Hub) opPhaseStored(op *pluginOp, phase, result, errText string) {
 	op.Phase, op.Result, op.Error = phase, result, errText
 	h.ev.emit("plugin_op", map[string]any{"op_id": op.ID, "kind": op.Kind, "entry": op.Entry, "phase": phase, "result": result, "error": errText})
 	h.changed("plugins")
-	return nil
 }
 
 // nextPhase is the phase after cur for the op's kind: done after the last one.
@@ -998,6 +1009,14 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	// The strict loader checks the whole new file (ids, sources, fields, the size bound).
 	if _, err := parseManagedBytes(nb); err != nil {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the new managed file is not valid: %v; nothing was written", err))
+	}
+	if op.Kind == "add" {
+		var pin lockEntry
+		json.Unmarshal([]byte(op.Pin), &pin)
+		identity := entryIdentity(&configEntry{managed: m.ID, Source: m.Source})
+		if stop, err := h.addRow(ctx, op, pin.Name, identity); stop || err != nil {
+			return err
+		}
 	}
 	if err := h.renameAttempt(ctx, op, "write:managed", path, nb, "rename"); err != nil {
 		return err
