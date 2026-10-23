@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -137,7 +136,7 @@ func (h *Hub) respawnDue(ctx context.Context, pl *Plugin, gen uint64) {
 	if err == nil {
 		return
 	}
-	log.Printf("plugin %s: respawn: %v", pl.Name, err)
+	pluginLogf(pl.Name, opEntryKey(entry), "respawn: %v", err)
 	h.mu.Lock()
 	again := respawnRetries(err) && h.plugins[pl.Name] == pl && pl.entry == entry && pl.Desired == "running" &&
 		pl.state == "" && r.due.IsZero() && ctx.Err() == nil
