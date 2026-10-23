@@ -95,13 +95,49 @@ func TestFocusWindowLab(t *testing.T) {
 	})
 }
 
-// TestReloadLeavesNoLiveRowsLab (v1.2, C11): a thread pane reloads its renderer (hub.ui.reload).
-// The old renderer's last frame is empty, so after the new renderer draws, the pane shows the
-// live region once.
+// tabPane waits for the plugin's open, attached tab view on route, takes its pane and sizes it.
+// It returns the pane's session and block.
+func (l *chunkLab) tabPane(route string, columns, rows int) (session, pane string) {
+	l.t.Helper()
+	l.waitFor("the tab view "+route, 30*time.Second, func() bool {
+		var r struct {
+			Views []struct {
+				Route    string `json:"route"`
+				Attached bool   `json:"attached"`
+				Session  string `json:"session_id"`
+				Block    string `json:"block_id"`
+			} `json:"views"`
+		}
+		l.hubTest("hub.test.views", map[string]any{}, &r)
+		for _, v := range r.Views {
+			if v.Route == route && v.Attached && v.Block != "" {
+				session, pane = v.Session, v.Block
+			}
+		}
+		return pane != ""
+	})
+	if err := l.owner.call(l.ctx, "session.attach", map[string]any{"session_id": session, "event_scope": "session"}, nil); err != nil {
+		l.t.Fatal(err)
+	}
+	if err := l.owner.call(l.ctx, "session.own_block", map[string]any{"session_id": session, "block_ids": []string{pane}, "mode": "take"}, nil); err != nil {
+		l.t.Fatal(err)
+	}
+	if err := l.owner.call(l.ctx, "block.method", map[string]any{"session_id": session, "block_id": pane, "method": "resize", "args": map[string]int{"columns": columns, "rows": rows}}, nil); err != nil {
+		l.t.Fatal(err)
+	}
+	return session, pane
+}
+
+// TestReloadLeavesNoLiveRowsLab (v1.2, C11): a thread tab reloads its renderer (hub.ui.reload;
+// the process and the pane stay). The old renderer's last frame is empty, so after the new
+// renderer draws, the pane shows the live region once.
 func TestReloadLeavesNoLiveRowsLab(t *testing.T) {
 	l := newModeLab(t)
-	pane := l.open("lazyrex_modelab_mode")
-	l.resize(pane, 80, 20)
+	session, pane := l.tabPane("/thread/lab", 80, 20)
+	screen := func() string {
+		out, _ := l.cli("block", "capture", "-s", session, "-b", pane)
+		return out
+	}
 	var last string
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -109,21 +145,22 @@ func TestReloadLeavesNoLiveRowsLab(t *testing.T) {
 		}
 	})
 	l.waitFor("the thread frame", 30*time.Second, func() bool {
-		last = l.screen(pane)
+		last = screen()
 		return strings.Count(last, "LAB-NOTICE") == 1
 	})
-	before := strings.Count(string(must(os.ReadFile(filepath.Join(l.lab, "state-hub", "events.jsonl")))), `"event":"view_reload"`)
+	events := filepath.Join(l.lab, "state-hub", "events.jsonl")
+	reloads := func() int { return strings.Count(string(must(os.ReadFile(events))), `"event":"view_reload"`) }
+	before := reloads()
 	b, _ := json.Marshal(map[string]any{"plugin": "modelab"})
 	f := filepath.Join(l.lab, "reload.json")
 	os.WriteFile(f, b, 0o600)
-	l.must("-C", "lazyrex-hub", "do", "hub.ui.reload", "--args", "@"+f)
-	l.waitFor("the hub's reload request", 10*time.Second, func() bool {
-		return strings.Count(string(must(os.ReadFile(filepath.Join(l.lab, "state-hub", "events.jsonl")))), `"event":"view_reload"`) > before
-	})
+	out := l.must("-C", "lazyrex-hub", "do", "hub.ui.reload", "--args", "@"+f)
+	t.Logf("hub.ui.reload: %s", strings.TrimSpace(out))
+	l.waitFor("the hub's reload request", 10*time.Second, func() bool { return reloads() > before })
 	// The new renderer draws "Connecting…" first, then the tree.
 	time.Sleep(2 * time.Second)
 	l.waitFor("the new renderer's thread frame", 30*time.Second, func() bool {
-		last = l.screen(pane)
+		last = screen()
 		return strings.Contains(last, "LAB-NOTICE") && !strings.Contains(last, "Connecting")
 	})
 	if n := strings.Count(last, "LAB-NOTICE"); n != 1 {
