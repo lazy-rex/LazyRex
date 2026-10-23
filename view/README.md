@@ -74,7 +74,7 @@ When the rows do not fit, the renderer cuts text rows only, and ends each cut wi
 When the controls alone do not fit, the live region is a window that always holds the focused control,
 with "… <n> more above" and "… <n> more below" rows.
 Tab and Shift+Tab reach every control, and the window follows the focus.
-The composer's top border is not one of the editor's focus rows, so a short window holds the editor row and Send.
+A composer's editor and Send are one focus span, so a short window holds the editor row and Send together.
 
 The last frame before the exit is empty, on the screen that is active, also during a panel replacement.
 

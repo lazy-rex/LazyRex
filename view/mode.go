@@ -135,11 +135,6 @@ func (m *model) liveRows() []row {
 		}
 		m.liveEditor = max(1, bound-len(body)-chrome)
 		composer = m.composerRows()
-		// The top border is not one of the editor's focus rows (an inline frame has no mouse), so a
-		// short focus window holds the editor row and Send together.
-		if len(composer) > 1 {
-			composer[1].Control = nil
-		}
 	}
 	body = trimBlank(body)
 	rows := append(cutText(body, max(0, bound-len(composer))), composer...)
