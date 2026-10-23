@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -336,17 +335,16 @@ func TestTeaProbeBytesTee(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(l.lab, "captures", "input-bytes.log"), b, 0o600)
 	os.Remove(log)
-	// Raw: the bytes of each key, each in a read of its own after the start replies.
-	var reads []string
+	// Raw: the bytes of the three keys, in order, in the byte stream. Input is a stream: a read can
+	// hold several keys or part of one, so the check joins the reads (the log keeps them as read).
+	var stream []string
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		if _, hex, ok := strings.Cut(line, " "); ok {
-			reads = append(reads, hex)
+			stream = append(stream, hex)
 		}
 	}
-	for _, want := range []string{"78", "0d", "1b 5b 31 33 3b 32 75"} {
-		if !slices.Contains(reads, want) {
-			t.Fatalf("the input log has no read %q (x, enter, shift+enter):\n%s", want, b)
-		}
+	if want := "78 0d 1b 5b 31 33 3b 32 75"; !strings.Contains(strings.Join(stream, " "), want) {
+		t.Fatalf("the input stream has no %q (x, enter, shift+enter):\n%s", want, b)
 	}
 	l.note("raw input reads (x, enter, shift+enter by rex send-key):\n%s", b)
 	// Parsed: the key message of each key, from the live region.
