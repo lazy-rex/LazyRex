@@ -48,14 +48,18 @@ func batchScript(dir, server, hubClient string, calls []relSetItem) string {
 	return strings.Join(append(lines, "echo done > done", ""), "\n")
 }
 
-// untilDecide decides after attempt n of an until item, which started at start: "next" when the
-// reply meets the until expects, else "again <seconds>" while the window has time for another call
+// untilDecide decides after attempt n of an until item, whose first attempt started at start: an
+// error when the reply came after the window; "next" when the reply meets the until expects, else "again <seconds>" while the window has time for another call
 // (after the 1 s pause), else an error with the last reply. A nonzero exit fails at once: an error
 // reply is not a state to wait for.
 func untilDecide(it relSetItem, n, code int, out []byte, vals map[string]string, start, now time.Time) (string, error) {
 	reply := strings.TrimSpace(string(out))
 	if code != 0 {
 		return "", fmt.Errorf("attempt %d exited %d: %s", n, code, reply)
+	}
+	// A reply after the window does not count, even when it meets the expects.
+	if now.Sub(start) > relUntilWindow {
+		return "", fmt.Errorf("attempt %d ended %s after the first attempt started, after the window of %s; the last reply (exit %d): %s", n, now.Sub(start).Round(time.Millisecond), relUntilWindow, code, reply)
 	}
 	miss := checkFilled(out, it.Until, vals)
 	if miss == nil {
@@ -78,8 +82,9 @@ func serveBatch(dir string, calls []relSetItem, vals map[string]string, say func
 	}
 	type untilState struct {
 		n     int
-		start time.Time
+		start time.Time // the mtime of the start marker, which the script writes before attempt 1
 		ended bool
+		last  string // the last completed attempt: "attempt n (exit c): reply"
 	}
 	state := map[int]*untilState{}
 	for i, c := range calls {
@@ -104,21 +109,35 @@ func serveBatch(dir string, calls []relSetItem, vals map[string]string, say func
 			if st == nil || st.ended {
 				continue
 			}
-			if st.start.IsZero() && exists(fmt.Sprintf("start-%d", i)) {
-				st.start = now
+			c := calls[i]
+			if st.start.IsZero() {
+				fi, err := os.Stat(filepath.Join(dir, fmt.Sprintf("start-%d", i)))
+				if err != nil {
+					continue
+				}
+				st.start = fi.ModTime()
 			}
 			code := fmt.Sprintf("code-%d-%d", i, st.n)
 			if !exists(code) {
+				// The window ends while an attempt runs: stop the script after that call, and fail now.
+				if now.Sub(st.start) > relUntilWindow {
+					answer(i, st.n, "stop")
+					last := st.last
+					if last == "" {
+						last = "no attempt completed"
+					}
+					return nil, relFail("item %d (%s): the window of %s ended while attempt %d ran; the last reply: %s", i+1, c.Action, relUntilWindow, st.n, last)
+				}
 				continue
 			}
-			c := calls[i]
 			out := mustReadFile(filepath.Join(dir, fmt.Sprintf("out-%d-%d", i, st.n)))
 			n := readCode(filepath.Join(dir, code))
+			st.last = fmt.Sprintf("attempt %d (exit %d): %s", st.n, n, strings.TrimSpace(string(out)))
 			say("item %d (%s): until attempt %d: exit %d: %s", i+1, c.Action, st.n, n, strings.TrimSpace(string(out)))
 			v, err := untilDecide(c, st.n, n, out, vals, st.start, now)
 			if err != nil {
 				answer(i, st.n, "stop")
-				if jc := readCode(filepath.Join(dir, "join.code")); jc != 0 {
+				if jc := readCode(filepath.Join(dir, "join.code")); exists("join.code") && jc != 0 {
 					return nil, relFail("hub.join exited %d: %s", jc, strings.TrimSpace(string(mustReadFile(filepath.Join(dir, "join.out")))))
 				}
 				return nil, relFail("item %d (%s): %v", i+1, c.Action, err)

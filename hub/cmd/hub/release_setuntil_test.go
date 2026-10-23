@@ -34,6 +34,10 @@ func TestReleaseSetUntilDecide(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "after 7 attempts") || !strings.Contains(err.Error(), `(exit 0): {"status":"running"}`) {
 		t.Fatalf("timeout: %v", err)
 	}
+	// A matching reply after the window does not count (codex-26, review of 7fca215).
+	if _, err := untilDecide(it, 1, 0, []byte(`{"status":"done"}`), nil, start, start.Add(61*time.Second)); err == nil || !strings.Contains(err.Error(), "after the window") {
+		t.Fatalf("a met reply after 61 s: %v", err)
+	}
 	// An error reply fails at once, with its exit code and reply.
 	if _, err := untilDecide(it, 2, 1, []byte("Error: conflict"), nil, start, start); err == nil || !strings.Contains(err.Error(), "attempt 2 exited 1: Error: conflict") {
 		t.Fatalf("nonzero exit: %v", err)
@@ -66,6 +70,9 @@ case "$act" in
   x.poll) n=$(cat poll.n 2>/dev/null || echo 0); n=$((n+1)); echo $n > poll.n
     if [ $n -ge 3 ]; then echo '{"status":"done"}'; else echo '{"status":"running"}'; fi ;;
   x.never) echo '{"status":"running"}' ;;
+  x.slow) sleep 5; echo '{"status":"done"}' ;;
+  x.slow2) n=$(cat slow2.n 2>/dev/null || echo 0); n=$((n+1)); echo $n > slow2.n
+    if [ $n -ge 2 ]; then sleep 5; echo '{"status":"done"}'; else echo '{"status":"running"}'; fi ;;
   x.fail) echo 'Error: conflict'; exit 1 ;;
   x.after) echo '{"ok":true}' ;;
 esac
@@ -265,5 +272,47 @@ func TestReleaseSetLabFileParses(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("%d until items, want 2 (seed and probe)", n)
+	}
+}
+
+// TestReleaseSetUntilWindow: the window starts at the start marker of the script, and it ends a
+// pending attempt; the error names the last completed reply (codex-26, review of 7fca215).
+func TestReleaseSetUntilWindow(t *testing.T) {
+	old := relUntilWindow
+	defer func() { relUntilWindow = old }()
+	relUntilWindow = 60 * time.Second
+
+	// A start marker 61 s old and a matching first reply: the reply is after the window.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "start-0"), nil, 0o600)
+	past := time.Now().Add(-61 * time.Second)
+	os.Chtimes(filepath.Join(dir, "start-0"), past, past)
+	os.WriteFile(filepath.Join(dir, "out-0-1"), []byte(`{"status":"done"}`), 0o600)
+	os.WriteFile(filepath.Join(dir, "code-0-1"), []byte("0\n"), 0o600)
+	_, err := serveBatch(dir, []relSetItem{untilItem("x.poll")}, nil, func(string, ...any) {}, time.Now().Add(10*time.Second))
+	if err == nil || !strings.Contains(err.Error(), "after the window") {
+		t.Fatalf("an old start marker: %v", err)
+	}
+	if v := strings.TrimSpace(string(mustReadFile(filepath.Join(dir, "go-0-1")))); v != "stop" {
+		t.Fatalf("the answer is %q, not stop", v)
+	}
+
+	// A pending first attempt: the error comes at the end of the window, before the call ends,
+	// and says that no attempt completed.
+	relUntilWindow = 2 * time.Second
+	start := time.Now()
+	_, _, err, _ = runBatch(t, []relSetItem{untilItem("x.slow")})
+	if err == nil || !strings.Contains(err.Error(), "ended while attempt 1 ran; the last reply: no attempt completed") {
+		t.Fatalf("a pending first attempt: %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("the batch took %s", d)
+	}
+
+	// A pending second attempt: the error names the first reply.
+	relUntilWindow = 3 * time.Second
+	_, _, err, _ = runBatch(t, []relSetItem{untilItem("x.slow2")})
+	if err == nil || !strings.Contains(err.Error(), `ended while attempt 2 ran; the last reply: attempt 1 (exit 0): {"status":"running"}`) {
+		t.Fatalf("a pending second attempt: %v", err)
 	}
 }

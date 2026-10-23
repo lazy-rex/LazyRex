@@ -97,11 +97,15 @@ have it. The runner repeats the call until the reply meets every `until` entry:
 
 - Each attempt runs in the same lab pane, as the same agent, with the same args file. So a keyed
   action is a replay of the same operation.
-- One window of 60 s covers all attempts of the item, the calls and the 1 s pause between them. A
-  call does not get its own 60 s.
+- One window of 60 s covers all attempts of the item, the calls and the 1 s pause between them. It
+  starts when the pane starts the first attempt. A call does not get its own 60 s: each call gets
+  only the time that is left.
 - A nonzero exit fails the item at once: an error reply is not a state to wait for. To wait for a
   state, put `until` on a read-only status action, and put the next write after it.
-- After the window, the item fails with the last reply and its exit code.
+- A reply that comes after the window fails the item, even when it meets `until`.
+- When the window ends while an attempt runs, the item fails at once. The pane stops after that
+  call. The error gives the last completed reply and its exit code, or says that no attempt
+  completed.
 - The tool logs each attempt: the attempt number, the exit code and the reply.
 - The later items of the batch run only after the `until` item is met.
 
