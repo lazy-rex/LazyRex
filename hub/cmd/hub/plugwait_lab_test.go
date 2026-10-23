@@ -231,8 +231,10 @@ func TestPluginWaitUnresolvedIntentLab(t *testing.T) {
 	before(t, s.order(), "plugin_registered a", "plugin_spawn_intent b")
 }
 
-// A waiting dependent whose dependency is refused becomes refused by the wake. The register of a
-// is gated, so b still waits when a's start is refused.
+// A waiting dependent whose dependency is refused keeps waiting, and its text names the state of
+// the dependency: the wake is an automatic start, so it runs b's selected run and does not check
+// the current graph (docs/plugin-sources.md section 7, "Selected run"). The register of a is
+// gated, so b still waits when a's start is refused; a lives, so a is retained.
 func TestPluginWaitDependencyRefusedLab(t *testing.T) {
 	s := newStartLab(t, "a", "b")
 	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
@@ -244,13 +246,12 @@ func TestPluginWaitDependencyRefusedLab(t *testing.T) {
 	if _, err := s.call("hub.admin.start", map[string]any{"plugin": "a"}); err == nil || !strings.Contains(err.Error(), "dependency missing is not configured") {
 		t.Fatalf("start of the broken a: %v", err)
 	}
-	want := "plugin b: dependency a is refused"
-	s.wait("b is refused", func() bool {
+	s.wait("b names the retained a", func() bool {
 		st := s.status("b")
-		return st.State == "refused" && strings.Contains(st.Error, want)
+		return st.State == "waiting" && st.Error == "waiting for a (retained)"
 	})
-	if e := s.entry("b"); e["waiting"] != nil {
-		t.Errorf("the refused entry b keeps waiting names: %v", e)
+	if e := s.entry("b"); fmt.Sprint(e["waiting"]) != "[a]" {
+		t.Errorf("the waiting entry b: %v", e)
 	}
 	if n := len(s.events("plugin_spawn_intent", "b")); n != 0 {
 		t.Errorf("b has %d spawn intents", n)
