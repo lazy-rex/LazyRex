@@ -163,18 +163,11 @@ type pluginOp struct {
 	Created, Updated             int64
 }
 
-// pluginOpsSchemaUp creates the manager's tables, and adds the columns that a lab store from
-// before them lacks ("duplicate column" means the store has the column already).
+// pluginOpsSchemaUp creates the manager's tables. No release had them, so there is no migration:
+// every column is in its CREATE TABLE.
 func (h *Hub) pluginOpsSchemaUp(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, pluginOpsSchema); err != nil {
-		return err
-	}
-	for _, col := range []string{"pin", "lock_base"} {
-		if _, err := h.db.ExecContext(ctx, `ALTER TABLE plugin_ops ADD COLUMN `+col+` TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			return err
-		}
-	}
-	return nil
+	_, err := h.db.ExecContext(ctx, pluginOpsSchema)
+	return err
 }
 
 func (h *Hub) pluginOpsStart(ctx context.Context) error {
