@@ -52,8 +52,10 @@ app.panel('Plugin Reads', function()
   app.hub('hub.plugins')
   return {app.ui.text('plugins', 'ok')}
 end, {landing = false})
--- hub.digest is a covered pure read: it keeps the render tracked and adds no change name.
+-- hub.digest is a covered pure read: it adds no change name, and it does not untrack the render
+-- of a covered read (the plugin manager's settings form reads both).
 app.panel('Digest Reads', function()
+  app.hub('hub.plugins')
   local r = app.hub('hub.digest', {texts = {'a'}})
   return {app.ui.text('digest', r.digests[1])}
 end, {landing = false})

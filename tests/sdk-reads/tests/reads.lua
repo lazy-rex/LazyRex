@@ -125,7 +125,7 @@ test('hub.plugins in a render keeps the render tracked, and a plugins change ren
   expect(count(v).sql_tracked, 'still tracked after the plugins change').to_be(true)
 end)
 
-test('hub.digest in a render keeps the render tracked, and no plugins change renders it again', function()
+test('hub.digest beside hub.plugins in a render keeps the render tracked with the plugins change', function()
   local p = pane('rr-digest-reads')
   user:command('digest_reads', p)
   local v = user:view('/panels/digest_reads', 'rr', p.session)
@@ -133,10 +133,13 @@ test('hub.digest in a render keeps the render tracked, and no plugins change ren
   settle()
   local sha_a = 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb'
   wait('the panel shows the digest', function() local t = (v:get() or {}).tree; return t and node(t, 'digest') and node(t, 'digest').text == sha_a end, 10)
-  expect(count(v).sql_tracked, 'a render with hub.digest only is tracked').to_be(true)
+  expect(count(v).sql_tracked, 'hub.digest does not untrack the render').to_be(true)
   local before = count(v).attempts
+  alice:call('rr.add', {t = 'b'})
+  settle()
+  expect(count(v).attempts, 'a table commit does not mark it').to_be(before)
   alice:call('rr.reload', {})
   settle()
-  expect(count(v).attempts, 'a plugins change does not render it again').to_be(before)
+  expect(count(v).attempts > before, 'a plugins change renders it again').to_be(true)
   expect(count(v).sql_tracked, 'still tracked').to_be(true)
 end)
