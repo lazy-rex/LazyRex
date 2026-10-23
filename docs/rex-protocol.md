@@ -1025,3 +1025,50 @@ The Rex app lists `pane.insert_path` ("Insert Path…") and `pane.go_to_director
 
 - In `rex do` Lua, `rex.call('client.perform', …)` returns no result and an error as text when the performer replies with `client.reply {error = {code, message}}`. Recorded: `stream response "control-159" failed: not_focused: refused by the mock (status=500 code=not_focused)`. The error is not a table, so `err.code` is nil. The code is the `code=` field at the end of the text. `plugins/templates.lua` reads it there. Inferred: the other plugins that test `type(err) == 'table'` lose the code in the same way.
 - A control client that sends `hello` with `client = {kind = "app", name, label}` over the Unix socket shows `info.kind: "app"` in `client.list`. After `session.attach`, `session_ids` contains that session. It can declare `session.select` with `client.keymap` and gets `client.perform` requests for it. `tests/templates-lab.mjs` uses such a client as the fake app. It does not show that the real app switches: that check needs the real app.
+
+## Inline output, alt screen, resize and keys (thread-view probes)
+
+These facts support the thread view (hub lead's thread contract v1.1, points H and K). The probe
+program is `view/testdata/teaprobe`; the lab driver is `view/teaprobe_lab_test.go`
+(`TEAPROBE_LAB=1 go test -run TestTeaProbe` in `view/`). Each step keeps raw captures (text,
+text `--unwrap`, vt) in its lab. Two independent runs passed (claude-52 and codex-29).
+
+### Rex on the Mac (observed 2026-10-22, Rex 0.0.1792158932-g88fd41, lab, Bubble Tea v2.1.0, Go 1.27.2, macOS 27.0.1)
+
+- Inline mode after a delayed first tree (a thread). The program starts inline with a
+  "Connecting…" row and chooses inline when the first tree arrives 2 s later. The live row
+  replaces the "Connecting…" row in place. After 31 `tea.Println` lines, the capture holds each
+  line once, in order (01 to 31), whole, above one live row.
+- Alt screen after a delayed first tree (an ordinary view). The program starts inline with
+  "Connecting…" and chooses the alt screen 2 s later. After the program exits, the primary screen
+  still holds the last inline frame (the "Connecting…" row). A renderer must clear its inline row
+  before it chooses the alt screen, or the row stays in the scrollback.
+- Alt screen on and off after inline output (a separate fact). After 30 inline lines, alt on shows
+  only the live row. After alt off, the 30 lines are back once each, and a new line goes below them.
+- Width change. Lines printed at 80 columns (2 rows each) become 3 rows each at 50 columns and 1 row
+  each at 110 columns, in both orders (80-50-110 and 110-50-80). Every line stays whole and appears
+  once, and no stale live row stays. Rex rewraps the rows that it soft-wrapped; the program prints
+  nothing again. Limit: the probe lines have no hard newlines inside. These facts do not cover
+  rows that a renderer breaks itself.
+- A live row wider than the terminal is cut by Bubble Tea. In one run its old copy stayed as a
+  stale fragment after a resize. Keep each live row within the width.
+- Size. `block.method resize` applies only for the block's owner, or for a block with no owner.
+  Otherwise Rex remembers the size and applies it when the caller becomes the owner (the method's
+  description in `rex block inspect`; not tested). `block.method size` reported the session's
+  creator as the owner. The driver takes ownership with `session.own_block` (`mode: take`). From the owner, 20, 60 and 200
+  rows applied (`block.method size` reported them, and the program saw them).
+- Capture. `rex block capture` (text) includes the scrollback: 100 lines on a 24-row grid, although
+  its help says "screen". `--unwrap` joins soft-wrapped rows.
+- Input bytes from `rex block send-key` (read before the parser; input is a byte stream, so one
+  read can hold several keys or part of one):
+  - `x`: `78`. `enter`: `0d`. `shift+enter`: `1b 5b 31 33 3b 32 75` (CSI 13;2u). Bubble Tea parses
+    the last one as `shift+enter` (code 13, modifier shift).
+  - The key name `P` sends `70` (a lowercase p).
+  - At program start, Rex answers Bubble Tea's terminal queries with two DECRQM replies
+    (`CSI ? 2026 ; 2 $ y`, `CSI ? 2027 ; 2 $ y`) and `CSI ? 1 u` (kitty keyboard flags).
+
+### The iOS app (not observed yet)
+
+No iOS fact is recorded. The width change by rotation and the bytes of Shift+Enter from the iOS
+soft keyboard need a direct observation on the device. Mac and Linux results do not stand in for
+them.
