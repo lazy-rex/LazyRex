@@ -3,7 +3,7 @@
 -- sets wins over the title (observed on Rex 0.0.1792158932-g88fd41).
 
 test('an unnamed tab names its agent after the terminal title', function()
-  local a = agent('quill', {join = false, unnamed = true})
+  local a = agent('quill', {report = false, unnamed = true})
   a:title('\226\156\179 First title') -- U+2733, the status glyph of an agent CLI
   a:report({kind = 'claude', conversation_id = 'quill-names'})
   local id = 'claude:quill-names'

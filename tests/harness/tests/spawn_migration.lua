@@ -10,10 +10,10 @@ test('any agent stops any worker; a repeat stop is closed again', function()
 end)
 
 test('another conversation in the same pane does not replay the first identity\'s spawn keys', function()
-  local carol = agent('carol')
+  local carol = agent('carol', {report = false})
   expect(carol:report({kind = 'claude', conversation_id = 'first'}).identity).to_be('claude:first')
   local w = carol:hub('hub.spawn', {profile = 'shell', key = 'own'})
-  -- The pane starts another conversation: carol stays the alias of claude:first.
+  -- The pane starts another conversation.
   expect(carol:report({kind = 'claude', conversation_id = 'second', source = 'clear'}).identity).to_be('claude:second')
   expect(carol:hub('hub.spawn', {profile = 'shell', key = 'own'}).spawn_id).not_to_be(w.spawn_id)
   -- The new conversation may still stop the old identity's worker: any agent may stop any worker.

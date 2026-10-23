@@ -9,7 +9,7 @@ test('a plugin starts a worker on behalf of the forwarded agent; the agent is it
   expect(id).to_be_truthy()
   local found
   for _, w in ipairs(alice:hub('hub.workers', {}).workers) do if w.spawn_id == id then found = w end end
-  expect(found.parent).to_be('alice')
+  expect(found.parent).to_be(alice.id)
   -- A replay of the key in a new forward returns the same spawn (keys are per caller).
   expect(alice:call('fix.spawn', {key = 'ob-1'}).spawn.spawn_id).to_be(id)
   -- Any agent may stop any worker (decision "Agents may act on anything", 2026-10-19); a repeat is closed again.

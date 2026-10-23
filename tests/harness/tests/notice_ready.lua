@@ -34,7 +34,7 @@ end
 -- far makes a pane in a new session, reports it as the identity claude:<conv>, and returns it.
 local function far(name, conv, status)
   local s = H.session(name)
-  local a = agent(name, {join = false, session = s})
+  local a = agent(name, {report = false, session = s})
   if status then a:program_status(status) end
   a:report({kind = 'claude', conversation_id = conv})
   return a, s
@@ -53,7 +53,7 @@ test('a failed status read is retried, then the notice is written', function()
   local s = H.session('retry-far')
   fault({point = 'status-read', mode = 'fail', key = s}) -- the read after the report
   fault({point = 'status-read', mode = 'fail', key = s}) -- noticeLoop's first read
-  local a = agent('retry-far', {join = false, session = s})
+  local a = agent('retry-far', {report = false, session = s})
   a:program_status('idle')
   a:report({kind = 'claude', conversation_id = 'retry-1'})
   expect(activity('claude:retry-1'), 'the state is unknown after a failed read').to_be('')
@@ -82,7 +82,7 @@ test('a status event during the read wins over the older result', function()
   local s = H.session('race-far')
   fault({point = 'status-read', mode = 'fail', key = s}) -- the read after the report: unknown
   local hold = fault({point = 'status-read', mode = 'hold', key = s})
-  local a = agent('race-far', {join = false, session = s})
+  local a = agent('race-far', {report = false, session = s})
   a:program_status('idle')
   a:report({kind = 'claude', conversation_id = 'race-1'})
   notify(a, 'claude:race-1')
@@ -114,7 +114,7 @@ test('a plugin stop during the read writes no notice; the notice waits for the n
   local s = H.session('stop-far')
   fault({point = 'status-read', mode = 'fail', key = s}) -- the read after the report: unknown
   local hold = fault({point = 'status-read', mode = 'hold', key = s})
-  local a = agent('stop-far', {join = false, session = s})
+  local a = agent('stop-far', {report = false, session = s})
   a:program_status('idle')
   a:report({kind = 'claude', conversation_id = 'stop-1'})
   notify(a, 'claude:stop-1')

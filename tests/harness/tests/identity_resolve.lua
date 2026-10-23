@@ -13,7 +13,7 @@ local function resolve(to) return H.hub('hub.agents.resolve', {to = to}).id end
 
 -- planner is a pane that never joins, with the identity claude:plan-2041. A repeat report is unchanged.
 local function planner()
-  local p = agent('planner', {join = false, title = 'Planner'})
+  local p = agent('planner', {report = false, title = 'Planner'})
   return p, p:report({kind = 'claude', conversation_id = 'plan-2041'})
 end
 
@@ -52,7 +52,7 @@ test('a pane that never joins can spawn: the spawn records the identity as its c
 end)
 
 test('a clear report names its predecessor; the superseded identity leaves the default list', function()
-  local d = agent('dave')
+  local d = agent('dave', {report = false})
   local r = d:report({kind = 'claude', conversation_id = 'dave-conv-1'})
   expect(r.state).to_be('current')
 

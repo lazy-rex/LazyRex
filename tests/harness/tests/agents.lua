@@ -1,13 +1,13 @@
 -- Agents are real lab panes: the plugin identifies them through the real hub.
 test('an agent call goes through the agent face and is attributed to its pane', function()
   local alice = agent('alice')
-  expect(alice:call('fix.who', {}).agent).to_be('alice')
-  expect(alice:call('fix.put', {key = 'k', value = {n = 1}}).by).to_be('alice')
+  expect(alice:call('fix.who', {}).agent).to_be(alice.id)
+  expect(alice:call('fix.put', {key = 'k', value = {n = 1}}).by).to_be(alice.id)
   expect(store('k').value).to_equal({n = 1})
 end)
 
 test('a direct plugin call from a pane is attributed too', function()
-  expect(agent('bob'):direct('fix.who', {}).agent).to_be('bob')
+  expect(agent('bob'):direct('fix.who', {}).agent).to_be(agent('bob').id)
 end)
 
 test('a caller outside any agent pane is refused by the real check', function()

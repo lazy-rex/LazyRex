@@ -13,7 +13,7 @@ end
 local function block_of(id) return ident(id).block_id end
 
 test('startup, a repeat, and clear: current, unchanged, then a successor', function()
-  local a = agent('id-start', {join = false})
+  local a = agent('id-start', {report = false})
   local r = a:report({kind = 'claude', conversation_id = 'conv-s1'})
   expect(r.state).to_be('current')
   expect(a:report({kind = 'claude', conversation_id = 'conv-s1'}).state).to_be('unchanged')
@@ -24,7 +24,7 @@ test('startup, a repeat, and clear: current, unchanged, then a successor', funct
 end)
 
 test('a delayed report from an older process is stale and records nothing', function()
-  local a = agent('id-stale', {join = false})
+  local a = agent('id-stale', {report = false})
   a:report({kind = 'claude', conversation_id = 'conv-t1'})
   -- The older process has started when report_async returns; it waits, and a newer process
   -- reports an unseen conversation first.
@@ -37,7 +37,7 @@ test('a delayed report from an older process is stale and records nothing', func
 end)
 
 test('a newer hook report revives a superseded identity', function()
-  local a = agent('id-revive', {join = false})
+  local a = agent('id-revive', {report = false})
   a:report({kind = 'claude', conversation_id = 'conv-m1'})
   expect(a:report({kind = 'claude', conversation_id = 'conv-m2', source = 'clear'}).predecessor).to_be('claude:conv-m1')
   a:report({kind = 'claude', conversation_id = 'conv-m3', source = 'clear'})
@@ -49,8 +49,8 @@ test('a newer hook report revives a superseded identity', function()
 end)
 
 test('another kind in the same pane is a transition; a wrong block hint is ignored', function()
-  local a = agent('id-kind', {join = false})
-  local other = agent('id-other', {join = false})
+  local a = agent('id-kind', {report = false})
+  local other = agent('id-other', {report = false})
   other:report({kind = 'claude', conversation_id = 'conv-o1'})
   a:report({kind = 'claude', conversation_id = 'conv-k1'})
   local mine = block_of('claude:conv-k1')
@@ -62,13 +62,13 @@ test('another kind in the same pane is a transition; a wrong block hint is ignor
 end)
 
 test('source mcp is refused: identities come from the hooks only', function()
-  local a = agent('id-mcp', {join = false})
+  local a = agent('id-mcp', {report = false})
   expect_error(function() a:report({kind = 'codex', conversation_id = 'thread-x1', source = 'mcp'}) end, 'invalid: source')
   expect(ident('codex:thread-x1')).to_be(nil)
 end)
 
 test('the identity takes the tab label as its name', function()
-  local a = agent('carol', {title = 'boot'})
+  local a = agent('carol', {title = 'boot', report = false})
   local r = a:report({kind = 'codex', conversation_id = 'thread-boot'})
   expect(r.state).to_be('current')
   expect(r.name, 'the name is the tab label').to_be('boot')
@@ -80,7 +80,7 @@ test('a caller outside any pane is not_in_pane', function()
 end)
 
 test('the agent process exits in a kept-open pane: child_exited detaches its identity', function()
-  local a = agent('id-exit', {join = false, keep_open = true})
+  local a = agent('id-exit', {report = false, keep_open = true})
   expect(a:report({kind = 'claude', conversation_id = 'conv-x1'}).state).to_be('current')
   local block = block_of('claude:conv-x1')
   a:exit()
@@ -94,7 +94,7 @@ test('the agent process exits in a kept-open pane: child_exited detaches its ide
 end)
 
 test('a tab rename renames the identity; a pane close detaches it and keeps its record', function()
-  local a = agent('id-close', {join = false})
+  local a = agent('id-close', {report = false})
   a:report({kind = 'codex', conversation_id = 'thread-c1'})
   a:set_label('renamed tab')
   wait('the name follows the tab', function() return ident('codex:thread-c1').name == 'renamed tab' end)

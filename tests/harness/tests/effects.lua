@@ -53,10 +53,10 @@ end)
 -- Reviewer probe (Codex, reviewer_navigation.lua): the LazyRex home plugin navigates through the
 -- effect path, so a failed target reaches the durable operation. This hub has no messaging plugin.
 test('the home plugin reports a failed navigation target on the operation', function()
-  agent('alice')
+  local alice = agent('alice')
   local home = user:panel('agents', {plugin = 'lazyrex'})
   home:render()
-  local op = home:action('agents', 'message', {item_id = 'alice'}, 'home-missing-target')
+  local op = home:action('agents', 'message', {item_id = alice.id}, 'home-missing-target')
   expect(op.status).to_be('succeeded')
   expect(op.effects).to_be('failed')
   expect(op.effects_error).to_match('messaging')

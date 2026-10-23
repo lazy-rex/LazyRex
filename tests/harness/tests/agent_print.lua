@@ -15,7 +15,7 @@ local function screen(session, block)
 end
 
 test('a:print puts its text on the agent screen', function()
-  local a = agent('printer', {join = false})
+  local a = agent('printer', {report = false})
   a:report({kind = 'claude', conversation_id = 'print-1'})
   local i = wait('the hub knows the pane', function()
     local found = identity('claude:print-1')

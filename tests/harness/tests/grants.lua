@@ -28,7 +28,7 @@ test('a grant made during a forward admits its exact request later, as the agent
   -- Deferred: no forward is in flight now.
   local w = alice:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/w1', title = 'Dev', layout = layout})
   expect(w.status).to_be('open')
-  expect(owner(alice, w.window_id)).to_equal({'alice', 'alice'})
+  expect(owner(alice, w.window_id)).to_equal({alice.id, alice.id})
   -- A replay of the same request returns the same window.
   expect(alice:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/w1', title = 'Dev', layout = layout}).window_id).to_be(w.window_id)
   expect_error(function() alice:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/w1', title = 'Other', layout = layout}) end, 'not the granted request')
@@ -61,7 +61,7 @@ test('a revoked grant admits nothing and stays revoked', function()
   expect(again.state).to_be('revoked')
   local got = alice:direct('fix.grant_get', {key = 'run/3'})
   expect(got.state).to_be('revoked')
-  expect(got.agent).to_be('alice')
+  expect(got.agent).to_be(alice.id)
 end)
 
 test('a session reference matches only the session that ensure made for the plugin', function()

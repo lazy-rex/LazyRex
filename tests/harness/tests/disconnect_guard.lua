@@ -46,7 +46,7 @@ end)
 
 test('exit waits through an inspect error until the client is gone', function()
   -- Fails first on 77020e9: its exit took the first error as a disconnect (one inspection).
-  local a = agent('exit-flaky', {join = false})
+  local a = agent('exit-flaky', {report = false})
   local client = a.client
   local n = with_inspect({timeout, connected, real}, function() a:exit() end)
   expect(n >= 3, 'inspections: ' .. n).to_be(true)
@@ -55,7 +55,7 @@ test('exit waits through an inspect error until the client is gone', function()
 end)
 
 test('exit keeps the agent when no disconnect is seen', function()
-  local a = agent('exit-stuck', {join = false})
+  local a = agent('exit-stuck', {report = false})
   expect_error(function() with_inspect({timeout}, function() a:exit() end) end, 'disconnect')
-  expect(agent('exit-stuck', {join = false}), 'the failed exit keeps the cache').to_be(a)
+  expect(agent('exit-stuck', {report = false}), 'the failed exit keeps the cache').to_be(a)
 end)

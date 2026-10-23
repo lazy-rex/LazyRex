@@ -23,7 +23,7 @@ end
 
 local function far(name, conv)
   local s = H.session(name)
-  local a = agent(name, {join = false, session = s})
+  local a = agent(name, {report = false, session = s})
   a:program_status('idle')
   a:report({kind = 'claude', conversation_id = conv})
   wait('the hub knows the agent is idle', function() return activity('claude:' .. conv) == 'idle' end)
