@@ -35,13 +35,13 @@ func TestOpCallFault(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := float64(res.(map[string]any)["id"].(int))
-	h.opCallFault("z") // another plugin: no hold
+	h.opCallFault("z", "hold-after-sent") // another plugin: no hold
 	if st, _ := h.testFaultState(id); st.(map[string]any)["fired"] != false {
 		t.Fatalf("another plugin fired it: %v", st)
 	}
 	done := make(chan struct{})
 	go func() {
-		h.opCallFault("y")
+		h.opCallFault("y", "hold-after-sent")
 		close(done)
 	}()
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
@@ -73,8 +73,49 @@ func TestOpCallFault(t *testing.T) {
 		t.Fatalf("no fault_held event: %s", b)
 	}
 	start := time.Now()
-	h.opCallFault("y") // one shot: no second hold
+	h.opCallFault("y", "hold-after-sent") // one shot: no second hold
 	if time.Since(start) > time.Second {
 		t.Fatal("the fault held twice")
+	}
+}
+
+// hold-before-retire is a mode of its own: an armed fault of that mode holds only the replace
+// handler's call (opCallFault with that mode), never the stop handler's hold-after-sent, and it
+// ends at the release. Its bounds are those of hold-after-sent.
+func TestOpCallFaultBeforeRetire(t *testing.T) {
+	h, _, _ := opsTestHub(t, "")
+	h.test = newTestState()
+	if _, err := h.testFaultArm(map[string]any{"point": "op-call", "mode": "hold-before-retire", "hold_ms": float64(60001)}, ""); err == nil {
+		t.Fatal("hold_ms 60001 armed")
+	}
+	res, err := h.testFaultArm(map[string]any{"point": "op-call", "mode": "hold-before-retire", "key": "y", "hold_ms": float64(60000)}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := float64(res.(map[string]any)["id"].(int))
+	h.opCallFault("y", "hold-after-sent") // the stop handler's mode: no hold
+	if st, _ := h.testFaultState(id); st.(map[string]any)["fired"] != false {
+		t.Fatalf("the stop handler's mode fired it: %v", st)
+	}
+	done := make(chan struct{})
+	go func() {
+		h.opCallFault("y", "hold-before-retire")
+		close(done)
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if st, _ := h.testFaultState(id); st.(map[string]any)["held"] == true {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fault is not held")
+		}
+	}
+	if _, err := h.testFaultRelease(id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the release did not end the hold")
 	}
 }
