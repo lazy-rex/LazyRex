@@ -841,6 +841,13 @@ func (h *Hub) opsRun(ctx context.Context) time.Duration {
 			return opBusyRetry
 		}
 	}
+	// An op of this pass can end with an unproved attempt: the observation then needs a next pass,
+	// also on an idle hub.
+	if left == 0 {
+		if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) `+laterAttempts).Scan(&left); err != nil {
+			return opObservePoll
+		}
+	}
 	if left > 0 {
 		return opObservePoll
 	}
@@ -1815,9 +1822,7 @@ var (
 // It returns the number of attempts that stay unresolved: the manager passes again after
 // opObservePoll while there are any.
 func (h *Hub) observeLater(ctx context.Context) (left int) {
-	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.sent_at, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
-		JOIN plugin_ops o ON o.op_id = a.op_id
-		WHERE a.proof = '' AND a.outcome NOT LIKE 'unproven:%' AND (a.outcome != '' OR a.bound_at = '') AND o.phase IN ('done', 'failed', 'conflict', 'unknown')`)
+	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.sent_at, a.target_instance, a.target_block, a.target_session, a.intent_id `+laterAttempts)
 	if err != nil {
 		log.Printf("plugin ops: the later observation: %v", err)
 		return 0
@@ -1891,6 +1896,11 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 	}
 	return left
 }
+
+// laterAttempts selects the attempts of the later observation: no proof, not unproven, not an open
+// bound attempt, of an ended op.
+const laterAttempts = `FROM plugin_op_attempts a JOIN plugin_ops o ON o.op_id = a.op_id
+	WHERE a.proof = '' AND a.outcome NOT LIKE 'unproven:%' AND (a.outcome != '' OR a.bound_at = '') AND o.phase IN ('done', 'failed', 'conflict', 'unknown')`
 
 // laterPasses counts the passes of the later observation of one attempt.
 type laterPasses struct {

@@ -446,3 +446,29 @@ func TestPluginOpUnknownReloadFreesName(t *testing.T) {
 		t.Fatalf("the add: phase %s, error %s", next.Phase, next.Error)
 	}
 }
+
+// The manager schedules the observation of an attempt that its own pass leaves unproved (codex-26):
+// opsRun runs a remove whose reload returns an error that is not "invalid", the op ends unknown,
+// and opsRun returns opObservePoll, so opsLoop passes again on an idle hub. A pass with nothing to
+// observe returns 0.
+func TestPluginOpsRunSchedulesObservation(t *testing.T) {
+	h := rowHub(t)
+	ctx := context.Background()
+	if wait := h.opsRun(ctx); wait != 0 {
+		t.Fatalf("an idle pass waits %v", wait)
+	}
+	if _, err := h.db.Exec(`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated)
+		VALUES ('old', 's', 'old', 'f', '{}', 'remove', 'managed:old', 'notes', '', '', '', 'reloading', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	reload := opReload
+	t.Cleanup(func() { opReload = reload })
+	opReload = func(context.Context, *Hub) (any, error) { return nil, errors.New("reload response lost") }
+	wait := h.opsRun(ctx)
+	if op := opsOf(t, h, "old"); op.Phase != "unknown" {
+		t.Fatalf("phase %s", op.Phase)
+	}
+	if wait != opObservePoll {
+		t.Fatalf("opsRun waits %v after the reload left an unproved attempt; want %v", wait, opObservePoll)
+	}
+}
