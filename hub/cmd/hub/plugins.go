@@ -552,7 +552,8 @@ func (h *Hub) startPluginWith(ctx context.Context, pl *Plugin, keepLive bool) er
 // desired state of the record does not decide: the start runs, and only a candidate that is x,
 // with every dependency registered, makes the record desired running and spawns. Otherwise it
 // refuses (candidate_changed, dependency_not_ready) and changes no desired state and no instance.
-// It never waits: a later wake would start whatever the candidate is then.
+// It never waits: a later wake would start whatever the candidate is then. hub.admin.start sends
+// a running plugin here only with a local expect_run (startExpected).
 func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, x *expectRun) error {
 	pl.attempted = true
 	h.startFault(pl.Name, "hold-before")
@@ -590,7 +591,10 @@ func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, 
 		return fmt.Errorf("plugin %s: %w", pl.Name, err)
 	}
 	defer lease.release()
-	e, cand, err := h.checkStart(pl)
+	h.mu.Lock()
+	running := x != nil && !keepLive && pl.ClientID != "" && alive(pl.ChildPID, pl.ChildStart)
+	h.mu.Unlock()
+	e, cand, err := h.checkStart(pl, running)
 	if err == errKept {
 		return h.recoverKept(ctx, pl) // removed before admission: spawn nothing
 	}
@@ -599,7 +603,7 @@ func (h *Hub) startPluginExpect(ctx context.Context, pl *Plugin, keepLive bool, 
 	}
 	h.startFault(pl.Name, "hold-after")
 	if x != nil {
-		return h.startExpected(ctx, pl, keepLive, x, e, cand, lease)
+		return h.startExpected(ctx, pl, keepLive, running, x, e, cand, lease)
 	}
 	h.mu.Lock()
 	pl.cancelRespawnLocked() // the start passed its refusals: it owns the plugin now (respawn.go)
@@ -769,8 +773,9 @@ func (h *Hub) recoverKept(ctx context.Context, pl *Plugin) error {
 
 // checkStart resolves every entry and returns the candidate of pl's entry. A refused entry gets
 // state refused, or retained when its recorded instance still lives: a refused start never
-// retires (section 7, "Retained instance").
-func (h *Hub) checkStart(pl *Plugin) (*configEntry, *pluginRun, error) {
+// retires (section 7, "Retained instance"). With running (a start of a running plugin with a
+// local expect_run), a refused entry changes no state: the running instance is unchanged.
+func (h *Hub) checkStart(pl *Plugin, running bool) (*configEntry, *pluginRun, error) {
 	// Admission: the entry read and the state write share one entriesMu + h.mu section, and a
 	// reload swaps the entries under the same locks. So the start is admitted with entry e, or it
 	// sees the removal (e nil: a kept record).
@@ -786,6 +791,15 @@ func (h *Hub) checkStart(pl *Plugin) (*configEntry, *pluginRun, error) {
 	cand, err := e.cand, e.err
 	if err == nil && cand != nil && cand.SDK != "" && h.cfg.SDK == "" {
 		err = errors.New("the manifest declares sdk, and the hub has no SDK directory (-sdk, with boot.lua)")
+	}
+	if running {
+		id := pl.InstanceID
+		h.mu.Unlock()
+		h.entriesMu.Unlock()
+		if err != nil {
+			return nil, nil, refuse("refused", "%v; the running instance %s is unchanged", err, id)
+		}
+		return e, cand, nil
 	}
 	pl.refusal = ""
 	if pl.state != "waiting" {
@@ -1460,6 +1474,10 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			h.mu.Unlock()
 			return nil, refuse("candidate_changed", "plugin %s runs %s, not %s; nothing was started", pl.Name, runText(&pl.run), x)
 		}
+		// A local expect_run on a running plugin (its run has the same local source): the start makes
+		// the snapshot of the current source, and replaces the instance when the digest differs
+		// (startExpected). A plain start of a running plugin changes nothing.
+		refresh := running && x != nil && x.Commit == ""
 		if !running {
 			// The first effect: the row insert and the desired state (no expect_run), or the start path.
 			if err := h.attemptSent(ctx, attempt); err != nil {
@@ -1476,7 +1494,7 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			}
 		}
 		h.mu.Unlock()
-		if !running {
+		if !running || refresh {
 			if err := h.startPluginExpect(ctx, pl, retained, x); err != nil {
 				return nil, err
 			}
