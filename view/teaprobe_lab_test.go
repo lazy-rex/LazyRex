@@ -317,6 +317,35 @@ func TestTeaProbeA4FrameWidth(t *testing.T) {
 	}
 }
 
+// A5: a resize to a pane shorter than the frame (also after the rewrap), then back to a tall pane
+// (coord-tvglitch). Each step notes the copies of each frame row and the rows of the capture.
+func TestTeaProbeA5ShortPane(t *testing.T) {
+	for _, park := range []bool{false, true} {
+		t.Run(fmt.Sprintf("park=%v", park), func(t *testing.T) {
+			trace := filepath.Join(os.TempDir(), fmt.Sprintf("teaprobe-trace-%d.log", time.Now().UnixNano()))
+			l := newTeaLab(t, 80, 30, "tea", "-delay", "500ms", "-mode", "inline", "-box", "6", "-trace", trace, fmt.Sprintf("-park=%v", park))
+			l.note("trace: %s", trace)
+			l.waitScreen("the first tree", func(s string) bool { return strings.Contains(s, "| tree alt=false") })
+			l.keys("p", "p", "p")
+			l.waitScreen("3 printed", printedCount(3))
+			for _, size := range [][2]int{{80, 30}, {80, 6}, {80, 30}, {40, 8}, {90, 26}} {
+				if size != [2]int{80, 30} || l.step > 0 {
+					l.resize(size[0], size[1])
+				}
+				geometry := fmt.Sprintf(" %dx%d ", size[0], size[1])
+				l.waitScreen("the live region at"+geometry, func(s string) bool { return strings.Contains(s, geometry) })
+				text := l.capture(fmt.Sprintf("at-%dx%d", size[0], size[1]))
+				var counts []string
+				for i := 1; i <= 6; i++ {
+					mark := fmt.Sprintf("B%02d|", i)
+					counts = append(counts, fmt.Sprintf("%s %d", mark, strings.Count(text, mark)))
+				}
+				l.note("step %02d frame rows: %v; LIVE rows %d", l.step, counts, strings.Count(text, "LIVE "))
+			}
+		})
+	}
+}
+
 func a4FrameWidth(t *testing.T, park bool) {
 	trace := filepath.Join(os.TempDir(), fmt.Sprintf("teaprobe-trace-%d.log", time.Now().UnixNano()))
 	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline", "-box", "6", "-trace", trace, fmt.Sprintf("-park=%v", park))
