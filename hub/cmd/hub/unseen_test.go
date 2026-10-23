@@ -140,3 +140,25 @@ func TestUnseenOwnForgotten(t *testing.T) {
 		t.Fatal("viewClose keeps the own view")
 	}
 }
+
+// The pass reads its rows (the view open, the tab not suppressed), then the exit event counts the
+// third crash. The pass's unseenExit counts nothing more, and its stale tab opens no view: the
+// insert reads the suppression (codex-25's order).
+func TestUnseenEventWinsAtLimit(t *testing.T) {
+	ctx := context.Background()
+	h, _ := unseenHub(t, true, "v1")
+	mustExec(t, h, `UPDATE ui_tabs SET crashes = ?`, maxCrashes-1)
+	v := unseenView(t, h, "v1")
+	stale := tab{Key: "main", Title: "Main", Route: "/main"}
+	h.uiChildExited(ctx, "b-v1")
+	h.unseenExit(ctx, v)
+	if c, s := tabCrashes(h); c != maxCrashes || s != 1 {
+		t.Fatalf("crashes %d, suppressed %d; want %d and 1", c, s, maxCrashes)
+	}
+	nv, err := h.spawnView(ctx, "p", "s", stale)
+	var n int
+	h.db.QueryRow(`SELECT count(*) FROM views WHERE plugin = 'p' AND tab = 'main' AND status != 'closed'`).Scan(&n)
+	if nv != nil || err != nil || n != 0 {
+		t.Fatalf("a suppressed tab got a view: %v %v, %d rows not closed", nv, err, n)
+	}
+}
