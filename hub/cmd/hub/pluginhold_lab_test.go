@@ -288,6 +288,21 @@ var oldSteps = []oldStep{
 	{table: "ui_tabs", column: "rev_known", def: "INTEGER NOT NULL DEFAULT 0", typ: "INTEGER", notnull: "1", dflt: "0"},
 }
 
+// oldTables are tables that H retires (store.go retiredSchema, the identity removal) and OLD
+// creates again at its start. H drops them again at its next start (h2Schema).
+var oldTables = map[string]bool{"bindings": true, "dyn_agents": true, "identity_aliases": true}
+
+// withoutOldTables is the schema s without the rows of oldTables.
+func withoutOldTables(s []map[string]string) []map[string]string {
+	var out []map[string]string
+	for _, e := range s {
+		if !oldTables[e["tbl_name"]] && !oldTables[e["tbl"]] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // afterOld is the schema s with oldSteps applied as SQLite stores an ADD COLUMN: the definition
 // goes right after the last column definition of the CREATE text (before a table constraint such
 // as PRIMARY KEY (...)), and the column comes last in its table.
@@ -333,11 +348,11 @@ func (b *b8Life) sameB8(s1, s2 b8Snapshot) {
 	if j(s1.B8) != j(s2.B8) {
 		b.t.Errorf("OLD changed a B8 row:\nS1 %s\nS2 %s", j(s1.B8), j(s2.B8))
 	}
-	want := afterOld(s1.Schema)
-	if j(want) != j(s2.Schema) {
-		b.t.Errorf("the schema through OLD is not S1 with exactly OLD's own steps %v:\nwant %s\nS2   %s", oldSteps, j(want), j(s2.Schema))
+	want, got := afterOld(s1.Schema), withoutOldTables(s2.Schema)
+	if j(want) != j(got) {
+		b.t.Errorf("the schema through OLD is not S1 with exactly OLD's own steps %v (and the tables %v):\nwant %s\nS2   %s", oldSteps, oldTables, j(want), j(got))
 	}
-	b.note("S1 and S2: the B8 rows are byte-equal: %v; the schema is S1 with exactly OLD's own steps: %v", j(s1.B8) == j(s2.B8), j(want) == j(s2.Schema))
+	b.note("S1 and S2: the B8 rows are byte-equal: %v; the schema is S1 with exactly OLD's own steps: %v", j(s1.B8) == j(s2.B8), j(want) == j(got))
 	b.note("OLD effects, plugins: S1 %s; S2 %s", j(s1.Plugins), j(s2.Plugins))
 	b.note("OLD effects, spawn_intents: S1 %s; S2 %s", j(s1.Intents), j(s2.Intents))
 }
