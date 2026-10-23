@@ -40,6 +40,7 @@ func TestReleaseRegisteredNowOrder(t *testing.T) {
 		{"registered X, exited X", cur("X"), []map[string]any{ev("plugin_registered", "X"), ev("plugin_exited", "X")}, false},
 		{"registered X, exited X, spawned X (the exit is final for X)", cur("X"), []map[string]any{ev("plugin_registered", "X"), ev("plugin_exited", "X"), ev("plugin_spawned", "X")}, false},
 		{"exited X, registered X (the exit is final for X)", cur("X"), []map[string]any{ev("plugin_exited", "X"), ev("plugin_registered", "X")}, false},
+		{"exited X, spawned X, registered X (the exit is final for X)", cur("X"), []map[string]any{ev("plugin_exited", "X"), ev("plugin_spawned", "X"), ev("plugin_registered", "X")}, false},
 		{"registered X, exited Y (another instance)", cur("X"), []map[string]any{ev("plugin_registered", "X"), ev("plugin_exited", "Y")}, true},
 		{"registered X, stopped, spawned X (no registration after the stop)", cur("X"), []map[string]any{ev("plugin_registered", "X"), ev("plugin_stopped", ""), ev("plugin_spawned", "X")}, false},
 		{"registered Y only", cur("X"), []map[string]any{ev("plugin_registered", "Y")}, false},
