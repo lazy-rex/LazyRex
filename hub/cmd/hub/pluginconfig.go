@@ -28,11 +28,12 @@ type pluginRun struct {
 	Source string `json:"source"` // the exact source string
 	Dir    string `json:"dir"`    // the plugin directory
 	// Entry is the published directory of the run, relative to <state>/plugins: a GitHub cache
-	// entry (github/<owner>/<repo>/<commit>.<token>; Dir is Entry plus the subdir); "" for a local
-	// source.
+	// entry (github/<owner>/<repo>/<commit>.<token>; Dir is Entry plus the subdir), or the snapshot
+	// of a local source (local/<hex>.<token>, localsnapshot.go). A local candidate has "" until an
+	// explicit start publishes it.
 	Entry   string            `json:"entry,omitempty"`
 	Commit  string            `json:"commit,omitempty"` // a GitHub source: the locked commit; "" for a local source
-	Digest  string            `json:"digest,omitempty"` // a GitHub source: the locked digest of the whole cache entry (Entry); "" for a local source
+	Digest  string            `json:"digest,omitempty"` // the digest of the whole Entry: the locked digest, or the snapshot's; "" for an unpublished local candidate
 	Tag     string            `json:"tag,omitempty"`    // a latest source: the locked release tag; "" for every other source
 	Path    string            `json:"path"`
 	SDK     string            `json:"sdk,omitempty"` // the manifest sdk: start through the SDK launcher
