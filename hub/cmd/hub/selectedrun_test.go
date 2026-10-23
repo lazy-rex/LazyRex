@@ -658,3 +658,24 @@ func TestSelectedRunPinnedCommit(t *testing.T) {
 		t.Fatalf("the local entry: %v", got.Entries[1])
 	}
 }
+
+// A lock that does not read gives pinned_commit "" in hub.plugins: the listing never reads a
+// missing lock (codex-27, plugins-p1-source-findings-1).
+func TestPinnedCommitBadLock(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
+	if err := os.WriteFile(filepath.Join(h.cfg.State, "hub.lock.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var item map[string]any
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("hub.plugins panicked: %v", r)
+			}
+		}()
+		item = entryItem(t, h)
+	}()
+	if v, ok := item["pinned_commit"]; !ok || v != "" {
+		t.Fatalf("pinned_commit %v (present %v)", v, ok)
+	}
+}
