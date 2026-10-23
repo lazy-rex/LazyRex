@@ -128,6 +128,7 @@ The gap fill:
 Page rules:
 
 - A new current page during a fetch joins the fetch when its oldest ID is in the fetched run. Any other page, or a new attachment, restarts the fetch from that page.
+- A joined page replaces the run from its oldest ID on: the page gives the thread order for its range, also for a new message inside it.
 - The opening exclusions stay across a restart. A result of an old fetch or an old attachment is dropped.
 - A failed page, or a page with `has_more` and no new message, is asked again after 2 s.
 - A reattach, a reload, a close, an output failure or a lost connection stops the fetch and its page call.

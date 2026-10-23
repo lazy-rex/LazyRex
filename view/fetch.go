@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -98,15 +99,22 @@ func (m *model) followFetch(page []Message) bool {
 	return true
 }
 
-// extend adds the messages of a current page that the run does not hold at its newest end.
+// extend takes a current page into the run. The page is the thread's order for its range: a new
+// message can come inside it (codex-29). So the page replaces the run from the page's oldest ID
+// on; a run without that ID (a new fetch) is the page.
 func (m *model) extend(f *fetch, page []Message) {
-	for _, x := range page {
-		if !f.held[x.ID] {
-			f.held[x.ID] = true
-			f.run = append(f.run, x)
-			if f.kind == fetchOpen {
-				m.print.openSeen[x.ID] = true
-			}
+	at := slices.IndexFunc(f.run, func(x Message) bool { return x.ID == page[0].ID })
+	if at < 0 {
+		at = len(f.run)
+	}
+	f.run = append(f.run[:at:at], page...)
+	f.held = map[string]bool{}
+	for _, x := range f.run {
+		f.held[x.ID] = true
+	}
+	if f.kind == fetchOpen {
+		for _, x := range page {
+			m.print.openSeen[x.ID] = true
 		}
 	}
 }
