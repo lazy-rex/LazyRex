@@ -119,12 +119,14 @@ func (h *Hub) opUnpin(ctx context.Context, op *pluginOp) error {
 	}
 	defer release()
 	delete(h.pops.busy, op.ID)
-	b, err := os.ReadFile(lockFile)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return done("kept", fmt.Sprintf("the lock %s does not read: %v", lockFile, err))
-	}
+	// The open attempt is settled first, also when the lock does not read (b is nil then): the op
+	// leaves the phase, so no later pass settles it.
+	b, rerr := os.ReadFile(lockFile)
 	if err := h.settleFileAttempt(ctx, op, "write:lock-old", b); err != nil {
 		return err
+	}
+	if rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+		return done("kept", fmt.Sprintf("the lock %s does not read: %v", lockFile, rerr))
 	}
 	last, err := h.lastIntended(ctx, op, "write:lock-old")
 	if err != nil {
