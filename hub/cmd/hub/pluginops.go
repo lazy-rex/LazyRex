@@ -938,6 +938,7 @@ func (h *Hub) opGraph(lockFile string, list []*configEntry, lock *pluginLock) ma
 // opWrite changes the op's entry in the managed file, under both plugin command flocks. Its
 // recovery rule, after a crash at any point: the file hash is the stored output -> written; the
 // entry is already the intended entry -> written; the entry is still base -> write; else conflict.
+// For an add or an update, "written" goes on only after the writing checks (writeChecks).
 func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	release, err := lockCommands(h.cfg.State, lockPath(h.cfg.path, h.cfg.Lock))
 	if err != nil {
@@ -962,10 +963,14 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	}
 	id := op.managedID()
 	cur := canonicalEntry(managedByID(list, id))
+	// written: the rename happened before a crash, or the file needs no change (an update that
+	// keeps its source string).
+	written := op.Output != "" && b != nil && hashBytes(b) == op.Output || cur == intended
+	checks := op.Kind == "add" || op.Kind == "update"
 	switch {
-	case op.Output != "" && b != nil && hashBytes(b) == op.Output, cur == intended:
-		return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "") // written (before a crash, or no change)
-	case cur != op.Base:
+	case written && !checks:
+		return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "")
+	case !written && cur != op.Base:
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("%s changed since the operation was admitted: %s, now %s", op.Entry, op.Base, cur))
 	}
 	if op.Kind == "remove" {
@@ -976,9 +981,14 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 			return h.setOpPhase(ctx, op, "conflict", "", msg+"; the plugin is stopped")
 		}
 	}
-	if op.Kind == "add" || op.Kind == "update" {
+	// An add or an update runs its writing checks on every path, also when the file needs no write
+	// (hub lead, lead-c4e 2): only "already at" (fetching) ends an update early.
+	if checks {
 		if stop, err := h.writeChecks(ctx, op); stop || err != nil {
 			return err
+		}
+		if written {
+			return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "")
 		}
 	}
 	// The new file: every other entry as the locked read gave it, in its order. An add's entry
