@@ -53,6 +53,11 @@ func live(pl *Plugin, commit string) {
 	pl.run = pluginRun{Name: "y", Source: upSource, Commit: commit, Digest: upDigest}
 }
 
+// selected makes pl's run the selected run of entry e.
+func selected(pl *Plugin, e *configEntry) {
+	pl.selected = &selectedRun{Entry: entryIdentity(e), Run: pl.run}
+}
+
 // notLive leaves pl desired as it is, with no instance that runs.
 func notLive(pl *Plugin) {
 	pl.BlockID, pl.ClientID, pl.ChildPID, pl.ChildStart = "", "", 0, ""
@@ -84,7 +89,19 @@ func TestPluginOpUpdateReplacing(t *testing.T) {
 		phase  string
 		result string // a part of the result or the error text
 	}{
-		{name: "live at the pin", setup: func(h *Hub, pl *Plugin) { live(pl, upCommit) }, phase: "done", result: "y runs " + upSource},
+		{name: "live at the pin", setup: func(h *Hub, pl *Plugin) { live(pl, upCommit); selected(pl, pl.entry) }, phase: "done", result: "y runs " + upSource},
+		// codex-27's selected-run gap: the run is the pin, but the next automatic start would not run
+		// it, so the update replaces, and the replace selects the pin under the intended entry.
+		{name: "live at the pin, no selected run", setup: func(h *Hub, pl *Plugin) { live(pl, upCommit) }, calls: "replace", phase: "done"},
+		{name: "live at the pin, selected under an old entry", setup: func(h *Hub, pl *Plugin) {
+			live(pl, upCommit)
+			selected(pl, opsEntry(t, h, "managed:z"))
+		}, calls: "replace", phase: "done"},
+		{name: "live at the pin, another run selected", setup: func(h *Hub, pl *Plugin) {
+			live(pl, upCommit)
+			selected(pl, pl.entry)
+			pl.selected.Run.Commit = upOld
+		}, calls: "replace", phase: "done"},
 		{name: "live at another run", setup: func(h *Hub, pl *Plugin) { live(pl, upOld) }, calls: "replace", phase: "done"},
 		{name: "waiting", setup: func(h *Hub, pl *Plugin) { pl.Desired = "running" }, calls: "start", phase: "done"},
 		{name: "retained", setup: func(h *Hub, pl *Plugin) { live(pl, upOld); notLive(pl) }, calls: "start", phase: "done"},
