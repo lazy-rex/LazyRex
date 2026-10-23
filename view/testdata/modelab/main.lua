@@ -46,6 +46,8 @@ local obj = {type = 'object'}
 rex.call('client.keymap', {actions = {
   {name = 'view.render', kind = 'client', title = 'Render', args = obj},
   {name = 'view.action', kind = 'client', title = 'Action', args = obj},
+  {name = 'view.send', kind = 'client', title = 'Send', args = obj},
+  {name = 'view.draft.save', kind = 'client', title = 'Save draft', args = obj},
 }})
 rex.on('client_perform_requested', function(ctx, ev)
   local ok, result = pcall(function()
