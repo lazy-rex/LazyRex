@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sdkBoot is a launcher with the contract of sdk/lua/boot.lua: it gets main=<absolute main>, puts
@@ -55,18 +58,77 @@ func TestPluginSDKLaunchLab(t *testing.T) {
 	}
 }
 
-// Without an SDK directory, a plugin that declares sdk is refused, and the others start.
+// Without an SDK directory, a plugin that declares sdk is refused, and the others start. The hub
+// has no -sdk, and harnessBinary builds it in a temporary directory with no sdk/lua above it, so
+// findSDK finds none.
 func TestPluginSDKRefusedWithoutSDKLab(t *testing.T) {
 	s := newStartLab(t, "sdkp", "plain")
 	s.writeSDKPlugin()
 	s.writeSource("plain", `{"name":"plain","main":"main.lua"}`, "plain")
-	s.args = []string{"-sdk", t.TempDir()} // no boot.lua
+	for d := filepath.Dir(s.bin); d != "/" && d != "."; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "sdk", "lua", "boot.lua")); err == nil {
+			t.Fatalf("the fixture: %s has an SDK above the hub binary", d)
+		}
+	}
 	s.start()
 	s.startRun("plain")
 	s.wait("the refusal", func() bool { return s.status("sdkp").State == "refused" })
 	if st := s.status("sdkp"); !strings.Contains(st.Error, "no SDK directory") {
 		t.Fatalf("the refusal: %+v", st)
 	}
+	if p := s.pluginProcs(); len(p) != 1 || !strings.Contains(p[0], filepath.Join(s.src, "plain")) {
+		t.Errorf("plugin processes %q, want plain only", p)
+	}
+}
+
+// A -sdk value is the operator's (or the wrapper's) explicit choice: a value without boot.lua, or
+// one that cannot be resolved, stops the start with exit status 1 before the store opens, so no
+// plugin starts (docs/hub.md, "Paths at the start").
+func TestHubRefusesABadSDKLab(t *testing.T) {
+	s := newStartLab(t, "sdkp", "plain")
+	s.writeSDKPlugin()
+	s.writeSource("plain", `{"name":"plain","main":"main.lua"}`, "plain")
+	cfg, err := loadConfig(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	for _, c := range []struct{ sdk, want string }{
+		{empty, fmt.Sprintf("-sdk %s has no boot.lua", empty)},
+		{filepath.Join(empty, "missing"), fmt.Sprintf("-sdk %s cannot be resolved", filepath.Join(empty, "missing"))},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cmd := exec.CommandContext(ctx, s.bin, "-config", s.cfg, "-test", "-sdk", c.sdk)
+		cmd.Env, cmd.Dir = s.l.env, s.l.home()
+		out, _ := cmd.CombinedOutput()
+		cancel()
+		if code := cmd.ProcessState.ExitCode(); code != 1 || !strings.Contains(string(out), c.want) {
+			t.Errorf("-sdk %s: exit %d, want 1 and %q\n%s", c.sdk, code, c.want, out)
+		}
+		if _, err := os.Stat(filepath.Join(cfg.State, "hub.db")); !os.IsNotExist(err) {
+			t.Errorf("-sdk %s: the store opened (hub.db: %v)", c.sdk, err)
+		}
+	}
+	if p := s.pluginProcs(); len(p) > 0 {
+		t.Errorf("plugin processes run: %q", p)
+	}
+}
+
+// pluginProcs returns the command lines of the processes whose argv names a source directory of
+// this lab: its plugin processes. TestPluginSDKRefusedWithoutSDKLab proves that it sees one.
+func (s *startLab) pluginProcs() []string {
+	s.t.Helper()
+	ps, err := exec.Command("ps", "-axww", "-o", "command=").Output()
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	var found []string
+	for _, line := range strings.Split(string(ps), "\n") {
+		if strings.Contains(line, s.src) {
+			found = append(found, line)
+		}
+	}
+	return found
 }
 
 func TestManifestSDK(t *testing.T) {
