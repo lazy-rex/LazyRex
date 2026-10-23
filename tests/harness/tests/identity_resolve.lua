@@ -1,6 +1,6 @@
 -- Agent identity, stage 2 on the hub (hub/cmd/hub/identity.go): a pane that never joins is known by
--- its report alone; hub.agents lists identities; hub.agents.resolve by ID, prefix, tab name and
--- legacy alias; a joined legacy pane's first report makes a permanent alias.
+-- its report alone; hub.agents lists identities; hub.agents.resolve by ID, prefix and tab name; a
+-- clear report supersedes the old identity.
 
 local function agents(all)
   local list = H.hub('hub.agents', {all = all or nil}).agents or {}
@@ -51,21 +51,15 @@ test('a pane that never joins can spawn: the spawn records the identity as its c
   expect(p:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed')
 end)
 
-test('a joined legacy pane\'s first report makes a permanent alias', function()
+test('a clear report names its predecessor; the superseded identity leaves the default list', function()
   local d = agent('dave')
   local r = d:report({kind = 'claude', conversation_id = 'dave-conv-1'})
-  expect(r.agent_id).to_be('dave')
-  local list = agents()
-  expect(list['dave'], 'an aliased legacy agent leaves the default list').to_be(nil)
-  expect(list['claude:dave-conv-1'].aliases).to_equal({'dave'})
-  expect(agents(true)['dave'].alias_of).to_be('claude:dave-conv-1')
-  expect(resolve('dave'), 'a legacy ID resolves to its identity').to_be('claude:dave-conv-1')
+  expect(r.state).to_be('current')
 
   r = d:report({kind = 'claude', conversation_id = 'dave-conv-2', source = 'clear'})
   expect(r.predecessor).to_be('claude:dave-conv-1')
   expect(agents()['claude:dave-conv-1'], 'a superseded identity leaves the default list').to_be(nil)
   expect(agents(true)['claude:dave-conv-1'].state).to_be('superseded')
-  expect(resolve('dave'), 'the alias is permanent: it follows the conversation').to_be('claude:dave-conv-1')
 end)
 
 test('the agent face lists agent actions and plugin exports, not internal actions', function()

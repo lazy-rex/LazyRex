@@ -67,11 +67,10 @@ test('source mcp is refused: identities come from the hooks only', function()
   expect(ident('codex:thread-x1')).to_be(nil)
 end)
 
-test('a joined agent\'s pane: the identity takes the joined agent and the tab label', function()
+test('the identity takes the tab label as its name', function()
   local a = agent('carol', {title = 'boot'})
   local r = a:report({kind = 'codex', conversation_id = 'thread-boot'})
   expect(r.state).to_be('current')
-  expect(r.agent_id).to_be('carol')
   expect(r.name, 'the name is the tab label').to_be('boot')
 end)
 

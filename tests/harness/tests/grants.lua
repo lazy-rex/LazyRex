@@ -74,16 +74,3 @@ test('a session reference matches only the session that ensure made for the plug
   local w = carol:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/s1', session = s, layout = layout})
   expect(w.session_id).to_be(s)
 end)
-
-test('a grant follows its agent through a migration', function()
-  local dave = agent('dave')
-  local e = {{action = 'hub.spawn_window', key = 'g/m1', request = {layout = layout}}}
-  local g = dave:call('fix.grant', {key = 'run/5', entries = e})
-  expect(dave:report({kind = 'claude', conversation_id = 'conv-g'}).identity).to_be('claude:conv-g')
-  -- The new identity replays the create; the window it admits is dave's and the identity stops it.
-  expect(dave:call('fix.grant', {key = 'run/5', entries = e}).grant_id).to_be(g.grant_id)
-  local w = dave:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/m1', layout = layout})
-  for _, s in ipairs(dave:hub('hub.workers', {}).workers) do
-    if s.window_id == w.window_id then expect(dave:hub('hub.stop', {spawn_id = s.spawn_id}).status).to_be('closed') end
-  end
-end)
