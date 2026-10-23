@@ -1099,6 +1099,11 @@ text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-
   stay above the new frame. Each later narrowing (80 to 40) adds one more stale copy of `B01`.
   With `-park` (the cursor on the first frame row), Bubble Tea writes only `CSI J` from the
   first row, and each frame row is on the pane once at 50, 80, 40 and 100 columns.
+- A5, a pane shorter than the frame (Linux lab, LazyRex 8fe2ad6e, 2026-10-23;
+  `TestTeaProbeA5ShortPane`). The same 10-row frame starts at 80x30. After 80x6 and back to
+  80x30, the capture has 2 LIVE rows. After 40x8 (the wide rows rewrap) and then 90x26, it has 3
+  LIVE rows and 2 copies of `B01` and `B02`. The counts are the same with and without `-park`:
+  the rows that do not fit the shorter pane go to the scrollback, and no later frame erases them.
 - Size. `block.method resize` applies only for the block's owner, or for a block with no owner.
   Otherwise Rex remembers the size and applies it when the caller becomes the owner (the method's
   description in `rex block inspect`; not tested). `block.method size` reported the session's

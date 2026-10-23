@@ -87,6 +87,7 @@ A frame row above the cursor can then take two rows, and the move up stops insid
 With the cursor on the first row, every rewrapped row is below the cursor, and the erase removes it.
 The view draws its own caret, so the pane never shows the terminal cursor: the pane output drops each "show cursor" sequence (ESC[?25h) while the program runs, and shows the cursor again after it (output.go).
 The lab TestLiveRegionResizeLab checks that each live node is on the pane at most once after each size change.
+A known limit: when the new pane is shorter than the old frame (after the rewrap), Rex pushes the old frame's top rows into the scrollback, and no frame can erase them there (docs/rex-protocol.md, A5).
 
 ### The clear at process start
 
