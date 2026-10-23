@@ -456,7 +456,7 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 			if i == sendRow {
 				ctl = sendControl
 			}
-			if i == len(lines)-1 {
+			if i > sendRow { // the narrow second hint row and the bottom border are decorative
 				ctl = nil
 			}
 			add(line, fmt.Sprintf("%s:edit:%d", n.ID, i), ctl)

@@ -423,71 +423,75 @@ func TestQuitFrameKeepsTheScreen(t *testing.T) {
 	}
 }
 
-// TestShortThreadPaneKeepsEditorAndSend (v1.2 item 1f): in a 6-row pane, a thread tree with two
-// actions and a composer with a draft is at most 5 rows. Tab and Shift+Tab reach every control,
-// the focused control is on screen, and the editor row and Send stay together. A resize keeps the
-// focus.
+// TestShortThreadPaneKeepsEditorAndSend (v1.2 item 1f): in a 6-row pane at 80 and 40 columns, a
+// thread tree with two actions and a composer with a draft is at most 5 rows. Tab and Shift+Tab
+// reach every control and wrap, the focused control is on screen, and the editor row and Send stay
+// together (at 40 columns the footer has a second, decorative hint row). A resize keeps the focus.
 func TestShortThreadPaneKeepsEditorAndSend(t *testing.T) {
-	m := modeModel(30)
-	m.apply(treeOf(tvHistory, tvAction("w1"), tvAction("w2"), tvComposer))
-	m.editors["composer"].Area.SetValue("DRAFT-TEXT")
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
-	controls := m.controls()
-	ids := make([]string, len(controls))
-	for i, c := range controls {
-		ids[i] = c.ID
-	}
-	if strings.Join(ids, " ") != "w1:action w2:action edit:composer composer:send" {
-		t.Fatalf("controls %q", ids)
-	}
-	check := func(step string) {
-		t.Helper()
-		v := ansi.Strip(m.View().Content)
-		if n := len(strings.Split(v, "\n")); n > m.height-1 {
-			t.Fatalf("%s: %d rows in a pane of %d:\n%s", step, n, m.height, v)
-		}
-		want := map[string][]string{"w1:action": {"Action w1"}, "w2:action": {"Action w2"}, "edit:composer": {"DRAFT-TEXT", "Send"}, "composer:send": {"DRAFT-TEXT", "Send"}}[m.focus]
-		for _, s := range want {
-			if !strings.Contains(v, s) {
-				t.Fatalf("%s: focus %q, %q is not on screen:\n%s", step, m.focus, s, v)
+	for _, width := range []int{80, 40} {
+		t.Run(fmt.Sprintf("%d columns", width), func(t *testing.T) {
+			m := modeModel(30)
+			m.apply(treeOf(tvHistory, tvAction("w1"), tvAction("w2"), tvComposer))
+			m.editors["composer"].Area.SetValue("DRAFT-TEXT")
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 6})
+			controls := m.controls()
+			ids := make([]string, len(controls))
+			for i, c := range controls {
+				ids[i] = c.ID
 			}
-		}
+			if strings.Join(ids, " ") != "w1:action w2:action edit:composer composer:send" {
+				t.Fatalf("controls %q", ids)
+			}
+			check := func(step string) {
+				t.Helper()
+				v := ansi.Strip(m.View().Content)
+				if n := len(strings.Split(v, "\n")); n > m.height-1 {
+					t.Fatalf("%s: %d rows in a pane of %d:\n%s", step, n, m.height, v)
+				}
+				want := map[string][]string{"w1:action": {"Action w1"}, "w2:action": {"Action w2"}, "edit:composer": {"DRAFT-TEXT", "Send"}, "composer:send": {"DRAFT-TEXT", "Send"}}[m.focus]
+				for _, s := range want {
+					if !strings.Contains(v, s) {
+						t.Fatalf("%s: focus %q, %q is not on screen:\n%s", step, m.focus, s, v)
+					}
+				}
+			}
+			m.setFocus(ids[0])
+			check("first")
+			for i := 1; i < len(ids); i++ {
+				m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+				if m.focus != ids[i] {
+					t.Fatalf("Tab %d: focus %q, want %q", i, m.focus, ids[i])
+				}
+				check(fmt.Sprintf("Tab %d", i))
+			}
+			for i := len(ids) - 2; i >= 0; i-- {
+				m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+				if m.focus != ids[i] {
+					t.Fatalf("Shift+Tab to %d: focus %q, want %q", i, m.focus, ids[i])
+				}
+				check(fmt.Sprintf("Shift+Tab %d", i))
+			}
+			// The focus wraps: the window jumps from the first action to Send, and back.
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+			if m.focus != "composer:send" {
+				t.Fatalf("Shift+Tab from the first control: focus %q", m.focus)
+			}
+			check("Shift+Tab wraps to Send")
+			m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+			if m.focus != ids[0] {
+				t.Fatalf("Tab from Send: focus %q", m.focus)
+			}
+			check("Tab wraps to the first control")
+			m.setFocus("edit:composer")
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+			check("tall pane")
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 6})
+			if m.focus != "edit:composer" {
+				t.Fatalf("the resize moved the focus to %q", m.focus)
+			}
+			check("resize from 30 to 6 rows")
+		})
 	}
-	m.setFocus(ids[0])
-	check("first")
-	for i := 1; i < len(ids); i++ {
-		m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-		if m.focus != ids[i] {
-			t.Fatalf("Tab %d: focus %q, want %q", i, m.focus, ids[i])
-		}
-		check(fmt.Sprintf("Tab %d", i))
-	}
-	for i := len(ids) - 2; i >= 0; i-- {
-		m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-		if m.focus != ids[i] {
-			t.Fatalf("Shift+Tab to %d: focus %q, want %q", i, m.focus, ids[i])
-		}
-		check(fmt.Sprintf("Shift+Tab %d", i))
-	}
-	// The focus wraps: the window jumps from the first action to Send, and back.
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.focus != "composer:send" {
-		t.Fatalf("Shift+Tab from the first control: focus %q", m.focus)
-	}
-	check("Shift+Tab wraps to Send")
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.focus != ids[0] {
-		t.Fatalf("Tab from Send: focus %q", m.focus)
-	}
-	check("Tab wraps to the first control")
-	m.setFocus("edit:composer")
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
-	check("tall pane")
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
-	if m.focus != "edit:composer" {
-		t.Fatalf("the resize moved the focus to %q", m.focus)
-	}
-	check("resize from 30 to 6 rows")
 }
 
 // TestInlineIgnoresTheMouse: an inline frame has no mouse reporting, so a mouse event changes
@@ -525,5 +529,54 @@ func TestInlineIgnoresTheMouse(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	if !m.selectText {
 		t.Fatal("alt: Ctrl+T did not turn text selection on")
+	}
+}
+
+// codex-29's probe for 7ef7b218 (c29-7ef7b218-narrow-blocker), unchanged except gofmt.
+func TestReviewNarrowShortComposer(t *testing.T) {
+	m := modeModel(30)
+	m.apply(treeOf(tvHistory, tvAction("w1"), tvAction("w2"), tvComposer))
+	m.editors["composer"].Area.SetValue("DRAFT-TEXT")
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 6})
+	for _, focus := range []string{"edit:composer", "composer:send"} {
+		m.setFocus(focus)
+		v := ansi.Strip(m.View().Content)
+		if !strings.Contains(v, "DRAFT-TEXT") || !strings.Contains(v, "Send") {
+			t.Errorf("focused %s hides editor or Send at 40x6:\n%s", focus, v)
+		}
+	}
+}
+
+// TestNarrowComposerTargets: at 40 columns in alt mode, the editor row, the top border and Send keep
+// their targets, and the second hint row has none. A click on the editor row focuses the editor.
+func TestNarrowComposerTargets(t *testing.T) {
+	m := modeModel(30)
+	m.apply(treeOf(tvAction("w1"), tvComposer))
+	m.editors["composer"].Area.SetValue("DRAFT-TEXT")
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 30})
+	m.setFocus("w1:action")
+	m.View()
+	target := func(text string) (string, int) {
+		for y, r := range m.visibleRows {
+			if strings.Contains(ansi.Strip(r.Text), text) {
+				id := ""
+				for _, c := range r.rowControls() {
+					id = c.ID
+				}
+				return id, y
+			}
+		}
+		t.Fatalf("no row with %q", text)
+		return "", 0
+	}
+	for text, want := range map[string]string{"╭": "edit:composer", "DRAFT-TEXT": "edit:composer", "Send": "composer:send", "Shift+Enter ↵": "", "╰": ""} {
+		if id, _ := target(text); id != want {
+			t.Errorf("the row with %q has target %q, want %q", text, id, want)
+		}
+	}
+	_, y := target("DRAFT-TEXT")
+	m.Update(tea.MouseClickMsg{X: m.leftMargin() + 4, Y: y, Button: tea.MouseLeft})
+	if m.focus != "edit:composer" {
+		t.Fatalf("a click on the editor row: focus %q", m.focus)
 	}
 }
