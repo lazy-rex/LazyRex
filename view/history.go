@@ -10,6 +10,12 @@ import (
 // reprint after it duplicates history (spikes/04-scrollback, question 4).
 const clearScrollback = "\x1b[H\x1b[2J\x1b[3J"
 
+// paneStart is the process's first write: the clear, then the cursor hide (ESC[?25l). The view
+// draws its own caret and parks the hidden cursor on the first live row (inlineView); paneOut
+// drops every later show-cursor sequence. The pane closes with the process, so nothing shows the
+// cursor again.
+const paneStart = clearScrollback + "\x1b[?25l"
+
 // historyNode returns the snapshot's history node. A loading snapshot has none.
 func historyNode(s Snapshot) *Node {
 	for i := range s.Tree.Nodes {

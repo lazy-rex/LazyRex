@@ -726,7 +726,7 @@ func waitAttached(t *testing.T, f *protocolFixture) {
 }
 
 // TestPaneOutHidesTheCursor: with hideCursor, each DECTCEM set is dropped and the write reports
-// the full length; restoreCursor writes one DECTCEM set after the program.
+// the full length.
 func TestPaneOutHidesTheCursor(t *testing.T) {
 	tt := &testTerm{}
 	out := newPaneOut(tt)
@@ -735,8 +735,7 @@ func TestPaneOutHidesTheCursor(t *testing.T) {
 	if n, err := out.Write([]byte(in)); err != nil || n != len(in) {
 		t.Fatalf("write: n=%d err=%v", n, err)
 	}
-	out.restoreCursor()
-	if got, want := tt.String(), "ab\x1b[?25lc\x1b[?25h"; got != want {
+	if got, want := tt.String(), "ab\x1b[?25lc"; got != want {
 		t.Fatalf("the pane got %q, want %q", got, want)
 	}
 }

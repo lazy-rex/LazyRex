@@ -85,13 +85,13 @@ Bubble Tea starts the next frame from the cursor: it moves up by the rows that i
 When the pane gets narrower, Rex rewraps every row that is wider than the new width, also a row that the renderer ended itself (docs/rex-protocol.md, A4).
 A frame row above the cursor can then take two rows, and the move up stops inside the old frame: the old rows above it stay as a stale copy.
 With the cursor on the first row, every rewrapped row is below the cursor, and the erase removes it.
-The view draws its own caret, so the pane never shows the terminal cursor: the pane output drops each "show cursor" sequence (ESC[?25h) while the program runs, and shows the cursor again after it (output.go).
+The view draws its own caret, so the pane never shows the terminal cursor. The process's first write is the clear and the cursor hide (ESC[?25l), before Bubble Tea starts (paneStart; one write, so a failure is one output failure). Then the pane output drops each "show cursor" sequence (ESC[?25h) (output.go). Nothing shows the cursor at the exit: the pane closes with the process.
 The lab TestLiveRegionResizeLab checks that each live node is on the pane at most once after each size change.
 A known limit: when the new pane is shorter than the old frame (after the rewrap), Rex pushes the old frame's top rows into the scrollback, and no frame can erase them there (docs/rex-protocol.md, A5).
 
 ### The clear at process start
 
-Every renderer process clears its pane once (cursor home, ESC[2J, ESC[3J), before Bubble Tea writes anything.
+Every renderer process clears its pane once (cursor home, ESC[2J, ESC[3J) and hides the cursor (ESC[?25l) in the same write, before Bubble Tea writes anything.
 This applies to thread mode and alt mode, because the mode is not decided at start (thread view v1.2).
 A renderer restarted in the same pane (a reload, or a respawn after an output failure) would otherwise print the thread history a second time below the old copy.
 In a new pane, the clear removes nothing.

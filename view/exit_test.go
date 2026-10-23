@@ -185,8 +185,9 @@ func TestRendererExitsOnOutputFault(t *testing.T) {
 	}
 }
 
-// TestRendererClearsThePaneAtStart (lead-tv-clear2): the process's first bytes are the clear
-// (cursor home, ESC[2J, ESC[3J), before any Bubble Tea byte. A reattach and a later print do not
+// TestRendererClearsThePaneAtStart (lead-tv-clear2, lead-cur): the process's first bytes are the
+// clear (cursor home, ESC[2J, ESC[3J) and the cursor hide (ESC[?25l), before any Bubble Tea byte,
+// and no byte shows the cursor again. A reattach and a later print do not
 // clear again: the process writes the clear once. The first-print probe of the review
 // (TestReviewFirstPrintClearsOldScrollback) moves to this scope: main writes the clear, and the
 // unit tests' startPrint does not run main.
@@ -198,8 +199,8 @@ func TestRendererClearsThePaneAtStart(t *testing.T) {
 			t.Fatalf("TEXT-1 was not printed: %q (stderr %q)", r.output(), r.stderr.String())
 		}
 	}
-	if out := r.output(); !strings.HasPrefix(out, clearScrollback) {
-		t.Fatalf("the first bytes are not the clear: %q", out[:min(len(out), 80)])
+	if out := r.output(); !strings.HasPrefix(out, clearScrollback+"\x1b[?25l") {
+		t.Fatalf("the first bytes are not the clear and the cursor hide: %q", out[:min(len(out), 80)])
 	}
 	// A reattach: the hub's client goes away and comes back; the renderer attaches again.
 	f.mu.Lock()
@@ -231,6 +232,9 @@ func TestRendererClearsThePaneAtStart(t *testing.T) {
 	}
 	if n := strings.Count(out, "\x1b[3J"); n != 1 {
 		t.Fatalf("ESC[3J is in the output %d times, want once", n)
+	}
+	if strings.Contains(out, "\x1b[?25h") {
+		t.Fatalf("the output shows the cursor: %q", out)
 	}
 	t.Logf("stdout: %d bytes, the clear once, at the start; TEXT-1 and TEXT-2 printed", len(out))
 }

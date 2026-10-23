@@ -61,7 +61,7 @@ func main() {
 	// (lead-tv-clear2): a renderer restarted in the same pane would otherwise print the thread
 	// history a second time below the old copy. A failed clear is an output failure: exit 1 before
 	// the program starts or attaches. No draft exists yet, and stderr is the same pane.
-	if _, err := out.WriteString(clearScrollback); err != nil {
+	if _, err := out.WriteString(paneStart); err != nil {
 		os.Exit(1)
 	}
 	client.outFailed = out.Failed
@@ -79,7 +79,6 @@ func main() {
 	}()
 	go client.run(ctx)
 	_, err = program.Run()
-	out.restoreCursor()
 	code := afterRun(model, out.paneOut, err, ctx.Err() != nil)
 	if code == 0 && model.reloadReady && ctx.Err() == nil {
 		if err := syscall.Exec(executable, os.Args, os.Environ()); err != nil {
