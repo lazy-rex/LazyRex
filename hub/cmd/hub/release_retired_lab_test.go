@@ -93,7 +93,7 @@ func buildHubAt(t *testing.T, commit string) string {
 
 // The mutant check of the release gate, without a rehearsal (release freeze refuses an H that is
 // not on origin/main, and a mutant never is). RELEASE_LAB_RETIRED_H and RELEASE_LAB_RETIRED_MUTANT
-// are two commits in this clone; the mutant's export leaves out at least one entry of H's. On a
+// are two commits in this clone; the mutant's export is H's with exactly one entry left out. On a
 // lab hub.db with OLD tables, the drops of H's real export are applied. With H's export the schema
 // check passes; with the mutant's real export it fails on the left-out table or column.
 func TestReleaseRetiredMutantLab(t *testing.T) {
@@ -119,8 +119,19 @@ func TestReleaseRetiredMutantLab(t *testing.T) {
 			left = append(left, e)
 		}
 	}
-	if len(left) == 0 {
-		t.Fatalf("the mutant %s leaves out no entry of %s", mc, hc)
+	// The mutant must differ from H only by one left-out entry, so that no other change can give the
+	// wanted failure (lead-c49mut).
+	inH := map[retiredEntry]bool{}
+	for _, e := range hEntries {
+		inH[e] = true
+	}
+	for _, e := range mEntries {
+		if !inH[e] {
+			t.Fatalf("the mutant %s has the entry %+v, which %s does not have", mc, e, hc)
+		}
+	}
+	if len(left) != 1 || len(mEntries) != len(hEntries)-1 {
+		t.Fatalf("the mutant %s leaves out %+v of %s; want exactly one entry", mc, left, hc)
 	}
 	check := func(entries []retiredEntry) error {
 		h := retiredLab(t, entries)
