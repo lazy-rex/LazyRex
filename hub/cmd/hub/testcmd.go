@@ -827,8 +827,9 @@ func tail(path string, res *fileResult, all bool) {
 // restartHub stops the lab hub that this command started and starts it again with the same config,
 // lab server and state (hub:restart() in a test; the coordinator, 2026-10-19). Mode term stops the
 // old hub's keeper (SIGTERM to its group, then the wait); mode kill sends SIGKILL to that group (a
-// crash). Either way the old keeper ends before the new hub starts, and a failed stop is a reason
-// that the cleanup is not proved. The old hub's log is kept as hub.<n>.log. Processes that the old
+// crash). Either way the old keeper ends, and then the old hub releases hub.lock (waitOldHub,
+// restartlock.go), before the new hub starts; a failed stop or wait is a reason that the cleanup is
+// not proved. The old hub's log is kept as hub.<n>.log. Processes that the old
 // hub left stay tracked, so the lab cleanup still checks them.
 //
 // restartAfterStop runs after the old hub's keeper ends and before the new hub starts. It is a
@@ -847,6 +848,7 @@ func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
 		return fmt.Errorf("the hub is not running")
 	}
 	l.snapshot()
+	oldPID, oldStart := l.hub.pid, l.hub.start
 	var p []string
 	if mode == "kill" {
 		p = l.hub.kill()
@@ -859,6 +861,14 @@ func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
 	if len(p) > 0 {
 		l.unproved = append(l.unproved, p...)
 		return fmt.Errorf("the old hub: %s", strings.Join(p, "; "))
+	}
+	// The keeper has ended, but the old hub can still hold hub.lock (restartlock.go): wait for it,
+	// bounded, so the new hub does not refuse with "another hub owns".
+	if err := waitOldHub(ctx, oldPID, oldStart, filepath.Join(l.dir, "hub", "hub.lock")); err != nil {
+		if ctx.Err() == nil {
+			l.unproved = append(l.unproved, "the old hub: "+err.Error())
+		}
+		return fmt.Errorf("the old hub: %w", err)
 	}
 	l.restarts++
 	if err := os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts))); err != nil {

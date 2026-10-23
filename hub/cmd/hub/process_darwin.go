@@ -19,7 +19,8 @@ func procRead(pid int) (procRecord, error) {
 		return procRecord{}, errProcGone
 	}
 	st := list[0].Proc.P_starttime
-	return procRecord{ppid: int(list[0].Eproc.Ppid), start: fmt.Sprintf("%d.%06d", st.Sec, st.Usec)}, nil
+	// p_stat 5 is SZOMB (sys/proc.h): the process has exited and is not reaped.
+	return procRecord{ppid: int(list[0].Eproc.Ppid), start: fmt.Sprintf("%d.%06d", st.Sec, st.Usec), zombie: list[0].Proc.P_stat == 5}, nil
 }
 
 // procArgvExact returns the exact arguments of pid from kern.procargs2 (parseProcArgs2).

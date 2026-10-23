@@ -14,8 +14,9 @@ import (
 // start time is "<seconds>.<microseconds>" on every system, so stored values and startBefore
 // compare the same way. procRead (process_darwin.go, process_linux.go) reads it.
 type procRecord struct {
-	ppid  int
-	start string
+	ppid   int
+	start  string
+	zombie bool // the process has exited and is not reaped (Linux state Z, darwin SZOMB)
 }
 
 // errProcGone is procRead's verified answer that the system has no such process. Every other
@@ -27,8 +28,8 @@ var errProcGone = errors.New("no such process")
 // 10 ms resolution: two processes that start in the same tick have equal start times.
 const procUserHZ = 100
 
-// parseProcStat reads the parent pid (field 4) and starttime (field 22) of a /proc/<pid>/stat
-// line. Field 2, the command name in parentheses, can hold spaces and parentheses, so the fields
+// parseProcStat reads the state (field 3), the parent pid (field 4) and starttime (field 22) of a
+// /proc/<pid>/stat line. Field 2, the command name in parentheses, can hold spaces and parentheses, so the fields
 // are counted after the last ')'. btime is the boot time in seconds.
 func parseProcStat(line string, btime int64) (procRecord, error) {
 	i := strings.LastIndexByte(line, ')')
@@ -49,7 +50,7 @@ func parseProcStat(line string, btime int64) (procRecord, error) {
 	}
 	sec := btime + ticks/procUserHZ
 	usec := (ticks % procUserHZ) * (1000000 / procUserHZ)
-	return procRecord{ppid: ppid, start: fmt.Sprintf("%d.%06d", sec, usec)}, nil
+	return procRecord{ppid: ppid, start: fmt.Sprintf("%d.%06d", sec, usec), zombie: f[0] == "Z"}, nil
 }
 
 // procInfo returns the parent pid and the start time of pid. ok is false if the process does not
