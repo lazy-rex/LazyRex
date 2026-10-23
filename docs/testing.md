@@ -157,7 +157,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.agents` | Roster agents in the test hub config. `user` is always there. |
 | `test.ui_slot` | The hub config `ui_slot` option: `"split"` or `"layer"` (an experiment; docs/hub.md). Another value fails at the manifest load. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
-| `test.parity_routes` | Those contextual routes. The fixture must render each one. |
+| `test.parity_routes` | Those contextual routes. The fixture must render each one. A route with no query (`/forms/worktree`) is checked by a render of that path with any query or none. A route with a query (`/forms/automation/new?profile=worker`) is checked only by a render of exactly that route. |
 | `test.env` | Variables added to the lab environment. See "Isolation". |
 | `test.args` | Plugin args (hub config `plugins[].args`, `rex.args` in the plugin), keyed by plugin name: the plugin under test, a `test.plugins` entry or `lazyrex`. Keys match `[a-z0-9_]+`; `hub_client_id`, `instance_id`, `plugin_session`, `main` and `lazyrex_sdk` are refused. |
 | `test.files` | Plugin args for one test file: `{"gallery.lua": {"args": {"<plugin>": {"k": "v"}}}}`, keyed by the file's base name (the form of `-file`). For that file's lab, these args go over `test.args`; other files do not get them. The rules of `test.args` apply. An entry can also have `prompts`: a list of plugin names, or `false` for none. For that file's lab it replaces `test.prompts` (the names follow the `test.prompts` rules). The parity sweep uses `test.prompts`. |
