@@ -63,20 +63,8 @@ type viewState struct {
 	tables   map[string]bool // the tables that the last good, tracked render read; nil: every SQL commit marks the view (renderreads.go)
 }
 
-// initLocked makes the maps of the render state (a test can build a viewSvc without them).
-// h.vs.mu must be held.
-func (vs *viewSvc) initLocked() {
-	if vs.views == nil {
-		vs.views, vs.all, vs.loose, vs.epoch = map[string]map[string]*viewState{}, map[string]renderCause{}, map[string]renderCause{}, map[string]int64{}
-	}
-	if vs.dirty == nil {
-		vs.dirty = map[string]bool{}
-	}
-}
-
 // stateLocked returns the state of the view, and makes it. h.vs.mu must be held.
 func (vs *viewSvc) stateLocked(plugin, id string) *viewState {
-	vs.initLocked()
 	m := vs.views[plugin]
 	if m == nil {
 		m = map[string]*viewState{}
@@ -104,7 +92,6 @@ func (h *Hub) markView(plugin, id string, cause renderCause) {
 // through loose.
 func (h *Hub) markCommit(plugin string, keys []string) {
 	h.vs.mu.Lock()
-	h.vs.initLocked()
 	for _, st := range h.vs.views[plugin] {
 		if st.inFlight || st.deps == nil || st.deps.prefixes == nil || matchesPrefix(keys, st.deps.prefixes) {
 			st.dirty |= causeCommit
@@ -124,7 +111,6 @@ func (h *Hub) markChanged(plugin, what string) {
 		return
 	}
 	h.vs.mu.Lock()
-	h.vs.initLocked()
 	for _, st := range h.vs.views[plugin] {
 		if st.inFlight || st.deps == nil || st.deps.changes == nil || slices.Contains(st.deps.changes, what) {
 			st.dirty |= causeChanged
@@ -140,7 +126,6 @@ func (h *Hub) markChanged(plugin, what string) {
 // stays, and a render result from before it installs nothing.
 func (h *Hub) clearDeclarations(plugin string) {
 	h.vs.mu.Lock()
-	h.vs.initLocked()
 	h.vs.epoch[plugin]++
 	for _, st := range h.vs.views[plugin] {
 		st.deps, st.depsErr, st.tables = nil, "", nil
