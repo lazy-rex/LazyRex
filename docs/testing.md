@@ -684,3 +684,19 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
   `HOME` does not change, and no lab file contains the secret.
 - `HARNESS_LAB=1 go test -run TestHarness ./cmd/hub` (in `hub/`) runs both, and also checks an
   empty `-run` match and an interrupt. It checks that no lab process survives.
+
+## Go lab tests
+
+A Go lab test of the hub (`hub/cmd/hub/*_lab_test.go`) starts its own lab Rex server. No lab test
+reads a socket from an env var, so `HARNESS_LAB=1 go test ./cmd/hub` (the main lab) runs all of
+them. The one exception, `replyguard_lab_test.go` (`REPLY_LAB_SOCKET`), goes with the hub.store
+removal.
+
+- A test that runs the hub binary uses `o.startLab` and `o.startHub` (`TestSessionRenameKeptLab`).
+- A test that runs an in-process `Hub` uses `rexLab(t)` (`rexlab_test.go`). It starts only the lab
+  Rex server (`o.startLab`, no hub), with the test binary as the keeper. It skips without
+  `HARNESS_LAB=1` or the rex CLI. It fails if the socket is not inside the lab dir, and it sets
+  the test's `REX_SERVER` to the lab server. The test sets its Hub's `cfg.Server` to `l.server`.
+  The cleanup stops the server and ends the lab dir with `endGoLab`.
+- Each test gets a new server. An in-process hub claims state for the whole server (the UI
+  session, the hub's client name), so a shared server would make a result depend on test order.
