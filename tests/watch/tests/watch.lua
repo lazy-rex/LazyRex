@@ -118,7 +118,10 @@ test('ensure is idempotent and a different spec for the key is a conflict', func
   local a = ensure('idem', d)
   local b = ensure('idem', d)
   expect(b.watch_id).to_be(a.watch_id)
-  expect_error(function() ensure('idem', d, {glob = '*.md'}) end, 'operation_conflict')
+  local e = expect_error(function() ensure('idem', d, {glob = '*.md'}) end, 'operation_conflict')
+  expect(e.code).to_be('operation_conflict')
+  expect(tostring(e.message):find('operation_conflict: key idem has another spec; remove it first', 1, true) ~= nil,
+    'the full message: ' .. tostring(e.message)).to_be(true)
 end)
 
 test('an atomic save gives one row; hidden temp files give none', function()

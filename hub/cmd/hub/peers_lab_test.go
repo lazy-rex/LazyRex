@@ -142,7 +142,8 @@ func TestPeerHubsLab(t *testing.T) {
 	if e := g[0].(map[string]any); e["from_hub"] != "b" || e["key"] != "r1" || e["body"] != "a reply" {
 		t.Fatalf("a got %v", g)
 	}
-	if out := a.plugin("fix.send", map[string]any{"hub": "b", "key": "k1", "body": "other"}); !strings.Contains(fmt.Sprint(out["error"]), "code=operation_conflict") {
+	if out := a.plugin("fix.send", map[string]any{"hub": "b", "key": "k1", "body": "other"}); !strings.Contains(fmt.Sprint(out["error"]), "code=operation_conflict") ||
+		!strings.Contains(fmt.Sprint(out["error"]), `operation_conflict: key "k1" was sent to b with another body`) {
 		t.Fatalf("another body for k1: %v", out)
 	}
 	for _, s := range []*startLab{a, b} {
