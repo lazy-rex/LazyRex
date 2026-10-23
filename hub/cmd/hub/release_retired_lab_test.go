@@ -12,10 +12,11 @@ import (
 
 // The retired schema in a real rehearsal (lead-hubdrop). release freeze needs H on origin/main, so
 // this runs once a hub with retiredSchema drops is on main (2d). OLD is setLabOld, which has
-// records, ops, sql_returns, sql_notice_plugins and ui_tabs.rev_known; H is RELEASE_LAB_RETIRED_H, a pushed
-// commit whose hub drops them through retiredSchema. RELEASE_LAB_RETIRED_WANT is "pass", or a text
-// that the failed rehearsal must contain (a mutant H). An OLD binary, which has no export, must
-// read as absent (TestReleaseRetiredExportOldLab).
+// records, ops, sql_returns, sql_notice_plugins and ui_tabs.rev_known; H is RELEASE_LAB_RETIRED_H,
+// a commit on origin/main whose hub drops them through retiredSchema. RELEASE_LAB_RETIRED_WANT is
+// "pass", or a text that the failed rehearsal must contain. A mutant H is never on origin/main, so
+// its check is TestReleaseRetiredMutantLab. An OLD binary, which has no export, must read as
+// absent (TestReleaseRetiredExportOldLab).
 func TestReleaseRehearseLabRetired(t *testing.T) {
 	h, want := os.Getenv("RELEASE_LAB_RETIRED_H"), os.Getenv("RELEASE_LAB_RETIRED_WANT")
 	if os.Getenv("RELEASE_LAB") != "1" || h == "" || want == "" {
@@ -69,17 +70,86 @@ func TestReleaseRetiredExportOldLab(t *testing.T) {
 	if os.Getenv("RELEASE_LAB") != "1" {
 		t.Skip("set RELEASE_LAB=1 to build the OLD hub of the set lab")
 	}
-	src := t.TempDir()
-	if out, err := exec.Command("sh", "-c", fmt.Sprintf("git -C ../../.. archive %s hub | tar -x -C %s", setLabOld, src)).CombinedOutput(); err != nil {
-		t.Fatalf("archive %s: %v\n%s", setLabOld, err, out)
-	}
-	oldBin := filepath.Join(t.TempDir(), "hub-old")
-	c := exec.Command("go", "build", "-o", oldBin, "./cmd/hub")
-	c.Dir = filepath.Join(src, "hub")
-	if out, err := c.CombinedOutput(); err != nil {
-		t.Fatalf("build OLD: %v\n%s", err, out)
-	}
-	if _, _, absent, err := exportRetired(oldBin, t.TempDir()); err != nil || !absent {
+	if _, _, absent, err := exportRetired(buildHubAt(t, setLabOld), t.TempDir()); err != nil || !absent {
 		t.Errorf("the export of OLD %s: absent %v, %v", setLabOld, absent, err)
 	}
+}
+
+// buildHubAt builds the hub of commit (it must be in this clone) and returns the binary.
+func buildHubAt(t *testing.T, commit string) string {
+	t.Helper()
+	src := t.TempDir()
+	if out, err := exec.Command("sh", "-c", fmt.Sprintf("git -C ../../.. archive %s hub | tar -x -C %s", commit, src)).CombinedOutput(); err != nil {
+		t.Fatalf("archive %s: %v\n%s", commit, err, out)
+	}
+	bin := filepath.Join(t.TempDir(), "hub-"+commit)
+	c := exec.Command("go", "build", "-o", bin, "./cmd/hub")
+	c.Dir = filepath.Join(src, "hub")
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("build %s: %v\n%s", commit, err, out)
+	}
+	return bin
+}
+
+// The mutant check of the release gate, without a rehearsal (release freeze refuses an H that is
+// not on origin/main, and a mutant never is). RELEASE_LAB_RETIRED_H and RELEASE_LAB_RETIRED_MUTANT
+// are two commits in this clone; the mutant's export leaves out at least one entry of H's. On a
+// lab hub.db with OLD tables, the drops of H's real export are applied. With H's export the schema
+// check passes; with the mutant's real export it fails on the left-out table or column.
+func TestReleaseRetiredMutantLab(t *testing.T) {
+	hc, mc := os.Getenv("RELEASE_LAB_RETIRED_H"), os.Getenv("RELEASE_LAB_RETIRED_MUTANT")
+	if os.Getenv("RELEASE_LAB") != "1" || hc == "" || mc == "" {
+		t.Skip("set RELEASE_LAB=1, RELEASE_LAB_RETIRED_H and RELEASE_LAB_RETIRED_MUTANT to run the mutant check")
+	}
+	export := func(commit string) []retiredEntry {
+		exp, _, absent, err := exportRetired(buildHubAt(t, commit), t.TempDir())
+		if err != nil || absent {
+			t.Fatalf("the export of %s: absent %v, %v", commit, absent, err)
+		}
+		return exp.Retired
+	}
+	hEntries, mEntries := export(hc), export(mc)
+	inMutant := map[retiredEntry]bool{}
+	for _, e := range mEntries {
+		inMutant[e] = true
+	}
+	var left []retiredEntry
+	for _, e := range hEntries {
+		if !inMutant[e] {
+			left = append(left, e)
+		}
+	}
+	if len(left) == 0 {
+		t.Fatalf("the mutant %s leaves out no entry of %s", mc, hc)
+	}
+	check := func(entries []retiredEntry) error {
+		h := retiredLab(t, entries)
+		db, err := h.hubDB(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range hEntries {
+			q := "DROP TABLE " + e.Table
+			if e.Column != "" {
+				q = "ALTER TABLE " + e.Table + " DROP COLUMN " + e.Column
+			}
+			if !hasRetired(h.schemas["before"], e) {
+				continue
+			}
+			if _, err := db.Exec(q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		db.Close()
+		return h.schemaAt("forward", false)
+	}
+	if err := check(hEntries); err != nil {
+		t.Errorf("with the export of H %s: %v", hc, err)
+	}
+	err := check(mEntries)
+	want := "a column of OLD changed or went: column " + left[0].Table + "."
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("with the export of the mutant %s (leaves out %+v): %v, want %q", mc, left, err, want)
+	}
+	t.Logf("H %s: %+v; the mutant %s leaves out %+v: %v", hc, hEntries, mc, left, err)
 }
