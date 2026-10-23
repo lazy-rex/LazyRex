@@ -965,7 +965,7 @@ All plugin views live in one Rex session, labeled `lazyrex`. The home plugin (co
 - One worker reconciles the whole session, serially. It reads placement from `session.list_blocks`, and it derives each view's window from Rex. It does not trust the stored value.
 - Restore: Rex reattaches a detached block only beside a visible anchor. The hub opens a tab with a placeholder pane, calls `session.move_block`, and closes the placeholder. A placeholder's label and its process arguments both name the view. The cleanup closes a leftover placeholder only when both match.
 - The user cannot close the home: it opens again. User suppression and the crash count of other tabs are unchanged.
-- Views in sessions of an older hub (one session per plugin) are **legacy**. The hub asks each one to retire (`view.retire`, per attachment, repeated every 10 s while refused). The renderer uses the reload gate: it saves composer drafts, waits while a form is dirty or a draft is in conflict, and shows "Retirement waits". Then it exits. The hub closes that exact pane, then the row. The tab's new view opens only after the legacy view is gone. A recorded legacy session with no blocks left is destroyed. A legacy exit counts no crash.
+- Views in sessions of an older hub (one session per plugin) are **legacy**. The hub asks each one to retire (`view.retire`, per attachment, repeated every 10 s while refused; after the hub's wait cuts a request, no repeat to that attachment, see "Hub calls to clients"). The renderer uses the reload gate: it saves composer drafts, waits while a form is dirty or a draft is in conflict, and shows "Retirement waits". Then it exits. The hub closes that exact pane, then the row. The tab's new view opens only after the legacy view is gone. A recorded legacy session with no blocks left is destroyed. A legacy exit counts no crash.
 - Durable intent: `ui_state` holds `active` and `nav` (written together). The nav intent goes only after Rex confirms the focus. A restore records its nonce (`ui_restores`) before the placeholder exists. The record goes only when that placeholder is confirmed closed. More than one session labeled `lazyrex` is a refusal.
 - The placeholder runs `/bin/sh -c "while :; do sleep 600; done" lazyrex-placeholder <nonce>`. With a plain `sleep 600` the shell execs sleep, and the nonce leaves the process arguments (observed in the lab).
 
@@ -1181,6 +1181,18 @@ first-write time, conversation, repeated), so the repeat and its time stay right
 give the nudge once more: never fewer nudges.
 Tests: `TestNoticeOnceUntilRead`, `TestNoticeOpForms`, `TestNoticeDue`, `TestNoticeDeliveryStored`,
 `tests/harness/tests/notice_once.lua`.
+
+## Hub calls to clients
+
+Rule: every `client.perform` that the hub sends to a client has a deadline, except a documented exception. The hub waits `timeout_ms + performMargin` (2 s, `hub/cmd/hub/perform.go`). This does not bound Rex's queue: `timeout_ms` starts at delivery, so Rex can still deliver a call after the hub stopped waiting (rex-protocol.md), and the outcome of a call that the hub's wait cut is unknown. After such a cut, the hub never sends the same request again by itself. It retries only after a failure that Rex reports.
+
+| Call | Hub wait | After the hub's wait cuts it |
+|---|---|---|
+| `view.reload` (`ui.go`, `uiReload`) | 7 s | Only the event (`view_reload` with the error). No retry, as before. |
+| `view.retire` (`ui.go`, `retireLegacy`) | 7 s | No other `view.retire` to that attachment. A new attachment gets one. A failure that Rex reports is retried after 10 s, as before. |
+| The view worker's calls to a plugin (`viewsvc.go`, `callPlugin`) | no deadline, by design | The worker is serial for each plugin, and `runOps` retries an unknown outcome. With a deadline, each retry would add one more queued call to a plugin that does not take its queue. Without one, one call waits, and the plugin is the cause. |
+
+Tests: `TestViewReloadHasADeadline`, `TestViewRetireAfterACut` (`perform_test.go`).
 
 ## Reply size
 

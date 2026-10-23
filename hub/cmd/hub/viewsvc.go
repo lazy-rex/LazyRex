@@ -438,6 +438,10 @@ func (h *Hub) pluginClient(plugin string) string {
 	return ""
 }
 
+// callPlugin calls a plugin action and waits as long as ctx allows: the view worker's calls have no
+// deadline, by design (docs/hub.md "Hub calls to clients"). The worker is serial, and runOps
+// retries an unknown outcome, so a deadline would only add queued calls to a plugin that does not
+// take its queue.
 func (h *Hub) callPlugin(ctx context.Context, plugin, action string, args any, out any) error {
 	if plugin == restartFormOwner {
 		return h.restartFormCall(ctx, action, args, out) // the hub's own form (restartform.go)

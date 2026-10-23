@@ -81,6 +81,7 @@ type uiState struct {
 	kick       chan struct{}
 	spawned    int                       // views opened in this pass (worker only)
 	retire     map[string]time.Time      // attachment -> last view.retire request (worker only)
+	retireCut  map[string]bool           // attachment -> a view.retire that the hub's wait cut: its outcome is unknown (mu)
 	retryArmed bool                      // a delayed kick is scheduled (retryLater)
 	badHomes   map[string]bool           // tab homes reported as not a Rex session ID (worker only)
 	labeled    map[string]string         // session_id -> the label the worker last set
@@ -141,7 +142,7 @@ func randomID(prefix string) string {
 
 // uiStart creates the tables, attaches the sessions and starts the worker.
 func (h *Hub) uiStart(ctx context.Context) error {
-	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}, retire: map[string]time.Time{}, labeled: map[string]string{}}
+	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}, retire: map[string]time.Time{}, retireCut: map[string]bool{}, labeled: map[string]string{}}
 	if _, err := h.db.ExecContext(ctx, uiSchema); err != nil {
 		return err
 	}
@@ -1583,7 +1584,8 @@ func (h *Hub) navigateCommitLocked(ctx context.Context, plugin, key string, seq 
 // uiReload asks every attached renderer of the plugin to run its binary again (view.reload).
 // The renderer replaces itself in the same process, so the pane, tab and PID stay. Tabs that
 // crashed too often open again. A renderer that does not answer is left alone: it reattaches
-// or exits, and the reconciler handles either.
+// or exits, and the reconciler handles either. The hub waits timeout_ms + performMargin for each
+// request (perform.go); Rex can still deliver one after that.
 func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
 	plugin, _ := args["plugin"].(string)
 	if _, err := h.db.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND crashes >= ?`, plugin, maxCrashes); err != nil {
@@ -1597,7 +1599,9 @@ func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
 	for id, target := range h.transcriptTargets(ctx, plugin) {
 		n++
 		go func(id, client, att string) {
-			err := h.rex.Call(context.Background(), "client.perform", map[string]any{"client_id": client, "action": "view.reload",
+			ctx, cancel := performCtx(context.Background(), 5000)
+			defer cancel()
+			err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "view.reload",
 				"args": map[string]any{"view_id": id, "attachment": att}, "timeout_ms": 5000}, nil)
 			h.ev.emit("view_reload", map[string]any{"plugin": plugin, "view_id": id, "role": layoutTranscript, "error": errString(err)})
 		}(id, target[0], target[1])
@@ -1608,7 +1612,9 @@ func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
 		}
 		n++
 		go func(v *view) {
-			err := h.rex.Call(context.Background(), "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.reload",
+			ctx, cancel := performCtx(context.Background(), 5000)
+			defer cancel()
+			err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.reload",
 				"args": map[string]any{"view_id": v.ID, "attachment": v.Attachment}, "timeout_ms": 5000}, nil)
 			h.ev.emit("view_reload", map[string]any{"plugin": plugin, "view_id": v.ID, "error": errString(err)})
 		}(v)
@@ -1758,14 +1764,30 @@ func (h *Hub) retireLegacy(ctx context.Context, v *view) bool {
 	if last, ok := h.ui.retire[v.Attachment]; ok && time.Since(last) < 10*time.Second {
 		return true
 	}
+	h.ui.mu.Lock()
+	cut := h.ui.retireCut[v.Attachment]
+	h.ui.mu.Unlock()
+	if cut {
+		// The hub's wait cut an earlier request: Rex can still deliver it, so the hub sends no
+		// other one to this attachment. A new attachment (a reloaded renderer) gets one.
+		return true
+	}
 	h.ui.retire[v.Attachment] = time.Now()
 	go func() {
-		err := h.rex.Call(context.Background(), "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.retire",
+		ctx, cancel := performCtx(context.Background(), 5000)
+		defer cancel()
+		err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.retire",
 			"args": map[string]any{"view_id": v.ID, "attachment": v.Attachment}, "timeout_ms": 5000}, nil)
-		// An old renderer that does not know view.retire refuses; the hub asks again after it
-		// reloads (a new attachment) or after 10 s.
+		cut := errors.Is(err, context.DeadlineExceeded)
+		if cut { // before the event: a pass after the event sees the cut
+			h.ui.mu.Lock()
+			h.ui.retireCut[v.Attachment] = true
+			h.ui.mu.Unlock()
+		}
 		h.ev.emit("view_retire", map[string]any{"view_id": v.ID, "error": errString(err)})
-		if err != nil {
+		if err != nil && !cut {
+			// A failure that Rex reports: an old renderer that does not know view.retire refuses.
+			// The hub asks again after it reloads (a new attachment) or after 10 s.
 			time.AfterFunc(10*time.Second, func() { h.kickUI(v.Plugin) })
 		}
 	}()
