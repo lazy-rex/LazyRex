@@ -1258,6 +1258,7 @@ app.on('peer.receive', function(args)
   if args.key == 'nobody' then return {refused = 'unknown_agent', message = 'no agent bob here'} end
   if args.key == 'bool' then return {refused = true} end
   app.db.exec('INSERT INTO inbox (key, from_hub, body) VALUES (?, ?, ?)', args.key, args.from_hub, args.body)
+  if args.key == 'badmsg' then return {refused = 'unknown_agent', message = {detail = 'no agent'}} end
   if args.key == 'boom' then error('cannot store') end
   if args.key == 'quiet' then return nil end
   return {stored = args.key}
@@ -1272,7 +1273,9 @@ app.action('p.inbox', {}, function() return {keys = #app.db.query('SELECT key FR
   expect(boom.error and boom.error.message, 'the error reaches the hub').to_be('cannot store')
   local bool = deliver('bool')
   expect(bool.error and bool.error.message, 'a refusal that is not a code string fails').to_be('peer.receive refused must be a code string, not boolean')
-  expect(s:agent('p.inbox', {}).result, 'only m1 and quiet are stored; the error rolled back').to_equal({keys = 2})
+  local badmsg = deliver('badmsg')
+  expect(badmsg.error and badmsg.error.message, 'a refusal message that is not a string fails').to_be('peer.receive message must be a string, not table')
+  expect(s:agent('p.inbox', {}).result, 'only m1 and quiet are stored; boom and badmsg rolled back').to_equal({keys = 2})
   expect(deliver('m2', 7).error.code, 'only the hub calls it').to_be('refused')
   local plain = plugin([[app.action('p.x', {}, function() return {} end)]])
   expect(find(plain.keymap, function(k) return k.name == 'peer.receive' end), 'no listener, no keymap entry').to_be(nil)

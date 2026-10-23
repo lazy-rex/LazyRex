@@ -1178,6 +1178,9 @@ function M.plugin(name)
         if r.refused ~= nil and (type(r.refused) ~= 'string' or r.refused == '') then
           fail('internal', 'peer.receive refused must be a code string, not ' .. type(r.refused))
         end
+        if r.refused ~= nil and r.message ~= nil and type(r.message) ~= 'string' then
+          fail('internal', 'peer.receive message must be a string, not ' .. type(r.message))
+        end
         return r
       end, a)
     end
