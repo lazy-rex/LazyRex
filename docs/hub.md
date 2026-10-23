@@ -2446,8 +2446,11 @@ an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
 - Unit tests: `hub/cmd/hub/peers_test.go`. Two-hub lab: `TestPeerHubsLab` (HARNESS_LAB=1).
 - Plugin tests: `hub.test.peer.deliver {plugin, from_hub, key, body}` (test mode only; harness
   `H.peer_deliver`) gives one envelope to the plugin through the same function as a pulled
-  envelope (`peerReceive`). It returns `{reply}`, or `{skipped: true}` for a stopped plugin; an
-  envelope that the plugin did not process is the error `not_processed`. The test manifest keys
+  envelope (`peerReceive`). The hub delivers after it replies with `{id}`, as the pull loop runs
+  outside any request: Rex gives the hub one request at a time, so a hub call of the plugin in
+  `peer.receive` would wait behind the test request. `hub.test.peer.delivery {id}` returns
+  `{done}`, then `{reply}`, `{skipped: true}` for a stopped plugin, or `{error}` with code
+  `not_processed` for an envelope that the plugin did not process. `H.peer_deliver` waits for it. The test manifest keys
   `test.hub_name` and `test.peers` set the lab hub's config; a peer whose server does not exist
   shows the send side in `hub.peer.status` (harness `H.peer_status`). Example: `tests/peers`.
 

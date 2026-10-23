@@ -43,7 +43,7 @@ var testActions = []string{"hub.test.status", "hub.test.sql", "hub.test.chunk", 
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events",
 	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover",
-	"hub.test.peer.deliver"}
+	"hub.test.peer.deliver", "hub.test.peer.delivery"}
 
 type testState struct {
 	mu           sync.Mutex
@@ -60,6 +60,15 @@ type testState struct {
 	callsDropped map[string]int64                    // plugin -> the highest seq of a call that the bound dropped
 	callSeq      int64                               // the seq of the last recorded call, for any plugin
 	renders      map[string]*renderCount             // view_id -> its render counts (renderdeps.go)
+	deliveries   []*testDelivery                     // hub.test.peer.deliver, by id - 1
+}
+
+// testDelivery is one hub.test.peer.deliver: its outcome, when done.
+type testDelivery struct {
+	done    bool
+	reply   json.RawMessage
+	skipped bool
+	err     string
 }
 
 type injection struct {
@@ -216,7 +225,10 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 	case "hub.test.chunk":
 		return h.testChunk(args)
 	case "hub.test.peer.deliver":
-		// One envelope to the plugin through peerReceive, the path of a pulled envelope.
+		// One envelope to the plugin through peerReceive, the path of a pulled envelope. It runs
+		// after the reply, as the pull loop runs outside any request: Rex gives the hub one request
+		// at a time, so a plugin's hub call during peer.receive would wait behind this request.
+		// hub.test.peer.delivery returns the outcome.
 		if err := needPlugin(); err != nil {
 			return nil, err
 		}
@@ -226,14 +238,40 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		if !hubName.MatchString(from) || key == "" || !ok {
 			return nil, bad("invalid: peer.deliver needs from_hub (a hub name), key and a string body")
 		}
-		res, err := h.peerReceive(ctx, from, plugin, key, body)
-		if err != nil {
-			return nil, refuse("not_processed", "%v", err)
+		d := &testDelivery{}
+		h.test.mu.Lock()
+		h.test.deliveries = append(h.test.deliveries, d)
+		id := len(h.test.deliveries)
+		h.test.mu.Unlock()
+		go func() {
+			res, err := h.peerReceive(context.Background(), from, plugin, key, body)
+			h.test.mu.Lock()
+			defer h.test.mu.Unlock()
+			d.done, d.reply, d.skipped = true, res, err == nil && res == nil
+			if err != nil {
+				d.err = err.Error()
+			}
+		}()
+		return map[string]any{"id": id}, nil
+	case "hub.test.peer.delivery":
+		id, _ := intArg(args["id"])
+		h.test.mu.Lock()
+		defer h.test.mu.Unlock()
+		if id < 1 || int(id) > len(h.test.deliveries) {
+			return nil, bad("invalid: unknown delivery %v", args["id"])
 		}
-		if res == nil {
-			return map[string]any{"skipped": true}, nil
+		d := h.test.deliveries[id-1]
+		out := map[string]any{"done": d.done}
+		switch {
+		case !d.done:
+		case d.err != "":
+			out["error"] = map[string]any{"code": "not_processed", "message": d.err}
+		case d.skipped:
+			out["skipped"] = true
+		default:
+			out["reply"] = d.reply
 		}
-		return map[string]any{"reply": res}, nil
+		return out, nil
 	case "hub.test.notice":
 		agent, _ := args["agent"].(string)
 		var pending bool

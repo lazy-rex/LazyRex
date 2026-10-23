@@ -12,7 +12,7 @@ test('an accepted envelope reaches peer.receive unchanged', function()
   local r = H.peer_deliver({from_hub = 'away', key = 'k1', body = body})
   H.assert_eq(r.reply.stored, 1, 'the plugin reply')
   local got = pf('pf.got').got
-  H.assert_eq(got[1], {from_hub = 'away', key = 'k1', body = body}, 'the envelope')
+  H.assert_eq(got[1], {from_hub = 'away', key = 'k1', body = body, hub_name = 'lab'}, 'the envelope and the hub call in peer.receive')
 end)
 
 test('a refusal comes back as the refused result', function()
