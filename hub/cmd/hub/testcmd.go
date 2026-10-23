@@ -830,6 +830,15 @@ func tail(path string, res *fileResult, all bool) {
 // crash). Either way the old keeper ends before the new hub starts, and a failed stop is a reason
 // that the cleanup is not proved. The old hub's log is kept as hub.<n>.log. Processes that the old
 // hub left stay tracked, so the lab cleanup still checks them.
+//
+// restartAfterStop runs after the old hub's keeper ends and before the new hub starts. It is a
+// Go-test seam only (restartlock_lab_test.go): nil in the test command.
+var restartAfterStop func(l *lab)
+
+// restartProbeFailed runs after each check that finds the old hub not gone or hub.lock held. It is
+// a Go-test seam only (restartlock_lab_test.go): nil in the test command.
+var restartProbeFailed func()
+
 func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -843,6 +852,9 @@ func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
 		p = l.hub.kill()
 	} else {
 		p = l.hub.stop()
+	}
+	if restartAfterStop != nil {
+		restartAfterStop(l)
 	}
 	if len(p) > 0 {
 		l.unproved = append(l.unproved, p...)
