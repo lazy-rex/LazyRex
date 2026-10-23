@@ -139,7 +139,9 @@ func TestHubInfo(t *testing.T) {
 
 // A hub whose config state is not the wrapper's state exits 3 before any side effect of start: no
 // hub.lock, hub.db or events.jsonl in either state, and a missing state is not made. The hub
-// exits before it connects to Rex, so the test needs no server.
+// exits before it connects to Rex, so the test needs no server. The state check comes before the
+// check of the pinned paths: with an SDK that is gone, the exit is still 3 (the wrapper stops), not
+// 1 (the wrapper would restart in backoff without end).
 func TestHubExpectStateMismatchExits3(t *testing.T) {
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "lazyrex-hub")
@@ -151,16 +153,18 @@ func TestHubExpectStateMismatchExits3(t *testing.T) {
 	canon, _ := canonicalState(owned)
 	other := filepath.Join(tmp, "other")
 	os.Mkdir(other, 0o700)
-	for _, state := range []string{other, filepath.Join(tmp, "missing")} {
+	gone := filepath.Join(tmp, "gone", "sdk", "lua")
+	for _, c := range []struct{ state, sdk string }{{other, ""}, {filepath.Join(tmp, "missing"), ""}, {other, gone}} {
+		state := c.state
 		cfg := filepath.Join(tmp, "hub.json")
 		b, _ := json.Marshal(map[string]any{"server": "unix:///nonexistent/rex.sock", "state": state,
 			"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
 		os.WriteFile(cfg, b, 0o600)
 		cmd := exec.Command(bin, "-config", cfg)
-		cmd.Env = append(os.Environ(), "LAZYREX_EXPECT_STATE="+canon, "LAZYREX_SDK=", "LAZYREX_VIEW=")
+		cmd.Env = append(os.Environ(), "LAZYREX_EXPECT_STATE="+canon, "LAZYREX_SDK="+c.sdk, "LAZYREX_VIEW=")
 		out, _ := cmd.CombinedOutput()
 		if code := cmd.ProcessState.ExitCode(); code != exitStateMismatch {
-			t.Errorf("state %s: exit %d, want %d\n%s", state, code, exitStateMismatch, out)
+			t.Errorf("state %s, sdk %q: exit %d, want %d\n%s", state, c.sdk, code, exitStateMismatch, out)
 		}
 		if !strings.Contains(string(out), "start a new wrapper") {
 			t.Errorf("state %s: text %q", state, out)

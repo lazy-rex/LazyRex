@@ -385,19 +385,6 @@ func main() {
 	}
 	cfg.Real = *realServer
 	cfg.Test = *testMode
-	// The SDK and the view are resolved once, here (findSDK, resolveView): a later switch of a link
-	// in either path changes nothing for this hub, its plugin respawns or its renderers. A restart
-	// wrapper's child uses the paths that its wrapper resolved (restartenv.go), so every child of
-	// one wrapper process has them, also a crash restart after a link switch.
-	if renvErr == nil && renv.expectState != "" {
-		cfg.SDK, cfg.View = renv.sdk, renv.view
-		err = checkPinnedPaths(cfg.SDK, cfg.View)
-	} else if cfg.SDK, err = findSDK(*sdkDir); err == nil {
-		cfg.View, err = resolveView(cfg.View)
-	}
-	if err != nil {
-		log.Fatal(err)
-	}
 	if !cfg.Test && len(cfg.TestRoots) > 0 {
 		log.Fatal("test_roots needs -test")
 	}
@@ -422,6 +409,21 @@ func main() {
 			os.Exit(exitStateMismatch)
 		}
 		cfg.State = state
+	}
+	// The SDK and the view are resolved once, here (findSDK, resolveView): a later switch of a link
+	// in either path changes nothing for this hub, its plugin respawns or its renderers. A restart
+	// wrapper's child uses the paths that its wrapper resolved (restartenv.go), so every child of
+	// one wrapper process has them, also a crash restart after a link switch. This comes after the
+	// state check (a child of another state exits 3, and its wrapper stops) and before the -restart
+	// branch (the wrapper passes the paths to its children).
+	if renv.expectState != "" {
+		cfg.SDK, cfg.View = renv.sdk, renv.view
+		err = checkPinnedPaths(cfg.SDK, cfg.View)
+	} else if cfg.SDK, err = findSDK(*sdkDir); err == nil {
+		cfg.View, err = resolveView(cfg.View)
+	}
+	if err != nil {
+		log.Fatal(err)
 	}
 	if *restart {
 		if renv.readyFD >= 0 || renv.expectState != "" {
