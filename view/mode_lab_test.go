@@ -585,3 +585,42 @@ func TestLateMessageLab(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveRegionResizeLab (coord-tvglitch-1): a real pane in thread mode with a docked composer
+// (stage 2). The pane changes size several times. After each change the whole capture (scrollback
+// and screen) holds the composer once: one top border and one DRAFT-TEXT. A width change never
+// moves live rows into the scrollback legitimately, so a second copy is a stale frame.
+func TestLiveRegionResizeLab(t *testing.T) {
+	l := newModeLab(t)
+	l.sql("UPDATE stage SET n = 2", true)
+	pane := l.open("lazyrex_modelab_mode")
+	l.resize(pane, 80, 24)
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last capture:\n%s", last)
+		}
+	})
+	l.waitFor("the composer frame", 30*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Ctrl+Q quit")
+	})
+	// The last two pairs come in a burst: the second size follows the first with no wait, as an
+	// app does when it lays out a pane that it shows.
+	for _, sizes := range [][][2]int{{{50, 24}}, {{80, 24}}, {{40, 24}}, {{100, 24}}, {{100, 12}}, {{60, 30}}, {{30, 8}, {90, 26}}, {{120, 40}, {70, 18}}} {
+		step := ""
+		for _, size := range sizes {
+			step += fmt.Sprintf("%dx%d ", size[0], size[1])
+			l.resize(pane, size[0], size[1])
+		}
+		time.Sleep(1500 * time.Millisecond) // the renderer gets the size and draws again
+		l.waitFor(step+": the frame", 10*time.Second, func() bool {
+			last = l.screen(pane)
+			return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Ctrl+Q quit")
+		})
+		t.Logf("%s capture:\n%s", step, last)
+		if n, d := strings.Count(last, "╭"), strings.Count(last, "DRAFT-TEXT"); n != 1 || d != 1 {
+			t.Errorf("%s: %d composer top borders and %d DRAFT-TEXT on the pane, want 1 and 1", step, n, d)
+		}
+	}
+}
