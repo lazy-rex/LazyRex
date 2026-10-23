@@ -175,3 +175,40 @@ func TestExpectRunRemovedEntry(t *testing.T) {
 		t.Fatalf("desired %q", pl.Desired)
 	}
 }
+
+// hub.admin.replace takes an optional expect_entry (hub lead, lead-c5-q1): the rules of start and
+// stop. A value that is not a non-empty string is invalid_input. A mismatch is entry_changed under
+// reloadMu and the lifecycle lock, before bindAttempt and sent_at: the attempt stays unbound, and
+// nothing is retired or spawned. With the matching entry, or with no expect_entry, the replace goes
+// on (here to its refusal of a plugin with no instance).
+func TestReplaceExpectEntry(t *testing.T) {
+	h, _, dir := opsTestHub(t, "")
+	ctx := context.Background()
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "y"))
+	opsLoadEntries(t, h)
+	e := opsEntry(t, h, "managed:y")
+	h.plugins["y"] = &Plugin{Name: "y", entry: e}
+	for _, v := range []any{"", 7.0} {
+		_, err := h.adminReplace(ctx, map[string]any{"plugin": "y", "expect_instance": "y-1-x", "expect_entry": v})
+		if !isRefusal(err, "invalid_input") || !strings.Contains(err.Error(), "expect_entry must be a non-empty string") {
+			t.Errorf("expect_entry %v: %v", v, err)
+		}
+	}
+	opsAttemptRow(t, h, "r1", "replace")
+	other := `["managed:y","github:acme/y@v1"]`
+	_, err := h.adminReplace(ctx, map[string]any{"plugin": "y", "expect_instance": "y-1-x", "expect_entry": other, "attempt": "r1"})
+	if !isRefusal(err, "entry_changed") || !strings.Contains(err.Error(), "nothing was retired or spawned") {
+		t.Fatalf("another entry: %v", err)
+	}
+	if s := opsAttemptState(t, h, "r1"); s.bound != "" || s.sent != "" {
+		t.Fatalf("the refused replace bound its attempt: %+v", s)
+	}
+	for _, args := range []map[string]any{
+		{"plugin": "y", "expect_instance": "y-1-x", "expect_entry": entryIdentity(e)},
+		{"plugin": "y", "expect_instance": "y-1-x"},
+	} {
+		if _, err := h.adminReplace(ctx, args); !isRefusal(err, "no_instance") {
+			t.Errorf("%v: %v, want the no_instance refusal", args, err)
+		}
+	}
+}
