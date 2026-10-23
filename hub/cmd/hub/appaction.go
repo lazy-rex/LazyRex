@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // appActions are the app actions a view may ask for.
@@ -21,6 +22,25 @@ var appActions = map[string]bool{"pane.insert_path": true}
 // appCall sends one Rex call for the app actions below. Tests replace it (no app runs in a lab).
 var appCall = func(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
 	return h.rex.Call(ctx, method, args, out)
+}
+
+// appTimeoutMS is the timeout_ms of a client.perform to the app.
+const appTimeoutMS = 5000
+
+// appPerform sends one client.perform to the app client and waits timeout_ms + performMargin
+// (perform.go). A cut by that wait is an unknown outcome: Rex can still deliver the call, and the
+// app can still run the action (open the browser, switch the session). So the caller's error says
+// that the request may still apply, and the hub never sends it again by itself. observeApp sees
+// the call's own error.
+func appPerform(h *Hub, ctx context.Context, app, action string, args map[string]any) error {
+	ctx, cancel := performCtx(ctx, appTimeoutMS)
+	defer cancel()
+	err := appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": action, "args": args, "timeout_ms": appTimeoutMS}, nil)
+	h.observeApp(app, action, err)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return refuse("outcome_unknown", "the app did not answer within %g s; the request may still apply", performWait(appTimeoutMS).Seconds())
+	}
+	return err
 }
 
 func (h *Hub) viewAppAction(ctx context.Context, p perform, args map[string]any) (any, error) {
@@ -42,9 +62,7 @@ func (h *Hub) viewAppAction(ctx context.Context, p perform, args map[string]any)
 		return nil, err
 	}
 	// The app opens the browser and answers at once; the path arrives later as typed input.
-	err = appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": action, "args": map[string]any{}, "timeout_ms": 5000}, nil)
-	h.observeApp(app, action, err)
-	if err != nil {
+	if err := appPerform(h, ctx, app, action, map[string]any{}); err != nil {
 		return nil, err
 	}
 	h.ev.emit("view_app_action", map[string]any{"view_id": v.ID, "action": action, "client_id": app})
@@ -159,10 +177,7 @@ func (h *Hub) appSelectSession(ctx context.Context, p perform, args map[string]a
 	if err != nil {
 		return nil, err
 	}
-	err = appCall(h, ctx, "client.perform", map[string]any{"client_id": app, "action": "session.select",
-		"args": map[string]any{"session_id": target, "window_id": window}, "timeout_ms": 5000}, nil)
-	h.observeApp(app, "session.select", err)
-	if err != nil {
+	if err := appPerform(h, ctx, app, "session.select", map[string]any{"session_id": target, "window_id": window}); err != nil {
 		return nil, err
 	}
 	h.ev.emit("app_select_session", map[string]any{"view_id": viewID, "plugin": pl.Name, "session_id": target, "window_id": window, "client_id": app})

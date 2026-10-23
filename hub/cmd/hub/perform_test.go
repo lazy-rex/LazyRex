@@ -117,3 +117,56 @@ func TestViewRetireAfterACut(t *testing.T) {
 	pass("refuses")
 	waitFor(t, "the retry after a refusal", 5*time.Second, func() bool { return sendsTo(fr, "view.retire", "refuses") == 2 })
 }
+
+// hangingApp is a fakeApp whose client.perform never answers: it waits until its context ends.
+type hangingApp struct{ fakeApp }
+
+func (f *hangingApp) call(h *Hub, ctx context.Context, method string, args map[string]any, out any) error {
+	if method == "client.perform" {
+		f.performs = append(f.performs, args)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return f.fakeApp.call(h, ctx, method, args, out)
+}
+
+// Row 13: an app call that the app never answers ends at the hub's wait. The caller's error says
+// that the outcome is unknown, the request is sent once, and no Remote Control state is recorded.
+func TestAppCallsHaveADeadline(t *testing.T) {
+	shortPerformWait(t, 200*time.Millisecond)
+	check := func(what string, f *hangingApp, h *Hub, run func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- run() }()
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s: no answer within 2 s, want the hub's wait (200 ms)", what)
+			return
+		}
+		if !isRefusal(err, "outcome_unknown") || !strings.Contains(err.Error(), "the request may still apply") {
+			t.Errorf("%s: %v, want outcome_unknown that may still apply", what, err)
+		}
+		if len(f.performs) != 1 {
+			t.Errorf("%s: %d sends, want 1", what, len(f.performs))
+		}
+		if _, ok := h.rc.seen["app-1"]; ok {
+			t.Errorf("%s: a cut recorded a Remote Control state", what)
+		}
+	}
+	f := &hangingApp{fakeApp{focused: "form-block", clients: oneApp}}
+	h, p := appActionHub(t, &f.fakeApp)
+	appCall = f.call
+	check("pane.insert_path", f, h, func() error {
+		_, err := h.viewAppAction(context.Background(), p, map[string]any{"view_id": "view-form-1", "attachment": "att-1", "action": "pane.insert_path"})
+		return err
+	})
+	g := &hangingApp{fakeApp{focused: "form-block", clients: oneApp}}
+	hs, ps := selectHub(t, &g.fakeApp)
+	appCall = g.call
+	check("session.select", g, hs, func() error {
+		_, err := hs.appSelectSession(context.Background(), ps, map[string]any{"view_id": "view-start", "session_id": "s2", "window_id": "w-new"})
+		return err
+	})
+}

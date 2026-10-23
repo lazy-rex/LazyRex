@@ -1197,10 +1197,10 @@ The 4.3 goal (timeout audit, 2026-10-22): every `client.perform` that the hub se
 | `view.reload` (`ui.go`, `uiReload`) | `timeout_ms + performMargin`, 7 s | Only the event (`view_reload` with the error). No retry, as before. | bounded |
 | `view.retire` (`ui.go`, `retireLegacy`) | `timeout_ms + performMargin`, 7 s | This hub process sends no other `view.retire` to that attachment. A new attachment gets one, and so can a new hub process (the mark is in memory). A failure that Rex reports is retried after 10 s, as before. | bounded |
 | `view.close_request` (`pair.go`) | none yet | | pending (audit row 12) |
-| App calls: `pane.insert_path`, `session.select` (`appaction.go`, `ui.go`) | none yet | | pending (audit row 13) |
+| App calls: `pane.insert_path`, `session.select` (`appaction.go`, `appPerform`; `ui.go`, `selectOnApps`) | `timeout_ms + performMargin`, 7 s | The caller gets `outcome_unknown`: "the app did not answer within 7 s; the request may still apply". The hub sends it once, and a late delivery can still run it (open the browser, switch the session). No Remote Control state is recorded. | bounded |
 | `hub.forward` (`agentface.go`) | none yet | | pending (audit row 8) |
 
-Tests: `TestViewReloadHasADeadline`, `TestViewRetireAfterACut` (`perform_test.go`).
+Tests: `TestViewReloadHasADeadline`, `TestViewRetireAfterACut`, `TestAppCallsHaveADeadline` (`perform_test.go`).
 
 ## Reply size
 
