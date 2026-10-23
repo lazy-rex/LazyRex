@@ -54,6 +54,12 @@ func replyRex(t *testing.T, reply func(method string) (any, string)) *rex.Rex {
 // payloadRex is replyRex with the request payload: reply(method, payload).
 func payloadRex(t *testing.T, reply func(method string, payload json.RawMessage) (any, string)) *rex.Rex {
 	t.Helper()
+	return limitRex(t, 0, reply)
+}
+
+// limitRex is payloadRex with a welcome that states max_message_bytes max (0: no limits).
+func limitRex(t *testing.T, max int, reply func(method string, payload json.RawMessage) (any, string)) *rex.Rex {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "fr") // a unix socket path must be short
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +87,9 @@ func payloadRex(t *testing.T, reply func(method string, payload json.RawMessage)
 			}
 			json.Unmarshal(data, &f)
 			frame := map[string]any{"type": "welcome"}
+			if max > 0 {
+				frame["limits"] = map[string]any{"max_message_bytes": max}
+			}
 			if f.Type == "request" {
 				payload, fail := reply(f.Method, f.Payload)
 				frame = map[string]any{"type": "response", "id": f.ID, "payload": payload}

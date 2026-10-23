@@ -11,8 +11,9 @@ import (
 	"testing"
 )
 
-// peerHub is a hub named name with one peer and a running plugin "messaging" (client c-<name>).
-// Its Rex answers client.perform with receive(args of the perform).
+// peerHub is a hub named name with one peer and an installed, running plugin "messaging" (client
+// c-<name>). Its Rex has the Unix socket's 1 MiB frame limit and answers client.perform with
+// receive(args of the perform).
 func peerHub(t *testing.T, name, peer string, receive func(args map[string]any) (any, string)) *Hub {
 	t.Helper()
 	db, err := openDB(t.TempDir() + "/hub.db")
@@ -21,9 +22,9 @@ func peerHub(t *testing.T, name, peer string, receive func(args map[string]any) 
 	}
 	t.Cleanup(func() { db.Close() })
 	cfg := Config{HubName: name, Peers: []PeerConfig{{Name: peer, Server: "lab-" + peer}}}
-	h := &Hub{db: db, cfg: cfg, plugins: map[string]*Plugin{"messaging": {Name: "messaging", ClientID: "c-" + name}}, vs: newViewSvc()}
+	h := &Hub{db: db, cfg: cfg, plugins: map[string]*Plugin{"messaging": {Name: "messaging", ClientID: "c-" + name, entry: &configEntry{}}}, vs: newViewSvc()}
 	h.peers = newPeerSet(cfg)
-	h.rex = payloadRex(t, func(method string, payload json.RawMessage) (any, string) {
+	h.rex = limitRex(t, 1<<20, func(method string, payload json.RawMessage) (any, string) {
 		var p struct {
 			Args map[string]any `json:"args"`
 		}
@@ -270,17 +271,147 @@ func TestPeerPullLimits(t *testing.T) {
 	if envs, more := pull(101); len(envs) != 0 || more {
 		t.Fatalf("after 101: %d, more %v", len(envs), more)
 	}
-	big := strings.Repeat("x", 60<<10)
+	// NUL encodes to 6 bytes: the reply is measured encoded. 20 envelopes of 10 KiB NUL (60 KiB
+	// encoded each) take more than one reply; each reply fits the hub's reply frame.
+	big := strings.Repeat("\x00", 10<<10)
 	for i := 0; i < 20; i++ {
 		if _, err := peerSendAs(a, "c-a", "b", fmt.Sprint("big", i), big); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if envs, more := pull(101); len(envs) != 17 || !more { // 17 * 60 KiB <= 1 MiB < 18 * 60 KiB
-		t.Fatalf("big envelopes: %d, more %v", len(envs), more)
+	after, got := 101, 0
+	for {
+		res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(after)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := guardReply("hub.peer.pull", map[string]any{"call_id": strings.Repeat("c", 64), "result": res}, replyLimit(a.rex)); !ok {
+			t.Fatalf("a pull reply after %d is over the reply frame limit", after)
+		}
+		m := res.(map[string]any)
+		envs := m["envelopes"].([]any)
+		if len(envs) == 0 {
+			break
+		}
+		got += len(envs)
+		after = int(envs[len(envs)-1].(map[string]any)["seq"].(int64))
+		if got < 20 && !m["more"].(bool) {
+			t.Fatalf("more is false after %d of 20 envelopes", got)
+		}
+	}
+	if got != 20 {
+		t.Fatalf("pulled %d big envelopes, want 20", got)
 	}
 	if _, err := a.peerPullServe(context.Background(), map[string]any{"hub": "zz", "after": float64(0)}); errCode(err) != "unknown_hub" {
 		t.Fatalf("an unknown puller: %v", err)
+	}
+}
+
+// TestPeerPullNotInstalled: an envelope for a plugin that is not installed on the receiver (no
+// record, or a kept record without a config entry) is logged and skipped: the cursor moves, and
+// nothing is delivered.
+func TestPeerPullNotInstalled(t *testing.T) {
+	var n atomic.Int32
+	a := peerHub(t, "a", "b", nil)
+	b := peerHub(t, "b", "a", func(map[string]any) (any, string) { n.Add(1); return map[string]any{}, "" })
+	linkHubs(a, b, func() bool { return false })
+	for _, k := range []string{"k1", "k2"} {
+		if _, err := peerSendAs(a, "c-a", "b", k, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.mu.Lock()
+	b.plugins["messaging"].entry = nil // removed from the config; the record is kept
+	b.mu.Unlock()
+	if _, err := b.peerPull(context.Background(), b.peers.links["a"]); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := b.peerAfter(context.Background(), "a"); after != 2 || n.Load() != 0 {
+		t.Fatalf("cursor %d after %d deliveries, want 2 after 0", after, n.Load())
+	}
+	if _, err := peerSendAs(a, "c-a", "b", "k3", "x"); err != nil {
+		t.Fatal(err)
+	}
+	b.mu.Lock()
+	delete(b.plugins, "messaging") // no record
+	b.mu.Unlock()
+	if _, err := b.peerPull(context.Background(), b.peers.links["a"]); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := b.peerAfter(context.Background(), "a"); after != 3 || n.Load() != 0 {
+		t.Fatalf("cursor %d after %d deliveries, want 3 after 0", after, n.Load())
+	}
+}
+
+// TestPeerSendSizes: the body limit counts encoded bytes, and each accepted envelope fits alone in
+// one pull reply, also on a Rex connection with the 64 KiB reference limit.
+func TestPeerSendSizes(t *testing.T) {
+	a := peerHub(t, "a", "b", nil)
+	if _, err := peerSendAs(a, "c-a", "b", "nul", strings.Repeat("\x00", 11<<10)); errCode(err) != "too_large" { // 66 KiB encoded
+		t.Fatalf("a body over 64 KiB encoded: %v", err)
+	}
+	a.rex = payloadRex(t, func(string, json.RawMessage) (any, string) { return map[string]any{}, "" }) // no limits: 64 KiB
+	if _, err := peerSendAs(a, "c-a", "b", "near", strings.Repeat("x", 63<<10)); errCode(err) != "too_large" {
+		t.Fatalf("an envelope over one pull reply: %v", err)
+	}
+	if _, err := peerSendAs(a, "c-a", "b", "fits", strings.Repeat("x", 60<<10)); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := guardReply("hub.peer.pull", map[string]any{"call_id": strings.Repeat("c", 64), "result": res}, replyLimit(a.rex)); !ok {
+		t.Fatal("the reply with the largest accepted envelope is over the reply frame limit")
+	}
+}
+
+// TestPeerSendConcurrent: 32 sends of one key at the same time all get the first seq; with another
+// body, each send that does not insert gets key_conflict.
+func TestPeerSendConcurrent(t *testing.T) {
+	a := peerHub(t, "a", "b", nil)
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	seqs := make(chan any, 64)
+	for i := range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key, body := "same", "one"
+			if i%2 == 1 {
+				key, body = "mixed", fmt.Sprint("body ", i%3)
+			}
+			res, err := peerSendAs(a, "c-a", "b", key, body)
+			if key == "same" {
+				if err != nil {
+					errs <- err
+					return
+				}
+				seqs <- res["seq"]
+			} else if err != nil && errCode(err) != "key_conflict" {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(seqs)
+	for err := range errs {
+		t.Errorf("a concurrent send: %v", err)
+	}
+	var first any
+	for seq := range seqs {
+		if first == nil {
+			first = seq
+		}
+		if seq != first {
+			t.Fatalf("seqs %v and %v for one key and body", first, seq)
+		}
+	}
+	var rows int
+	a.db.QueryRow(`SELECT count(*) FROM peer_outbox`).Scan(&rows)
+	if rows != 2 {
+		t.Fatalf("%d outbox rows, want 2", rows)
 	}
 }
 
