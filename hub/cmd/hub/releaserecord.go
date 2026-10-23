@@ -44,6 +44,7 @@ type relRehearsal struct {
 	Set         []relSetCheck       `json:"set,omitempty"`       // rehearse -set: every data check and probe of the set phase
 	Chunks      []relChunkCheck     `json:"chunks,omitempty"`    // rehearse -set: the chunking probe windows
 	SetSteps    []relSetStep        `json:"set_steps,omitempty"` // rehearse -set: each plugin step as its lab freeze saw it
+	Faults      []relSetFault       `json:"faults,omitempty"`    // rehearse -set: the fault runs; never success evidence, never read by the gate
 }
 
 // relSetStep is one plugin step of a set rehearsal: the frozen lab candidate and the base pins of

@@ -1008,6 +1008,9 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 	if h.set != nil && len(h.set.steps) != len(h.set.file.Plugins) {
 		return relFail("the set has %d plugins, but %d plugin steps were frozen; no record", len(h.set.file.Plugins), len(h.set.steps))
 	}
+	if h.set != nil && len(h.set.faults) != 2 {
+		return relFail("the set rehearsal ran %d of 2 fault cases; no record", len(h.set.faults))
+	}
 	now, err := h.capture()
 	if err != nil {
 		return err
@@ -1031,6 +1034,7 @@ func (h *rehearsal) publish(tier string, reasons []string) error {
 		rec.Set = h.set.checks
 		rec.Chunks = h.chunks
 		rec.SetSteps = h.set.steps
+		rec.Faults = h.set.faults
 	}
 	if err := h.r.writeRehearsal(rec); err != nil {
 		return err

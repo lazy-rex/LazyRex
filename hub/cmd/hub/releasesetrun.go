@@ -27,6 +27,7 @@ type relSetState struct {
 	runs   map[string]string   // the lab plugin run of each plugin
 	checks []relSetCheck       // the record of every data check and probe
 	steps  []relSetStep        // each plugin step as its lab freeze saw it, in set order
+	faults []relSetFault       // the fault runs (evidence of recovery only)
 }
 
 // relSetCheck is one record line: a phase, a plugin and what passed there.
@@ -76,6 +77,9 @@ func (h *rehearsal) setPhase() error {
 		}
 	}
 	if err := h.setChecks("probes on FROM"); err != nil {
+		return err
+	}
+	if err := h.setFaults(&s.file.Plugins[0]); err != nil {
 		return err
 	}
 	for i := range s.file.Plugins {

@@ -101,6 +101,22 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 	if pins := strings.Join(rec.SetSteps[1].Candidate.Pins, "\n"); !strings.Contains(pins, " "+setLabPlugins[0].to+" ") {
 		t.Errorf("record: the Messaging step saw the pins\n%s", pins)
 	}
+	// The fault cases ran on the first plugin, both passed, and stay apart from the set steps.
+	if len(rec.Faults) != 2 {
+		t.Fatalf("record: %d fault runs", len(rec.Faults))
+	}
+	for i, want := range []string{"failed-forward", "interrupted-replace"} {
+		f := rec.Faults[i]
+		if f.Case != want || f.Plugin != setLabPlugins[0].name || f.Result != "pass" || len(f.Steps) == 0 {
+			t.Errorf("record: fault %d %+v", i+1, f)
+		}
+	}
+	if f := rec.Faults[0]; f.Base != setLabPlugins[0].to || f.Commit == setLabPlugins[0].to || !strings.Contains(strings.Join(f.Steps, "|"), "rollback exit 0") {
+		t.Errorf("record: failed-forward %+v", f)
+	}
+	if f := rec.Faults[1]; f.Commit != setLabPlugins[0].to || !strings.Contains(strings.Join(f.Steps, "|"), "exit 3") || !strings.Contains(strings.Join(f.Steps, "|"), "verify (rerun) exit 0") {
+		t.Errorf("record: interrupted-replace %+v", f)
+	}
 	if len(rec.Chunks) != 2 {
 		t.Errorf("record: %d chunking windows", len(rec.Chunks))
 	}
@@ -112,7 +128,7 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 		}
 	}
 	got := strings.Join(phases, "|")
-	for _, want := range []string{"seed", "seeded", "probes on FROM", "tunnels backup", "tunnels replace", "tunnels verify", "tunnels rerun",
+	for _, want := range []string{"seed", "seeded", "probes on FROM", "tunnels fault failed-forward rollback", "tunnels fault failed-forward probes on FROM", "tunnels fault interrupted-replace rerun", "tunnels fault interrupted-replace rollback", "tunnels fault interrupted-replace probes on FROM", "tunnels backup", "tunnels replace", "tunnels verify", "tunnels rerun",
 		"tunnels probes on TO", "messaging rerun", "messaging probes on TO", "chunking probe", "messaging rollback",
 		"messaging probes after the rollback", "tunnels rollback", "tunnels probes after the rollback"} {
 		if !strings.Contains("|"+got+"|", "|"+want+"|") {
