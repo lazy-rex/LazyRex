@@ -742,21 +742,6 @@ func (h *Hub) placed(ctx context.Context, v *view, b rexBlock) {
 	}
 }
 
-// detachView removes the view's pane from its tab without closing it. Rex removes the empty tab.
-func (h *Hub) detachView(ctx context.Context, sess string, v *view) error {
-	if err := h.rex.Call(ctx, "session.detach_block", map[string]any{"session_id": sess, "block_id": v.Block}, nil); err != nil {
-		var re *rex.RexError
-		if errors.As(err, &re) && re.Code == "not_found" {
-			return nil // the next pass sees why
-		}
-		return fmt.Errorf("detach %s: %w", v.ID, err)
-	}
-	v.Window = ""
-	h.db.ExecContext(ctx, `UPDATE views SET window_id = '' WHERE view_id = ?`, v.ID)
-	h.ev.emit("view_detached", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab})
-	return nil
-}
-
 // restoreView puts a detached view back in a tab of its own. Rex reattaches a detached block only
 // beside a visible anchor (session.move_block), so the hub opens a tab with a placeholder pane,
 // moves the view beside it and closes the placeholder. The placeholder's label and arguments
