@@ -20,7 +20,7 @@ type gateLoad struct {
 
 func newGateLoad() *gateLoad { return &gateLoad{runs: map[string]int{}, release: make(chan struct{})} }
 
-func (g *gateLoad) run(ctx context.Context, key string) (any, bool, error) {
+func (g *gateLoad) run(ctx context.Context, key string, _ any) (any, bool, error) {
 	g.mu.Lock()
 	g.runs[key]++
 	n := g.runs[key]
@@ -187,7 +187,7 @@ func TestLoadCacheBounds(t *testing.T) {
 func TestLoadCacheStale(t *testing.T) {
 	var stale atomic.Bool
 	stale.Store(true)
-	run := func(ctx context.Context, key string) (any, bool, error) { return "v", !stale.Load(), nil }
+	run := func(ctx context.Context, key string, _ any) (any, bool, error) { return "v", !stale.Load(), nil }
 	h, _, _ := opsTestHub(t, "")
 	h.loads.init(context.Background())
 	c := h.loads.cache("test", time.Minute, run)
