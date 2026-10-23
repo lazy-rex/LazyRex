@@ -2,19 +2,17 @@ package main
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // TestStatusReadNeedsAttach records a Rex fact on a lab server: a connection reads a pane's
 // program status (com.superlogical.terminal.program_status) only after it attaches the pane's
-// session. Set STATUS_LAB_SOCKET to an isolated Rex lab socket (never the user's server).
+// session. Lab only (rexLab: HARNESS_LAB=1).
 func TestStatusReadNeedsAttach(t *testing.T) {
-	socket := os.Getenv("STATUS_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set STATUS_LAB_SOCKET to an isolated Rex lab socket")
-	}
+	socket := rexLab(t).socket
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	owner := labCaller(t, socket)
@@ -62,4 +60,21 @@ func TestStatusReadNeedsAttach(t *testing.T) {
 	if after != nil || len(st.Records) != 1 || st.Records[0].ID != "" || st.Records[0].State != "idle" {
 		t.Errorf("after attach: %v %+v", after, st.Records)
 	}
+}
+
+// labCaller dials socket and drains its events; the cleanup closes it.
+func labCaller(t *testing.T, socket string) *rex.Rex {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	r, err := rex.Dial(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	go func() {
+		for range r.Events {
+		}
+	}()
+	return r
 }

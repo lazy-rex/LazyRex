@@ -91,22 +91,6 @@ func (l *labResponder) connected(t *testing.T, caller *rex.Rex) string {
 	return ins.Client.State
 }
 
-func labCaller(t *testing.T, socket string) *rex.Rex {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	r, err := rex.Dial(ctx, socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { r.Close() })
-	go func() {
-		for range r.Events {
-		}
-	}()
-	return r
-}
-
 func labPerform(caller *rex.Rex, client string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
