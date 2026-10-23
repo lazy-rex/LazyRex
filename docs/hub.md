@@ -66,6 +66,8 @@ Transport failures remain uncertain and use reconnect backoff.
 
 `hub.view.subscribe` and `hub.view.get` return `{schema_version: 1, view_id, route, revision, tree}`.
 A view that a reopen made also has `open`: the args of the reopen ("Reopen", below).
+`open` is optional. The renderer accepts it only as an object whose one key is `full`, a boolean; another key or value is invalid (view/schema.go). Without `open`, the renderer opens a thread with the newest 500 messages.
+A snapshot can also have `layout`, the hub's effective layout for the view: `"transcript"` when a transcript pane above the view prints the history (a pair). Otherwise `layout` is absent or empty.
 `revision` is a decimal string. It increases within the current `hub_generation`.
 The renderer compares revisions numerically, without converting them to floating-point values.
 A hub restart requires a new attachment, subscription, and snapshot.
@@ -300,20 +302,35 @@ An unknown node type produces an error at that node and disables its actions.
 
 | Node type | Additional fields | Behavior |
 |---|---|---|
-| `list` | `items: [{id, label, detail, action}]` | Select one stable item ID. |
-| `history` | `messages: [{id, author, text, at}]`, `before`, `has_more`, `page_size`, `load_action` | Messages are oldest first. `before` is an opaque cursor or `null`. |
+| `list` | `items: [{id, label, detail, action, icon, status}]` | Select one stable item ID. `icon` (optional) is one cell before the label; `status` (optional) is short text at the right edge. |
+| `history` | `messages: [{id, author, text, at}]`, `before`, `has_more`, `page_size`, `total`, `load_action` | Messages are oldest first. `before` is an opaque cursor or `null`. `total` is optional (below). |
 | `composer` | `text`, `draft_revision`, `save_action`, `send_action` | The first snapshot supplies the saved draft. Later snapshots do not overwrite dirty local text. |
 | `form` | `fields: [{id, label, kind, value, required, options}]`, `submit_action` | Version 1 kinds are `text`, `multiline`, `boolean`, and `select`. Options have `value` and `label`. |
 | `widget` | `text`, `action` | Show a value and an optional action. |
+| `menu` | `label`, `action` | A control that opens the plugin's menu through `action`. Ctrl+O activates the first menu node. The hub opens the menu form in a side pane ("Palette forms and thread menus"). |
 | `loading` | `text` | Show progress without accepting domain actions. |
 | `error` | `text`, `retry_action` | Show an understandable error and an optional retry action. |
 
 Arrays must encode as JSON arrays, including empty arrays.
 `page_size` is a positive integer selected by the plugin, not an unbounded renderer request.
 A history page contains at most `page_size` messages.
-A load action receives `{before}` and replaces the displayed history page.
+`total` is the number of messages in the whole thread. It is optional. When present, it is an integer that is at least 0 and at least the number of messages in the node; otherwise the tree is invalid. The renderer checks it against the node only. It uses `total` only for the count line of a thread (view/README.md, "The history fetch").
+In alt mode, a load action receives `{before}` and replaces the displayed history page.
 The renderer preserves the selected message when it occurs in the new page.
 It does not accumulate all history pages in memory.
+In thread mode, the renderer prints messages into the pane's scrollback and gets older pages through `hub.view.history` (view/README.md, "The history fetch").
+
+The root may also have `menu: true`: the tree is a form that a menu opened, so Ctrl+O closes it.
+
+#### Renderer mode
+
+The renderer decides its mode once per process, from the first tree with content (view/mode.go):
+
+- Neutral: before that tree. Loading and error nodes do not decide. The renderer draws inline and prints nothing.
+- Thread: the first tree has a history node, no list or form node, and a `layout` other than `"transcript"`. The pane stays on the primary screen for the life of the process, and the renderer reports no mouse. Messages print once into the scrollback; the live region below them holds the other nodes and the composer.
+- Alt: the first tree has any other content, a history node beside a list or form (a view defect, shown once as a status note), or `layout` `"transcript"` (the paired composer). The alt screen, as before thread mode.
+
+A later tree does not change the mode. A new renderer process (a reload) decides again and clears its pane once at the start.
 
 The root may also have an optional `status`: `{state, kind, msg}`.
 `state` is `idle`, `working`, `done`, `blocked`, or `error`. `kind` (`permission`, `question`, or `auth`) applies only to `blocked`. `msg` is one line of plain text.
