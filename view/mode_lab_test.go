@@ -618,20 +618,20 @@ func TestComposerGrowLab(t *testing.T) {
 	keys := []string{"send-key", "-s", l.session, "-b", pane}
 	var typed []string
 	for i := 2; i <= 8; i++ {
-		keys = append(keys, "shift+enter", "L", fmt.Sprint(i))
-		typed = append(typed, fmt.Sprintf("│ L%d ", i))
+		keys = append(keys, "shift+enter", "l", fmt.Sprint(i)) // rex send-key sends a key name in lowercase
+		typed = append(typed, fmt.Sprintf("│ l%d ", i))
 	}
 	l.must(keys...)
 	l.waitFor("the grown composer", 10*time.Second, func() bool {
 		last = l.screen(pane)
-		return strings.Contains(last, "│ L8 ")
+		return strings.Contains(last, "│ l8 ")
 	})
 	time.Sleep(time.Second) // the frames for the earlier lines are drawn
 	last = l.screen(pane)
 	t.Logf("grown capture:\n%s", last)
 	once("grown", typed...)
 	// The two actions share the 10-row bound, so the input shows 2 to 6 of its 8 lines.
-	if n := strings.Count(last, "│ L"); n < 2 || n > 6 {
+	if n := strings.Count(last, "│ l"); n < 2 || n > 6 {
 		t.Errorf("grown: %d typed input rows on the pane, want 2 to 6", n)
 	}
 	back := []string{"send-key", "-s", l.session, "-b", pane}
@@ -641,13 +641,13 @@ func TestComposerGrowLab(t *testing.T) {
 	l.must(back...)
 	l.waitFor("the shrunk composer", 10*time.Second, func() bool {
 		last = l.screen(pane)
-		return strings.Contains(last, "│ DRAFT-TEXT ") && !strings.Contains(last, "│ L8 ")
+		return strings.Contains(last, "│ DRAFT-TEXT ") && !strings.Contains(last, "│ l8 ")
 	})
 	time.Sleep(time.Second)
 	last = l.screen(pane)
 	t.Logf("shrunk capture:\n%s", last)
 	once("shrunk", "DRAFT-TEXT")
-	if strings.Contains(last, "│ L") {
+	if strings.Contains(last, "│ l") {
 		t.Errorf("shrunk: a typed line stays on the pane after the delete")
 	}
 }

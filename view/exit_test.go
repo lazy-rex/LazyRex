@@ -32,6 +32,7 @@ type rendererRun struct {
 	out    bytes.Buffer // every byte that the test read from the process's stdout
 	closed chan struct{}
 	done   chan error
+	waited chan struct{} // closed when Wait returns; the cleanup never reads cmd.ProcessState
 }
 
 func history(ids ...int) Snapshot {
@@ -48,11 +49,15 @@ func startRenderer(t *testing.T, f *protocolFixture, closeAfter string) *rendere
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &rendererRun{t: t, f: f, closed: make(chan struct{}), done: make(chan error, 1)}
+	r := &rendererRun{t: t, f: f, closed: make(chan struct{}), done: make(chan error, 1), waited: make(chan struct{})}
 	t.Cleanup(func() {
-		if r.cmd != nil && r.cmd.Process != nil && r.cmd.ProcessState == nil {
-			r.cmd.Process.Kill()
-			<-r.done
+		if r.cmd != nil && r.cmd.Process != nil {
+			select {
+			case <-r.waited:
+			default:
+				r.cmd.Process.Kill()
+				<-r.waited
+			}
 		}
 		if !t.Failed() {
 			os.RemoveAll(dir)
@@ -94,7 +99,10 @@ func startRenderer(t *testing.T, f *protocolFixture, closeAfter string) *rendere
 		t.Fatal(err)
 	}
 	outSlave.Close() // the child holds its own copy
-	go func() { r.done <- r.cmd.Wait() }()
+	go func() {
+		r.done <- r.cmd.Wait()
+		close(r.waited)
+	}()
 	if closeAfter != "" {
 		go func() {
 			b := make([]byte, 4096)
