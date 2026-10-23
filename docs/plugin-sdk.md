@@ -136,6 +136,11 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
 - **Long lists.** Under the SDK, `table.concat` has no length limit (Rex Lua alone fails at about
   2560 items). Do not `unpack` a list of more than about 2000 items, and do not pass that many
   arguments: Rex Lua fails with "registry overflow".
+- **Files.** A plugin loads only files inside its own directory (its subdir for a GitHub source).
+  The hub runs a local plugin from a snapshot of that directory, so `../x.lua` is not there. Find
+  your files from the run path (`debug.getinfo(1, 'S').source`, or `require` through the plugin
+  directory that boot.lua puts in `package.path`), never from the source path
+  (docs/plugin-sources.md, section 2).
 - **Big numbers.** Lua holds integers exactly only up to 2^53. A larger integer from the database
   comes back as a decimal string.
 - **Views refresh by themselves.** The hub renders a view again after a write to a table that its
