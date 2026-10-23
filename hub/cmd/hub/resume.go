@@ -157,7 +157,7 @@ func (h *Hub) agentOp(ctx context.Context, action string, args map[string]any, f
 	err := h.db.QueryRowContext(ctx, `SELECT op_id, request FROM agent_ops WHERE caller = 'admin' AND key = ?`, key).Scan(&opID, &prev)
 	if err == nil {
 		if prev != string(fp) {
-			return nil, bad("key %q was used for a different request", key)
+			return nil, refuse("operation_conflict", "key %q was used for a different request", key)
 		}
 		h.kickResume()
 		return h.opReply(ctx, opID)

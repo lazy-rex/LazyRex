@@ -829,7 +829,7 @@ func (h *Hub) watchExisting(ctx context.Context, w watchRecord) (any, bool, erro
 		return nil, false, err
 	}
 	if cur.Path != w.Path || cur.Glob != w.Glob || cur.SettleMs != w.SettleMs || cur.EmitExisting != w.EmitExisting {
-		return nil, true, refuse("watch_conflict", "key %s has another spec; remove it first", w.Key)
+		return nil, true, refuse("operation_conflict", "key %s has another spec; remove it first", w.Key)
 	}
 	return map[string]any{"key": cur.Key, "watch_id": cur.ID, "state": cur.State, "cursor": revString(cur.Cursor), "watermark": revString(cur.Watermark)}, true, nil
 }

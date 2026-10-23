@@ -84,7 +84,7 @@ func outboxOpen(t *testing.T, h *Hub, peer string) int {
 }
 
 // TestPeerSendKey: a send gives a seq; the same key and body gives the same seq, also after the ack
-// deleted the body; another body is key_conflict, also after the ack. A seq never repeats after
+// deleted the body; another body is operation_conflict, also after the ack. A seq never repeats after
 // the outbox is empty. Only a plugin can send, only to a peer, and a body has at most 64 KiB.
 func TestPeerSendKey(t *testing.T) {
 	a := peerHub(t, "a", "b", nil)
@@ -97,7 +97,7 @@ func TestPeerSendKey(t *testing.T) {
 	if again, err := peerSendAs(a, "c-a", "b", "k1", "one"); err != nil || again["seq"] != int64(1) {
 		t.Fatalf("a retry: %v %v", again, err)
 	}
-	if _, err := peerSendAs(a, "c-a", "b", "k1", "two"); errCode(err) != "key_conflict" {
+	if _, err := peerSendAs(a, "c-a", "b", "k1", "two"); errCode(err) != "operation_conflict" {
 		t.Fatalf("another body: %v", err)
 	}
 	if _, err := b.peerPull(context.Background(), b.peers.links["a"]); err != nil {
@@ -112,7 +112,7 @@ func TestPeerSendKey(t *testing.T) {
 	if again, err := peerSendAs(a, "c-a", "b", "k1", "one"); err != nil || again["seq"] != int64(1) {
 		t.Fatalf("a retry after the ack: %v %v", again, err)
 	}
-	if _, err := peerSendAs(a, "c-a", "b", "k1", "two"); errCode(err) != "key_conflict" {
+	if _, err := peerSendAs(a, "c-a", "b", "k1", "two"); errCode(err) != "operation_conflict" {
 		t.Fatalf("another body after the ack: %v", err)
 	}
 	if next, err := peerSendAs(a, "c-a", "b", "k2", "x"); err != nil || next["seq"] != int64(2) {
@@ -481,7 +481,7 @@ func TestPeerSendSizes(t *testing.T) {
 }
 
 // TestPeerSendConcurrent: 32 sends of one key at the same time all get the first seq; with another
-// body, each send that does not insert gets key_conflict.
+// body, each send that does not insert gets operation_conflict.
 func TestPeerSendConcurrent(t *testing.T) {
 	a := peerHub(t, "a", "b", nil)
 	var wg sync.WaitGroup
@@ -502,7 +502,7 @@ func TestPeerSendConcurrent(t *testing.T) {
 					return
 				}
 				seqs <- res["seq"]
-			} else if err != nil && errCode(err) != "key_conflict" {
+			} else if err != nil && errCode(err) != "operation_conflict" {
 				errs <- err
 			}
 		}()

@@ -258,7 +258,7 @@ func (h *Hub) spawnWindow(ctx context.Context, p perform, args map[string]any) (
 	switch err := row.Scan(&prevReq, &prevIDs); {
 	case err == nil:
 		if prevReq != string(fp) {
-			return nil, bad("key %q was used for a different request", key)
+			return nil, refuse("operation_conflict", "key %q was used for a different request", key)
 		}
 		return h.windowResult(ctx, key, prevIDs)
 	case !errors.Is(err, sql.ErrNoRows):

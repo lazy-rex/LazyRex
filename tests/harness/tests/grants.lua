@@ -23,8 +23,8 @@ test('a grant made during a forward admits its exact request later, as the agent
   expect(g.state).to_be('active')
   -- A replay in a new forward returns the same grant; other entries or another agent conflict.
   expect(alice:call('fix.grant', {key = 'run/1', entries = entries()}).grant_id).to_be(g.grant_id)
-  expect_error(function() alice:call('fix.grant', {key = 'run/1', entries = entries('session:x')}) end, 'conflict')
-  expect_error(function() bob:call('fix.grant', {key = 'run/1', entries = entries()}) end, 'conflict')
+  expect_error(function() alice:call('fix.grant', {key = 'run/1', entries = entries('session:x')}) end, 'operation_conflict')
+  expect_error(function() bob:call('fix.grant', {key = 'run/1', entries = entries()}) end, 'operation_conflict')
   -- Deferred: no forward is in flight now.
   local w = alice:direct('fix.grant_spawn', {grant_id = g.grant_id, key = 'g/w1', title = 'Dev', layout = layout})
   expect(w.status).to_be('open')

@@ -528,7 +528,7 @@ func (h *Hub) spawnWorker(ctx context.Context, p perform, args map[string]any) (
 	}
 	if prev, err := scanSpawn(row, &prevReq); err == nil {
 		if prevReq != string(fp) {
-			return nil, bad("key %q was used for a different request", key)
+			return nil, refuse("operation_conflict", "key %q was used for a different request", key)
 		}
 		if _, err := h.workerBlocks(ctx, prev); err != nil {
 			return nil, err

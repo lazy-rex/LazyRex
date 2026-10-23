@@ -1411,7 +1411,7 @@ An error reply keeps its code, as on the plugin face: a hub error has its own co
 A plugin accepts that assertion only from its registered hub client.
 Direct plugin calls and MCP tools keep their existing caller attribution.
 
-The IDs of one agent are its identity and each agent spawn address bound to that identity (`spawns.identity`, read at each call; see "Agent spawn addresses"). A spawn row keeps the ID that made it; `hub.workers` reports that recorded `parent`. `hub.spawn` and `hub.spawn_window` replay a key made by any ID of the caller's agent, and `hub.stop` accepts any ID of the parent's agent. A key that two IDs of one agent used before they became one is refused (`conflict`), even for equal requests: a replay cannot tell which request it repeats. Each of those workers stays stoppable by its spawn ID. The admission transaction reads the ID set again before it inserts: the hub's database has one connection, so the check and the insert are atomic with every other admission and every bind. A second ID of one agent that admits the same key at the same time gets `conflict`; a retry with that key replays the first row. Test: `TestSpawnAddressAdmissionRace`.
+The IDs of one agent are its identity and each agent spawn address bound to that identity (`spawns.identity`, read at each call; see "Agent spawn addresses"). A spawn row keeps the ID that made it; `hub.workers` reports that recorded `parent`. `hub.spawn` and `hub.spawn_window` replay a key made by any ID of the caller's agent, and `hub.stop` accepts any ID of the parent's agent. A key that two IDs of one agent used before they became one is refused (`operation_conflict`), even for equal requests: a replay cannot tell which request it repeats. Each of those workers stays stoppable by its spawn ID. The admission transaction reads the ID set again before it inserts: the hub's database has one connection, so the check and the insert are atomic with every other admission and every bind. A second ID of one agent that admits the same key at the same time gets `conflict`; a retry with that key replays the first row. Test: `TestSpawnAddressAdmissionRace`.
 
 See `../skills/lazyrex/SKILL.md` for agent instructions.
 The skill is stored in this repository. Installing it in an agent's configuration is a separate step.
@@ -1965,7 +1965,7 @@ Sequence values and cursors are decimal strings.
     `glob` matches the base name (`filepath.Match`, default `*`). `settle_ms` is 200 to 60000
     (default 1000).
   - The same key and the same spec return the same `watch_id`. Another spec for the key is refused
-    (`watch_conflict`). To change a spec, remove the watch, then ensure it again.
+    (`operation_conflict`). To change a spec, remove the watch, then ensure it again.
   - `ensure` is fast. It checks the grant and the path, lists the directory once (bounded, see
     "Limits"), and commits the watch in one transaction with state `initializing`. It does not
     wait for any file to settle. If the check fails, it stores nothing and returns the error.
@@ -2398,7 +2398,7 @@ Each hub pulls from its peers. A hub never pushes data.
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
 
 - **Send.** The body is opaque to the hub. The same `(peer, plugin, key)` with the same body returns
-  the first `seq`. Another body is `key_conflict`. Both rules stay after the peer acked the envelope:
+  the first `seq`. Another body is `operation_conflict`. Both rules stay after the peer acked the envelope:
   the ack keeps the row and clears only the body. Two sends of one key at the same time get one
   row. Other errors: `unknown_hub`, `too_large`, `not_plugin`.
 - **Size.** The hub measures the body JSON-encoded: a control character encodes to 6 bytes. The

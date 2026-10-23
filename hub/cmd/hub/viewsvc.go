@@ -361,7 +361,7 @@ func (h *Hub) viewAdmit(ctx context.Context, kind string, p perform, args map[st
 	err = h.db.QueryRowContext(ctx, `SELECT fingerprint FROM view_ops WHERE plugin = ? AND user = ? AND op_key = ?`, v.Plugin, viewUser, key).Scan(&existing)
 	switch {
 	case err == nil && existing != fingerprint:
-		return nil, bad("operation_conflict: key %q has different arguments", key)
+		return nil, refuse("operation_conflict", "key %q has different arguments", key)
 	case err == nil:
 		// A retry: the first admission stands. Its current state answers, as hub.view.operation
 		// does, so a renderer that lost the first reply cannot finish early.
