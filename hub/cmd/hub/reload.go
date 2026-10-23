@@ -68,6 +68,10 @@ func (h *Hub) setKeptLocked(pl *Plugin) {
 // is added; a missing id is removed). Then, under each record's lifecycle lock: a removed record
 // takes the kept path, a re-added kept record takes the re-add start, and an added or changed entry
 // starts unless it runs (the hub.admin.start rule).
+// reloadBeforeApply runs in a reload after it read the managed file and before it applies it. A
+// test replaces it to hold a reload with that snapshot.
+var reloadBeforeApply = func() {}
+
 func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any, error) {
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
@@ -89,6 +93,7 @@ func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any,
 		go h.changed("plugins")
 		return nil, refuse("invalid", "%v; the managed entries are unchanged", err)
 	}
+	reloadBeforeApply()
 
 	h.entriesMu.Lock()
 	var config, old []*configEntry
