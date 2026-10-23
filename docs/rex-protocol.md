@@ -1089,8 +1089,8 @@ text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-
   rows that a renderer breaks itself.
 - A live row wider than the terminal is cut by Bubble Tea. In one run its old copy stayed as a
   stale fragment after a resize.
-- A4, a live frame of several rows (Linux lab, the same Rex, LazyRex ebc1031d and f4e6c30e,
-  2026-10-23; `TestTeaProbeA4FrameWidth`). The frame has 4 short rows and 6 rows of 65 cells. At
+- A4, a live frame of several rows (Linux lab, Rex 0.0.1792593189-g3f4a0a, Bubble Tea v2.1.0,
+  LazyRex ebc1031d and f4e6c30e, 2026-10-23; `TestTeaProbeA4FrameWidth`). The frame has 4 short rows and 6 rows of 65 cells. At
   80 columns, Bubble Tea leaves the hidden cursor at column 0 of the last frame row. At 50
   columns, Rex rewraps each 65-cell row into 2 rows, although Bubble Tea ended each row with
   CR LF: the frame takes 16 rows, and the cursor stays on the first part of the last row. Bubble
@@ -1099,7 +1099,8 @@ text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-
   stay above the new frame. Each later narrowing (80 to 40) adds one more stale copy of `B01`.
   With `-park` (the cursor on the first frame row), Bubble Tea writes only `CSI J` from the
   first row, and each frame row is on the pane once at 50, 80, 40 and 100 columns.
-- A5, a pane shorter than the frame (Linux lab, LazyRex 8fe2ad6e, 2026-10-23;
+- A5, a pane shorter than the frame (Linux lab, Rex 0.0.1792593189-g3f4a0a, Bubble Tea v2.1.0,
+  LazyRex 8fe2ad6e, 2026-10-23;
   `TestTeaProbeA5ShortPane`). The same 10-row frame starts at 80x30. After 80x6 and back to
   80x30, the capture has 2 LIVE rows. After 40x8 (the wide rows rewrap) and then 90x26, it has 3
   LIVE rows and 2 copies of `B01` and `B02`. The counts are the same with and without `-park`:
