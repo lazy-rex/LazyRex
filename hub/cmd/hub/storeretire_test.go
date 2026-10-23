@@ -170,3 +170,131 @@ func TestRetireStoreFailedDropKeepsBoth(t *testing.T) {
 		t.Errorf("without the blocker: %d of the tables stay, %v", n, err)
 	}
 }
+
+// retiredSchema is well formed: one entry for each table or column; an unconditional entry has a
+// check and a statement that name what it removes; a conditional entry has neither, and it is a
+// table that retireStore drops.
+func TestRetiredSchemaIsWellFormed(t *testing.T) {
+	seen := map[string]bool{}
+	for _, s := range retiredSchema {
+		name := s.table
+		if s.column != "" {
+			name += "." + s.column
+		}
+		if s.table == "" || seen[name] {
+			t.Errorf("%q: an empty or duplicate entry", name)
+		}
+		seen[name] = true
+		if s.conditional {
+			if s.check != "" || s.statement != "" || s.column != "" || (s.table != "records" && s.table != "ops") {
+				t.Errorf("%s: a conditional entry is a table that retireStore drops, with no check or statement", name)
+			}
+			continue
+		}
+		if s.check == "" || !strings.Contains(s.check, "'"+s.table+"'") || !strings.Contains(s.statement, " "+s.table) {
+			t.Errorf("%s: the check or the statement does not name the table", name)
+		}
+		drop := "DROP TABLE " + s.table
+		if s.column != "" {
+			drop = "DROP COLUMN " + s.column
+		}
+		if !strings.Contains(s.statement, drop) || !strings.Contains(s.check, "'"+s.column+"'") && s.column != "" {
+			t.Errorf("%s: the statement %q is not %s", name, s.statement, drop)
+		}
+	}
+	for _, table := range []string{"records", "ops"} {
+		if !seen[table] {
+			t.Errorf("retireStore drops %s, and retiredSchema does not name it", table)
+		}
+	}
+}
+
+// hubSchema lists each table and each column of the hub.db at path: "t" and "t.c".
+func hubSchema(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT m.name, p.name FROM sqlite_master m, pragma_table_info(m.name) p WHERE m.type = 'table'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			t.Fatal(err)
+		}
+		out[table], out[table+"."+column] = true, true
+	}
+	return out
+}
+
+// An open removes only what retiredSchema names: every table or column of the old hub.db that is
+// gone after the open is a declared entry (the whole table, or that column); every unconditional
+// entry is gone; a conditional entry may stay (one namespace without a database) or go.
+func TestOpenRemovesOnlyDeclared(t *testing.T) {
+	declared := map[string]bool{}
+	for _, s := range retiredSchema {
+		if s.column == "" {
+			declared[s.table] = true
+		} else {
+			declared[s.table+"."+s.column] = true
+		}
+	}
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a namespace without a database %v", missing), func(t *testing.T) {
+			state := t.TempDir()
+			path := filepath.Join(state, "hub.db")
+			reopen(t, path) // the current schema, then each object that a step removes
+			oldStoreDB(t, path, `CREATE TABLE ui_tabs (key TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', rev_known INTEGER NOT NULL DEFAULT 0)`,
+				`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`,
+				`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`, `INSERT INTO ops VALUES ('beta', 'op', 'fp', '{}')`)
+			if err := os.MkdirAll(filepath.Join(state, "sql"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(state, "sql", "alpha.db"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !missing {
+				if err := os.WriteFile(filepath.Join(state, "sql", "beta.db"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := hubSchema(t, path)
+			reopen(t, path)
+			after := hubSchema(t, path)
+			for x := range before {
+				if after[x] {
+					continue
+				}
+				table, _, _ := strings.Cut(x, ".")
+				if !declared[x] && !declared[table] {
+					t.Errorf("the open removed %s, which retiredSchema does not name", x)
+				}
+			}
+			for _, s := range retiredSchema {
+				x := s.table
+				if s.column != "" {
+					x += "." + s.column
+				}
+				if !before[x] {
+					t.Errorf("the old hub.db of the test has no %s", x)
+				}
+				if s.conditional {
+					if after[x] != missing {
+						t.Errorf("%s after the open: %v, want %v", x, after[x], missing)
+					}
+				} else if after[x] {
+					t.Errorf("%s stays after the open", x)
+				}
+			}
+			if !after["ui_tabs.title"] {
+				t.Error("the column ui_tabs.title went with rev_known")
+			}
+		})
+	}
+}
