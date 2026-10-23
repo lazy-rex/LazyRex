@@ -80,6 +80,7 @@ func waitFor(t *testing.T, what string, d time.Duration, ok func() bool) {
 }
 
 // pairRestart is a hub start on the same state: memory is new, attachments are gone.
+// Known race (-race only; coord-sweepq-1): viewsStart replaces h.vs while an old viewWorker reads it. The transcript sweep removes these tests.
 func pairRestart(t *testing.T, h *Hub) {
 	t.Helper()
 	h.selfClosed = map[string]bool{}
