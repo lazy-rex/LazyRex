@@ -48,11 +48,11 @@ func TestReloadRefusesPaneCallers(t *testing.T) {
 	want := "hub.plugins.reload is refused from agent panes and from plugin processes that are not the registered instance"
 	cases := map[string]func(){
 		"an agent pane": func() {
-			h.agents = map[string]*Agent{"x": {BlockID: "b1", ChildPID: pid, ChildStart: startTime(pid)}}
+			h.idents = map[string]*Agent{"x": {ID: "x", IdState: "current", BlockID: "b1", ChildPID: pid, ChildStart: startTime(pid)}}
 			h.plugins = map[string]*Plugin{}
 		},
 		"a plugin pane, not the registered instance": func() {
-			h.agents = map[string]*Agent{}
+			h.idents = map[string]*Agent{}
 			h.plugins = map[string]*Plugin{"p": {Name: "p", entry: &configEntry{name: "p"}, ClientID: "c1", ChildPID: pid, ChildStart: startTime(pid)}}
 		},
 	}
@@ -66,7 +66,7 @@ func TestReloadRefusesPaneCallers(t *testing.T) {
 			t.Errorf("%s: the reload ran: %v", name, h.managedErr)
 		}
 	}
-	h.agents, h.plugins = map[string]*Agent{}, map[string]*Plugin{}
+	h.idents, h.plugins = map[string]*Agent{}, map[string]*Plugin{}
 	if _, err := h.reloadAction(context.Background(), p); !isRefusal(err, "invalid") || h.managedErr == nil {
 		t.Errorf("an operator: %v (the reload must run and report the malformed file)", err)
 	}

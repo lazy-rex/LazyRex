@@ -131,7 +131,7 @@ func TestSpawnFocusLab(t *testing.T) {
 		if !ok {
 			t.Fatal("source process not alive")
 		}
-		h.agents["caller"] = &Agent{ID: "caller", Session: session, BlockID: sourceBlock, ChildPID: pid, ChildStart: start}
+		h.idents = map[string]*Agent{"caller": {ID: "caller", Kind: "claude", IdState: "current", Session: session, BlockID: sourceBlock, ChildPID: pid, ChildStart: start}}
 		var caller perform
 		caller.Requester.Principal.PID = pid
 		req := request(session, source)

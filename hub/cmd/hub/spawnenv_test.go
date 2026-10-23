@@ -8,10 +8,9 @@ import (
 )
 
 // TestSpawnArgvEnv runs the pane command with stale agent variables in its environment, as a Rex
-// server started from an agent's pane has. A shell gets none of them; an agent gets only its own
-// fresh LAZYREX_AGENT. The lab check is tests/isolation (a worker of a real hub).
+// server started from an agent's pane has. Neither a shell nor an agent gets them. The lab check is
+// tests/isolation (a worker of a real hub).
 func TestSpawnArgvEnv(t *testing.T) {
-	t.Setenv("LAZYREX_AGENT", "stale-agent")
 	for _, k := range agentEnvUnset {
 		t.Setenv(k, "stale")
 	}
@@ -31,10 +30,7 @@ func TestSpawnArgvEnv(t *testing.T) {
 		}
 		return env
 	}
-	check := func(who string, env map[string]string, agent string) {
-		if v, ok := env["LAZYREX_AGENT"]; agent == "" && ok || agent != "" && v != agent {
-			t.Errorf("%s: LAZYREX_AGENT = %q (set %v), want %q", who, v, ok, agent)
-		}
+	check := func(who string, env map[string]string) {
 		for _, k := range agentEnvUnset {
 			if v, ok := env[k]; ok {
 				t.Errorf("%s: %s = %q, want unset", who, k, v)
@@ -44,11 +40,11 @@ func TestSpawnArgvEnv(t *testing.T) {
 			t.Errorf("%s: LRT_KEPT = %q, LRT_PROFILE = %q: other variables must pass", who, env["LRT_KEPT"], env["LRT_PROFILE"])
 		}
 	}
-	check("a shell", run(&spawnRow{ID: "s1"}), "")
-	check("an agent", run(&spawnRow{ID: "s2", Agent: "agent-fresh"}), "agent-fresh")
+	check("a shell", run(&spawnRow{ID: "s1"}))
+	check("an agent", run(&spawnRow{ID: "s2", Agent: "spawn:s2"}))
 	// The command is the profile's own, with no argument added (for example no --session-id: the
 	// agent's hook reports its conversation).
-	argv := spawnArgv(&spawnRow{ID: "s3", Agent: "agent-fresh"}, prof, nil)
+	argv := spawnArgv(&spawnRow{ID: "s3", Agent: "spawn:s3"}, prof, nil)
 	if tail := argv[len(argv)-len(prof.Command):]; !reflect.DeepEqual(tail, prof.Command) || strings.Contains(strings.Join(argv, " "), "--session-id") {
 		t.Errorf("argv %q: want the profile command %q at the end and no added argument", argv, prof.Command)
 	}
