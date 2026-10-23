@@ -405,3 +405,22 @@ func TestRecordLogf(t *testing.T) {
 		t.Fatalf("the lines: %q", lines)
 	}
 }
+
+// A start error that starts with "plugin <same name>: " loses that inner prefix once (the hub
+// lead, lead-c7code); a prefix of another name, and the same text later in the message, stay.
+func TestPluginLogfInnerPrefix(t *testing.T) {
+	var buf strings.Builder
+	w, flags := log.Writer(), log.Flags()
+	t.Cleanup(func() { log.SetOutput(w); log.SetFlags(flags) })
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	pluginLogf("x", "managed:x", "%v", "plugin x: plugin x: dependency cycle a -> b -> a")
+	pluginLogf("x", "managed:x", "%v", "plugin y: dependency cycle")
+	pluginLogf("x", "managed:x", "respawn: %v", "plugin x: no run")
+	want := "plugin x [managed:x]: plugin x: dependency cycle a -> b -> a\n" +
+		"plugin x [managed:x]: plugin y: dependency cycle\n" +
+		"plugin x [managed:x]: respawn: plugin x: no run\n"
+	if buf.String() != want {
+		t.Fatalf("the lines:\n%s", buf.String())
+	}
+}
