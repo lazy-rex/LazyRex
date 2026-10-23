@@ -296,7 +296,7 @@ func (h *Hub) join(ctx context.Context, p perform, args map[string]any) (any, er
 	if spawn != nil && spawn.Status == "sending" {
 		// The spawn's outcome is unknown (the hub restarted during new_window). A join from the
 		// one pane with the spawn's label establishes the block.
-		st, err := h.adoptByJoin(ctx, spawn, block)
+		st, err := h.adoptSpawn(ctx, spawn, block, "join")
 		if err != nil {
 			return nil, err
 		}

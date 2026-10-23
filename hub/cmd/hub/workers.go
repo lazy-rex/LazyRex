@@ -988,11 +988,11 @@ func (h *Hub) failSpawn(ctx context.Context, s *spawnRow, why string) error {
 // resolveSpawns reports spawns whose Rex request had no known outcome, for example after a hub
 // crash. A label is only a discovery hint (architecture.md), so this never adopts or closes a pane
 // by its label. It records how many candidate panes exist, for the worker list. An agent spawn
-// opens when its process joins from the one candidate pane (adoptByJoin). An accessory spawn
-// stays pending, visible in the worker list, and hub.stop refuses it (known limit of v1).
-// It runs at start and on Rex events that can change the answer (kickSpawns): a block created or
-// closed, a session destroyed, an agent join. A timer is armed only for a pending spawn that is
-// still in its first-request window, and after an error.
+// opens when its process joins or reports its identity from the one candidate pane (adoptSpawn).
+// An accessory spawn stays pending, visible in the worker list, and hub.stop refuses it (known
+// limit of v1). It runs at start and on Rex events that can change the answer (kickSpawns): a
+// block created or closed, a session destroyed, an agent join or adoption. A timer is armed only
+// for a pending spawn that is still in its first-request window, and after an error.
 func (h *Hub) resolveSpawns(ctx context.Context) {
 	for {
 		next, err := h.resolveNext(ctx)
@@ -1149,10 +1149,10 @@ func spawnCandidates(blocks map[string]rexBlock, spawnID string) []string {
 	return out
 }
 
-// adoptByJoin opens a pending agent spawn when its process joins. The caller's pane, found from
-// the caller's PID, is the proof; the label only rules out other panes. It returns the spawn's
-// status after the attempt.
-func (h *Hub) adoptByJoin(ctx context.Context, s *spawnRow, block string) (string, error) {
+// adoptSpawn opens a pending agent spawn when its process joins (via "join") or reports its
+// identity (via "identity") from its pane. The caller's pane, found from the caller's PID, is the
+// proof; the label only rules out other panes. It returns the spawn's status after the attempt.
+func (h *Hub) adoptSpawn(ctx context.Context, s *spawnRow, block, via string) (string, error) {
 	blocks, err := h.workerBlocks(ctx, s)
 	if err != nil {
 		return "", err
@@ -1167,8 +1167,47 @@ func (h *Hub) adoptByJoin(ctx context.Context, s *spawnRow, block string) (strin
 	if err := h.openSpawn(ctx, s, h.windowOf(ctx, s.Session, block), block); err != nil {
 		return "", err
 	}
-	h.ev.emit("spawn_adopted", map[string]any{"spawn_id": s.ID, "block_id": block})
+	h.ev.emit("spawn_adopted", map[string]any{"spawn_id": s.ID, "block_id": block, "via": via})
 	return "open", nil
+}
+
+// adoptReported adopts the pending agent spawn of the pane that reported an identity: the pane's
+// label "lazyrex-spawn:<id>" names the one spawn to check (lead-idd-adopt). The reporter's PID
+// ancestry proved the pane. An error is only logged: the report never fails because of the
+// adoption, and the next report from the pane tries again. It returns the agent of the spawn that
+// is open in this pane (also one that another opener opened), or "".
+func (h *Hub) adoptReported(ctx context.Context, sess, block string) string {
+	blocks, err := h.blocksIn(ctx, sess)
+	if err != nil {
+		log.Printf("identity report: adoption check of %s: %v", block, err)
+		return ""
+	}
+	id, ok := strings.CutPrefix(blocks[block].Label, "lazyrex-spawn:")
+	if !ok {
+		return ""
+	}
+	s, err := h.spawnByID(ctx, id)
+	if err != nil {
+		log.Printf("identity report: adoption check of %s: %v", block, err)
+		return ""
+	}
+	if s.Agent == "" {
+		return "" // an accessory spawn is never adopted
+	}
+	if s.Status == "sending" {
+		st, err := h.adoptSpawn(ctx, s, block, "identity")
+		if err != nil {
+			log.Printf("identity report: adoption of spawn %s in %s: %v", s.ID, block, err)
+			return ""
+		}
+		if st == "open" {
+			h.kickSpawns()
+		}
+	}
+	if s.Status == "open" && s.Block == block {
+		return s.Agent
+	}
+	return ""
 }
 
 func (h *Hub) windowOf(ctx context.Context, sess, block string) string {

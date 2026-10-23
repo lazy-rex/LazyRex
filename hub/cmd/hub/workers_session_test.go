@@ -162,7 +162,7 @@ func TestWorkerSessionLab(t *testing.T) {
 		if err != nil || pending.Status != "sending" || pending.Session != "" || pending.Error != "" {
 			t.Fatalf("resolveOnce changed a row without a session: %+v %v", pending, err)
 		}
-		state, err := h.adoptByJoin(ctx, pending, s.Block)
+		state, err := h.adoptSpawn(ctx, pending, s.Block, "join")
 		if err != nil || state != "sending" {
 			t.Fatalf("a join adopted a row without a session: %s %v", state, err)
 		}

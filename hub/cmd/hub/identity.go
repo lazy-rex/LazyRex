@@ -122,13 +122,16 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 		return nil, bad("not_in_pane: caller pid %d is not in a Rex pane", reporter)
 	}
 	cstart := startTime(child)
+	// Before identMu and the transaction: the adoption calls Rex.
+	spawnAgent := h.adoptReported(ctx, sess, block)
 	name, nameErr := h.paneName(ctx, sess, block)
 	id := kind + ":" + conv
 
 	h.identMu.Lock()
 	defer h.identMu.Unlock()
 	// The agent bound to the pane, for the result. Its join binding may name an older process: the
-	// pane row below decides the process generation.
+	// pane row below decides the process generation. An opener writes the in-memory binding after
+	// its commit, so the stored spawn row of this pane also counts.
 	agentID := ""
 	h.mu.Lock()
 	for _, a := range h.agents {
@@ -137,6 +140,9 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 		}
 	}
 	h.mu.Unlock()
+	if agentID == "" {
+		agentID = spawnAgent
+	}
 	result := func(state, pred string) map[string]any {
 		r := map[string]any{"identity": id, "state": state, "predecessor": nil, "name": name,
 			"pane": map[string]any{"session_id": sess, "block_id": block}, "agent_id": nil}
