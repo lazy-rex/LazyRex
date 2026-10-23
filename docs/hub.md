@@ -66,7 +66,7 @@ Transport failures remain uncertain and use reconnect backoff.
 
 `hub.view.subscribe` and `hub.view.get` return `{schema_version: 1, view_id, route, revision, tree}`.
 A view that a reopen made also has `open`: the args of the reopen ("Reopen", below).
-`open` is optional. The renderer accepts it only as an object whose one key is `full`, a boolean; another key or value is invalid (view/schema.go). Without `open`, the renderer opens a thread with the newest 500 messages.
+`open` may be absent or `null`. When it is an object, its only allowed key is the optional boolean `full`; an absent `full` is `false`, and another key or a value that is not a boolean is invalid (view/schema.go). Without `open`, or with `full` false, the renderer opens a thread with the newest 500 messages.
 A snapshot can also have `layout`, the hub's effective layout for the view: `"transcript"` when a transcript pane above the view prints the history (a pair). Otherwise `layout` is absent or empty.
 `revision` is a decimal string. It increases within the current `hub_generation`.
 The renderer compares revisions numerically, without converting them to floating-point values.
