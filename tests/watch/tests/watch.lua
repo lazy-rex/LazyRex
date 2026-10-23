@@ -120,8 +120,9 @@ test('ensure is idempotent and a different spec for the key is a conflict', func
   expect(b.watch_id).to_be(a.watch_id)
   local e = expect_error(function() ensure('idem', d, {glob = '*.md'}) end, 'operation_conflict')
   expect(e.code).to_be('operation_conflict')
-  expect(tostring(e.message):find('operation_conflict: key idem has another spec; remove it first', 1, true) ~= nil,
-    'the full message: ' .. tostring(e.message)).to_be(true)
+  -- raw is the Rex text with the full message (message drops the repeated code).
+  expect(tostring(e.raw):find('operation_conflict: key idem has another spec; remove it first', 1, true) ~= nil,
+    'the full message: ' .. tostring(e.raw)).to_be(true)
 end)
 
 test('an atomic save gives one row; hidden temp files give none', function()

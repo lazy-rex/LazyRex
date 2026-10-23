@@ -137,8 +137,7 @@ func TestPluginOpsLab(t *testing.T) {
 	s.same("m", m0, mStart)
 
 	// The same key with another request; a caller outside every pane.
-	if _, err := s.agentDo(alice, "hub.plugins.op", map[string]any{"key": "rm-d", "op": "stop", "entry": "managed:m"}); err == nil || !strings.Contains(err.Error(), `operation_conflict: key "rm-d" has a different operation`) ||
-		!strings.Contains(err.Error(), "code=operation_conflict") {
+	if _, err := s.agentDo(alice, "hub.plugins.op", map[string]any{"key": "rm-d", "op": "stop", "entry": "managed:m"}); err == nil || err.Error() != `client.perform: operation_conflict: operation_conflict: key "rm-d" has a different operation` { // client.perform: <code>: <message>
 		t.Errorf("a reused key: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
