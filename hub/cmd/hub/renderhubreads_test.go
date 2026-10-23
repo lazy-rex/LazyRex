@@ -224,8 +224,8 @@ func TestCoveredWorkersDegraded(t *testing.T) {
 	}
 }
 
-// The covered actions of the hub equal COVERED_READS in the SDK. Until the SDK commit adds the
-// line, its absence is allowed (lead-g1b-plan C2); a follow-up in the same release makes it fail.
+// The covered actions of the hub equal COVERED_READS in the SDK. A missing line is a failure: the
+// SDK would then send no render ID with a covered read.
 func TestCoveredReadsMatchSDK(t *testing.T) {
 	src, err := os.ReadFile("../../../sdk/lua/lazyrex.lua")
 	if err != nil {
@@ -238,7 +238,7 @@ func TestCoveredReadsMatchSDK(t *testing.T) {
 		}
 	}
 	if line == "" {
-		t.Skip("sdk/lua/lazyrex.lua has no COVERED_READS line yet")
+		t.Fatal(`sdk/lua/lazyrex.lua has no line that starts with "local COVERED_READS = "`)
 	}
 	var sdk, hub []string
 	for _, m := range regexp.MustCompile(`\['([^']+)'\] = true`).FindAllStringSubmatch(line, -1) {

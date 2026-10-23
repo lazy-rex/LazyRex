@@ -203,14 +203,13 @@ Marks and races (the rules of "Render dependencies" apply):
 ### Hub reads in a render
 
 A covered hub read in a render is a tracked read of its change names, as a tokened query is a
-tracked read of its tables. The hub side is built (`coveredReads` and `renderHubRead` in
-renderreads.go). Until the SDK sends the render ID with a covered call, each such call untracks
-its render, as before.
+tracked read of its tables. Built: `coveredReads` and `renderHubRead` in renderreads.go, and
+`COVERED_READS` in sdk/lua/lazyrex.lua (`TestCoveredReadsMatchSDK` keeps the two lists equal).
 
 - The covered actions and their change names: `hub.agents` and `hub.agents.resolve` give
   `agents`; `hub.workers` gives `workers`; `hub.profiles` gives `profiles` and `workers` (its
   `running` counts come from the spawns). `hub.plugins` is not covered: it untracks, as today.
-- The plugin sends the open render ID as `render` with a covered call (the SDK is to do it). The call
+- The plugin sends the open render ID as `render` with a covered call (the SDK does it). The call
   then does not untrack the render. When the call returns without error, the hub adds its change
   names to the render's read set. An error, a closed or unknown ID, or an ID of another plugin or
   instance untracks, as for a query. A `hub.workers` read in which a Rex read failed (a pane's
