@@ -153,7 +153,6 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `events` | `session` (default) or `all`: the Rex events that the plugin receives. |
 | `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin No control characters (the hub pastes it, then sends CR). Without it, a `notify` op of the plugin fails with code `no_notice`, and nothing in that batch is written. |
 | `test.plugins` | Other plugins that the hub loads for the tests: `[{"source": "<dir>"}]`. Each source is a directory relative to the manifest directory, with its own `lazyrex.json`. The names come from those manifests. `lazyrex` is refused (the harness adds the home plugin), and so is a name used twice. |
-| `test.agents` | Removed: the manifest refuses it. Test agents report identities (see "Agents"). |
 | `test.ui_slot` | The hub config `ui_slot` option: `"split"` or `"layer"` (an experiment; docs/hub.md). Another value fails at the manifest load. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. A route with no query (`/forms/worktree`) is checked by a render of that path with any query or none. A route with a query (`/forms/automation/new?profile=worker`) is checked only by a render of exactly that route. |
@@ -266,9 +265,6 @@ Options:
 - `keep_open`: `true` keeps the pane after the agent process exits (by default Rex closes the pane). Use it with `a:exit()`.
 - `session`: the session of the pane (default: the tests session).
 - `join` is removed and refused: an agent gets its ID from its report.
-
-The manifest refuses `test.agents` (also an empty list and `null`): the roster mode is removed (the
-identity removal, step (d)). A literal agent ID in a test (`'alice'`) becomes `alice.id`.
 
 Methods:
 

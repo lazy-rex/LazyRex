@@ -81,7 +81,6 @@ var (
 	// and subdir never contain @, and the ref is the rest (it can contain @ or #).
 	githubSource  = regexp.MustCompile(`^github:([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)(/[^@]*)?@(\S+)$`)
 	subdirSegment = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	removedFields = []string{"name", "path", "events", "notice"}
 )
 
 // parseEntries checks the config field plugins. cfgDir is the directory of the config file: a
@@ -92,15 +91,6 @@ func parseEntries(cfgDir string, raws []json.RawMessage) ([]*configEntry, error)
 	messenger := 0 // the entry with user_messaging
 	for i, raw := range raws {
 		n := i + 1
-		var keys map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &keys); err != nil {
-			return nil, fmt.Errorf("plugin entry %d: %w", n, err)
-		}
-		for _, k := range removedFields {
-			if _, ok := keys[k]; ok {
-				return nil, fmt.Errorf("plugin entry %d: %q is removed: use \"source\" (a directory with lazyrex.json, or github:owner/repo@ref)", n, k)
-			}
-		}
 		e := &configEntry{index: n}
 		if err := decodeManifest(fmt.Sprintf("plugin entry %d", n), raw, e); err != nil {
 			return nil, err
