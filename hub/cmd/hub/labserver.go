@@ -109,6 +109,8 @@ type waiter struct {
 	done   chan error // the exit status, sent once
 }
 
+// watch reaps the started process of c in its own goroutine. The caller must not use c.Process
+// after watch: watch releases it after the reap (Release sets its Pid to -1).
 func watch(c *exec.Cmd) *waiter {
 	w := &waiter{pid: c.Process.Pid, done: make(chan error, 1)}
 	go func() {
