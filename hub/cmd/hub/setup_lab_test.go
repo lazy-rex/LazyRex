@@ -99,6 +99,7 @@ func TestSetupLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { r.Close() }) // first, so it runs after every cleanup that uses r
 	go func() {
 		for range r.Events {
 		}
