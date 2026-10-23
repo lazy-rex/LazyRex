@@ -139,6 +139,18 @@ func (h *Hub) reopenStep(ctx context.Context, plugin, key, viewID string, e reop
 		if err != nil && (r == nil || r.State == "releasing") {
 			return false, err
 		}
+	} else if r.State == "closing" {
+		// The old pane's close failed before: try it again. closing sends no pane request, so the
+		// one-split rule holds.
+		lock := h.windowLock(r.Window)
+		lock.Lock()
+		if r, err = h.slotRow(ctx, h.db, id); err == nil && r != nil && r.State == "closing" {
+			h.advanceSlot(ctx, r)
+		}
+		lock.Unlock()
+		if err != nil {
+			return false, err
+		}
 	}
 	return h.reopenAnswer(ctx, r)
 }
@@ -303,20 +315,23 @@ func (h *Hub) adoptTabPane(ctx context.Context, r *slotRow, b rexBlock) error {
 }
 
 // resolveTabPane looks for the new pane of an unresolved tab row by its label. It reports whether
-// the row moved on. A complete inventory without the label, reopenBound after the request, expires
-// the row; an incomplete one proves nothing.
+// the row moved on. A pane is the row's when its child's argv carries the new view ID, or when it
+// has no child reopenBound after the request (the new renderer exited before the hub saw it). A
+// labeled pane whose child is another program is not the row's. A complete inventory without the
+// row's pane, reopenBound after the request, expires the row; an incomplete one proves nothing.
 func (h *Hub) resolveTabPane(ctx context.Context, r *slotRow) bool {
 	blocks, err := h.blocksIn(ctx, r.Session)
 	if err != nil && !sessionGone(err) {
 		h.watchTabRow(r.ID, 5*time.Second)
 		return false
 	}
-	labeled := false
+	sent, perr := time.Parse(time.RFC3339Nano, r.SplitAt)
+	late := perr == nil && time.Since(sent) >= reopenBound
+	var dead *rexBlock
 	for b, info := range blocks {
 		if info.Label != "lazyrex-view:"+r.New {
 			continue
 		}
-		labeled = true
 		if r.State == "expired" {
 			// A late pane: its views row was abandoned at the expiry, so it is closed here, never adopted.
 			if err := h.closeBlock(ctx, r.Session, b); err == nil {
@@ -325,25 +340,67 @@ func (h *Hub) resolveTabPane(ctx context.Context, r *slotRow) bool {
 			}
 			return false
 		}
-		if c, err := h.childIn(ctx, r.Session, b); err == nil && c > 0 && argvHas(c, r.New) {
+		c, err := h.childIn(ctx, r.Session, b)
+		switch {
+		case err != nil:
+			h.watchTabRow(r.ID, 5*time.Second)
+			return false
+		case c > 0 && argvHas(c, r.New):
 			h.adoptTabPane(ctx, r, info)
 			return true
+		case c == 0:
+			info := info
+			dead = &info
 		}
 	}
 	if r.State == "expired" {
 		return false // no late pane (yet): a layout change of the session looks again
 	}
-	if labeled || r.State != "opening" {
-		h.watchTabRow(r.ID, 5*time.Second) // a pane with the label whose child is not proven yet
+	if dead != nil {
+		h.noteTabPane(ctx, r, *dead) // its close or its exit event is the row's from now on
+	}
+	if r.State != "opening" || !late {
+		d := 5 * time.Second
+		if r.State == "opening" && perr == nil {
+			d = reopenBound - time.Since(sent)
+		}
+		h.watchTabRow(r.ID, d)
 		return false
 	}
-	sent, perr := time.Parse(time.RFC3339Nano, r.SplitAt)
-	if perr != nil || time.Since(sent) < reopenBound {
-		h.watchTabRow(r.ID, reopenBound-time.Since(sent))
-		return false
+	if dead != nil {
+		h.tabPaneExited(ctx, r, *dead)
+		return true
 	}
 	h.expireTab(ctx, r)
 	return true
+}
+
+// noteTabPane records the pane of a tab row's new view on its views row, which stays 'sending'
+// until the pane is adopted. A close or a child exit of that block is then the row's
+// (tabReplPaneClosed, tabReplPaneExited).
+func (h *Hub) noteTabPane(ctx context.Context, r *slotRow, b rexBlock) {
+	h.db.ExecContext(ctx, `UPDATE views SET block_id = ?, window_id = ? WHERE view_id = ? AND status = 'sending'`, b.BlockID, b.WindowID, r.New)
+}
+
+// tabPaneExited adopts the new pane of a tab row whose renderer exited before the hub saw it, and
+// runs the crash path once (uiChildExited). The row goes on: the old pane is replaced anyway, and
+// the reconcile pass replaces the exited view (or not, at the crash limit). The caller holds the
+// window lock.
+func (h *Hub) tabPaneExited(ctx context.Context, r *slotRow, b rexBlock) {
+	if err := h.adoptTabPane(ctx, r, b); err != nil {
+		log.Printf("reopen %s: %v", r.ID, err)
+	}
+	var status string
+	h.db.QueryRowContext(ctx, `SELECT status FROM views WHERE view_id = ? AND block_id = ?`, r.New, b.BlockID).Scan(&status)
+	if status != "open" {
+		return // not adopted: a later look tries again
+	}
+	h.uiChildExited(ctx, b.BlockID)
+	if r.State == "closing" {
+		if _, err := h.advanceSlot(ctx, r); err != nil {
+			log.Printf("reopen %s: %v", r.ID, err)
+		}
+	}
 }
 
 // expireTab ends a tab row whose pane did not appear in time: the new views row is abandoned, the
@@ -357,8 +414,8 @@ func (h *Hub) expireTab(ctx context.Context, r *slotRow) {
 	h.ev.emit("reopen_expired", map[string]any{"replacement_id": r.ID, "view_id": r.New})
 }
 
-// watchTabRow runs an unresolved tab row on after d, so the bound holds without a later event.
-// One timer per row.
+// watchTabRow runs an unresolved tab row on after d (opening: its pane and the bound; closing: a
+// failed close of the old pane), so the row moves without a later event. One timer per row.
 func (h *Hub) watchTabRow(id string, d time.Duration) {
 	if d < time.Second {
 		d = time.Second
@@ -379,18 +436,32 @@ func (h *Hub) watchTabRow(id string, d time.Duration) {
 		h.slots.mu.Unlock()
 		ctx := context.Background()
 		r, err := h.slotRow(ctx, h.db, id)
-		if err != nil || r == nil || r.State != "opening" {
+		if err != nil || r == nil || (r.State != "opening" && r.State != "closing") {
 			return
 		}
 		lock := h.windowLock(r.Window)
 		lock.Lock()
 		defer lock.Unlock()
-		if r, err = h.slotRow(ctx, h.db, id); err == nil && r != nil && r.State == "opening" {
+		if r, err = h.slotRow(ctx, h.db, id); err == nil && r != nil && (r.State == "opening" || r.State == "closing") {
 			if _, err := h.advanceSlot(ctx, r); err != nil {
 				log.Printf("reopen %s: %v", id, err)
 			}
 		}
 	})
+}
+
+// closeRetry is the delay before the next try of a tab row's failed old-pane close: 1 s, then
+// doubling to 30 s. The tries go on while the row is closing; each one is a single block.close.
+func (h *Hub) closeRetry(id string) time.Duration {
+	h.slots.mu.Lock()
+	defer h.slots.mu.Unlock()
+	if h.slots.tries == nil {
+		h.slots.tries = map[string]int{}
+	}
+	n := h.slots.tries[id]
+	h.slots.tries[id] = n + 1
+	d := time.Second << min(n, 5)
+	return min(d, 30*time.Second)
 }
 
 // slotClose closes view id of row r: a form or panel with closeForm, a tab view with closeTabView.
@@ -507,4 +578,128 @@ func (r *slotRow) Active() bool {
 		return true
 	}
 	return false
+}
+
+// openingTabRows are the tab rows in opening whose new view has no pane yet, in session sess, or
+// in every session when sess is "".
+func (h *Hub) openingTabRows(ctx context.Context, sess string) []*slotRow {
+	rows, err := h.db.QueryContext(ctx, `SELECT r.repl_id FROM ui_replacements r JOIN views v ON v.view_id = r.new_view
+		WHERE r.kind = 'tab' AND r.state = 'opening' AND v.status = 'sending' AND (? = '' OR r.session_id = ?)`, sess, sess)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	var out []*slotRow
+	for _, id := range ids {
+		if r, err := h.slotRow(ctx, h.db, id); err == nil && r != nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// tabReplCreated runs on block_created in sess. block_created carries no label (Rex 1792158932,
+// lab), so while a tab row waits for its pane in sess, the hub reads the new block's label once and
+// notes the row's pane: a close or a child exit that follows is then the row's. A close or exit
+// event of the block waits for this read (tabReplWait).
+func (h *Hub) tabReplCreated(sess, block string) {
+	ctx := context.Background()
+	if len(h.openingTabRows(ctx, sess)) == 0 {
+		return
+	}
+	done := make(chan struct{})
+	h.slots.mu.Lock()
+	if h.slots.noting == nil {
+		h.slots.noting = map[string]chan struct{}{}
+	}
+	h.slots.noting[block] = done
+	h.slots.mu.Unlock()
+	go func() {
+		defer func() {
+			h.slots.mu.Lock()
+			delete(h.slots.noting, block)
+			h.slots.mu.Unlock()
+			close(done)
+		}()
+		blocks, err := h.blocksIn(ctx, sess)
+		if err != nil {
+			return
+		}
+		b, ok := blocks[block]
+		if !ok {
+			return
+		}
+		for _, r := range h.openingTabRows(ctx, sess) {
+			if b.Label == "lazyrex-view:"+r.New {
+				h.noteTabPane(ctx, r, b)
+			}
+		}
+	}()
+}
+
+// tabReplWait waits (at most 3 s) for a label read of block that tabReplCreated started.
+func (h *Hub) tabReplWait(block string) {
+	h.slots.mu.Lock()
+	done := h.slots.noting[block]
+	h.slots.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+}
+
+// tabReplPaneClosed handles a pane close of a tab row's new pane before the hub adopted it: the
+// user closed the tab, as with any user close (uiBlockClosed), and the row ends. It reports whether
+// block was such a pane.
+func (h *Hub) tabReplPaneClosed(ctx context.Context, block string) bool {
+	h.tabReplWait(block)
+	var id, plugin, tabKey string
+	if h.db.QueryRowContext(ctx, `SELECT v.view_id, v.plugin, v.tab FROM views v JOIN ui_replacements r ON r.new_view = v.view_id
+		WHERE v.block_id = ? AND v.status = 'sending' AND r.kind = 'tab' AND r.state IN `+activeStates, block).Scan(&id, &plugin, &tabKey) != nil {
+		return false
+	}
+	h.closeViewRow(ctx, id, "user")
+	h.db.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 1, closed_revision = revision WHERE plugin = ? AND tab = ?`, plugin, tabKey)
+	h.ev.emit("view_closed", map[string]any{"plugin": plugin, "view_id": id, "tab": tabKey, "by": "user"})
+	h.tabReplUserClosed(ctx, id)
+	h.kickUI(plugin)
+	return true
+}
+
+// tabReplPaneExited handles a child exit in a block that is no open view: the new pane of a tab
+// row whose renderer exited before the hub adopted it. The pane is the row's when it was noted, or
+// when it carries the row's label and has no child now.
+func (h *Hub) tabReplPaneExited(ctx context.Context, block string) {
+	h.tabReplWait(block)
+	for _, r := range h.openingTabRows(ctx, "") {
+		var noted string
+		h.db.QueryRowContext(ctx, `SELECT block_id FROM views WHERE view_id = ?`, r.New).Scan(&noted)
+		blocks, err := h.blocksIn(ctx, r.Session)
+		if err != nil {
+			continue
+		}
+		b, ok := blocks[block]
+		if !ok || (noted != block && b.Label != "lazyrex-view:"+r.New) {
+			continue
+		}
+		if pid, err := h.childIn(ctx, r.Session, block); err != nil || pid != 0 {
+			continue
+		}
+		lock := h.windowLock(r.Window)
+		lock.Lock()
+		if r, err := h.slotRow(ctx, h.db, r.ID); err == nil && r != nil && r.State == "opening" {
+			h.tabPaneExited(ctx, r, b)
+		}
+		lock.Unlock()
+		return
+	}
 }

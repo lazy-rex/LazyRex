@@ -1058,7 +1058,7 @@ func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool
 	var id, plugin, tabKey, sess string
 	err := h.db.QueryRowContext(ctx, `SELECT view_id, plugin, tab, session_id FROM views WHERE block_id = ? AND status = 'open'`, blockID).Scan(&id, &plugin, &tabKey, &sess)
 	if err != nil {
-		return false
+		return !self && h.tabReplPaneClosed(ctx, blockID) // a reopen's new pane before its adoption
 	}
 	if tabKey == formTab {
 		if !self {

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // A reopen against a real Rex lab (PANELS_LAB_SOCKET, as the side-slot lab tests): the old tab
@@ -88,5 +91,61 @@ func TestReopenTabPaneLab(t *testing.T) {
 			t.Fatalf("new view ID %s", nv)
 		}
 		r.Call(ctx, "session.destroy", map[string]any{"session_id": sess}, nil)
+	}
+}
+
+// The reconcile pass leaves a reopening tab to its row (PAIR_LAB_SOCKET, real reconcile passes):
+// the pane request is lost before Rex (no pane), and the old renderer exits while the row is
+// opening. The passes open no third view and close neither view; the exit counts once. After the
+// row expires, the next passes replace the exited view: the tab is back with one open view.
+func TestReopenReservationLab(t *testing.T) {
+	h := pairLabHub(t)
+	ctx := context.Background()
+	declarePair(t, h, "")
+	passes(t, h, 2)
+	old := onlyView(t, h)
+	if old.Block == "" || old.Session == "" {
+		t.Fatalf("the tab view: %+v", old)
+	}
+	fc, _ := json.Marshal(formContext{SessionID: old.Session, WindowID: old.Window, SourceViewID: old.ID, SourceRoute: old.Route})
+	mustExec(t, h, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES ('form', 'messaging', ?, '/forms/a', 'open', ?, ?, 'attached')`, formTab, string(fc), old.Session)
+	orig := slotSplit
+	slotSplit = func(*Hub, context.Context, string, map[string]any, any) error {
+		return &rex.RexError{Code: "disconnected", Message: "lab: the request is lost before Rex"}
+	}
+	t.Cleanup(func() { slotSplit = orig })
+	done, err := h.reopenStep(ctx, "messaging", "k", "form", fullOpen())
+	slotSplit = orig
+	id := reopenID("messaging", "k")
+	if done || err != nil || reopenState(h, id) != "opening" {
+		t.Fatalf("reopen: %v %v, row %s", done, err, reopenState(h, id))
+	}
+	h.uiChildExited(ctx, old.Block)
+	passes(t, h, 3)
+	var crashes, live int
+	h.db.QueryRow(`SELECT crashes FROM ui_tabs WHERE plugin = 'messaging' AND tab = 'thread/a'`).Scan(&crashes)
+	h.db.QueryRow(`SELECT COUNT(*) FROM views WHERE plugin = 'messaging' AND tab = 'thread/a' AND status != 'closed'`).Scan(&live)
+	st, _, _ := viewStatus(h, old.ID)
+	nv, _, _ := viewStatus(h, reopenViewID(id))
+	if live != 2 || st != "exited" || nv != "sending" || crashes != 1 {
+		t.Fatalf("during the row: %d live views, old %s, new %s, crashes %d", live, st, nv, crashes)
+	}
+	blocks, err := h.blocksIn(ctx, old.Session)
+	if _, ok := blocks[old.Block]; err != nil || !ok {
+		t.Fatalf("the old pane was closed during the row: %v", err)
+	}
+	mustExec(t, h, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, time.Now().Add(-reopenBound-time.Second).UTC().Format(time.RFC3339Nano), id)
+	h.slotSweep(ctx)
+	if s := reopenState(h, id); s != "expired" {
+		t.Fatalf("row %s", s)
+	}
+	passes(t, h, 3)
+	v := onlyView(t, h)
+	if v.ID == old.ID || v.ID == reopenViewID(id) {
+		t.Fatalf("the tab's view after the row: %s", v.ID)
+	}
+	h.db.QueryRow(`SELECT crashes FROM ui_tabs WHERE plugin = 'messaging' AND tab = 'thread/a'`).Scan(&crashes)
+	if crashes != 1 {
+		t.Fatalf("crashes %d", crashes)
 	}
 }

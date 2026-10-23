@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -592,7 +593,7 @@ func TestReopenAndSlotRowsAreIndependent(t *testing.T) {
 	mustExec(t, h, `INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, state, next_title, created)
 		VALUES ('slot', 's', 'w', '', 'n', 'p', '/panels/a', '{}', 'opening', '', '')`)
 	var n int
-	h.db.QueryRow(`SELECT COUNT(*) FROM ui_replacements WHERE kind = 'slot' AND window_id = 'w' AND state IN `+activeStates).Scan(&n)
+	h.db.QueryRow(`SELECT COUNT(*) FROM ui_replacements WHERE kind = 'slot' AND window_id = 'w' AND state IN ` + activeStates).Scan(&n)
 	if n != 1 || reopenState(h, id) != "confirming" {
 		t.Fatalf("slot rows %d, the tab row %s", n, reopenState(h, id))
 	}
@@ -609,3 +610,233 @@ func TestReopenOpenArgs(t *testing.T) {
 	}
 }
 
+// lostPaneHub runs a reopen whose split answer is lost; the pane b-new exists with the row's label
+// and a live renderer, and the hub has not adopted it.
+func lostPaneHub(t *testing.T) (*Hub, *reopenRex, *performRex, string) {
+	t.Helper()
+	h, x, fr := reopenTestHub(t)
+	x.split = "lost"
+	if done, err := h.reopenStep(context.Background(), "p", "k", "form", fullOpen()); done || err != nil {
+		t.Fatalf("a lost answer: %v %v", done, err)
+	}
+	id := reopenID("p", "k")
+	if s := reopenState(h, id); s != "opening" {
+		t.Fatalf("row %s", s)
+	}
+	return h, x, fr, id
+}
+
+// codex-25's probe 1: the user closes the new pane before the hub adopted it. block_created let the
+// hub note the pane, so the close is the user's close of the tab: suppressed, and the row ends.
+func TestReopenUserClosesTheUnadoptedPane(t *testing.T) {
+	h, x, _, id := lostPaneHub(t)
+	ctx := context.Background()
+	h.tabReplCreated("s", "b-new")
+	h.tabReplWait("b-new")
+	x.mu.Lock()
+	x.blocks = x.blocks[:1] // b-new is gone
+	x.mu.Unlock()
+	if !h.uiBlockClosed(ctx, "b-new", false) {
+		t.Fatal("the close of the noted pane was not handled")
+	}
+	var sup int
+	h.db.QueryRow(`SELECT suppressed FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&sup)
+	st, by, _ := viewStatus(h, reopenViewID(id))
+	if s := reopenState(h, id); s != "user_closed" || sup != 1 || st != "closed" || by != "user" {
+		t.Fatalf("row %s, suppressed %d, new view %s %s", s, sup, st, by)
+	}
+	if _, err := h.reopenStep(ctx, "p", "k", "form", fullOpen()); err == nil || !strings.Contains(err.Error(), "the source view is closed") {
+		t.Fatalf("the effect: %v", err)
+	}
+	// A close of an unrelated new block is not the row's.
+	h2, x2, _, id2 := lostPaneHub(t)
+	x2.mu.Lock()
+	x2.blocks = append(x2.blocks, rexBlock{BlockID: "b-other", Label: "", WindowID: "w"})
+	x2.mu.Unlock()
+	h2.tabReplCreated("s", "b-other")
+	h2.tabReplWait("b-other")
+	if h2.uiBlockClosed(ctx, "b-other", false) || reopenState(h2, id2) != "opening" {
+		t.Fatalf("an unrelated close: row %s", reopenState(h2, id2))
+	}
+}
+
+// codex-25's probe 2: the new renderer exits before the hub adopted its pane. The exit is counted
+// once, and the row goes on: the old pane closes, and the exited view is the reconcile pass's.
+func TestReopenNewRendererExitsBeforeAdoption(t *testing.T) {
+	for _, how := range []string{"event", "bound"} {
+		h, x, _, id := lostPaneHub(t)
+		ctx := context.Background()
+		x.mu.Lock()
+		x.children["b-new"] = 0
+		x.mu.Unlock()
+		if how == "event" {
+			h.tabReplPaneExited(ctx, "b-new")
+		} else {
+			h.slotSweep(ctx)
+			if s := reopenState(h, id); s != "opening" {
+				t.Fatalf("before the bound: row %s", s)
+			}
+			mustExec(t, h, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, time.Now().Add(-reopenBound-time.Second).UTC().Format(time.RFC3339Nano), id)
+			h.slotSweep(ctx)
+		}
+		var crashes int
+		h.db.QueryRow(`SELECT crashes FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&crashes)
+		st, _, _ := viewStatus(h, reopenViewID(id))
+		old, _, _ := viewStatus(h, "old")
+		if s := reopenState(h, id); s != "done" || crashes != 1 || st != "exited" || old != "closed" {
+			t.Fatalf("%s: row %s, crashes %d, new view %s, old view %s", how, s, crashes, st, old)
+		}
+		h.slotSweep(ctx)
+		h.db.QueryRow(`SELECT crashes FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&crashes)
+		if crashes != 1 {
+			t.Fatalf("%s: the exit counted %d times", how, crashes)
+		}
+	}
+}
+
+// A labeled pane whose child is another program is not the row's: at the bound the row expires.
+func TestReopenForeignLabeledPaneExpires(t *testing.T) {
+	h, x, _, id := lostPaneHub(t)
+	ctx := context.Background()
+	x.mu.Lock()
+	x.children["b-new"] = os.Getpid() // a process whose argv does not carry the new view ID
+	x.mu.Unlock()
+	mustExec(t, h, `UPDATE ui_replacements SET split_at = ? WHERE repl_id = ?`, time.Now().Add(-reopenBound-time.Second).UTC().Format(time.RFC3339Nano), id)
+	h.slotSweep(ctx)
+	if s := reopenState(h, id); s != "expired" {
+		t.Fatalf("row %s", s)
+	}
+}
+
+// codex-25's probe 3: the first block.close of the old pane fails. A timer tries again (no other
+// event is needed), and a retry of the operation also moves the row; each try is one block.close.
+func TestReopenFailedCloseIsRetried(t *testing.T) {
+	h, x, fr := reopenTestHub(t)
+	ctx := context.Background()
+	var mu sync.Mutex
+	closes := 0
+	fr.mu.Lock()
+	base := fr.other
+	fr.other = func(m string, p json.RawMessage) (any, string) {
+		if m == "block.close" {
+			mu.Lock()
+			closes++
+			n := closes
+			mu.Unlock()
+			if n == 1 {
+				return nil, "internal"
+			}
+		}
+		return base(m, p)
+	}
+	fr.mu.Unlock()
+	done, _ := h.reopenStep(ctx, "p", "k", "form", fullOpen())
+	id := reopenID("p", "k")
+	if done || reopenState(h, id) != "closing" {
+		t.Fatalf("done %v, row %s", done, reopenState(h, id))
+	}
+	waitFor(t, "the timer's retry", 5*time.Second, func() bool { return reopenState(h, id) == "done" })
+	mu.Lock()
+	n := closes
+	mu.Unlock()
+	if n != 2 || !slices.Contains(x.closed, "b-old") || x.splitCount() != 1 {
+		t.Fatalf("%d block.close calls, closed %v, %d splits", n, x.closed, x.splitCount())
+	}
+	// The operation's retry: a row left closing moves on without the timer.
+	h2, _, fr2 := reopenTestHub(t)
+	fr2.mu.Lock()
+	base2 := fr2.other
+	fail := true
+	fr2.other = func(m string, p json.RawMessage) (any, string) {
+		mu.Lock()
+		f := fail
+		mu.Unlock()
+		if m == "block.close" && f {
+			return nil, "internal"
+		}
+		return base2(m, p)
+	}
+	fr2.mu.Unlock()
+	h2.reopenStep(ctx, "p", "k", "form", fullOpen())
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if done, err := h2.reopenStep(ctx, "p", "k", "form", fullOpen()); !done || err != nil {
+		t.Fatalf("the operation's retry: %v %v, row %s", done, err, reopenState(h2, id))
+	}
+}
+
+// effectsHub has view_ops, with one succeeded operation k of the form.
+func effectsHub(t *testing.T) (*Hub, *reopenRex) {
+	t.Helper()
+	h, x, _ := reopenTestHub(t)
+	h.vs = &viewSvc{snaps: map[string]*snapshot{}, dirty: map[string]bool{}, notify: map[string]bool{}, workers: map[string]chan struct{}{"p": make(chan struct{}, 1)},
+		seen: map[string]map[string]string{}, history: map[string]*historyFetch{}, views: map[string]map[string]*viewState{}, all: map[string]renderCause{},
+		loose: map[string]renderCause{}, epoch: map[string]int64{}, senders: map[notifyKey]*viewNotifier{}, ctx: context.Background()}
+	mustExec(t, h, viewOpsSchema)
+	for _, q := range []string{
+		`ALTER TABLE view_ops ADD COLUMN effect_state TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE view_ops ADD COLUMN effect_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE view_ops ADD COLUMN effect_nav INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE view_ops ADD COLUMN effect_reopen INTEGER NOT NULL DEFAULT 0`,
+	} {
+		mustExec(t, h, q)
+	}
+	mustExec(t, h, `INSERT INTO view_ops (plugin, user, op_key, view_id, kind, fingerprint, args, status, effect_state) VALUES ('p', ?, 'k', 'form', 'action', 'f', '{}', 'succeeded', 'pending')`, viewUser)
+	return h, x
+}
+
+func effectState(h *Hub) (state, msg string, reopen int) {
+	h.db.QueryRow(`SELECT effect_state, effect_error, effect_reopen FROM view_ops WHERE op_key = 'k'`).Scan(&state, &msg, &reopen)
+	return
+}
+
+// The effects run in order: a failed navigate runs no reopen; a failed reopen runs no close_form,
+// and the form stays open with the error.
+func TestReopenEffectOrder(t *testing.T) {
+	ctx := context.Background()
+	h, x := effectsHub(t)
+	h.applyEffects(ctx, "p", "k", "form", json.RawMessage(`{"navigate": {"tab": ""}, "reopen": {}, "close_form": true}`))
+	if s, _, _ := effectState(h); s != "failed" || reopenState(h, reopenID("p", "k")) != "" || x.splitCount() != 0 {
+		t.Fatalf("a failed navigate: effect %s, row %q", s, reopenState(h, reopenID("p", "k")))
+	}
+	h, x = effectsHub(t)
+	mustExec(t, h, `UPDATE views SET status = 'closed' WHERE view_id = 'old'`)
+	h.applyEffects(ctx, "p", "k", "form", json.RawMessage(`{"reopen": {}, "close_form": true}`))
+	s, msg, _ := effectState(h)
+	if st, _, _ := viewStatus(h, "form"); s != "failed" || !strings.Contains(msg, "the source view is closed") || st != "open" || x.splitCount() != 0 {
+		t.Fatalf("a failed reopen: effect %s %q, form %s", s, msg, st)
+	}
+}
+
+// The reopen ended done, and the hub stopped before it wrote effect_reopen: the retry answers from
+// the done row (no second split), and close_form runs.
+func TestReopenDoneBeforeTheProgressWrite(t *testing.T) {
+	ctx := context.Background()
+	h, x := effectsHub(t)
+	if done, err := h.reopenStep(ctx, "p", "k", "form", fullOpen()); !done || err != nil {
+		t.Fatalf("reopen: %v %v", done, err)
+	}
+	if again := h.applyEffects(ctx, "p", "k", "form", json.RawMessage(`{"reopen": {"args": {"full": true}}, "close_form": true}`)); again {
+		t.Fatal("the effects asked for a retry")
+	}
+	s, msg, reopen := effectState(h)
+	if st, _, _ := viewStatus(h, "form"); s != "done" || reopen != 1 || st != "closed" || x.splitCount() != 1 {
+		t.Fatalf("effect %s %q, effect_reopen %d, form %s, %d splits", s, msg, reopen, st, x.splitCount())
+	}
+}
+
+// While the row waits, the effect stays pending and holds nothing: applyEffects answers false (no
+// retry loop), and the form stays.
+func TestReopenWaitingEffectStaysPending(t *testing.T) {
+	ctx := context.Background()
+	h, x := effectsHub(t)
+	x.release = "confirm"
+	if again := h.applyEffects(ctx, "p", "k", "form", json.RawMessage(`{"reopen": {}, "close_form": true}`)); again {
+		t.Fatal("a waiting reopen asked for a retry")
+	}
+	s, _, reopen := effectState(h)
+	if st, _, _ := viewStatus(h, "form"); s != "pending" || reopen != 0 || st != "open" {
+		t.Fatalf("effect %s, effect_reopen %d, form %s", s, reopen, st)
+	}
+}

@@ -709,6 +709,7 @@ func (h *Hub) handleEvent(ctx context.Context, raw json.RawMessage) {
 			go h.identityPaneClosed(ctx, se.Event.Payload.BlockID)
 			h.kickSpawns()
 		case "block_created":
+			h.tabReplCreated(se.SessionID, se.Event.Payload.BlockID) // before a close or exit event of the block
 			h.kickSpawns() // a pending spawn's pane may have appeared
 		case "session_view_changed":
 			h.uiSessionChanged(se.SessionID)
@@ -734,6 +735,7 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			go h.uiChildExited(ctx, blockID) // a renderer, not a plugin
 			return
 		}
+		go h.tabReplPaneExited(ctx, blockID) // a reopen's new renderer before its adoption
 		if h.transcriptChildExited(ctx, blockID) {
 			return
 		}

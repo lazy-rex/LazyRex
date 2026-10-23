@@ -1413,7 +1413,9 @@ The reopen is a `ui_replacements` row of kind `tab`, on the side-slot lifecycle:
    had it. An unknown outcome is resolved only by the label. The hub never sends a
    second request.
 3. After the new pane exists, the hub closes the old pane and its row. A failed
-   `block.close` keeps the row in `closing`, and the hub tries again.
+   `block.close` keeps the row in `closing`. A timer tries again after 1 s, then with
+   the delay doubled up to 30 s, while the row is `closing`. A retry of the operation
+   also tries again. Each try is one `block.close`; no try sends a pane request.
 
 The operation waits while the row is active. The wait does not block the plugin's
 other operations. A retry of the same operation key finds the same row:
@@ -1430,6 +1432,11 @@ other operations. A retry of the same operation key finds the same row:
 A second reopen of the same tab while a row is active (for example during the
 confirmation) gets `conflict` "the view is reopening".
 
+A pane with the label is the row's when its child's argv carries the new `view_id`. A
+labeled pane with another program is not the row's. A labeled pane with no child
+30 seconds after the pane request is the row's: its renderer exited before the hub saw
+it. The hub then adopts the pane and runs the crash path once, and the row goes on.
+
 If no pane appears within 30 seconds of the pane request, and a complete
 `session.list_blocks` does not contain the label, the row expires. The new views
 row closes, the old view resumes, and the hub closes a pane that appears later. An
@@ -1438,7 +1445,12 @@ incomplete inventory proves nothing. A renderer sees `expired` as `cancelled`.
 While the row is active, it owns its tab. The reconcile pass opens no other view for
 the tab, does not change its layout, and closes neither view. It can restore a
 detached old pane. A user close of either pane (the pane's close or Ctrl+Q) closes
-the tab as any user close does, and ends the row. An exit of the old renderer
+the tab as any user close does, and ends the row. This includes the new pane before
+the hub adopted it: `block_created` carries no label (Rex 0.0.1792158932, lab), so while
+a row waits for its pane, the hub reads the label of each new block in the session once
+and records the row's pane. A close or a child exit of that block is then the row's. A
+pane that the user closes before the hub reads its label cannot be told from another
+pane: the row then ends by the expiry, and the old view resumes. An exit of the old renderer
 before the pane request cancels the row; after the pane request the row goes on.
 Crash counts stay in the exit handler.
 

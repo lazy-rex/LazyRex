@@ -70,9 +70,11 @@ type slotReturn struct {
 }
 
 type slotState struct {
-	mu    sync.Mutex
-	wins  map[string]*sync.Mutex // window -> lock; one replacement at a time per window
-	watch map[string]bool        // tab rows with a timer (reopen.go watchTabRow)
+	mu     sync.Mutex
+	wins   map[string]*sync.Mutex   // window -> lock; one replacement at a time per window
+	watch  map[string]bool          // tab rows with a timer (reopen.go watchTabRow)
+	tries  map[string]int           // tab row -> failed old-pane closes (reopen.go closeRetry)
+	noting map[string]chan struct{} // block -> a label read of a new block (reopen.go tabReplCreated)
 }
 
 func (h *Hub) windowLock(window string) *sync.Mutex {
@@ -476,6 +478,9 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 	if r.State == "closing" {
 		if r.Old != "" {
 			if err := h.slotClose(ctx, r, r.Old, "replaced"); err != nil {
+				if r.Kind == "tab" {
+					h.watchTabRow(r.ID, h.closeRetry(r.ID)) // no other event retries a tab row's close
+				}
 				return nil, err
 			}
 		}
