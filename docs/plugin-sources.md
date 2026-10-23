@@ -81,6 +81,12 @@ The file is one JSON object; data after the object is refused.
     source.
   - A parent directory can be a symlink (for example a release clone path).
     `EvalSymlinks(main)` must be inside `EvalSymlinks(source dir)`.
+- A plugin is its own directory: the manifest directory (its subdir for a GitHub source). A plugin
+  loads only files inside its own directory. A read outside it is not supported: a local source
+  runs from a snapshot of its directory only (section 4), so a path outside it (`../x.lua`, an
+  absolute path to another tree) is not in the snapshot, and its load fails. A plugin finds its
+  files from its own run path (debug info, or the SDK's plugin directory), never from its source
+  path.
 - `sdk`: `"0"` or absent. With `"0"`, the hub starts the plugin through the SDK launcher:
   `rex do <sdk dir>/boot.lua main=<absolute main> ...` (docs/plugin-sdk.md). The launcher puts the
   plugin directory and the SDK directory in `package.path`, so `require('lazyrex')` and a sibling
@@ -169,8 +175,9 @@ lazyrex-hub plugin sync`.
   16 random hex. The lock entry records the path.
 - The entry is the whole commit tree, also for a source with a subdir. The digest covers the whole
   entry. The plugin directory is `<entry>/<subdir>` (the entry itself without a subdir). The main
-  file rule (main inside the plugin directory) applies to that directory. A plugin can read other
-  files of the commit at run time: the entry never changes.
+  file rule (main inside the plugin directory) applies to that directory. The entry holds the whole
+  commit, but a file outside the subdir is not part of the plugin (section 2), and a plugin that
+  loads one does not run as a local source.
 - Published permissions: files 0444, executable files 0555, directories 0555.
 - **A published entry never moves.** No command renames, deletes or writes a published entry.
   - A repair publishes a new entry and points the lock at it.
@@ -191,8 +198,8 @@ lazyrex-hub plugin sync`.
   snapshot (`local/<hex>.<token>`, below) has no lock, so for it the rule is `run` or
   `selected_run`.
 - **Local snapshots** (`localsnapshot.go`). An explicit start of a local source copies the source
-  into a stage, `local/.stage-<token>/`, and publishes it as `local/<hex>.<token>`, where `<hex>` is
-  the digest of the published bytes (the digest rule below). `.git` is skipped. A symlink or
+  directory, and only that directory (section 2), into a stage, `local/.stage-<token>/`, and
+  publishes it as `local/<hex>.<token>`, where `<hex>` is the digest of the published bytes (the digest rule below). `.git` is skipped. A symlink or
   another non-regular file refuses the start (`plugin <name>: <path> is not a regular file; a local
   source is copied, and the copy has no symlinks`). The bound is 10,000 files and 64 MiB; over it,
   the start refuses with the numbers. The modes are the modes of a cache entry. An existing
@@ -306,7 +313,8 @@ exactly, or nothing:
   tree removes it, and `export-subst` on a file with a `$Format:...$` marker changes its content.
   An attribute that changes nothing (no matching file, no marker) does not refuse the source.
 - With a subdir, `<subdir>/lazyrex.json` must be in the commit. `main` must be inside the subdir.
-  The whole commit is in the cache entry, so a plugin can read files outside its subdir at run time.
+  The whole commit is in the cache entry, but a plugin reads only files inside its subdir (section
+  2): a read outside it is not supported, and a local snapshot does not contain it.
 - The cache entry is read-only (files 0444 or 0555). A plugin writes its data elsewhere, for
   example in the hub store.
 
