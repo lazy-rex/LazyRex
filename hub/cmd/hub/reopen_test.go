@@ -114,7 +114,8 @@ func reopenTestHub(t *testing.T) (*Hub, *reopenRex, *performRex) {
 	h.selfClosed = map[string]bool{}
 	h.cfg.View = "view"
 	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{"s": uiSessionKey}}
-	h.vs = &viewSvc{workers: map[string]chan struct{}{"p": make(chan struct{}, 1)}} // a kick is recorded, and no worker runs
+	h.vs = newViewSvc()
+	h.vs.workers["p"] = make(chan struct{}, 1) // a kick is recorded, and no worker runs
 	child := exec.Command("/bin/sh", "-c", "sleep 60; true", reopenViewID(reopenID("p", "k")))
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
@@ -775,9 +776,9 @@ func TestReopenFailedCloseIsRetried(t *testing.T) {
 func effectsHub(t *testing.T) (*Hub, *reopenRex) {
 	t.Helper()
 	h, x, _ := reopenTestHub(t)
-	h.vs = &viewSvc{snaps: map[string]*snapshot{}, dirty: map[string]bool{}, notify: map[string]bool{}, workers: map[string]chan struct{}{"p": make(chan struct{}, 1)},
-		seen: map[string]map[string]string{}, history: map[string]*historyFetch{}, views: map[string]map[string]*viewState{}, all: map[string]renderCause{},
-		loose: map[string]renderCause{}, epoch: map[string]int64{}, senders: map[notifyKey]*viewNotifier{}, ctx: context.Background()}
+	h.vs = newViewSvc()
+	h.vs.workers["p"] = make(chan struct{}, 1)
+	h.vs.ctx = context.Background()
 	mustExec(t, h, viewOpsSchema)
 	for _, q := range []string{
 		`ALTER TABLE view_ops ADD COLUMN effect_state TEXT NOT NULL DEFAULT ''`,
