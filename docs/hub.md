@@ -334,7 +334,7 @@ The root may also have `menu: true`: the tree is a form that a menu opened, so C
 The renderer decides its mode once per process, from the first tree with content (view/mode.go):
 
 - Neutral: before that tree. Loading and error nodes do not decide. The renderer draws inline and prints nothing.
-- Thread: the first tree has a history node and no list or form node. The pane stays on the primary screen for the life of the process, and the renderer reports no mouse. Messages print once into the scrollback; the live region below them holds the other nodes and the composer.
+- Thread: the first tree has a history node and no list or form node. The pane stays on the primary screen for the life of the process, and the renderer reports no mouse. Messages print once into the scrollback; the live region below them holds the other nodes and the composer. The live region is at most min(10, pane height - 2) rows plus one status line, so a frame is at most the pane height minus 1 (v1.2 item 1f, lead-comp2). The composer input grows with its text up to 6 rows within that bound.
 - Alt: the first tree has any other content, or a history node beside a list or form (a view defect, shown once as a status note). The alt screen, as before thread mode.
 
 A later tree does not change the mode. A new renderer process (a reload) decides again and clears its pane once at the start.

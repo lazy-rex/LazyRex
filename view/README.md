@@ -68,8 +68,10 @@ Two defect cases show a fixed status note once per process:
 "view defect: history beside a list or form" and "view defect: history in alt mode".
 
 The live region is the composer and the other nodes, then one status line.
-They get at most the pane height minus 2 rows, and at most 8 rows beside a history node.
+They get at most the pane height minus 2 rows, and at most 10 rows beside a history node.
 So every inline frame is at most the pane height minus 1 rows. Alt mode keeps its full-pane layout.
+The composer input grows by one row for each line of its text (also a wrapped line), up to 6 rows and up to the bound less the other rows; past that it scrolls inside the box, and the cursor line stays on screen (lead-comp2).
+The input is the content width minus the box border and padding (the pane width minus 10). The footer is one row at every width: below 60 columns it shows only "Enter send"; at 60 columns or more the hint also names the newline key, and the thread menu (Ctrl+O) reaches the rest.
 When the rows do not fit, the renderer cuts text rows only, and ends each cut with "… <n> more lines".
 When the controls alone do not fit, the live region is a window that always holds the focused control,
 with "… <n> more above" and "… <n> more below" rows.

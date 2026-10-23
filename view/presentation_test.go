@@ -53,11 +53,8 @@ func TestLayoutFitsAndPinsComposer(t *testing.T) {
 						send = i
 					}
 				}
-				// Send is on the first footer row of the composer. A narrow pane has a second hint row.
+				// Send is on the footer row of the composer, at every width (lead-comp2).
 				want := size[1] - 3
-				if size[0] < 60 {
-					want--
-				}
 				if send != want {
 					t.Fatalf("Send row %d, want %d", send, want)
 				}

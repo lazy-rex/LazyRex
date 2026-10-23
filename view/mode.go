@@ -40,7 +40,11 @@ const (
 )
 
 // threadLiveRows is the bound of the composer and the other nodes beside a history node.
-const threadLiveRows = 8
+const threadLiveRows = 10
+
+// composerMaxRows is the most input rows of an inline composer (lead-comp2). The input grows by one
+// row for each wrapped line up to this bound and the live region bound, then scrolls inside the box.
+const composerMaxRows = 6
 
 type altClear struct{}
 
@@ -130,11 +134,8 @@ func (m *model) liveRows() []row {
 	body := m.bodyRows()
 	var composer []row
 	if id := m.dockedComposer(); id != "" {
-		chrome := 4 // the space row, the borders and the footer
-		if m.contentWidth() < 60 {
-			chrome = 5
-		}
-		m.liveEditor = max(1, bound-len(body)-chrome)
+		const chrome = 4 // the space row, the borders and the footer
+		m.liveEditor = max(1, min(composerMaxRows, bound-len(body)-chrome))
 		composer = m.composerRows()
 	}
 	body = trimBlank(body)

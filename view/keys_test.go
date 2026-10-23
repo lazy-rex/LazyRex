@@ -97,7 +97,7 @@ func TestComposerHintComesFromTheKeyList(t *testing.T) {
 			t.Fatalf("the editor does not bind %s", k.key)
 		}
 	}
-	if hint, _ := composerHint(80); !strings.Contains(hint, newlineKeys[0].name) {
+	if hint := composerHint(80); !strings.Contains(hint, newlineKeys[0].name) {
 		t.Fatalf("the hint %q does not name %s", hint, newlineKeys[0].name)
 	}
 	m := testModel()
@@ -106,7 +106,7 @@ func TestComposerHintComesFromTheKeyList(t *testing.T) {
 		rows  []string
 	}{
 		{80, []string{"Enter send · Shift+Enter newline"}},
-		{40, []string{"Enter send", "Shift+Enter ↵"}},
+		{40, []string{"Enter send"}},
 	} {
 		m.width = tc.width
 		frame := ansi.Strip(m.View().Content)
@@ -114,6 +114,9 @@ func TestComposerHintComesFromTheKeyList(t *testing.T) {
 			if !strings.Contains(frame, row) {
 				t.Fatalf("%d columns: the frame has no %q:\n%s", tc.width, row, frame)
 			}
+		}
+		if tc.width < 60 && strings.Contains(frame, "Shift+Enter") {
+			t.Fatalf("%d columns: the narrow footer names the newline key (lead-comp2):\n%s", tc.width, frame)
 		}
 	}
 }

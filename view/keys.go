@@ -31,11 +31,11 @@ func newlineBinding() key.Binding {
 	return key.NewBinding(key.WithKeys(keys...))
 }
 
-// composerHint returns the composer's hint row and, below 60 columns, a second hint row.
-func composerHint(width int) (hint, second string) {
-	name := newlineKeys[0].name
+// composerHint returns the composer's hint row. Below 60 columns it names only Enter (lead-comp2):
+// the full hint at 60 columns or more lists the newline key, and the thread menu reaches the rest.
+func composerHint(width int) string {
 	if width < 60 {
-		return "Enter send", name + " ↵"
+		return "Enter send"
 	}
-	return "Enter send · " + name + " newline", ""
+	return "Enter send · " + newlineKeys[0].name + " newline"
 }
