@@ -11,6 +11,11 @@ package main
 // The load reads a snapshot of the entry and its record at its start and at its end. If the two
 // differ (another entry, instance or block), the result is stale: the entry goes back to idle, and
 // the next request starts a new load.
+//
+// The block part belongs to the record that the load read (the hub lead, lead-c7cache): its entry
+// identity (source and managed entry), instance and block. A kept value of another record is not
+// fresh, and the reply never shows its block, in any state; its hub_log part is the entry's
+// history, so the reply keeps it.
 
 import (
 	"context"
@@ -100,9 +105,10 @@ func (h *Hub) logSnapshot(key string) (s logSnap, ok bool) {
 }
 
 type logBlock struct {
-	Text      string `json:"text"`
-	Truncated bool   `json:"truncated"`
-	Error     string `json:"error,omitempty"`
+	InstanceID string `json:"instance_id"` // the instance whose pane the text is
+	Text       string `json:"text"`
+	Truncated  bool   `json:"truncated"`
+	Error      string `json:"error,omitempty"`
 }
 
 // hubLogPart is the hub_log part. truncated: the reply may not have every line of the entry in
@@ -116,6 +122,7 @@ type hubLogPart struct {
 }
 
 type logResult struct {
+	snap   logSnap // what the load read: the block part is valid only for this record
 	Block  *logBlock
 	HubLog hubLogPart
 }
@@ -126,9 +133,10 @@ func (h *Hub) runLogLoad(ctx context.Context, key string) (any, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	var res logResult
+	res := logResult{snap: before}
 	if before.block != "" {
 		res.Block = h.readBlock(ctx, before)
+		res.Block.InstanceID = before.instance
 	}
 	res.HubLog = readHubLog(h.cfg.hubLog, pluginLogMarker(before.name, key))
 	if after, ok := h.logSnapshot(key); !ok || after != before {
@@ -257,17 +265,19 @@ func (h *Hub) pluginLog(args json.RawMessage) (any, error) {
 	if in.Entry == "" {
 		return nil, refuse("invalid_input", "entry must be the key of a plugin entry")
 	}
-	if _, ok := h.logSnapshot(in.Entry); !ok {
+	cur, ok := h.logSnapshot(in.Entry)
+	if !ok {
 		return nil, refuse("not_found", "no plugin entry has the key %s", in.Entry)
 	}
-	r, err := h.loadRequest(h.loads.logs, in.Entry, in.Refresh)
+	stale := func(v any) bool { r, ok := v.(logResult); return ok && r.snap != cur }
+	r, err := h.loadRequest(h.loads.logs, in.Entry, in.Refresh, stale)
 	if err != nil {
 		return nil, err
 	}
 	out := map[string]any{"entry": in.Entry, "state": r.State, "block": nil, "hub_log": nil, "error": r.Error,
 		"read_at": loadTime(r.ReadAt)}
 	if v, ok := r.Value.(logResult); ok {
-		if v.Block != nil {
+		if v.Block != nil && v.snap == cur {
 			out["block"] = v.Block
 		}
 		out["hub_log"] = v.HubLog

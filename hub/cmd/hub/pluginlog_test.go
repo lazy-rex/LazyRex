@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -267,7 +269,7 @@ func TestPluginLogAction(t *testing.T) {
 	}
 	b := v["block"].(*logBlock)
 	hl := v["hub_log"].(hubLogPart)
-	if v["state"] != "ready" || b.Text != strings.Repeat("p", blockKeep) || !b.Truncated || b.Error != "" ||
+	if v["state"] != "ready" || b.Text != strings.Repeat("p", blockKeep) || !b.Truncated || b.Error != "" || b.InstanceID != "i1" ||
 		len(hl.Lines) != 1 || !hl.Available || v["read_at"].(int64) == 0 {
 		t.Fatalf("ready: %v %+v %+v", v, b, hl)
 	}
@@ -422,5 +424,121 @@ func TestPluginLogfInnerPrefix(t *testing.T) {
 		"plugin x [managed:x]: respawn: plugin x: no run\n"
 	if buf.String() != want {
 		t.Fatalf("the lines:\n%s", buf.String())
+	}
+}
+
+// blockTextCall answers the format method with the text "pane of <block_id>", so a reply shows
+// which block it read.
+func blockTextCall(ctx context.Context, method string, payload any, out any) error {
+	block, _ := payload.(map[string]any)["block_id"].(string)
+	return json.Unmarshal(rawJSON(map[string]any{"content": "pane of " + block}), out)
+}
+
+// changeLogRecord changes the entry managed:x or its record, as a restart, a source change, a block
+// change or an entry replacement under the same key does.
+func changeLogRecord(h *Hub, mode string) {
+	h.entriesMu.Lock()
+	defer h.entriesMu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	p := h.plugins["x"]
+	switch mode {
+	case "restart":
+		p.InstanceID, p.BlockID = "i2", "block:2"
+	case "source":
+		p.entry.Source = "github:acme/y@v2.0.0"
+	case "block":
+		p.BlockID = "block:2"
+	case "entry_replaced":
+		e := &configEntry{Source: "github:acme/y@v2.0.0", name: "x", managed: "x"}
+		h.entries[len(h.entries)-1], p.entry = e, e
+	}
+}
+
+// The block part of a cached log belongs to the record that its load read (codex-27, plugins-c7-
+// cache-blocker; the hub lead, lead-c7cache). After a change of the instance, the block, the source
+// or the managed entry (the last two keep the instance and the block), a read and a refresh start a
+// load at once and do not show the old block: state loading, block null. The hub_log part may stay.
+// The new load reads the current block.
+func TestPluginLogCacheFollowsRecord(t *testing.T) {
+	for _, mode := range []string{"restart", "source", "block", "entry_replaced"} {
+		for _, refresh := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s refresh=%v", mode, refresh), func(t *testing.T) {
+				h := logTestHub(t, blockTextCall)
+				askLog(t, h, map[string]any{"entry": "managed:x"})
+				waitLogLoad(t, h, "managed:x")
+				changeLogRecord(h, mode)
+				v := askLog(t, h, map[string]any{"entry": "managed:x", "refresh": refresh})
+				if v["state"] != "loading" || v["block"] != nil {
+					t.Fatalf("after the change: %v", v)
+				}
+				waitLogLoad(t, h, "managed:x")
+				v = askLog(t, h, map[string]any{"entry": "managed:x"})
+				want, instance := "pane of block:1", "i1"
+				switch mode {
+				case "restart":
+					want, instance = "pane of block:2", "i2"
+				case "block":
+					want = "pane of block:2"
+				}
+				if b, _ := v["block"].(*logBlock); v["state"] != "ready" || b == nil || b.Text != want || b.InstanceID != instance {
+					t.Fatalf("the new load: %v %+v", v, b)
+				}
+			})
+		}
+	}
+}
+
+// A change while a load runs: a request does not get the old value, the running load's result is
+// discarded at its end, and the next request starts one new load (one load per key).
+func TestPluginLogCacheChangeDuringLoad(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	h := logTestHub(t, func(ctx context.Context, method string, payload any, out any) error {
+		if calls.Add(1) == 1 {
+			<-release
+		}
+		return blockTextCall(ctx, method, payload, out)
+	})
+	askLog(t, h, map[string]any{"entry": "managed:x"})
+	for calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	changeLogRecord(h, "restart")
+	if v := askLog(t, h, map[string]any{"entry": "managed:x", "refresh": true}); v["state"] != "loading" || v["block"] != nil {
+		t.Fatalf("during the load: %v", v)
+	}
+	close(release)
+	if r := waitLogLoad(t, h, "managed:x"); r["state"] != "idle" || r["value"] != nil {
+		t.Fatalf("the old load's end: %v", r)
+	}
+	askLog(t, h, map[string]any{"entry": "managed:x"})
+	waitLogLoad(t, h, "managed:x")
+	v := askLog(t, h, map[string]any{"entry": "managed:x"})
+	if b, _ := v["block"].(*logBlock); b == nil || b.Text != "pane of block:2" || calls.Load() != 2 {
+		t.Fatalf("the new load: %v %+v, %d calls", v, b, calls.Load())
+	}
+}
+
+// A failed load for the new instance keeps no block of the old one: state failed, block null.
+func TestPluginLogFailedLoadAfterChange(t *testing.T) {
+	var h *Hub
+	h = logTestHub(t, blockTextCall)
+	askLog(t, h, map[string]any{"entry": "managed:x"})
+	waitLogLoad(t, h, "managed:x")
+	changeLogRecord(h, "restart")
+	h.loads.mu.Lock()
+	h.loads.logs.run = func(ctx context.Context, key string) (any, bool, error) {
+		return nil, true, errors.New("the load failed")
+	}
+	h.loads.mu.Unlock()
+	askLog(t, h, map[string]any{"entry": "managed:x"})
+	waitLogLoad(t, h, "managed:x")
+	v := askLog(t, h, map[string]any{"entry": "managed:x"})
+	if v["block"] != nil || v["error"] != "the load failed" {
+		t.Fatalf("a failed load of i2: %v", v)
+	}
+	if v["state"] != "loading" && v["state"] != "failed" {
+		t.Fatalf("a failed load of i2: state %v", v["state"])
 	}
 }

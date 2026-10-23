@@ -87,16 +87,18 @@ func (l *pluginLoads) cache(name string, fresh time.Duration, run loadFunc) *loa
 
 // loadRequest returns the entry of key, and starts a load when the entry is not fresh, or for a
 // refresh, unless a load runs. Each state change of the load sends hub.changed {what = "plugins"}.
-func (h *Hub) loadRequest(c *loadCache, key string, refresh bool) (loadReply, error) {
-	return h.loads.requestNotify(c, key, refresh, func() { h.changed("plugins") })
+// stale (nil: none) reports whether a kept value belongs to an earlier record of the key: such a
+// value is not fresh, whatever its age.
+func (h *Hub) loadRequest(c *loadCache, key string, refresh bool, stale func(value any) bool) (loadReply, error) {
+	return h.loads.requestNotify(c, key, refresh, stale, func() { h.changed("plugins") })
 }
 
 // request is loadRequest with no notice (the tests of the cache).
 func (l *pluginLoads) request(c *loadCache, key string, refresh bool) (loadReply, error) {
-	return l.requestNotify(c, key, refresh, func() {})
+	return l.requestNotify(c, key, refresh, nil, func() {})
 }
 
-func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, notify func()) (loadReply, error) {
+func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, stale func(any) bool, notify func()) (loadReply, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -118,7 +120,8 @@ func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, noti
 		c.entries[key] = e
 	}
 	e.requested = now
-	if !e.running && (refresh || e.readAt.IsZero() || now.Sub(e.readAt) >= c.fresh) {
+	old := e.value != nil && stale != nil && stale(e.value)
+	if !e.running && (refresh || old || e.readAt.IsZero() || now.Sub(e.readAt) >= c.fresh) {
 		e.running = true
 		e.gen++
 		l.goroutines.Add(1)
