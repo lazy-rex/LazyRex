@@ -102,6 +102,8 @@ type Snapshot struct {
 	Layout string `json:"layout,omitempty"`
 	// Open holds the args of the view's last reopen (thread view v1.1), or nil for none.
 	Open *OpenArgs `json:"open,omitempty"`
+	// gen is the client's attachment generation of the call that fetched this tree (client.go).
+	gen uint64
 }
 
 // OpenArgs are the reopen args that the hub keeps for the life of a view's pane. Full: print the

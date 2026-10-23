@@ -31,6 +31,22 @@ func seenStays(t *testing.T, f *protocolFixture, want int, step string) {
 	}
 }
 
+// stamp gives a test tree the client's current attachment generation, as the client's fetch does.
+func stamp(c *viewClient, s Snapshot) Snapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s.gen = c.gen
+	return s
+}
+
+// reattach does what connect does to the gate for a new attachment.
+func reattach(c *viewClient, attachment string) {
+	c.mu.Lock()
+	c.seenOK, c.attachment = false, attachment
+	c.gen++
+	c.mu.Unlock()
+}
+
 func seenReaches(t *testing.T, f *protocolFixture, want int, step string) {
 	t.Helper()
 	until := time.Now().Add(2 * time.Second)
@@ -59,27 +75,27 @@ func focusedFixtureModel(t *testing.T) (*model, *protocolFixture, <-chan tea.Msg
 
 func TestSeenClosedUntilAltDecision(t *testing.T) {
 	m, f, _ := focusedFixtureModel(t)
-	m.Update(treeOf(tvError("e", "The hub lost the thread.", true)))
+	m.Update(stamp(m.client, treeOf(tvError("e", "The hub lost the thread.", true))))
 	seenStays(t, f, 0, "an error-only tree")
-	m.Update(treeOf(tvList))
+	m.Update(stamp(m.client, treeOf(tvList)))
 	seenReaches(t, f, 1, "the list tree decides alt")
 }
 
 func TestSeenClosedUntilThreadPrint(t *testing.T) {
 	m, f, _ := focusedFixtureModel(t)
-	m.Update(treeOf(Node{ID: "l", Type: "loading", Text: "Loading"}))
+	m.Update(stamp(m.client, treeOf(Node{ID: "l", Type: "loading", Text: "Loading"})))
 	seenStays(t, f, 0, "a loading tree")
-	m.Update(threadTree(msgs(1, 2)))
+	m.Update(stamp(m.client, threadTree(msgs(1, 2))))
 	seenStays(t, f, 0, "the thread tree before its print")
 	m.Update(printDone{ids: []string{"m1", "m2"}})
 	seenReaches(t, f, 1, "the print of the newest ID")
-	m.Update(threadTree(msgs(1, 2)))
+	m.Update(stamp(m.client, threadTree(msgs(1, 2))))
 	seenStays(t, f, 1, "the same tree again")
 }
 
 func TestSeenAfterReattachWaitsForAThreadFrame(t *testing.T) {
 	m, f, events := focusedFixtureModel(t)
-	m.Update(threadTree(msgs(1)))
+	m.Update(stamp(m.client, threadTree(msgs(1))))
 	m.Update(printDone{ids: []string{"m1"}})
 	seenReaches(t, f, 1, "the first print")
 	f.mu.Lock()
@@ -93,7 +109,7 @@ func TestSeenAfterReattachWaitsForAThreadFrame(t *testing.T) {
 	waitMessage(t, events, func(msg tea.Msg) bool { s, ok := msg.(connectionMsg); return ok && !s.Ready })
 	waitMessage(t, events, func(msg tea.Msg) bool { s, ok := msg.(connectionMsg); return ok && s.Ready })
 	seenStays(t, f, 1, "the reattach alone")
-	m.Update(threadTree(msgs(1)))
+	m.Update(stamp(m.client, threadTree(msgs(1))))
 	seenReaches(t, f, 2, "the first thread frame of the new attachment")
 }
 
@@ -115,10 +131,29 @@ func seenAfterFault(t *testing.T, hook bool) {
 	if hook {
 		out.onFault = m.client.closeSeen
 	}
-	m.Update(threadTree(msgs(1)))
+	m.Update(stamp(m.client, threadTree(msgs(1))))
 	tt.set(func(t *testTerm) { t.failAt = func([]byte) bool { return true } })
 	out.Write([]byte("a frame"))
 	m.Update(printDone{ids: []string{"m1"}}) // the model has not heard of the fault yet
 	m.client.focus(true, "focus")
 	seenStays(t, f, 0, "after the fault")
+}
+
+// TestSeenOldReceiptBeforeNewAttachTree (codex-29's probe on bbe841b3): attachment A's tree, a
+// reattach on the real client, then the receipt of A's print. The current tree is A's, so the
+// receipt sends no seen.
+func TestSeenOldReceiptBeforeNewAttachTree(t *testing.T) {
+	m, f, events := focusedFixtureModel(t)
+	m.Update(stamp(m.client, threadTree(msgs(1))))
+	f.mu.Lock()
+	conn := f.conn
+	f.mu.Unlock()
+	b, _ := json.Marshal(map[string]any{"type": "event", "payload": map[string]any{"type": "session_event", "payload": map[string]any{"event": map[string]any{"type": "client_disconnected", "payload": map[string]string{"client_id": "hub"}}}}})
+	if err := conn.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	waitMessage(t, events, func(msg tea.Msg) bool { s, ok := msg.(connectionMsg); return ok && !s.Ready })
+	waitMessage(t, events, func(msg tea.Msg) bool { s, ok := msg.(connectionMsg); return ok && s.Ready })
+	m.Update(printDone{ids: []string{"m1"}})
+	seenStays(t, f, 0, "the old print receipt before the new attachment's tree")
 }

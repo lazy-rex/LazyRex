@@ -289,29 +289,46 @@ func TestPrintLedgerSurvivesReattach(t *testing.T) {
 	r := startPrint(t, &testTerm{})
 	r.p.Send(threadTree(msgs(1, 2)))
 	r.wait("printed", printedAll(1, 2))
-	r.m.client.mu.Lock()
-	r.m.client.seenOK = false // what connect does for a new attachment
-	r.m.client.mu.Unlock()
+	reattach(r.m.client, "B")
 	r.wait("gate closed", func(s probeState) bool { return !s.seenOK })
-	r.p.Send(threadTree(msgs(1, 2)))
+	r.p.Send(stamp(r.m.client, threadTree(msgs(1, 2))))
 	r.wait("the first frame of the new attachment opens the gate", func(s probeState) bool { return s.seenOK })
 	r.stop()
 	once(t, r.term.String(), "TEXT-1", "TEXT-2")
 }
 
-// TestPrintQueuedThenReattach: a print queued before a reattach commits its IDs at printDone, and
-// its seen goes through the attachment that is current then. The new attachment's frame (newest
-// m1) comes before the receipt: m1 is queued, so it is not printed again.
-func TestPrintQueuedThenReattach(t *testing.T) {
+// TestPrintReceiptBeforeNewAttachTree (record item 3): a print queued for attachment A commits
+// its IDs at printDone after the reattach to B, but it opens no gate: the current tree is A's. B's
+// first thread frame, whose newest ID is printed, opens it.
+func TestPrintReceiptBeforeNewAttachTree(t *testing.T) {
 	tt := &testTerm{}
 	r := startPrint(t, tt)
 	gate := r.holdNextPrint()
 	r.p.Send(threadTree(msgs(1)))
 	r.wait("queued", func(s probeState) bool { return !s.printed["m1"] && !s.seenOK })
-	r.m.client.mu.Lock()
-	r.m.client.seenOK, r.m.client.attachment = false, "B"
-	r.m.client.mu.Unlock()
+	reattach(r.m.client, "B")
+	close(gate)
+	s := r.wait("committed", printedAll(1))
+	if s.seenOK {
+		t.Fatal("A's print receipt opened the gate before B's first tree")
+	}
+	r.p.Send(stamp(r.m.client, threadTree(msgs(1))))
+	r.wait("B's first thread frame opens the gate", func(s probeState) bool { return s.seenOK })
+	r.stop()
+	once(t, tt.String(), "TEXT-1")
+}
+
+// TestPrintReceiptAfterNewAttachTree: B's frame (newest m1) comes before the receipt of A's print.
+// m1 is queued, so it is not printed again; the receipt opens the gate, because the current tree
+// is B's and holds m1.
+func TestPrintReceiptAfterNewAttachTree(t *testing.T) {
+	tt := &testTerm{}
+	r := startPrint(t, tt)
+	gate := r.holdNextPrint()
 	r.p.Send(threadTree(msgs(1)))
+	r.wait("queued", func(s probeState) bool { return !s.printed["m1"] && !s.seenOK })
+	reattach(r.m.client, "B")
+	r.p.Send(stamp(r.m.client, threadTree(msgs(1))))
 	r.wait("B's frame before the receipt", func(s probeState) bool { return !s.printed["m1"] && !s.seenOK && s.waiting == 0 })
 	close(gate)
 	s := r.wait("committed", printedAll(1))
@@ -332,10 +349,8 @@ func TestPrintWaitingBatchSurvivesReattach(t *testing.T) {
 	r.p.Send(threadTree(msgs(1)))
 	r.p.Send(threadTree(msgs(1, 2)))
 	r.wait("m2 waits", func(s probeState) bool { return s.waiting == 1 })
-	r.m.client.mu.Lock()
-	r.m.client.seenOK, r.m.client.attachment = false, "B"
-	r.m.client.mu.Unlock()
-	r.p.Send(threadTree(msgs(1, 2)))
+	reattach(r.m.client, "B")
+	r.p.Send(stamp(r.m.client, threadTree(msgs(1, 2))))
 	r.wait("B's frame", func(s probeState) bool { return s.waiting == 1 && !s.seenOK })
 	close(gate)
 	s := r.wait("all printed", printedAll(1, 2))
@@ -719,5 +734,20 @@ func TestPaneOutLatchesTheFirstFailure(t *testing.T) {
 	}
 	if faults != 1 || strings.Contains(tt.String(), "later") {
 		t.Fatalf("faults %d, output %q", faults, tt.String())
+	}
+}
+
+// TestFailureSavesCurrentEditorText (codex-29's probe on bbe841b3): a send waits with earlier
+// text, and the editor holds newer text. The failure save keeps the current local text.
+func TestFailureSavesCurrentEditorText(t *testing.T) {
+	m := modeModel(20)
+	m.apply(threadTree(msgs(1)))
+	e := m.editors["composer"]
+	e.Area.SetValue("CURRENT UNSAVED TEXT")
+	e.SendText = "EARLIER SEND TEXT"
+	e.WantSend = true
+	saves := m.failureDrafts()
+	if len(saves) != 1 || saves[0].args["text"] != "CURRENT UNSAVED TEXT" {
+		t.Fatalf("the failure save does not hold the current editor text: %#v", saves)
 	}
 }

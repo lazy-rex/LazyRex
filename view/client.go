@@ -59,9 +59,12 @@ type viewClient struct {
 	// The seen gate (thread view v1.2 item 3): seenClosed until the renderer decides its mode;
 	// seenAlt sends as before; seenThread sends only while seenOK (the current tree's newest ID
 	// is printed). outFailed is the output boundary's latch: after a fault no seen goes out.
+	// gen counts the attachments; each emitted Snapshot carries the gen of the attachment that
+	// fetched it, and only a tree of the current attachment opens the gate.
 	seenGate  int
 	seenOK    bool
 	outFailed func() bool
+	gen       uint64
 }
 
 const (
@@ -85,11 +88,16 @@ func (v *viewClient) decideSeen(thread bool) {
 	}
 }
 
-// allowSeen opens a thread view's gate: the current tree's newest ID is printed. reason is
+// allowSeen opens a thread view's gate: the current tree's newest ID is printed. gen is the
+// current tree's attachment generation: a tree of an earlier attachment opens nothing. reason is
 // "content" after the print of new messages; "" keeps a waiting reason (else "connect"). It wakes
 // the run loop only when the gate opens or a reason is new, so a draft-only tree sends nothing.
-func (v *viewClient) allowSeen(reason string) {
+func (v *viewClient) allowSeen(reason string, gen uint64) {
 	v.mu.Lock()
+	if gen != v.gen {
+		v.mu.Unlock()
+		return
+	}
 	wake := !v.seenOK || reason != ""
 	v.seenOK = true
 	if reason != "" && v.seenReason != "focus" {
@@ -385,6 +393,8 @@ func (v *viewClient) connect(ctx context.Context) error {
 	v.hub = hub
 	v.attachment = attached.Attachment
 	v.seenOK = false // a new attachment sends seen at its first thread frame with a printed newest ID
+	v.gen++
+	gen := v.gen
 	v.lost = false
 	v.available = false
 	v.mu.Unlock()
@@ -402,6 +412,7 @@ func (v *viewClient) connect(ctx context.Context) error {
 	if err = snapshot.Validate(v.ViewID, v.Route); err != nil {
 		return err
 	}
+	snapshot.gen = gen
 	v.emit(snapshot)
 	return nil
 }
@@ -570,6 +581,9 @@ func (v *viewClient) run(ctx context.Context) {
 				retry(fmt.Errorf("The hub disconnected"))
 				continue
 			}
+			v.mu.Lock()
+			gen := v.gen // the attachment that makes this call, read before it
+			v.mu.Unlock()
 			var snapshot Snapshot
 			err := v.call(ctx, "hub.view.get", map[string]any{"route": v.Route}, &snapshot)
 			if err == nil {
@@ -579,6 +593,7 @@ func (v *viewClient) run(ctx context.Context) {
 				retry(err)
 				continue
 			}
+			snapshot.gen = gen
 			v.emit(snapshot)
 			if err = v.check(ctx, pending); err != nil {
 				retry(err)

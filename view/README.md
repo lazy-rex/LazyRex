@@ -97,14 +97,14 @@ The renderer sends no `hub.view.seen` until the mode is decided.
 - Alt mode sends one seen at the decision, then uses the focus rules below.
 - Thread mode sends seen only after a print that holds the current tree's newest message ID.
 - A tree without a history page, or with an unprinted newest message, sends no seen.
-- A new attachment sends no seen until its first thread frame.
+- A new attachment sends no seen until its first thread frame. A print receipt that comes before that frame (a print of the old attachment's tree) opens nothing.
 
 ### Output failures
 
 The first failed or short write to the pane is fatal (view/output.go):
 
 1. The renderer prints nothing more, commits no print, and sends no seen.
-2. The renderer saves each dirty composer draft with one `hub.view.draft.save` call and a new operation key.
+2. The renderer saves the current text of each dirty composer (also while a send waits) with one `hub.view.draft.save` call and a new operation key.
    All saves share one 5 s deadline. There is no retry.
 3. The process exits with status 1. It writes nothing to stderr, because stderr is the same pane.
 

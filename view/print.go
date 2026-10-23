@@ -79,7 +79,7 @@ func (m *model) printTree() tea.Cmd {
 	page := history.Messages
 	p.newest = page[len(page)-1].ID
 	if p.printed[p.newest] {
-		m.client.allowSeen("")
+		m.client.allowSeen("", m.snapshot.gen)
 	} else {
 		m.client.blockSeen()
 	}
@@ -166,7 +166,7 @@ func (m *model) printFinished(d printDone) tea.Cmd {
 		newest = newest || id == p.newest
 	}
 	if newest {
-		m.client.allowSeen("content")
+		m.client.allowSeen("content", m.snapshot.gen)
 	}
 	return m.nextPrint()
 }
@@ -205,7 +205,8 @@ func (m *model) beginFailure() ([]draftSave, bool) {
 	return m.failureDrafts(), true
 }
 
-// failureDrafts lists the composer drafts that are not saved, with new operation keys.
+// failureDrafts lists the composer drafts whose current text is not saved, with new operation
+// keys.
 func (m *model) failureDrafts() []draftSave {
 	var saves []draftSave
 	for id, e := range m.editors {
@@ -213,10 +214,7 @@ func (m *model) failureDrafts() []draftSave {
 		if e.Kind != "composer" || e.Conflict || n == nil || n.SaveAction == nil || !n.SaveAction.Enabled {
 			continue
 		}
-		text := e.Area.Value()
-		if e.WantSend {
-			text = e.SendText
-		}
+		text := e.Area.Value() // the current local text, also while a send waits
 		if text == e.Saved {
 			continue
 		}
