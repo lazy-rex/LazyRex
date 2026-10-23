@@ -995,6 +995,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	if err != nil {
 		return &spawnError{stage: "child", err: err} // the block exists; its child is not verified
 	}
+	h.mapFault(pl.Name, out.BlockID)
 	h.mu.Lock()
 	pl.BlockID, pl.ChildPID, pl.ChildStart = out.BlockID, pid, startTime(pid)
 	pl.respawn.spawned = h.clock() // the base of the backoff reset

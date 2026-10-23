@@ -751,6 +751,8 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			go h.pluginExited(ctx, exited, blockID, payload)
 		} else if h.isWorkerBlock(ctx, blockID) {
 			go h.changed("workers") // the home shows the worker as exited
+		} else {
+			log.Printf("child_exited for block %s: no plugin or worker has it", blockID)
 		}
 	case "program_status_changed", "program_status_removed":
 		if h.isWorkerBlock(ctx, blockID) {

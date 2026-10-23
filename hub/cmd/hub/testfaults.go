@@ -26,7 +26,10 @@ package main
 //     intent stays open). lose-answer fires only when Rex answers yes. hold-send: the spawn gets
 //     an unknown outcome at once, and the hub sends the request only after
 //     hub.test.fault_release (at most 30 s, or hold_ms ms): the block appears later, so an intent
-//     stays unresolved until the release.
+//     stays unresolved until the release. hold-map: the spawn waits after its child read, before
+//     it records the block ID, until hub.test.fault_release (at most 30 s, or hold_ms ms). It logs
+//     the held block, then its release. A hub request that waits on the start holds the request
+//     queue, so a test that starts with hub.admin.start uses hold_ms.
 //   - resume-prompt: the first prompt of an agent resume (resume.go; key = the identity, "" = any).
 //     hold waits after prompt_sending is stored, before the write, until hub.test.fault_release (at
 //     most 30 s, or hold_ms ms): a test can stop the hub there. lose-answer writes the prompt, then
@@ -43,6 +46,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -65,7 +69,7 @@ type testFault struct {
 
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
-	"plugin-create": {"refuse", "lose-answer", "hold-send"}, "resume-prompt": {"hold", "lose-answer"},
+	"plugin-create": {"refuse", "lose-answer", "hold-send", "hold-map"}, "resume-prompt": {"hold", "lose-answer"},
 	"prompt-answer": {"close", "refuse", "lose-reply"}, "view-render": {"hold"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
@@ -119,7 +123,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer) or view-render (hold)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send, hold-map), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer) or view-render (hold)")
 	}
 	switch f.Point {
 	case "spawn-create":
@@ -425,6 +429,20 @@ func (h *Hub) waitRelease(f *testFault) {
 			return
 		}
 	}
+}
+
+// mapFault holds the spawn of plugin at an armed plugin-create hold-map fault: the child of block
+// was read, and the block ID is not recorded yet. It does nothing outside test mode.
+func (h *Hub) mapFault(plugin, block string) {
+	f := h.takeFault(func(f *testFault) bool {
+		return f.Point == "plugin-create" && f.Mode == "hold-map" && (f.Key == "" || f.Key == plugin)
+	})
+	if f == nil {
+		return
+	}
+	log.Printf("lab fault: hold-map of %s holds block %s", plugin, block)
+	h.waitRelease(f)
+	log.Printf("lab fault: hold-map of %s released", plugin)
 }
 
 // startFault holds the start path of plugin at an armed start-admission fault of this mode,
