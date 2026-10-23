@@ -1203,6 +1203,8 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 		res, callErr = h.opStart(ctx, op, attempt)
 	case "stop":
 		res, callErr = h.opStop(ctx, op, attempt)
+	case "replace":
+		res, callErr = h.opReplace(ctx, op, attempt)
 	case "reload":
 		res, callErr = opReload(ctx, h)
 	}
@@ -1440,6 +1442,44 @@ func (h *Hub) opStart(ctx context.Context, op *pluginOp, attempt string) (any, e
 	return opAdmin(ctx, h, "hub.admin.start", args)
 }
 
+// opReplace replaces the instance of the op's plugin with the op's run (expect_run) of the op's
+// entry (expect_entry). A restart names the instance that it stored at admission; an update names
+// the instance that the record owns now (the handler checks it again under its locks:
+// instance_changed). A record with no owned instance is no_instance, before the attempt is bound.
+func (h *Hub) opReplace(ctx context.Context, op *pluginOp, attempt string) (any, error) {
+	expect, err := opExpectEntry(op)
+	if err != nil {
+		return nil, err
+	}
+	pl, now := h.opEntryNow(op)
+	if now != expect {
+		return nil, entryChanged(op, expect, now)
+	}
+	x, err := opRun(op)
+	if err != nil {
+		return nil, err
+	}
+	var instance string
+	if op.Kind == "restart" {
+		var r opRestartTarget
+		if err := json.Unmarshal([]byte(op.Target), &r); err != nil {
+			return nil, fmt.Errorf("the stored target: %v", err)
+		}
+		instance = r.Instance
+	} else if pl != nil {
+		h.mu.Lock()
+		owned, pending := h.ownedInstance(pl)
+		h.mu.Unlock()
+		if !pending {
+			instance = owned
+		}
+	}
+	if instance == "" {
+		return nil, refuse("no_instance", "plugin %s has no instance; nothing was called", op.Name)
+	}
+	return opAdmin(ctx, h, "hub.admin.replace", map[string]any{"plugin": op.Name, "expect_instance": instance, "expect_run": x, "expect_entry": expect, "attempt": attempt})
+}
+
 // opStop stops the op's plugin, only while it is bound to the op's entry. An entry without a record
 // has nothing to stop.
 func (h *Hub) opStop(ctx context.Context, op *pluginOp, attempt string) (any, error) {
@@ -1605,7 +1645,7 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 	return "", fmt.Sprintf("the start's intent is %q with status %q, and it has not registered. A new start runs only after the hub resolves the spawn intent (unresolved_intent).", intent, status), intent != "" && status != "abandoned", nil
 }
 
-// observeLater proves the sent start and stop attempts that are still unresolved, when exact
+// observeLater proves the sent start, stop and replace attempts that are still unresolved, when exact
 // evidence appears later: for example, the instance of a start's created intent registers after
 // the op ended unknown (a lost answer, or a hub restart before the registration). Each attempt has
 // an outcome, so its call cannot act any more. It never calls again and never changes the op's
@@ -1618,7 +1658,7 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 func (h *Hub) observeLater(ctx context.Context) (left int) {
 	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
 		JOIN plugin_ops o ON o.op_id = a.op_id
-		WHERE a.proof = '' AND a.resolved_by = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop') AND o.phase = 'unknown'`)
+		WHERE a.proof = '' AND a.resolved_by = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop', 'replace') AND o.phase = 'unknown'`)
 	if err != nil {
 		log.Printf("plugin ops: the later observation: %v", err)
 		return 0
