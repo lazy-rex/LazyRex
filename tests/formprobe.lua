@@ -34,15 +34,6 @@ local function perform(args)
   if args.route == '/forms/second' and args.action == 'done' then return {close_form = true} end
   fail('invalid_input', 'Unknown action')
 end
--- Lab only: re-declare the tabs with a 'homed' tab in a home session (hometabs-lab.mjs).
-local function declare(args)
-  local tabs = {{key = 'home', title = 'Form probe', route = '/'}}
-  if type(args.session_id) == 'string' then
-    tabs[#tabs + 1] = {key = 'homed', title = 'Homed', route = '/', session_id = args.session_id ~= '' and args.session_id or nil, revision = args.revision}
-  end
-  hub('hub.ui.tabs', {tabs = tabs})
-  return {declared = #tabs}
-end
 local handlers = {
   ['view.render'] = function(args) return {tree = render(args)} end,
   ['view.action'] = perform,
@@ -52,14 +43,12 @@ local handlers = {
 local actions = {}
 for name in pairs(handlers) do actions[#actions + 1] = {name = name, kind = 'client', title = name,
   args = {type = 'object', additionalProperties = true}} end
-actions[#actions + 1] = {name = 'formprobe.declare', kind = 'client', title = 'formprobe.declare', args = {type = 'object', additionalProperties = true}}
 rex.call('client.keymap', {actions = actions})
 hub('hub.register', {plugin = 'formprobe', instance_id = instance_id, exports = {},
   commands = {{id = 'probe', title = 'Probe Form…', description = 'Lab probe: open a form', keywords = {'probe', 'lab "quoted"'}, route = '/forms/probe'}}})
 hub('hub.ui.tabs', {tabs = {{key = 'home', title = 'Form probe', route = '/'}}})
 rex.on('client_perform_requested', function(ctx, ev)
   local ok, result = pcall(function()
-    if ev.action == 'formprobe.declare' then return declare(ev.args or {}) end -- lab only: any caller
     if not ev.requester or ev.requester.client_id ~= hub_id then fail('refused', 'Only the hub calls probe actions') end
     local handler = handlers[ev.action]
     if not handler then fail('not_supported', 'Unknown action') end
