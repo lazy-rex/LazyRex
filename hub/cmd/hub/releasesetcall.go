@@ -53,7 +53,7 @@ func fillPlaceholders(raw []byte, vals map[string]string) []byte {
 }
 
 // agentBatch runs calls as the lab agent relSeedAgent from one new pane of the lab session: the
-// pane joins, runs each call with the rex CLI through the hub client, and ends. The tool writes the
+// pane joins, runs each call with the rex CLI through the agent face, and ends. The tool writes the
 // args files only after it knows the pane's session and block (<SESSION_ID>, <BLOCK_ID>), and the
 // pane waits for them. After the batch the tool closes the pane and waits until the hub has no
 // binding of the agent: the next batch joins again.
@@ -77,13 +77,17 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	R := fmt.Sprintf("rex -S %s --autostart=false --timeout 60s -C %s do", shQuote(h.l.server), shQuote(client))
+	// hub.join goes to the hub client; the items go to the agent face (agentLabel), which carries
+	// the plugin actions that agents may call.
+	rexDo := func(client string) string {
+		return fmt.Sprintf("rex -S %s --autostart=false --timeout 60s -C %s do", shQuote(h.l.server), shQuote(client))
+	}
 	lines := []string{"#!/bin/sh",
 		"cd " + shQuote(dir),
 		"while [ ! -e go ]; do sleep 0.1; done",
-		fmt.Sprintf(`%s hub.join --args '{"agent":"%s"}' > join.out 2>&1; echo $? > join.code`, R, relSeedAgent)}
+		fmt.Sprintf(`%s hub.join --args '{"agent":"%s"}' > join.out 2>&1; echo $? > join.code`, rexDo(client), relSeedAgent)}
 	for i, c := range calls {
-		lines = append(lines, fmt.Sprintf(`%s %s --args @args-%d.json > out-%d 2>&1; echo $? > code-%d`, R, shQuote(c.Action), i, i, i))
+		lines = append(lines, fmt.Sprintf(`%s %s --args @args-%d.json > out-%d 2>&1; echo $? > code-%d`, rexDo(agentLabel), shQuote(c.Action), i, i, i))
 	}
 	lines = append(lines, "echo done > done", "")
 	script := filepath.Join(dir, "batch.sh")
