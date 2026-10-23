@@ -153,3 +153,102 @@ func TestPluginOpsLab(t *testing.T) {
 		t.Error("hub.plugins.op on the hub client passed")
 	}
 }
+
+// liveBlocks counts the live blocks labeled lazyrex-plugin:<name> in every session of the lab: a
+// block whose terminal.process has a child. A block that only keeps its log after an exit does not
+// count.
+func (s *startLab) liveBlocks(name string) int {
+	s.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var list struct {
+		Sessions []struct {
+			SessionID string `json:"session_id"`
+		} `json:"sessions"`
+	}
+	if err := s.l.r.Call(ctx, "session.list", map[string]any{}, &list); err != nil {
+		s.t.Fatal(err)
+	}
+	n := 0
+	for _, se := range list.Sessions {
+		s.l.r.Call(ctx, "session.attach", map[string]any{"session_id": se.SessionID, "event_scope": "session"}, nil) // list_blocks needs it
+		var bl struct {
+			Blocks []rexBlock `json:"blocks"`
+		}
+		if err := s.l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": se.SessionID}, &bl); err != nil {
+			s.t.Fatalf("session %s: %v", se.SessionID, err)
+		}
+		for _, b := range bl.Blocks {
+			if b.Label != "lazyrex-plugin:"+name {
+				continue
+			}
+			var proc struct {
+				Child *struct {
+					PID int `json:"pid"`
+				} `json:"child"`
+			}
+			if err := s.l.r.BlockCall(ctx, "com.superlogical.terminal.process", se.SessionID, b.BlockID, nil, &proc); err != nil {
+				s.t.Fatalf("block %s: %v", b.BlockID, err)
+			}
+			if proc.Child != nil {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// An unproven attempt blocks no start, and a start keeps one live instance: an op on n that ended
+// unknown, its start attempt with an "unproven:" outcome (its later observation ended) and its
+// spawn intent abandoned are written while the hub is stopped. After the restart, the agent's
+// start of managed:n runs, the lab has exactly one live block of n, and the seeded attempt stays
+// as written. The add path is not tested here (no add on the agent face, and no lab add until C6);
+// the add guard with an unproven attempt is TestPluginOpAddRowGuard. The bound itself is
+// TestPluginOpLaterObservationBound.
+func TestUnprovenAttemptStartLab(t *testing.T) {
+	s := newStartLab(t)
+	s.writeSource("n", `{"name":"n","main":"main.lua"}`, "n")
+	s.writeManagedIDs("n=n")
+	s.start()
+	s.registered("n")
+	s.must("hub.admin.stop", map[string]any{"plugin": "n"})
+	s.wait("no live block of n", func() bool { return s.liveBlocks("n") == 0 })
+	s.stop()
+	outcome := unprovenPrefix + "error: the start's outcome is unknown: lost"
+	db, err := openDB(filepath.Join(s.l.dir, "hub", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range [][]any{
+		{`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o-old', 'seed', 'seed', 'f', '{}', 'start', 'managed:n', 'n', '', '', '', 'unknown', 1, 1)`},
+		{`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, sent_at, intent_id, outcome) VALUES ('a-old', 'o-old', 'start', 1, 't', 't', 'n-0-old', ?)`, outcome},
+		{`INSERT INTO spawn_intents (instance_id, plugin, status) VALUES ('n-0-old', 'n', 'abandoned')`},
+	} {
+		if _, err := db.Exec(q[0].(string), q[1:]...); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	s.start()
+	alice := s.opsAgent("alice")
+	if op := s.opDone(alice, "start-n", map[string]any{"op": "start", "entry": "managed:n"}); op["phase"] != "done" {
+		t.Fatalf("start n: %v", op)
+	}
+	s.registered("n")
+	if n := s.liveBlocks("n"); n != 1 {
+		t.Fatalf("%d live blocks of n; want 1", n)
+	}
+	db, err = openDB(filepath.Join(s.l.dir, "hub", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var gotOutcome, proof string
+	if err := db.QueryRow(`SELECT outcome, proof FROM plugin_op_attempts WHERE attempt = 'a-old'`).Scan(&gotOutcome, &proof); err != nil {
+		t.Fatal(err)
+	}
+	if gotOutcome != outcome || proof != "" {
+		t.Errorf("the seeded attempt changed: outcome %q, proof %q", gotOutcome, proof)
+	}
+}
