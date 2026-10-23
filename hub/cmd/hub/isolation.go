@@ -416,3 +416,21 @@ func (m *manifest) labValues(manifestDir, lab string, fileArgs map[string]map[st
 	}
 	return out, nil
 }
+
+// checkTestSourceRuns checks the config key test_source_runs: only -test accepts it, and each dir
+// must be absolute and in test_roots. It cleans each dir, as a local source dir is cleaned.
+func checkTestSourceRuns(cfg *Config) error {
+	if len(cfg.TestSourceRuns) == 0 {
+		return nil
+	}
+	if !cfg.Test {
+		return fmt.Errorf("test_source_runs needs -test")
+	}
+	for i, d := range cfg.TestSourceRuns {
+		if err := checkPath(d, cfg.TestRoots); err != nil {
+			return fmt.Errorf("test_source_runs: %w", err)
+		}
+		cfg.TestSourceRuns[i] = filepath.Clean(d)
+	}
+	return nil
+}

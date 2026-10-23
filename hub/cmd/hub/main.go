@@ -48,6 +48,10 @@ type Config struct {
 	// TestHoldRecovery holds plugin recovery at hub start until hub.test.recover, so a lab test can
 	// call actions before recovery reaches a record. Only -test accepts it.
 	TestHoldRecovery bool `json:"test_hold_recovery"`
+	// TestSourceRuns are local source dirs that run from the source dir, with no snapshot (a source
+	// run, localsnapshot.go). `lazyrex-hub test` names only the plugin under test, so ${PLUGIN} is
+	// the dir it runs from. Only -test accepts it, and each dir must be in test_roots.
+	TestSourceRuns []string `json:"test_source_runs"`
 	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
 	// pane (pair.go). Off: those tabs open as one view, as before.
 	Transcript bool `json:"transcript"`
@@ -425,6 +429,9 @@ func main() {
 	}
 	if cfg.Test && len(cfg.TestRoots) == 0 {
 		log.Fatal("-test needs test_roots in the config (lazyrex-hub test writes it)")
+	}
+	if err := checkTestSourceRuns(&cfg); err != nil {
+		log.Fatal(err)
 	}
 	if cfg.Test {
 		if err := checkLabProof(cfg.Server); err != nil {

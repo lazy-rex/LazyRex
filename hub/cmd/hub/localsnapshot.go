@@ -39,11 +39,11 @@ var localCopyHook func(path string)
 //  4. Read the manifest again from the snapshot: it must give the candidate's fields, else the
 //     start refuses ("the source changed during the start").
 //
-// A GitHub candidate, and a run that is already published (an automatic start's selected run),
-// are returned unchanged. A failure after step 3 leaves a new entry that no row names; a prune
-// removes it. publishLocal never removes an entry.
+// A GitHub candidate, a run that is already published (an automatic start's selected run), and
+// a source run (testSourceRun) are returned unchanged. A failure after step 3 leaves a new entry
+// that no row names; a prune removes it. publishLocal never removes an entry.
 func (h *Hub) publishLocal(e *configEntry, cand *pluginRun) (*pluginRun, error) {
-	if e.github || cand.Entry != "" {
+	if e.github || cand.Entry != "" || h.testSourceRun(cand.Dir) {
 		return cand, nil
 	}
 	if localSnapshotHook != nil {
@@ -177,4 +177,11 @@ func copyBounded(src, dst string, limit int64) (int64, error) {
 		err = cerr
 	}
 	return n, err
+}
+
+// testSourceRun reports a local dir that the hub runs from its source dir: -test and the config
+// key test_source_runs name it (a lab of `lazyrex-hub test`, the plugin under test). Its run has
+// no Entry and no Digest. Every other run is published.
+func (h *Hub) testSourceRun(dir string) bool {
+	return h.cfg.Test && dir != "" && slices.Contains(h.cfg.TestSourceRuns, dir)
 }
