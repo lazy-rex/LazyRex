@@ -670,8 +670,7 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
 ## Go lab tests
 
 A Go lab test of the hub (`hub/cmd/hub/*_lab_test.go`) starts its own lab Rex server. No lab test
-reads a socket from an env var. The one exception, `replyguard_lab_test.go` (`REPLY_LAB_SOCKET`),
-goes with the hub.store removal.
+reads a socket from an env var.
 
 `HARNESS_LAB=1 go test ./cmd/hub` runs the tests gated on `HARNESS_LAB` (rexLab,
 harnessBinary). The tests behind their own gates (`PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and

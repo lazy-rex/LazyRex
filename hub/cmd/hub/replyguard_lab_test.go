@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,23 +10,8 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// Lab tests of the reply limit through a real Rex server. Run with
-//   REPLY_LAB_SOCKET=/tmp/rexlab-<name>/rex.sock go test -run Lab ./cmd/hub
-
-func replyLabSocket(t *testing.T) string {
-	t.Helper()
-	socket := os.Getenv("REPLY_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set REPLY_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
-	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") && !strings.HasPrefix(real, "/tmp/rexlab-") {
-		t.Fatalf("refuse a socket that resolves outside the lab: %s %v", real, err)
-	}
-	return socket
-}
+// Lab tests of the reply limit through a real Rex server. Each test starts its own lab server
+// (rexLab, HARNESS_LAB=1).
 
 // labResponder is a client that declares lab.big and answers each call with answer.
 type labResponder struct {
@@ -108,7 +91,7 @@ func labPerform(caller *rex.Rex, client string) (json.RawMessage, error) {
 //
 // The guard's limit (replyLimit) passes both. The responder's reply is its second request (h2).
 func TestServerFrameLimitLab(t *testing.T) {
-	socket := replyLabSocket(t)
+	socket := rexLab(t).socket
 	caller := labCaller(t, socket)
 	if caller.MaxMessage() <= 0 {
 		t.Fatalf("the welcome states no limit: %s", caller.Welcome)
@@ -141,7 +124,7 @@ func TestServerFrameLimitLab(t *testing.T) {
 // sendReply, which both hub reply paths use, keeps the connection for a result over the limit, and
 // for an error over the limit. The caller gets reply_too_large at once, not a timeout.
 func TestSendReplyKeepsTheConnectionLab(t *testing.T) {
-	socket := replyLabSocket(t)
+	socket := rexLab(t).socket
 	caller := labCaller(t, socket)
 	for _, failed := range []bool{false, true} {
 		big := strings.Repeat("<é", caller.MaxMessage()/4) // about 2 times the limit when encoded
@@ -170,7 +153,8 @@ func TestSendReplyKeepsTheConnectionLab(t *testing.T) {
 // to the agent is over the guard's limit. The agent gets reply_too_large; the hub's agent face
 // stays connected and answers the next call.
 func TestAgentFaceReplyGuardLab(t *testing.T) {
-	socket := replyLabSocket(t)
+	l := rexLab(t)
+	socket := l.socket
 	caller := labCaller(t, socket)
 	size := 0
 	plugin := newLabResponder(t, socket, func(r *rex.Rex, callID string) {
@@ -190,7 +174,7 @@ func TestAgentFaceReplyGuardLab(t *testing.T) {
 		for range r.Events {
 		}
 	}()
-	h.rex = r
+	h.rex, h.cfg.Server = r, l.server
 	h.plugins = map[string]*Plugin{"lab": {Name: "lab", ClientID: plugin.id, Exports: []string{"lab.big"}}}
 	if err := h.agentFaceStart(ctx, socket); err != nil {
 		t.Fatal(err)
