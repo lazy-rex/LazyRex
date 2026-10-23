@@ -181,13 +181,3 @@ func TestStartOrder(t *testing.T) {
 		}
 	}
 }
-
-func TestDuplicateSources(t *testing.T) {
-	es := []*sourceEntry{{Index: 1, Source: "../A"}, {Index: 2, Source: "github:o/r@main"}, {Index: 3, Source: "github:o/r@main"}}
-	if err := duplicateSources(es); err == nil || err.Error() != "entries 2 and 3 have the same source github:o/r@main" {
-		t.Errorf("got %v", err)
-	}
-	if err := duplicateSources(es[:2]); err != nil {
-		t.Error(err)
-	}
-}

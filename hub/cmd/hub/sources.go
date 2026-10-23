@@ -183,19 +183,6 @@ type sourceEntry struct {
 	Err     error
 }
 
-// duplicateSources refuses a config with two entries of the same source string: a malformed
-// config, so the hub does not start.
-func duplicateSources(entries []*sourceEntry) error {
-	first := map[string]int{}
-	for _, e := range entries {
-		if i, ok := first[e.Source]; ok {
-			return fmt.Errorf("entries %d and %d have the same source %s", i, e.Index, e.Source)
-		}
-		first[e.Source] = e.Index
-	}
-	return nil
-}
-
 // checkGraph refuses entries for graph reasons: a shared name (every entry with it), a missing
 // dependency, a refused dependency (transitive), and a cycle (every member). An entry that is
 // already refused keeps its own error.
