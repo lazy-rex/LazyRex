@@ -118,18 +118,24 @@ func TestCheckMappedOnlyAnExitCounts(t *testing.T) {
 // before the record. The read after the record takes the exit.
 func TestAdoptionTakesAnExitBeforeTheRecord(t *testing.T) {
 	h, _, events, pl := oneHub(t)
-	child := exec.Command("/bin/sh", "-c", "sleep 60; true", "instance_id=p-1") // no exec of sleep: the argv stays
+	// The shell's built-in read waits on a pipe that the test never writes: no child process, so the
+	// kill at the cleanup leaves nothing behind, and the argv keeps instance_id=p-1.
+	child := exec.Command("/bin/sh", "-c", "read x", "instance_id=p-1")
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { child.Process.Kill(); child.Wait() })
+	t.Cleanup(func() { child.Process.Kill(); stdin.Close(); child.Wait() })
 	procRex(t, h, map[string]any{"child": map[string]any{"pid": child.Process.Pid}}, exitedRead)
 	mustExec(t, h, `INSERT INTO spawn_intents (instance_id, plugin, status, session_id) VALUES ('p-1', 'p', 'sending', 's')`)
 	h.mu.Lock()
 	pl.Desired = "running"
 	h.mu.Unlock()
 	pl.lifecycle.Lock()
-	err := h.resolveIntents(context.Background(), pl)
+	err = h.resolveIntents(context.Background(), pl)
 	pl.lifecycle.Unlock()
 	if err != nil {
 		t.Fatal(err)

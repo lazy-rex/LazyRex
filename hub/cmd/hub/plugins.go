@@ -1002,6 +1002,7 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	if err != nil {
 		// The block exists; its child is not verified. The outcome is unknown, not a failed create:
 		// the intent stays sending, and resolveIntents adopts a live child by its instance argv.
+		log.Printf("plugin %s: cannot read the child of block %s after its create: %v", pl.Name, out.BlockID, err)
 		return &spawnError{stage: "child", err: err}
 	}
 	h.mapFault(pl.Name, out.BlockID)
