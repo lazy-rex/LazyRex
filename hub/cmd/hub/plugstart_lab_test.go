@@ -272,23 +272,78 @@ func (s *startLab) registered(name string) {
 	s.wait(name+" registers", func() bool { return s.status(name).Registered })
 }
 
-// A plugin crashes after its manifest gained a missing dependency: the respawn is refused, and the
-// old block stays (it is not retired). A repair, then hub.admin.start: a new instance in a new
-// block replaces it.
+// snapshot reports whether d (a hub.plugins dir) is a published local snapshot,
+// <state>/plugins/local/<hex>.<token>: the run dir of a local source.
+func (s *startLab) snapshot(d any) bool {
+	p, _ := d.(string)
+	return p != "" && filepath.Dir(p) == filepath.Join(s.state(), "plugins", "local")
+}
+
+// state gives the hub's canonical state directory (absolute, symlinks resolved): the path that
+// the hub uses and reports.
+func (s *startLab) state() string {
+	s.t.Helper()
+	var c Config
+	b, _ := os.ReadFile(s.cfg)
+	json.Unmarshal(b, &c)
+	state, err := canonicalState(c.State)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return state
+}
+
+// spoilRun changes main.lua in the published snapshot of the run of the plugin in src/<dir>, so
+// the snapshot no longer has the run's digest: an automatic start refuses the run. It gives the
+// refusal text of that start.
+func (s *startLab) spoilRun(dir string) string {
+	s.t.Helper()
+	snap, _ := s.entry(dir)["dir"].(string)
+	if !s.snapshot(snap) {
+		s.t.Fatalf("the run of %s is not a local snapshot: %q", dir, snap)
+	}
+	digest, err := dirDigest(snap)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	main := filepath.Join(snap, "main.lua")
+	if err := os.Chmod(snap, 0o700); err != nil {
+		s.t.Fatal(err)
+	}
+	if err := os.Chmod(main, 0o600); err != nil {
+		s.t.Fatal(err)
+	}
+	f, err := os.OpenFile(main, os.O_WRONLY|os.O_APPEND, 0)
+	if err == nil {
+		_, err = f.WriteString("\n-- spoiled\n")
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return "plugin " + dir + ": run " + digest + " is no longer available; start it again"
+}
+
+// A plugin crashes after its selected snapshot changed: the respawn is refused, and the old block
+// stays (it is not retired). hub.admin.start, an explicit start, publishes a new snapshot of the
+// source: a new instance in a new block replaces it.
 func TestPluginCrashRefusedKeepsBlockLab(t *testing.T) {
 	s := newStartLab(t, "a")
 	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
 	s.start()
 	s.registered("a")
 	first := s.status("a")
-	s.writeSource("a", `{"name":"a","main":"main.lua","depends":["missing"]}`, "")
+	spoiled := s.entry("a")["dir"]
+	refusal := s.spoilRun("a")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	s.c.perform(ctx, first.ClientID, "fix.exit", nil) // the reply may not arrive: the process ends
 	s.wait("the respawn is refused", func() bool { return s.status("a").State == "refused" })
 	st := s.status("a")
-	if st.Error != "plugin a: dependency missing is not configured" {
-		t.Errorf("error %q", st.Error)
+	if st.Error != refusal {
+		t.Errorf("error %q, want %q", st.Error, refusal)
 	}
 	if st.BlockID != first.BlockID || st.InstanceID != first.InstanceID || st.Registered {
 		t.Errorf("the old block is kept: %+v, first %+v", st, first)
@@ -296,14 +351,16 @@ func TestPluginCrashRefusedKeepsBlockLab(t *testing.T) {
 	if n := len(s.events("plugin_spawned", "a")); n != 1 {
 		t.Errorf("%d spawns: the refused start spawns nothing", n)
 	}
-	if e := s.entry("a"); e["state"] != "refused" || e["error"] != "plugin a: dependency missing is not configured" {
+	if e := s.entry("a"); e["state"] != "refused" || e["error"] != refusal {
 		t.Errorf("hub.plugins: %v", e)
 	}
-	s.writeSource("a", `{"name":"a","main":"main.lua"}`, "")
 	s.must("hub.admin.start", map[string]any{"plugin": "a"})
 	s.registered("a")
 	if st := s.status("a"); st.InstanceID == first.InstanceID || st.BlockID == first.BlockID || st.State != "running" {
 		t.Errorf("after the repair: %+v", st)
+	}
+	if d := s.entry("a")["dir"]; d == spoiled {
+		t.Errorf("the explicit start runs the spoiled snapshot %v", d)
 	}
 	if n := len(s.events("plugin_spawned", "a")); n != 2 {
 		t.Errorf("%d spawns after the repair", n)
@@ -503,7 +560,7 @@ func TestPluginKeptUnreadableSourceLab(t *testing.T) {
 			if e := s.entry("a"); e["name"] != nil || e["state"] != "refused" || !strings.HasPrefix(fmt.Sprint(e["error"]), "plugin source src/a: ") {
 				t.Errorf("the entry: %v", e)
 			}
-			if k := s.kept("a"); k == nil || k["source"] != "src/a" || k["state"] != "retained" || k["dir"] != filepath.Join(s.src, "a") ||
+			if k := s.kept("a"); k == nil || k["source"] != "src/a" || k["state"] != "retained" || !s.snapshot(k["dir"]) ||
 				k["error"] != "plugin a: no entry gives this name now (it ran from source src/a); stop it with hub.admin.stop" {
 				t.Errorf("kept: %v", k)
 			}
