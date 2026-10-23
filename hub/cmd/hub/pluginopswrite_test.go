@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,59 @@ func TestPluginOpWritePinChanged(t *testing.T) {
 	if op.Phase != "conflict" || !strings.Contains(op.Error, "the lock changed since the add wrote its pin") || !strings.HasSuffix(op.Error, "; nothing more was written") || managedText(t, h) != "" {
 		t.Fatalf("%+v; file %q", op, managedText(t, h))
 	}
+}
+
+// The writing checks run also when the file needs no write (lead-c4e 2; codex-27's probe
+// TestReviewerSameSourceWriteChecksPin): an update that keeps its source string (the entry is
+// already the intended entry), and an add whose rename happened before a crash (the file is the
+// stored output). Another writer changes the pin after the lock write: conflict, not reloading.
+func TestPluginOpWriteNoChangeChecks(t *testing.T) {
+	ctx := context.Background()
+	repin := func(h *Hub) {
+		l := readTestLock(t, h)
+		l.Plugins["github:acme/notes@v1.0.0"] = otherLockEntry()
+		writeTestLock(t, h, l)
+	}
+	t.Run("same source", func(t *testing.T) {
+		h, _, _, update := atTestHub(t, "github:acme/notes@v1.0.0")
+		if _, err := h.db.Exec(`INSERT INTO plugins (name, desired) VALUES ('notes', 'running')`); err != nil {
+			t.Fatal(err)
+		}
+		op := update("w-same")
+		if err := h.opFetch(ctx, op); err != nil || op.Phase != "locking" {
+			t.Fatalf("fetch: %+v %v", op, err)
+		}
+		if err := h.opLock(ctx, op); err != nil || op.Phase != "writing" {
+			t.Fatalf("lock: %+v %v", op, err)
+		}
+		file := managedText(t, h)
+		repin(h)
+		if err := h.opWrite(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		if op.Phase != "conflict" || !strings.Contains(op.Error, "the lock changed since the update wrote its pin") || managedText(t, h) != file {
+			t.Fatalf("%+v; file %q", op, managedText(t, h))
+		}
+	})
+	t.Run("written before a crash", func(t *testing.T) {
+		r, _ := fetchTestRepo(t)
+		h := fetchTestHub(t, r)
+		op := lockedAdd(t, h, "w-crash", "github:acme/notes@v1.0.0")
+		h.pops.fault = func(p string) bool { return p == "plugin-op-after-rename" }
+		if err := h.opWrite(ctx, op); !errors.Is(err, errOpCrash) {
+			t.Fatalf("the crash after the rename: %v", err)
+		}
+		h.pops.fault = nil
+		file := managedText(t, h)
+		repin(h)
+		op = opsOf(t, h, op.ID)
+		if err := h.opWrite(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		if op.Phase != "conflict" || !strings.Contains(op.Error, "the lock changed since the add wrote its pin") || managedText(t, h) != file {
+			t.Fatalf("%+v; file %q", op, managedText(t, h))
+		}
+	})
 }
 
 // The directory check at writing (C4 plan r2, 2b; codex-27's case 4): another writer keeps the pin
