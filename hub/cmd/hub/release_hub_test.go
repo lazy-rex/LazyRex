@@ -972,6 +972,23 @@ func TestReleaseHubReplaceAfterStart(t *testing.T) {
 	}
 	w.must("verify")
 
+	// The same with the new instance's registration before its spawn event (the hub writes the
+	// two in either order; codex-26's lab at 1e6350aa).
+	w = stale()
+	w.pluginsHook = func(n int) {
+		if n == 2 {
+			w.nextInst++
+			fresh = fmt.Sprintf("inst-%d", w.nextInst)
+			w.runs["lazyrex"] = &fakeRun{commit: commitOld, digest: digestOld, instance: fresh, desired: "running", registered: true}
+			w.event(map[string]any{"event": "plugin_registered", "plugin": "lazyrex", "instance_id": fresh, "client_id": "client:" + fresh})
+			w.event(map[string]any{"event": "plugin_spawned", "plugin": "lazyrex", "instance_id": fresh})
+		}
+	}
+	w.must("replace")
+	if w.replaceCalls != 1 || w.replaceArgs[0]["expect_instance"] != fresh || w.runs["lazyrex"].commit != commitH {
+		t.Errorf("registered before spawned: %d calls %v (current %s)", w.replaceCalls, w.replaceArgs, fresh)
+	}
+
 	w = stale()
 	err := w.step("replace")
 	if err == nil || !strings.Contains(err.Error(), "not registered by its current instance") || w.replaceCalls != 0 || w.pluginsN < 61 {
