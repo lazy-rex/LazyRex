@@ -247,3 +247,63 @@ func TestPluginOpWriteGraph(t *testing.T) {
 		}
 	})
 }
+
+// The intended entry must pass the graph (C4 plan r3 A; codex-27's graph gap): also when the
+// current file already has it, so that before and after refuse it alike. Another writer puts the
+// identical intended entry of an add in the file, with a second entry of the same manifest name;
+// or an update keeps its source and another writer removes its dependency. Conflict, and the add
+// writes no row.
+func TestPluginOpWriteIntendedRefused(t *testing.T) {
+	ctx := context.Background()
+	t.Run("a written add with a second entry of its name", func(t *testing.T) {
+		r, _ := fetchTestRepo(t)
+		h := fetchTestHub(t, r)
+		op := lockedAdd(t, h, "w-twin", "github:acme/notes@v1.0.0")
+		dir := t.TempDir()
+		plugDir(t, dir, "other", `{"name":"notes","main":"m.lua"}`, "m.lua")
+		file := `{"plugins":[{"id":"notes","source":"github:acme/notes@v1.0.0"},{"id":"other","source":"` + filepath.Join(dir, "other") + `"}]}`
+		os.WriteFile(h.cfg.managedPath, []byte(file), 0o600)
+		if err := h.opWrite(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		if op.Phase != "conflict" || !strings.Contains(op.Error, "the add of managed:notes refuses managed:notes") || managedText(t, h) != file || rowCols(t, h, "notes") != nil {
+			t.Fatalf("%+v; file %s; row %+v", op, managedText(t, h), rowCols(t, h, "notes"))
+		}
+	})
+	t.Run("a same-source update with its dependency removed", func(t *testing.T) {
+		r := newTestRepo(t)
+		r.commit(map[string]string{"lazyrex.json": manifestJSON("notes", "dep"), "main.lua": "return 1\n"})
+		r.git("tag", "v1.0.0")
+		h := fetchTestHub(t, r)
+		dir := t.TempDir()
+		dep := opsLocal(t, dir, "dep")
+		os.WriteFile(h.cfg.managedPath, []byte(dep), 0o600)
+		opsLoadEntries(t, h)
+		lockedAdd(t, h, "w-seed", "github:acme/notes@v1.0.0") // the lock entry, as a CLI sync gives it
+		both := strings.TrimSuffix(dep, "]}") + `,{"id":"notes","source":"github:acme/notes@v1.0.0"}]}`
+		os.WriteFile(h.cfg.managedPath, []byte(both), 0o600)
+		opsLoadEntries(t, h)
+		// desired running with no selected run: not "already at", so the update goes on.
+		if _, err := h.db.Exec(`INSERT INTO plugins (name, desired) VALUES ('notes', 'running')`); err != nil {
+			t.Fatal(err)
+		}
+		up, err := resolveOp(t, h, "w-same-dep", opRequest{Op: "update", Entry: "managed:notes", Input: rawJSON(map[string]any{"to": "v1.0.0"})})
+		if err != nil || up.Phase != "fetching" {
+			t.Fatalf("resolve: %+v %v", up, err)
+		}
+		if err := h.opFetch(ctx, up); err != nil || up.Phase != "locking" {
+			t.Fatalf("fetch: %+v %v", up, err)
+		}
+		if err := h.opLock(ctx, up); err != nil || up.Phase != "writing" {
+			t.Fatalf("lock: %+v %v", up, err)
+		}
+		file := `{"plugins":[{"id":"notes","source":"github:acme/notes@v1.0.0"}]}`
+		os.WriteFile(h.cfg.managedPath, []byte(file), 0o600)
+		if err := h.opWrite(ctx, up); err != nil {
+			t.Fatal(err)
+		}
+		if up.Phase != "conflict" || !strings.Contains(up.Error, "the update of managed:notes refuses managed:notes") || managedText(t, h) != file {
+			t.Fatalf("%+v; file %s", up, managedText(t, h))
+		}
+	})
+}
