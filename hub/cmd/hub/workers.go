@@ -90,11 +90,12 @@ func (h *Hub) loadProfiles() (map[string]Profile, []string, error) {
 }
 
 // builtinShell is the plain login shell: no agent, no messaging. The Templates pair starts it too.
-// A profile file can replace it with its own "shell" profile.
+// A profile file can replace it with its own "shell" profile. Without an absolute $SHELL it runs
+// /bin/sh, which every host has (Mac: bash in sh mode, Linux lab: dash; both take -l).
 func builtinShell() Profile {
 	sh := os.Getenv("SHELL")
 	if !filepath.IsAbs(sh) {
-		sh = "/bin/zsh"
+		sh = "/bin/sh"
 	}
 	return Profile{ID: "shell", Name: "Shell", Kind: "accessory", Command: []string{sh, "-l"}}
 }

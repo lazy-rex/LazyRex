@@ -66,3 +66,14 @@ func TestResolveArgs(t *testing.T) {
 		t.Fatalf("resolve: %v %v", got, err)
 	}
 }
+
+// The built-in shell runs an absolute $SHELL as a login shell. Without one it runs /bin/sh, which
+// every host has; /bin/zsh is not on every host.
+func TestBuiltinShellFallback(t *testing.T) {
+	for _, c := range []struct{ shell, want string }{{"", "/bin/sh"}, {"zsh", "/bin/sh"}, {"/bin/bash", "/bin/bash"}} {
+		t.Setenv("SHELL", c.shell)
+		if got := builtinShell().Command; len(got) != 2 || got[0] != c.want || got[1] != "-l" {
+			t.Errorf("SHELL=%q: %q, want [%s -l]", c.shell, got, c.want)
+		}
+	}
+}
