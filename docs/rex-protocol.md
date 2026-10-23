@@ -234,8 +234,9 @@ Observed 2026-10-23: a Mac lab server on Rex 0.0.1792158932-g88fd41 and a Linux 
 - A lab hub on each host, each with the other lab server as its peer, exchanged Messaging messages
   both ways (`claude:x@a` to `claude:y@b` and the reply with `reply_to`). `hub.peer.status` on both
   hubs: `state` up, `outbox` 0, no `last_error`. So two different Rex builds federate.
-- Anonymous TCP gives every caller full access, so bind the tailnet address only (never `0.0.0.0`),
-  and stop the lab server after the check. Its listener goes with the server.
+- Lab only: never add `--allow-anonymous` or this listener to a real Rex server. Anonymous TCP
+  gives every caller full access, so bind the tailnet address only (never `0.0.0.0`), keep the lab
+  for minutes, and stop it after the check. Its listener goes with the server.
 - A hub that starts before its peer's hub logs one failed pull ("client target `lazyrex-hub` not
   found") and then pulls normally.
 
