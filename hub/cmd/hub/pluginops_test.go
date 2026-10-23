@@ -725,3 +725,23 @@ func TestPluginOpBusyFlocks(t *testing.T) {
 		t.Errorf("after the release: %+v", op)
 	}
 }
+
+// A plugins op alone keeps its form open (C8: the form shows its op); every other effect ends it.
+func TestPluginsEffectKeepsForm(t *testing.T) {
+	for _, c := range []struct {
+		result    string
+		any, ends bool
+	}{
+		{`{"plugins":{"op":"stop","entry":"managed:x"}}`, true, false},
+		{`{"plugins":{"op":"stop","entry":"managed:x"},"close_form":true}`, true, true},
+		{`{"plugins":{"op":"stop","entry":"managed:x"},"form":"/forms/x"}`, true, true},
+		{`{"panel":{"route":"/panels/x"}}`, true, true},
+		{`{"plugins":null}`, false, false},
+		{`{}`, false, false},
+	} {
+		e, err := decodeEffects([]byte(c.result))
+		if err != nil || e.any() != c.any || e.endsForm() != c.ends {
+			t.Errorf("%s: any %v, endsForm %v, err %v; want %v, %v", c.result, e.any(), e.endsForm(), err, c.any, c.ends)
+		}
+	}
+}
