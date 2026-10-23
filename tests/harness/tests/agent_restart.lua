@@ -172,6 +172,12 @@ end)
 
 test('no exit keys when another process is in the foreground', function()
   local id, old, sess = started('fgchild', 'codex', 'k5')
+  -- The fake reports before its child takes the foreground (testcli.go): a restart before that
+  -- sees the agent in the foreground and sends the exit keys.
+  H.wait('the child in the foreground', function()
+    local r = rex.call('block.method', {session_id = sess, block_id = old, method = 'process', args = {}})
+    return r and r.child and r.foreground and r.foreground.pid ~= r.child.pid
+  end)
   restarted(finished('x-k5', {agent = id}), id, old, sess, 'exited after SIGTERM')
   expect(log('k5')).not_to_contain('signal: INT')
 end)
