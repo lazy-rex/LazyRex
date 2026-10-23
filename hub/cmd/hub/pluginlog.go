@@ -13,9 +13,9 @@ package main
 // the next request starts a new load.
 //
 // The block part belongs to the record that the load read (the hub lead, lead-c7cache): its entry
-// identity (source and managed entry), instance and block. A kept value of another record is not
-// fresh, and the reply never shows its block, in any state; its hub_log part is the entry's
-// history, so the reply keeps it.
+// identity (source and managed entry), instance and block. A request drops a kept result of
+// another record (loadRequest's stamp), so the reply never shows a block of another record, in
+// any state.
 
 import (
 	"context"
@@ -122,18 +122,19 @@ type hubLogPart struct {
 }
 
 type logResult struct {
-	snap   logSnap // what the load read: the block part is valid only for this record
 	Block  *logBlock
 	HubLog hubLogPart
 }
 
-// runLogLoad is the load of one entry key.
-func (h *Hub) runLogLoad(ctx context.Context, key string) (any, bool, error) {
+// runLogLoad is the load of one entry key for the record stamp (the request's logSnap). A result
+// is kept only when the load read that record at its start and at its end, so a kept value is
+// always of its stamp, and the cache's stamp check is the only check that the reply needs.
+func (h *Hub) runLogLoad(ctx context.Context, key string, stamp any) (any, bool, error) {
 	before, ok := h.logSnapshot(key)
-	if !ok {
+	if !ok || before != stamp {
 		return nil, false, nil
 	}
-	res := logResult{snap: before}
+	var res logResult
 	if before.block != "" {
 		res.Block = h.readBlock(ctx, before)
 		res.Block.InstanceID = before.instance
@@ -269,15 +270,14 @@ func (h *Hub) pluginLog(args json.RawMessage) (any, error) {
 	if !ok {
 		return nil, refuse("not_found", "no plugin entry has the key %s", in.Entry)
 	}
-	stale := func(v any) bool { r, ok := v.(logResult); return ok && r.snap != cur }
-	r, err := h.loadRequest(h.loads.logs, in.Entry, in.Refresh, stale)
+	r, err := h.loadRequest(h.loads.logs, in.Entry, in.Refresh, cur)
 	if err != nil {
 		return nil, err
 	}
 	out := map[string]any{"entry": in.Entry, "state": r.State, "block": nil, "hub_log": nil, "error": r.Error,
 		"read_at": loadTime(r.ReadAt)}
 	if v, ok := r.Value.(logResult); ok {
-		if v.Block != nil && v.snap == cur {
+		if v.Block != nil {
 			out["block"] = v.Block
 		}
 		out["hub_log"] = v.HubLog
