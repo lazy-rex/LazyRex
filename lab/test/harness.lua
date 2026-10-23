@@ -76,11 +76,16 @@ local function is_client_id(id) return type(id) == 'string' and id:sub(1, 7) == 
 -- back as an error or be raised): it is the evidence for a View with an empty client (the Worktrees
 -- flake, 2026-10-22). Only a well-formed client that inspect reports disconnected is skipped
 -- without a line: a client that closed.
-local function resolve(label)
+-- exclude: an optional set of client IDs that are not candidates (retired agent clients).
+local function resolve(label, exclude)
   local res, err = H.rex_call('target.resolve', {kinds = {'client'}, queries = {label}})
   if err or not res or not res.results or not res.results[1] then return nil end
   local r = res.results[1]
-  local cands = r.status == 'resolved' and {r.target} or (r.candidates or {})
+  local all = r.status == 'resolved' and {r.target} or (r.candidates or {})
+  local cands = {}
+  for _, c in ipairs(all) do
+    if not (exclude and exclude[c.client_id]) then cands[#cands + 1] = c end
+  end
   local connected = {}
   for _, c in ipairs(cands) do
     -- The answer goes into a table: this pcall gives only its first result back.
@@ -466,8 +471,9 @@ end
 local Agent = {}
 Agent.__index = Agent
 local agents = {}
--- retired[name] is the client of a failed agent whose disconnect was not seen. A new agent with
--- that name has the same label, so its start never takes that client.
+-- retired[name] is the set of clients of failed agents whose disconnect was not seen. A new agent
+-- with that name has the same label; its start resolves the label without them, so it never takes
+-- one and is not blocked while one stays connected.
 local retired = {}
 
 -- wait_disconnected returns when client.inspect shows that the client is gone: not_found (a closed
@@ -558,10 +564,7 @@ function H.agent(name, opts)
   -- Identity mode. A failure closes the pane and waits for its client to disconnect, so a later
   -- call opens a new one.
   local ok, e = pcall(function()
-    a.client = wait('agent ' .. name .. ' to start', function()
-      local c = resolve(a.label)
-      if c and c ~= retired[name] then return c end
-    end, 15)
+    a.client = wait('agent ' .. name .. ' to start', function() return resolve(a.label, retired[name]) end, 15)
     a.pid = perform(a.client, 'agent.status', {}).pid
     if not report then return end
     a:report({kind = kind, conversation_id = name, source = 'startup'})
@@ -590,7 +593,8 @@ function H.agent(name, opts)
     if a.client then
       local gone, gerr = pcall(H.wait_disconnected, a.client, 'agent ' .. name)
       if not gone then
-        retired[name] = a.client
+        retired[name] = retired[name] or {}
+        retired[name][a.client] = true
         cleanup[#cleanup + 1] = tostring(gerr)
       end
     end

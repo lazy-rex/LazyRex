@@ -99,3 +99,18 @@ test('resolve skips a disconnected client without a diagnostic', function()
   expect(got.value).to_be(nil)
   expect(got.lines).to_have_length(0)
 end)
+
+test('resolve leaves out excluded clients before it counts the connected ones', function()
+  -- Two connected clients share the label: a retired one and a new one (harness.lua, retired).
+  local both = {results = {{status = 'ambiguous', candidates = {{client_id = 'client:old'}, {client_id = 'client:new'}}}}}
+  local inspect_any = function(p) return {client = {client_id = p.client_id, connection_state = 'connected'}} end
+  local got = with_fake({['target.resolve'] = both, ['client.inspect'] = inspect_any},
+    function() return H.resolve('lazyrex-testagent:x') end)
+  expect(got.value, 'two connected clients: no answer').to_be(nil)
+  got = with_fake({['target.resolve'] = both, ['client.inspect'] = inspect_any},
+    function() return H.resolve('lazyrex-testagent:x', {['client:old'] = true}) end)
+  expect(got.value).to_be('client:new')
+  got = with_fake({['target.resolve'] = both, ['client.inspect'] = inspect_any},
+    function() return H.resolve('lazyrex-testagent:x', {['client:old'] = true, ['client:new'] = true}) end)
+  expect(got.value).to_be(nil)
+end)
