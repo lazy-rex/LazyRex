@@ -30,26 +30,71 @@ type relCallOut struct {
 
 // fillExpects returns expects with the lab placeholders replaced in each expected value. The set
 // bytes stay as the owner reviewed them.
-func fillExpects(expects []relSetExpect, vals map[string]string) []relSetExpect {
+func fillExpects(expects []relSetExpect, vals map[string]string) ([]relSetExpect, error) {
 	out := make([]relSetExpect, len(expects))
 	for i, x := range expects {
 		out[i] = x
 		if len(x.Value) > 0 {
-			out[i].Value = json.RawMessage(fillPlaceholders(x.Value, vals))
+			v, err := fillPlaceholders(x.Value, vals)
+			if err != nil {
+				return nil, fmt.Errorf("the expected value of %q: %v", x.Pointer, err)
+			}
+			out[i].Value = v
 		}
 	}
-	return out
+	return out, nil
 }
 
-// fillPlaceholders replaces the lab placeholders in a JSON text. Each value is JSON-escaped, so a
-// placeholder must stand inside a JSON string.
-func fillPlaceholders(raw []byte, vals map[string]string) []byte {
-	s := string(raw)
-	for k, v := range vals {
-		b, _ := json.Marshal(v)
-		s = strings.ReplaceAll(s, k, string(b[1:len(b)-1]))
+// checkFilled applies the expects to a result after it fills the lab placeholders in them.
+func checkFilled(result []byte, expects []relSetExpect, vals map[string]string) error {
+	filled, err := fillExpects(expects, vals)
+	if err != nil {
+		return err
 	}
-	return []byte(s)
+	return checkExpects(result, filled)
+}
+
+// fillPlaceholders replaces the lab placeholders in each string (value or member name) of a JSON
+// text, and encodes it without HTML escapes. It works on the decoded strings, so an escaped form
+// of a placeholder in the text (<SELF>) is replaced too.
+func fillPlaceholders(raw []byte, vals map[string]string) ([]byte, error) {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	var v any
+	if err := d.Decode(&v); err != nil {
+		return nil, err
+	}
+	fill := func(s string) string {
+		for k, x := range vals {
+			s = strings.ReplaceAll(s, k, x)
+		}
+		return s
+	}
+	var walk func(any) any
+	walk = func(v any) any {
+		switch x := v.(type) {
+		case string:
+			return fill(x)
+		case []any:
+			for i := range x {
+				x[i] = walk(x[i])
+			}
+		case map[string]any:
+			m := make(map[string]any, len(x))
+			for k, e := range x {
+				m[fill(k)] = walk(e)
+			}
+			return m
+		}
+		return v
+	}
+	var b bytes.Buffer
+	e := json.NewEncoder(&b)
+	e.SetEscapeHTML(false)
+	if err := e.Encode(walk(v)); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
 
 // agentBatch runs calls as the lab agent relSeedAgent from one new pane of the lab session: the
@@ -134,7 +179,11 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 		if len(args) == 0 {
 			args = json.RawMessage("{}")
 		}
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("args-%d.json", i)), fillPlaceholders(args, vals), 0o600); err != nil {
+		filled, err := fillPlaceholders(args, vals)
+		if err != nil {
+			return nil, relFail("the agent pane %s: the args of item %d: %v", name, i+1, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("args-%d.json", i)), filled, 0o600); err != nil {
 			return nil, err
 		}
 	}

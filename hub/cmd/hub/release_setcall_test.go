@@ -46,8 +46,18 @@ func TestReleaseSetExpects(t *testing.T) {
 }
 
 func TestReleaseSetPlaceholders(t *testing.T) {
-	got := fillPlaceholders([]byte(`{"repo":"<LAB>/repos/demo","to":["<SELF>","<PEER>"],"s":"<SESSION_ID>"}`),
-		map[string]string{"<LAB>": `/tmp/lab "x"`, "<SELF>": "relseed", "<PEER>": "relpeer", "<SESSION_ID>": "session:1"})
+	vals := map[string]string{"<LAB>": `/tmp/lab "x"`, "<SELF>": "relseed", "<PEER>": "relpeer", "<SESSION_ID>": "session:1"}
+	got, err := fillPlaceholders([]byte(`{"repo":"<LAB>/repos/demo","to":["<SELF>","<PEER>"],"s":"<SESSION_ID>"}`), vals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The set bytes can hold an escaped placeholder: Go encodes < and > as \u003c and \u003e.
+	if esc, err := fillPlaceholders([]byte(`{"to":"\u003cSELF\u003e","\u003cPEER\u003e":1}`), vals); err != nil || string(esc) != `{"relpeer":1,"to":"relseed"}` {
+		t.Errorf("the escaped placeholders: %s, %v", esc, err)
+	}
+	if _, err := fillPlaceholders([]byte(`{"to":`), vals); err == nil {
+		t.Error("args that are not JSON: want an error")
+	}
 	var v map[string]any
 	if err := json.Unmarshal(got, &v); err != nil {
 		t.Fatalf("%s: %v", got, err)

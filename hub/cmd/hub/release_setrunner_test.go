@@ -17,7 +17,10 @@ func TestReleaseSetExpectPlaceholders(t *testing.T) {
 	var x []relSetExpect
 	json.Unmarshal([]byte(`[{"pointer":"/thread","value":"<SELF>"},{"pointer":"/path","value":"<LAB>/src"},{"pointer":"/p","empty":true}]`), &x)
 	vals := map[string]string{"<SELF>": "relseed", "<LAB>": `/tmp/lab "q"`}
-	got := fillExpects(x, vals)
+	got, err := fillExpects(x, vals)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := checkExpects([]byte(`{"thread":"relseed","path":"/tmp/lab \"q\"/src","p":{}}`), got); err != nil {
 		t.Fatal(err)
 	}

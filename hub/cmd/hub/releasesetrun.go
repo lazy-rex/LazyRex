@@ -298,7 +298,7 @@ func (h *rehearsal) runItems(e *relSetEntry, items []relSetItem, phase string, c
 				return relFail("item %d (%s) exited %d: %s", idx[j]+1, it.Action, o.Code, strings.TrimSpace(string(o.Out)))
 			}
 			if check {
-				if err := checkExpects(o.Out, fillExpects(it.Expect, o.Vals)); err != nil {
+				if err := checkFilled(o.Out, it.Expect, o.Vals); err != nil {
 					return relFail("item %d (%s): %v", idx[j]+1, it.Action, err)
 				}
 			}
@@ -524,14 +524,18 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if len(input) == 0 {
 		input = json.RawMessage("{}")
 	}
+	filled, err := fillPlaceholders(input, h.placeholders(session, block))
+	if err != nil {
+		return relFail("the input of the view action %s: %v", it.Action, err)
+	}
 	act := map[string]any{"node_id": it.NodeID, "action": it.Action, "revision": snap.Revision, "operation_key": key,
-		"input": json.RawMessage(fillPlaceholders(input, h.placeholders(session, block)))}
+		"input": json.RawMessage(filled)}
 	result, err := h.viewOperation(ctx, c, tv, act, key)
 	if err != nil {
 		return err
 	}
 	if check {
-		if err := checkExpects(result, fillExpects(it.Expect, h.placeholders(session, block))); err != nil {
+		if err := checkFilled(result, it.Expect, h.placeholders(session, block)); err != nil {
 			return err
 		}
 	}
