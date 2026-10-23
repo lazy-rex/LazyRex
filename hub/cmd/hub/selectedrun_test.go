@@ -193,7 +193,7 @@ func TestSelectedRunGone(t *testing.T) {
 	h, clock := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
 	pl := h.plugins["p"]
 	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, context.Background(), `{"exit_code":1}`)
 	removeTree(filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(readTestLock(t, h).Plugins[p1Source("p")].Dir)))
 	dropForTest(h, pl)
@@ -236,7 +236,7 @@ func TestSelectedRunSessionLoss(t *testing.T) {
 	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
 	pl := h.plugins["p"]
 	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	p1Pin(t, h, "p", p1B, p1Manifest("p"))
 	p1Lose(t, h, pl)
 	h.mu.Lock()
@@ -253,7 +253,7 @@ func TestSelectedRunRetry(t *testing.T) {
 	h, clock := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, nil)
 	pl := h.plugins["p"]
 	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, context.Background(), `{"exit_code":1}`)
 	p1Pin(t, h, "p", p1B, p1Manifest("p"))
 	dropForTest(h, pl)
@@ -733,5 +733,30 @@ func TestLocalSnapshotGrowingFile(t *testing.T) {
 	}
 	if m, _ := filepath.Glob(filepath.Join(h.cfg.State, "plugins", "local", "*")); len(m) != 0 {
 		t.Fatalf("left: %v", m)
+	}
+}
+
+// A live retained local instance and a start with a source-only expect_run (a local expect_run has
+// no commit and no digest): the run, with its snapshot digest, is the expected run, so the start
+// keeps the instance and spawns nothing (codex-27, plugins-p1-deviations-source-review).
+func TestLocalSnapshotExpectRunKeeps(t *testing.T) {
+	h, pl, src := p1Local(t)
+	p1Spawned(t, h, pl, p1Start(t, h, pl), "")
+	h.mu.Lock()
+	pl.state, pl.ClientID, pl.InstanceID, pl.BlockID = "retained", "client:p", "p-1", "block:p-1"
+	pl.ChildPID, pl.ChildStart = os.Getpid(), startTime(os.Getpid())
+	h.savePlugin(context.Background(), pl)
+	run := pl.run
+	h.mu.Unlock()
+	var before int
+	h.db.QueryRow(`SELECT count(*) FROM spawn_intents`).Scan(&before)
+	pl.lifecycle.Lock()
+	err := h.startPluginExpect(context.Background(), pl, true, &expectRun{Source: src})
+	pl.lifecycle.Unlock()
+	var after int
+	h.db.QueryRow(`SELECT count(*) FROM spawn_intents`).Scan(&after)
+	state, _, _ := p1State(h, pl)
+	if err != nil || after != before || state != "running" || p1Run(h, pl).Digest != run.Digest {
+		t.Fatalf("%v; spawns %d -> %d, state %s, run %+v", err, before, after, state, p1Run(h, pl))
 	}
 }
