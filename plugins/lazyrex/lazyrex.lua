@@ -1,6 +1,6 @@
 -- LazyRex home. The hub owns profiles, workers, and navigation. Home has no tab: its palette
--- entries are "Agents…" (a panel), "Stop Worker…" and, while no other plugin offers a launch,
--- "Launch Profile…" (forms).
+-- entries are "Agents…" and "Plugins…" (panels), "Stop Worker…" and, while no other plugin offers
+-- a launch, "Launch Profile…" (forms).
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
 local instance_id = assert(rex.args.instance_id, 'instance_id is required')
 local navigation_notice
@@ -31,8 +31,13 @@ local function hub(action, args)
   return response.result
 end
 -- read is a covered hub read of a render (docs/hub.md, "Hub reads in a render"): the render ID
--- keeps the render tracked. A render passes its own ID; no other code borrows it.
-local function read(render_id, action) return hub(action, {render = render_id}) end
+-- keeps the render tracked. A render passes its own ID; no other code borrows it. An action passes
+-- nil: then it is a plain hub call.
+local function read(render_id, action, args)
+  local a = {render = render_id}
+  for k, v in pairs(args or {}) do a[k] = v end
+  return hub(action, a)
+end
 -- set_notice changes the launch notice. The notice is Lua state that the Agents… panel shows, not hub
 -- data, so a change renders the open panel again (hub.ui.invalidate). A failure is ignored, as the
 -- SDK app.refresh does; the call raises nothing.
@@ -166,7 +171,284 @@ local function launch_tree(render_id)
   return {title = 'Launch Profile', nodes = nodes}
 end
 
-local function render(route, render_id)
+-- The plugin manager (C8, docs/hub.md "Plugin manager"): Plugins… lists the entries, and each
+-- entry has a menu. Every op is the view effect plugins = {op, entry, expect, input}: the hub
+-- admits it as the user's op, bound to the view operation key. The entry key (managed:<id>, or
+-- the source of a config entry) goes into the route as hex, so a render needs no Lua state.
+-- A form that sent an op stays open and shows the newest op of its own view (origin_view).
+local confirmation = {user_only = 'confirmation'} -- new code or a new entry: only the user decides
+local op_tool = {tool = 'hub.plugins.op'}
+local final = {done = true, failed = true, conflict = true, unknown = true}
+local function hex(s) return (s:gsub('.', function(c) return string.format('%02x', c:byte()) end)) end
+local function unhex(h)
+  if type(h) ~= 'string' or h == '' or #h % 2 == 1 or h:find('[^0-9a-f]') then fail('invalid_input', 'Unknown plugin route') end
+  return (h:gsub('..', function(x) return string.char(tonumber(x, 16)) end))
+end
+local function entry_key(e) return e.managed and ('managed:' .. e.managed) or e.source end
+local function entry_of(list, key)
+  for _, e in ipairs(list.entries or {}) do if entry_key(e) == key then return e end end
+end
+local function widget(id, text, a) return {id = id, type = 'widget', text = text, action = a} end
+local function button(id, name, label, parity) return widget(id, '', action(name, label, parity)) end
+-- digest16 is the first 16 hex digits of the SHA-256 of text (hub.digest: Rex Lua has no hash).
+local function digest16(render_id, text) return read(render_id, 'hub.digest', {texts = {text}}).digests[1]:sub(1, 16) end
+local function entry_detail(e)
+  local d = e.state or 'unknown'
+  if e.state == 'stopped' and e.desired == 'stopped' then d = 'Disabled: stays stopped until you enable it' end
+  if e.tag then d = d .. ' · ' .. e.tag end
+  if e.commit then d = d .. ' · ' .. e.commit:sub(1, 12) end
+  if type(e.error) == 'string' and e.error ~= '' then d = d .. ' · ' .. e.error end
+  if type(e.candidate) == 'table' then
+    d = d .. (e.candidate.error and (' · New code refused: ' .. e.candidate.error) or ' · New code is ready: it runs at the next start')
+  end
+  return d
+end
+-- progress_node shows the newest op that this view sent, or that it sent none.
+local function progress_node(render_id, view_id)
+  local op = (read(render_id, 'hub.plugins.ops', {origin_view = view_id}).ops or {})[1]
+  local text = 'No operation yet.'
+  if op then
+    text = 'Last operation: ' .. op.op .. ' · ' .. op.phase
+    local why = op.error ~= '' and op.error or op.result
+    if final[op.phase] and why and why ~= '' then text = text .. ' · ' .. why end
+  end
+  return widget('progress', text)
+end
+local function gone(title, render_id, view_id)
+  return {title = title, menu = true, nodes = {widget('gone', 'This plugin entry is no longer listed.'), progress_node(render_id, view_id), cancel_node('Close')}}
+end
+-- settings_text is the managed entry's args (sorted key=value lines) and watch roots (one per
+-- line), or nil when a form cannot show them exactly: a line break in a key or value, "=" in a key,
+-- or over 65536 bytes (the hub.digest limit of one text).
+local function settings_text(e)
+  local keys, lines = {}, {}
+  for k in pairs(e.args or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+  for _, k in ipairs(keys) do
+    if k:find('[=\r\n]') or e.args[k]:find('[\r\n]') then return nil end
+    lines[#lines + 1] = k .. '=' .. e.args[k]
+  end
+  for _, r in ipairs(e.watch_roots or {}) do if r:find('[\r\n]') then return nil end end
+  local a, w = table.concat(lines, '\n'), table.concat(e.watch_roots or {}, '\n')
+  if #a + #w + 1 > 65536 then return nil end
+  return a, w
+end
+local function settings_id(render_id, a, w) return 'settings/' .. digest16(render_id, a .. '\0' .. w) end
+local function start_id(render_id, x) return 'start/' .. digest16(render_id, x.source .. '\0' .. (x.commit or '') .. '\0' .. (x.digest or '')) end
+local function lines_of(text)
+  local out = {}
+  for line in (text .. '\n'):gmatch('(.-)\r?\n') do if line ~= '' then out[#out + 1] = line end end
+  return out
+end
+local function version_field(render_id, source)
+  local t = read(render_id, 'hub.plugins.tags', {source = source})
+  local options = {{value = 'latest', label = 'Latest release' .. (t.latest and (' (' .. t.latest.tag .. ')') or '')}}
+  for _, tag in ipairs(t.tags or {}) do options[#options + 1] = {value = tag.tag, label = tag.tag} end
+  local state = 'Versions: ' .. (t.state or 'unknown') .. ((t.error or '') ~= '' and (' · ' .. t.error) or '')
+  return {id = 'version', label = 'Version', kind = 'select', required = true, value = 'latest', options = options}, widget('versions', state, action('refresh', 'Refresh versions', navigation))
+end
+
+local function plugins_panel(render_id)
+  local list = read(render_id, 'hub.plugins')
+  local nodes, items = {}, {}
+  for _, r in ipairs(list.refused or {}) do
+    if r.managed_file then nodes[#nodes + 1] = widget('managed_file', 'The managed plugin file ' .. r.managed_file .. ' does not read, so its entries are not loaded: ' .. r.error) end
+  end
+  for _, e in ipairs(list.entries or {}) do
+    items[#items + 1] = {id = entry_key(e), label = e.name or entry_key(e), detail = entry_detail(e), action = action('manage', 'Manage…', navigation)}
+  end
+  for _, k in ipairs(list.kept or {}) do
+    items[#items + 1] = {id = 'kept:' .. k.name, label = k.name, detail = 'Kept record with no entry · ' .. (k.state or 'unknown') .. ((k.error or '') ~= '' and (' · ' .. k.error) or '')}
+  end
+  nodes[#nodes + 1] = {id = 'entries', type = 'list', label = 'Plugins', items = items}
+  nodes[#nodes + 1] = button('add', 'add', 'Add plugin…', navigation)
+  return {title = 'Plugins', nodes = nodes}
+end
+
+local function entry_tree(key, render_id, view_id)
+  local list = read(render_id, 'hub.plugins')
+  local e = entry_of(list, key)
+  if not e then return gone('Plugin', render_id, view_id) end
+  local nodes = {widget('detail', entry_key(e) .. '\n' .. entry_detail(e)), progress_node(render_id, view_id)}
+  local github = e.source:sub(1, 7) == 'github:'
+  if e.state ~= 'running' then nodes[#nodes + 1] = button('enable', 'enable', 'Enable (start)', github and navigation or op_tool) end
+  if e.name ~= 'lazyrex' and e.state == 'running' then nodes[#nodes + 1] = button('disable', 'disable', 'Disable (stop)', op_tool) end
+  if e.state == 'running' then nodes[#nodes + 1] = button('restart', 'restart', 'Restart', op_tool) end
+  if e.managed and github then nodes[#nodes + 1] = button('update', 'update', 'Update…', navigation) end
+  if e.managed then
+    local a, w = settings_text(e)
+    if a then
+      nodes[#nodes + 1] = {id = settings_id(render_id, a, w), type = 'form', label = 'Settings (they apply at the next start)', fields = {
+        {id = 'args', label = 'Args: one key=value per line', kind = 'multiline', required = false, value = a},
+        {id = 'watch_roots', label = 'Watch roots: one path per line', kind = 'multiline', required = false, value = w},
+      }, submit_action = action('settings', 'Save settings', op_tool)}
+    else
+      nodes[#nodes + 1] = widget('settings', 'These settings cannot be edited here (a line break, "=" in a key, or over 64 KiB). Change them with the agent tool hub.plugins.op.')
+    end
+    if e.name ~= 'lazyrex' then nodes[#nodes + 1] = button('remove', 'remove', 'Remove…', navigation) end
+  end
+  nodes[#nodes + 1] = button('log', 'log', 'Log', navigation)
+  for _, p in ipairs(list.plugins or {}) do
+    if p.id == e.name and p.panel then nodes[#nodes + 1] = button('open', 'open', 'Open', navigation) end
+  end
+  nodes[#nodes + 1] = cancel_node('Close')
+  return {title = e.name or key, menu = true, nodes = nodes}
+end
+
+local function confirm_tree(what, key, render_id, view_id)
+  local e = entry_of(read(render_id, 'hub.plugins'), key)
+  if not e then return gone('Confirm', render_id, view_id) end
+  local nodes = {}
+  if what == 'remove' then
+    nodes[1] = widget('remove', 'Remove ' .. key .. ' (' .. e.source .. ')? It stops, and its entry leaves the managed file.', action('remove', 'Remove', op_tool))
+  elseif not e.expect_run then
+    nodes[1] = widget('no_run', 'This entry has no code to start: ' .. ((e.candidate or {}).error or e.error or 'unknown'))
+  elseif e.expect_run.commit then
+    local x = e.expect_run
+    nodes[1] = widget(start_id(render_id, x), 'Run ' .. x.source .. ' at commit ' .. x.commit .. ' (' .. x.digest .. ')? This runs code from GitHub on this computer.', action('start', 'Start', confirmation))
+  else
+    nodes[1] = widget(start_id(render_id, e.expect_run), 'Run the code in ' .. (e.dir or e.source) .. ' as it is at the start?', action('start', 'Start', confirmation))
+  end
+  nodes[#nodes + 1] = progress_node(render_id, view_id)
+  nodes[#nodes + 1] = cancel_node('Close')
+  return {title = what == 'remove' and 'Remove Plugin' or 'Start Plugin', nodes = nodes}
+end
+
+local function add_tree(source_hex, render_id, view_id)
+  if not source_hex then
+    return {title = 'Add Plugin', nodes = {{id = 'source', type = 'form', label = 'GitHub source', fields = {
+      {id = 'source', label = 'Source: github:<owner>/<repo>[/<subdir>], with no @ref', kind = 'text', required = true, value = ''}},
+      submit_action = action('next', 'Next', confirmation)}, cancel_node()}}
+  end
+  local source = unhex(source_hex)
+  local version, versions = version_field(render_id, source .. '@latest')
+  return {title = 'Add Plugin', nodes = {widget('shown_source', source), versions,
+    {id = 'add', type = 'form', label = 'Add ' .. source, fields = {version,
+      {id = 'id', label = 'Id (optional: the default comes from the source)', kind = 'text', required = false, value = ''}},
+      submit_action = action('add', 'Add', confirmation)},
+    progress_node(render_id, view_id), button('back', 'back', 'Back', navigation), cancel_node('Close')}}
+end
+
+local function update_tree(key, render_id, view_id)
+  local e = entry_of(read(render_id, 'hub.plugins'), key)
+  if not e then return gone('Update', render_id, view_id) end
+  local version, versions = version_field(render_id, e.source)
+  return {title = 'Update ' .. (e.name or key), nodes = {widget('shown_source', e.source), versions,
+    {id = 'update', type = 'form', label = 'Update to', fields = {version}, submit_action = action('update', 'Update', confirmation)},
+    progress_node(render_id, view_id), cancel_node('Close')}}
+end
+
+-- log_tree: the plugin pane's last 60 lines (escape sequences removed) and its hub.log lines.
+local function log_tree(key, render_id)
+  local r = read(render_id, 'hub.plugins.log', {entry = key})
+  local text = 'Log: ' .. (r.state or 'unknown') .. ((r.error or '') ~= '' and (' · ' .. r.error) or '')
+  local nodes = {widget('state', text, action('refresh', 'Refresh', navigation))}
+  if type(r.block) == 'table' then
+    local pane = (r.block.text or ''):gsub('\27%[[%d;?]*[@-~]', ''):gsub('\27%][^\7\27]*\7', ''):gsub('\27.', ''):gsub('[%z\1-\8\11-\31\127]', '')
+    local all, from = lines_of(pane), 1
+    if #all > 60 then from = #all - 59 end
+    nodes[#nodes + 1] = widget('pane', 'Pane output:\n' .. table.concat(all, '\n', from) .. ((r.block.error or '') ~= '' and ('\n' .. r.block.error) or ''))
+  end
+  if type(r.hub_log) == 'table' then
+    local lines = r.hub_log.lines or {}
+    nodes[#nodes + 1] = widget('hub_log', 'Hub log:\n' .. (#lines > 0 and table.concat(lines, '\n') or (r.hub_log.reason or r.hub_log.error or 'No lines.')))
+  end
+  return {title = 'Plugin Log', nodes = nodes}
+end
+
+local function manager_tree(route, render_id, view_id)
+  if route == '/panels/plugins' then return plugins_panel(render_id) end
+  if route == '/forms/plugins/add' then return add_tree(nil, render_id, view_id) end
+  local kind, h = route:match('^/[a-z]+/plugins/([a-z/]+)/(%x+)$')
+  local key = unhex(h)
+  if kind == 'entry' then return entry_tree(key, render_id, view_id) end
+  if kind == 'add' then return add_tree(h, render_id, view_id) end
+  if kind == 'update' then return update_tree(key, render_id, view_id) end
+  if kind == 'log' then return log_tree(key, render_id) end
+  return confirm_tree(kind:match('^confirm/(.+)$'), key, render_id, view_id)
+end
+
+-- manager_action answers a manager action, or nil for another route. It reads the hub again: an
+-- op names the state that the user acts on now (expect), not the state of an older render.
+local function manager_action(args, input)
+  local route = args.route
+  if not (route:find('^/panels/plugins') or route:find('^/forms/plugins/')) then return nil end
+  local values = type(input.values) == 'table' and input.values or {}
+  if route == '/panels/plugins' then
+    if args.node_id == 'add' then return {form = '/forms/plugins/add'} end
+    local e = entry_of(hub('hub.plugins'), input.item_id)
+    if args.node_id ~= 'entries' or not e then fail('not_found', 'The selected item is no longer available. Refresh the view.') end
+    return {form = '/forms/plugins/entry/' .. hex(entry_key(e))}
+  end
+  if route == '/forms/plugins/add' then
+    local source = values.source
+    if type(source) ~= 'string' or not source:match('^github:[^@%s]+$') then fail('invalid_input', 'Give a GitHub source github:<owner>/<repo>[/<subdir>], with no @ref') end
+    return {form = '/forms/plugins/add/' .. hex(source)}
+  end
+  local kind, h = route:match('^/[a-z]+/plugins/([a-z/]+)/(%x+)$')
+  local key = unhex(h)
+  if args.action == 'refresh' then
+    if kind == 'log' then hub('hub.plugins.log', {entry = key, refresh = true}) else
+      local e = kind == 'update' and entry_of(hub('hub.plugins'), key)
+      hub('hub.plugins.tags', {source = e and e.source or (key .. '@latest'), refresh = true})
+    end
+    return {}
+  end
+  if kind == 'add' then
+    if args.action == 'back' then return {form = '/forms/plugins/add'} end
+    if type(values.version) ~= 'string' or values.version == '' then fail('invalid_input', 'Select a version') end
+    local id = type(values.id) == 'string' and values.id ~= '' and values.id or nil
+    return {plugins = {op = 'add', input = {source = key .. '@' .. values.version, id = id}}}
+  end
+  local list = hub('hub.plugins')
+  local e = entry_of(list, key)
+  if not e then fail('not_found', 'This plugin entry is no longer listed.') end
+  local x = e.expect_run
+  if kind == 'update' then
+    if type(values.version) ~= 'string' or values.version == '' then fail('invalid_input', 'Select a version') end
+    return {plugins = {op = 'update', entry = key, input = {to = values.version}}}
+  end
+  if kind == 'confirm/remove' then return {plugins = {op = 'remove', entry = key}} end
+  if kind == 'confirm/start' then
+    if not x or start_id(nil, x) ~= args.node_id then fail('conflict', 'The code to start changed since it was shown. Read the new text, then start again.') end
+    return {plugins = {op = 'start', entry = key, expect = x}}
+  end
+  local a = args.action
+  if a == 'enable' and e.source:sub(1, 7) == 'github:' then return {form = '/forms/plugins/confirm/start/' .. h} end
+  if a == 'enable' then
+    if not x then fail('invalid_input', 'This entry has no code to start: ' .. ((e.candidate or {}).error or e.error or 'unknown')) end
+    return {plugins = {op = 'start', entry = key, expect = x}}
+  end
+  if a == 'disable' then return {plugins = {op = 'stop', entry = key}} end
+  if a == 'restart' then return {plugins = {op = 'restart', entry = key}} end
+  if a == 'update' then return {form = '/forms/plugins/update/' .. h} end
+  if a == 'remove' then return {form = '/forms/plugins/confirm/remove/' .. h} end
+  if a == 'log' then return {panel = {route = '/panels/plugins/log/' .. h}} end
+  if a == 'open' then
+    for _, p in ipairs(list.plugins or {}) do if p.id == e.name and p.panel then return {panel = {plugin = p.id, command = p.panel}} end end
+    fail('not_found', 'The plugin has no panel now.')
+  end
+  if a == 'settings' then
+    local cur_a, cur_w = settings_text(e)
+    if not cur_a or settings_id(nil, cur_a, cur_w) ~= args.node_id then fail('conflict', 'The settings changed since they were shown. Read the new values, then save again.') end
+    local new_args, roots = {}, lines_of(type(values.watch_roots) == 'string' and values.watch_roots or '')
+    for n, line in ipairs(lines_of(type(values.args) == 'string' and values.args or '')) do
+      local k, v = line:match('^([^=]+)=(.*)$')
+      if not k then fail('invalid_input', 'args: line ' .. n .. ' needs key=value') end
+      if new_args[k] then fail('invalid_input', 'args: the key ' .. k .. ' is given twice') end
+      new_args[k] = v
+    end
+    -- An empty list is left out: Rex Lua encodes an empty table as {}, and the hub takes a missing
+    -- watch_roots as an empty one.
+    local cur_roots = #(e.watch_roots or {}) > 0 and e.watch_roots or nil
+    return {plugins = {op = 'settings', entry = key, input = {args = new_args, watch_roots = #roots > 0 and roots or nil},
+      expect = {args = e.args or {}, watch_roots = cur_roots}}}
+  end
+  fail('invalid_input', 'Unknown plugin manager action')
+end
+
+local function render(route, render_id, view_id)
+  if route:find('^/panels/plugins') or route:find('^/forms/plugins/') then return manager_tree(route, render_id, view_id) end
   if route == '/panels/agents' then return panel_tree(render_id) end
   if route == '/forms/stop' then return stop_tree(render_id) end
   if route == '/forms/launch' then return launch_tree(render_id) end
@@ -183,6 +465,8 @@ local function closing(result)
 end
 local function perform(args)
   local input = type(args.input) == 'table' and args.input or {}
+  local managed = manager_action(args, input)
+  if managed then return managed end
   if args.node_id == 'agents' and args.action == 'message' then
     local agent = find(hub('hub.agents').agents, 'id', input.item_id)
     if agent.id == 'user' then fail('invalid_input', 'Select an agent') end
@@ -249,11 +533,14 @@ local function launch_offered()
 end
 -- The palette entries. "Launch Profile…" only while no other plugin offers a launch (decision Q1 A,
 -- 2026-10-22; the hub lead: gate on the capability).
+local base_commands = {
+  {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
+  {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'},
+  {id = 'plugins', title = 'Plugins…', route = '/panels/plugins', surface = 'panel', user_only = 'navigation'},
+}
 local function commands()
-  local list = {
-    {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
-    {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'},
-  }
+  local list = {}
+  for i, c in ipairs(base_commands) do list[i] = c end
   if not launch_offered() then
     list[#list + 1] = {id = 'launch', title = 'Launch Profile…', route = '/forms/launch', action = 'hub.spawn'}
   end
@@ -273,12 +560,18 @@ local function sync()
   registered_ids = ids
 end
 
-local routes = {['/panels/agents'] = true, ['/forms/stop'] = true, ['/forms/launch'] = true}
+local routes = {['/panels/agents'] = true, ['/forms/stop'] = true, ['/forms/launch'] = true,
+  ['/panels/plugins'] = true, ['/forms/plugins/add'] = true}
+local manager_routes = {'^/forms/plugins/entry/%x+$', '^/forms/plugins/add/%x+$', '^/forms/plugins/update/%x+$',
+  '^/forms/plugins/confirm/start/%x+$', '^/forms/plugins/confirm/remove/%x+$', '^/panels/plugins/log/%x+$'}
 local function known_route(route)
-  return type(route) == 'string' and (routes[route] or route:match('^/forms/worker/.+$') ~= nil)
+  if type(route) ~= 'string' then return false end
+  if routes[route] or route:match('^/forms/worker/.+$') then return true end
+  for _, p in ipairs(manager_routes) do if route:match(p) then return true end end
+  return false
 end
 local handlers = {
-  ['view.render'] = function(args) return {tree = render(args.route, args.render)} end,
+  ['view.render'] = function(args) return {tree = render(args.route, args.render, args.view_id)} end,
   ['view.action'] = perform,
   ['view.seen'] = function(args) return {} end,
   ['hub.changed'] = function(args) sync(); return {} end,
@@ -289,10 +582,8 @@ for name in pairs(handlers) do actions[#actions + 1] = {name = name, kind = 'cli
 rex.call('client.keymap', {actions = actions})
 -- The first registration names the base commands, so the hub knows the plugin; sync then adds
 -- Launch Profile… when no other plugin offers a launch.
-hub('hub.register', {plugin = 'lazyrex', instance_id = instance_id, exports = {}, commands = {
-  {id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'},
-  {id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'}}})
-registered_ids = 'agents,stop'
+hub('hub.register', {plugin = 'lazyrex', instance_id = instance_id, exports = {}, commands = base_commands})
+registered_ids = 'agents,stop,plugins'
 sync()
 hub('hub.ui.tabs', {tabs = {}})
 rex.on('client_perform_requested', function(ctx, ev)

@@ -14,10 +14,10 @@ local function command_ids()
   return ids
 end
 
-test('the home plugin declares no tabs; its palette entries are Agents… and Stop Worker…', function()
+test('the home plugin declares no tabs; its palette entries are Agents…, Stop Worker… and Plugins…', function()
   expect(tabs()).to_equal({})
   -- The launcher stub offers a launch (hub.spawn): no Launch Profile….
-  expect(command_ids()).to_equal({'agents', 'stop'})
+  expect(command_ids()).to_equal({'agents', 'stop', 'plugins'})
   local cmds = H.hub('hub.test.commands', {plugin = 'lazyrex'}).commands
   expect(cmds[1]).to_equal({id = 'agents', title = 'Agents…', route = '/panels/agents', surface = 'panel', landing = true, user_only = 'navigation'})
   expect(cmds[2]).to_equal({id = 'stop', title = 'Stop Worker…', route = '/forms/stop', action = 'hub.stop'})
