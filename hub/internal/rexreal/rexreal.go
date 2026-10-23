@@ -143,19 +143,6 @@ func IsReal(ctx context.Context, s string) bool {
 	return cfg.InstanceID == "" || cfg.InstanceID == def.InstanceID
 }
 
-// DefaultEndpoint is the endpoint of Rex's default server, for a caller without a server (a Linux
-// pane has no REX_SERVER). An answer without an endpoint or an instance_id is an error.
-func DefaultEndpoint(ctx context.Context) (string, error) {
-	def, err := status(ctx, "")
-	if err != nil {
-		return "", err
-	}
-	if _, ok := socketPath(def.Endpoint); !ok || def.InstanceID == "" {
-		return "", errors.New("rex server status names no default endpoint")
-	}
-	return def.Endpoint, nil
-}
-
 type serverStatus struct {
 	Endpoint   string `json:"endpoint"`
 	InstanceID string `json:"instance_id"`

@@ -74,27 +74,6 @@ func TestKnownDefaultSymlinks(t *testing.T) {
 	}
 }
 
-// DefaultEndpoint is Rex's own default endpoint. An empty, malformed or failed answer is no
-// endpoint: the caller refuses.
-func TestDefaultEndpoint(t *testing.T) {
-	for _, c := range []struct {
-		def, want string
-		ok        bool
-	}{
-		{`{"endpoint":"unix:///run/user/501/rex/server.sock","instance_id":"i1"}`, "unix:///run/user/501/rex/server.sock", true},
-		{`{"endpoint":"","instance_id":"i1"}`, "", false},
-		{`{"endpoint":"unix:///run/user/501/rex/server.sock"}`, "", false},
-		{`not json`, "", false},
-		{"down", "", false},
-	} {
-		fakeStatusRex(t, c.def, "")
-		got, err := DefaultEndpoint(context.Background())
-		if got != c.want || (err == nil) != c.ok {
-			t.Errorf("default %q: %q, %v", c.def, got, err)
-		}
-	}
-}
-
 // fakeStatusRex puts a rex on PATH that answers "server status --json" as cmd/hub's test of the
 // same name does: the default server answers DEF ("down" = not running); any -S server answers
 // CFG ("" = refused); with FAKE_CFG_HOLD set, it creates that file and does not answer for 5 s. It
@@ -131,10 +110,10 @@ echo "$FAKE_DEF"
 	return log
 }
 
-// The default query removes REX_SERVER and never starts a server.
+// The default query (IsReal) removes REX_SERVER and never starts a server.
 func TestDefaultQueryHasNoServer(t *testing.T) {
 	log := fakeStatusRex(t, `{"endpoint":"unix:///run/user/501/rex/server.sock","instance_id":"i1"}`, "")
-	if _, err := DefaultEndpoint(context.Background()); err != nil {
+	if _, err := status(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
