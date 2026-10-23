@@ -988,6 +988,12 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 			return err
 		}
 		if written {
+			// An add goes on only while it owns its row (lead-c4e 3).
+			if op.Kind == "add" {
+				if stop, err := h.entryRow(ctx, op, intended); stop || err != nil {
+					return err
+				}
+			}
 			return h.setOpPhase(ctx, op, op.nextPhase("writing"), "", "")
 		}
 	}
@@ -1021,10 +1027,7 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the new managed file is not valid: %v; nothing was written", err))
 	}
 	if op.Kind == "add" {
-		var pin lockEntry
-		json.Unmarshal([]byte(op.Pin), &pin)
-		identity := entryIdentity(&configEntry{managed: m.ID, Source: m.Source})
-		if stop, err := h.addRow(ctx, op, pin.Name, identity); stop || err != nil {
+		if stop, err := h.entryRow(ctx, op, intended); stop || err != nil {
 			return err
 		}
 	}
