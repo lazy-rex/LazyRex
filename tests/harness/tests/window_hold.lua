@@ -47,7 +47,10 @@ test('a hold stops only its own key; cancel lets the held call record the window
   wait('the held panes', function() return #spawn_panes(s) == 4 end, 20)
   -- The next hub request waits until the held call times out for its caller.
   expect(injection(id).consumed).to_be(1)
-  expect(outcome('h/held').error).to_match('timed out')
+  -- Two 10 s limits end it: the caller's ("timed out") or Rex's answer limit, whichever ends first
+  -- ("did not answer within 10s (status=504 code=timeout)"). Both are the timeout.
+  local held = outcome('h/held').error
+  expect((held:match('timed out') or held:match('code=timeout%)')) and 'timeout' or held).to_be('timeout')
   -- Cancel: the held call goes on and records its leaves (its reply has no receiver now).
   cancel_injection(id)
   local r = wait('the recorded window', function()
