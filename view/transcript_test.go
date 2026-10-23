@@ -1,11 +1,8 @@
 package main
 
 import (
-	"strconv"
-
 	"context"
 	"fmt"
-	"github.com/lazy-rex/LazyRex/view/transcript"
 	"strings"
 	"testing"
 	"time"
@@ -143,16 +140,6 @@ func TestTranscriptPassesThePreviousPrintedMessage(t *testing.T) {
 	}
 }
 
-func TestTranscriptRestyleReprintsTheWindow(t *testing.T) {
-	p, w := printerFor(t)
-	s := historySnapshot(false, "1", "2")
-	p.apply(s)
-	p.restyle(s, func(m Message, _ *Message) string { return "<" + m.ID + ">" })
-	if len(*w) != 2 || (*w)[1] != clearScrollback+"<1><2>" {
-		t.Fatalf("writes=%q", *w)
-	}
-}
-
 func TestPrescrollMakesRoomBeforeWrappedBackgroundLines(t *testing.T) {
 	bg := "\x1b[48;2;40;48;64m"
 	long := bg + strings.Repeat("x", 25) + "\x1b[0m\n" // 25 cells: 3 rows at 10 columns
@@ -278,15 +265,6 @@ func TestCRLFWriterReportsAShortWrite(t *testing.T) {
 	}
 }
 
-func TestTranscriptBannerFollowsTheClear(t *testing.T) {
-	p, w := printerFor(t)
-	p.banner = "B\n"
-	p.apply(historySnapshot(true, "1"))
-	if (*w)[0] != clearScrollback+"B\n"+olderMarker+"[1:t1]" {
-		t.Fatalf("writes=%q", *w)
-	}
-}
-
 func TestOSC11Theme(t *testing.T) {
 	for payload, want := range map[string]string{
 		"11;rgb:1e1e/1e1e/1e1e": "dark",  // Rex with a dark theme (observed)
@@ -329,28 +307,9 @@ func TestAwaitThemePrefersTheBackground(t *testing.T) {
 	}
 }
 
-func TestGalleryBannerNamesTheTheme(t *testing.T) {
-	if b := galleryBanner(8, 10, "9 header prompt", true, true); !strings.Contains(b, "Style 9 of 10: 9 header prompt · dark (forced) · ") {
-		t.Fatalf("banner=%q", b)
-	}
-	if b := galleryBanner(0, 10, "x", false, false); !strings.Contains(b, " · light · s next") {
-		t.Fatalf("banner=%q", b)
-	}
-}
-
-func TestTranscriptStylePassesTheTheme(t *testing.T) {
-	style, err := parseTranscriptStyle("9")
-	if err != nil || style.gallery != 9 {
-		t.Fatalf("style=%+v err=%v", style, err)
-	}
+func TestTranscriptFormatPassesTheTheme(t *testing.T) {
 	m := Message{ID: "1", Author: "You", Own: true, Text: "hello"}
-	light, dark := formatTranscript(style, false)(m, nil), formatTranscript(style, true)(m, nil)
-	if light == dark {
+	if formatTranscript(false)(m, nil) == formatTranscript(true)(m, nil) {
 		t.Fatal("the dark palette is not used")
-	}
-	for _, bad := range []string{"0", strconv.Itoa(len(transcript.GalleryStyles) + 1), "e"} {
-		if _, err := parseTranscriptStyle(bad); err == nil {
-			t.Errorf("style %q was accepted", bad)
-		}
 	}
 }

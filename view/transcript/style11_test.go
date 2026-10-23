@@ -13,7 +13,7 @@ var updateStyle11 = flag.Bool("update-style11", false, "rewrite testdata/style11
 // style11 is the renderer's transcript style (style 11, "header + bold user"). It is the only call
 // of the formatter in this test, so a rename changes one line and the golden files stay.
 func style11(m Message, previous *Message, dark bool) string {
-	return FormatGallery(m, previous, BoldUser, dark)
+	return Format(m, previous, dark)
 }
 
 // TestStyle11Golden pins the exact bytes of style 11 for both palettes: a first message and a

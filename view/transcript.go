@@ -31,7 +31,6 @@ type transcriptPrinter struct {
 	started bool
 	added   []string // IDs printed by the current apply, removed again if the write fails
 	rebuilt bool     // the current apply replaced the ledger
-	banner  string   // printed after the clear of every rebuild (gallery mode)
 	// size returns the pane's columns and rows, or zeros when unknown. See prescroll.
 	size func() (cols, rows int)
 }
@@ -127,7 +126,6 @@ func (p *transcriptPrinter) applyHistory(s Snapshot) error {
 func (p *transcriptPrinter) rebuild(messages []Message, hasMore bool) error {
 	var buf bytes.Buffer
 	buf.WriteString(clearScrollback)
-	buf.WriteString(p.banner)
 	if hasMore {
 		buf.WriteString(olderMarker)
 	}
@@ -137,13 +135,6 @@ func (p *transcriptPrinter) rebuild(messages []Message, hasMore bool) error {
 	}
 	p.started = true
 	return p.write(buf.Bytes())
-}
-
-// restyle reprints the current window with a new format, for the demo style switch.
-func (p *transcriptPrinter) restyle(s Snapshot, format func(Message, *Message) string) error {
-	p.format = format
-	p.started = false
-	return p.apply(s)
 }
 
 func (p *transcriptPrinter) print(buf *bytes.Buffer, m Message) {

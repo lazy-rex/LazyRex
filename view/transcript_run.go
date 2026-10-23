@@ -4,12 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"os"
-	"strings"
-	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -32,24 +28,15 @@ func (c crlfWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-type transcriptOptions struct {
-	style   transcriptStyle
-	gallery bool           // s and S cycle the gallery styles instead of a, c, d
-	client  *viewClient    // hub mode
-	thread  *fixtureThread // fixture mode
-}
-
 // runTranscript prints a thread into the pane's scrollback until ctx ends, Ctrl+Q, or a
 // reload. It returns reload=true when the hub asked it to execute itself again.
 //
 // The pane gets no echo and no mouse modes, so the wheel, selection and copy stay native.
-// Keys: a, c, d switch the user-message style (a rebuild); o loads 50 older messages
-// (fixture mode); Ctrl+Q quits. In gallery mode, s and S cycle the styles and t forces the
-// other theme. Focus reports (DECSET 1004) go to the hub as read notices.
+// Ctrl+Q quits. Focus reports (DECSET 1004) go to the hub as read notices.
 //
 // The theme comes from the terminal (themeQuery) before the first print. A later scheme
-// report with the other theme changes the palette of new messages; in the gallery it rebuilds.
-func runTranscript(ctx context.Context, opts transcriptOptions) (reload bool, err error) {
+// report with the other theme changes the palette of new messages.
+func runTranscript(ctx context.Context, client *viewClient) (reload bool, err error) {
 	fd := os.Stdin.Fd()
 	if state, err := term.MakeRaw(fd); err == nil {
 		defer term.Restore(fd, state)
@@ -65,37 +52,18 @@ func runTranscript(ctx context.Context, opts transcriptOptions) (reload bool, er
 	focus := make(chan bool, 4)
 	themes := make(chan themeReport, 4)
 	go readTranscriptInput(ctx, os.Stdin, keys, focus, themes)
-	dark, forced := awaitTheme(themes, themeQueryTimeout), false
+	dark := awaitTheme(themes, themeQueryTimeout)
 
-	snapshots := make(chan Snapshot, 4)
 	events := make(chan tea.Msg, 16)
-	switch {
-	case opts.thread != nil:
-		go opts.thread.watch(ctx, snapshots)
-	case opts.client != nil:
-		opts.client.emit = func(msg tea.Msg) {
-			select {
-			case events <- msg:
-			case <-ctx.Done():
-			}
+	client.emit = func(msg tea.Msg) {
+		select {
+		case events <- msg:
+		case <-ctx.Done():
 		}
-		go opts.client.run(ctx)
 	}
+	go client.run(ctx)
 
-	entries, shown := galleryEntries(), 0
-	if opts.style.gallery > 0 {
-		shown = opts.style.gallery - 1 // the gallery opens on the selected style
-	}
-	format := func() func(Message, *Message) string {
-		if opts.gallery {
-			return entries[shown].format(dark)
-		}
-		return formatTranscript(opts.style, dark)
-	}
-	p := newTranscriptPrinter(out, format())
-	if opts.gallery {
-		p.banner = galleryBanner(shown, len(entries), entries[shown].name, dark, forced)
-	}
+	p := newTranscriptPrinter(out, formatTranscript(dark))
 	p.size = func() (int, int) {
 		cols, rows, err := term.GetSize(os.Stdout.Fd())
 		if err != nil {
@@ -104,12 +72,8 @@ func runTranscript(ctx context.Context, opts transcriptOptions) (reload bool, er
 		return cols, rows
 	}
 	// The view tree holds the newest messages; full fetches the rest of the thread (64 KiB limit).
-	var full *fullHistory
-	if opts.client != nil {
-		full = newFullHistory(func(before string) (historyPage, error) { return opts.client.history(ctx, before) })
-	}
-	var current, raw Snapshot
-	have := false
+	full := newFullHistory(func(before string) (historyPage, error) { return client.history(ctx, before) })
+	var raw Snapshot
 	// retry fires while older history is missing (a failed fetch, for example during a plugin
 	// restart): an unchanged thread sends no new snapshot that would fetch again.
 	var retry <-chan time.Time
@@ -126,23 +90,13 @@ func runTranscript(ctx context.Context, opts transcriptOptions) (reload bool, er
 		case <-ctx.Done():
 			return false, nil
 		case <-retry:
-			current = merge(raw)
-			if err := p.apply(current); err != nil {
-				return false, err
-			}
-		case s := <-snapshots:
-			current, have = s, true
-			if err := p.apply(s); err != nil {
+			if err := p.apply(merge(raw)); err != nil {
 				return false, err
 			}
 		case msg := <-events:
 			switch msg := msg.(type) {
 			case Snapshot:
-				if full != nil {
-					msg = merge(msg)
-				}
-				current, have = msg, true
-				if err := p.apply(msg); err != nil {
+				if err := p.apply(merge(msg)); err != nil {
 					return false, err
 				}
 			case reloadRequested:
@@ -156,73 +110,25 @@ func runTranscript(ctx context.Context, opts transcriptOptions) (reload bool, er
 				}
 			}
 		case t := <-themes:
-			if forced || t.dark == dark {
+			if t.dark == dark {
 				continue
 			}
+			// The new palette applies to new messages only; the next rebuild (Older messages,
+			// reload) prints all of them in it. A full rebuild of a long thread is not bounded
+			// yet (coordinator, 2026-10-19).
 			dark = t.dark
-			if opts.gallery {
-				p.banner = galleryBanner(shown, len(entries), entries[shown].name, dark, forced)
-			}
-			if !opts.gallery || !have {
-				// Outside the gallery the new palette applies to new messages only; the next
-				// rebuild (Older messages, reload) prints all of them in it. A full rebuild of a
-				// long thread is not bounded yet (coordinator, 2026-10-19).
-				p.format = format()
-				continue
-			}
-			if err := p.restyle(current, format()); err != nil {
-				return false, err
-			}
+			p.format = formatTranscript(dark)
 		case f := <-focus:
-			if opts.client != nil {
-				opts.client.focus(f, "focus")
-			}
+			client.focus(f, "focus")
 		case k := <-keys:
 			switch k {
 			case 0x11, 0x03: // Ctrl+Q, Ctrl+C
 				// In a pair, the user's close: the hub closes this pane and asks the composer to
 				// close through its gate. The printer runs until its pane closes.
-				if opts.client != nil && opts.client.closeView() == nil {
+				if client.closeView() == nil {
 					continue
 				}
 				return false, nil
-			case 's', 'S':
-				if !opts.gallery || !have {
-					continue
-				}
-				step := 1
-				if k == 'S' {
-					step = len(entries) - 1
-				}
-				shown = (shown + step) % len(entries)
-				p.banner = galleryBanner(shown, len(entries), entries[shown].name, dark, forced)
-				if err := p.restyle(current, format()); err != nil {
-					return false, err
-				}
-			case 't':
-				if !opts.gallery || !have {
-					continue
-				}
-				dark, forced = !dark, true
-				p.banner = galleryBanner(shown, len(entries), entries[shown].name, dark, forced)
-				if err := p.restyle(current, format()); err != nil {
-					return false, err
-				}
-			case 'a', 'c', 'd':
-				if opts.gallery {
-					continue
-				}
-				style, _ := parseTranscriptStyle(string(k))
-				if style != opts.style && have {
-					opts.style = style
-					if err := p.restyle(current, formatTranscript(style, dark)); err != nil {
-						return false, err
-					}
-				}
-			case 'o':
-				if opts.thread != nil {
-					opts.thread.older()
-				}
 			}
 		}
 	}
@@ -365,120 +271,4 @@ func skipPaste(r *bufio.Reader) error {
 		}
 	}
 	return nil
-}
-
-// fixtureThread is a demo thread in a JSON Lines file of Message values. The transcript
-// polls it; the demo composer appends sends to it; a timer appends agent messages. It
-// produces the same snapshots the messaging plugin sends: the latest window, oldest first.
-type fixtureThread struct {
-	path   string
-	every  time.Duration
-	mu     sync.Mutex
-	window int
-	bump   chan struct{}
-}
-
-func newFixtureThread(path string, window int, every time.Duration) *fixtureThread {
-	return &fixtureThread{path: path, window: window, every: every, bump: make(chan struct{}, 1)}
-}
-
-func (f *fixtureThread) older() {
-	f.mu.Lock()
-	f.window += 50
-	f.mu.Unlock()
-	select {
-	case f.bump <- struct{}{}:
-	default:
-	}
-}
-
-func (f *fixtureThread) snapshot() (Snapshot, error) {
-	data, err := os.ReadFile(f.path)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	var all []Message
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var m Message
-		if json.Unmarshal([]byte(line), &m) == nil && m.ID != "" {
-			all = append(all, m)
-		}
-	}
-	f.mu.Lock()
-	window := f.window
-	f.mu.Unlock()
-	first := max(0, len(all)-window)
-	return Snapshot{SchemaVersion: 1, ViewID: "demo", Route: "/demo/thread", Revision: "1", Tree: Tree{Title: "Demo thread", Nodes: []Node{
-		{ID: "history", Type: "history", Messages: all[first:], HasMore: first > 0, PageSize: max(1, window)},
-	}}}, nil
-}
-
-// watch sends a snapshot when the file changes, and appends a timed agent message.
-func (f *fixtureThread) watch(ctx context.Context, out chan<- Snapshot) {
-	poll := time.NewTicker(150 * time.Millisecond)
-	defer poll.Stop()
-	var tick <-chan time.Time
-	if f.every > 0 {
-		t := time.NewTicker(f.every)
-		defer t.Stop()
-		tick = t.C
-	}
-	var size int64 = -1
-	n := 0
-	send := func() {
-		if s, err := f.snapshot(); err == nil {
-			select {
-			case out <- s:
-			case <-ctx.Done():
-			}
-		}
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-f.bump:
-			send()
-		case <-tick:
-			n++
-			_ = appendFixtureMessage(f.path, timedMessage(n))
-		case <-poll.C:
-			if info, err := os.Stat(f.path); err == nil && info.Size() != size {
-				size = info.Size()
-				send()
-			}
-		}
-	}
-}
-
-// appendFixtureMessage appends one message as one write, so a reader never sees half a line.
-func appendFixtureMessage(path string, m Message) error {
-	line, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.Write(append(line, '\n'))
-	return err
-}
-
-var timedBodies = []string{
-	"Lab check done. The **reflow** probe passed at 100, 50 and 120 columns, and no message was printed twice.",
-	"Next step:\n\n- run the printer against the fixture\n- resize the pane\n- select a few lines and copy them",
-	"Here is the call:\n\n```go\nprinter.apply(snapshot) // one Write per snapshot\n```",
-	"| Check | Result |\n| --- | --- |\n| wheel | native |\n| copy | native |",
-	"A long line to show soft wrapping: the terminal wraps this paragraph at any width and joins it again when the pane grows wider, because the printer never inserts line breaks of its own.",
-}
-
-func timedMessage(n int) Message {
-	author := []string{"codex", "claude"}[n%2]
-	return Message{ID: fmt.Sprintf("timed-%d-%d", time.Now().UnixNano(), n), Author: author,
-		Text: timedBodies[(n-1)%len(timedBodies)], At: time.Now().UTC().Format(time.RFC3339Nano)}
 }

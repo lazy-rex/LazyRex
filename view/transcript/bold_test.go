@@ -50,7 +50,7 @@ func boldCells(value string) (string, []bool) {
 func TestBoldUserBodyAndListsKeepCodeNormal(t *testing.T) {
 	m := Message{Author: "You", Own: true, Text: "ParagraphWord\n\n- ListWord\n  - NestedWord\n\n1. OrderedWord\n\n```go\n  CodeWord()\n```\n\nAfterWord"}
 	for _, dark := range []bool{false, true} {
-		got := FormatGallery(m, nil, BoldUser, dark)
+		got := Format(m, nil, dark)
 		plain, cells := boldCells(got)
 		for word, want := range map[string]bool{"ParagraphWord": true, "ListWord": true, "NestedWord": true, "OrderedWord": true, "AfterWord": true, "CodeWord": false} {
 			at := strings.Index(plain, word)
@@ -64,11 +64,11 @@ func TestBoldUserBodyAndListsKeepCodeNormal(t *testing.T) {
 			}
 		}
 		if strings.Contains(got, "48;2;") || strings.Contains(ansi.Strip(got), "> ") {
-			t.Fatal("Style 11 adds a background or prompt")
+			t.Fatal("A user body has a background or prompt")
 		}
 		m.Own = false
-		if FormatGallery(m, nil, BoldUser, dark) != FormatGallery(m, nil, HeaderMarker, dark) {
-			t.Fatal("Agent changed from style 8")
+		if plain, cells := boldCells(Format(m, nil, dark)); cells[strings.Index(plain, "ParagraphWord")] {
+			t.Fatal("An agent body is bold")
 		}
 		m.Own = true
 	}

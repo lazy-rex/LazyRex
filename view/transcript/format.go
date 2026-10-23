@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -20,47 +21,82 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
-type Style int
-
-const (
-	TextBackground Style = iota
-	BarBackground
-	Foreground
-)
-
 type Message struct {
 	ID, Author, Text, At string
 	Own, FYI             bool
 }
 
 const reset = "\x1b[0m"
-const userColor = "\x1b[38;2;125;211;252m"
-const agentColor = "\x1b[38;2;251;191;36m"
-const muted = "\x1b[38;2;148;163;184m"
 
-// Format returns one complete message, followed by one blank line.
-// Each message keeps its header. Previous is reserved for caller compatibility.
+// Format returns one message with a final newline. The header has a colored bar, the bold
+// sender name, the time and the FYI note. User paragraphs and lists are bold; code keeps its
+// color and normal weight. Format puts a blank line before the header when previous is not
+// nil, so the caller passes the previous printed message and nil after a rebuild.
 // The function owns its renderer, so callers can prepare separate messages concurrently.
-func Format(m Message, previous *Message, style Style) string {
-	body := renderBody(m.Text, styles(m.Own, style))
-	if m.Own && style == BarBackground && body != "" {
-		body = userColor + "▌" + reset + body
-	}
-	color := agentColor
+func Format(m Message, previous *Message, dark bool) string {
+	palette := newPalette(dark)
+	color := palette.sender(m)
+	config := styles()
+	dim := palette.dim
+	config.Document.Color = &palette.body
+	config.Code.Color, config.CodeBlock.Color = &dim, &dim
 	if m.Own {
-		color = userColor
+		bold, normal := true, false
+		config.Document.Bold = &bold
+		config.List.Bold = &bold
+		config.CodeBlock.Bold = &normal
 	}
-	header := "\x1b[1m" + color + oneLine(m.Author) + reset
+	body := renderBody(m.Text, config)
+	gap := ""
+	if previous != nil {
+		gap = "\n"
+	}
+	header := rgb(color) + "▍ " + reset + "\x1b[1m" + rgb(color) + oneLine(m.Author) + reset
 	if m.At != "" {
-		header += " " + muted + "· " + oneLine(m.At) + reset
+		header += " " + rgb(dim) + "· " + oneLine(m.At) + reset
 	}
 	if m.FYI {
-		header += " " + muted + "· no reply needed" + reset
+		header += " " + rgb(dim) + "· no reply needed" + reset
 	}
 	if body == "" {
-		return header + "\n\n"
+		return gap + header + "\n"
 	}
-	return header + "\n" + body + reset + "\n\n"
+	return gap + header + "\n" + body + reset + "\n"
+}
+
+type palette struct {
+	body, dim                  string
+	user, claude, codex, other string
+}
+
+func newPalette(dark bool) palette {
+	if dark {
+		return palette{"#F1F5F9", "#CBD5E1", "#60A5FA", "#FDBA74", "#6EE7B7", "#C4B5FD"}
+	}
+	return palette{"#0F172A", "#475569", "#2563EB", "#C2410C", "#047857", "#7C3AED"}
+}
+
+// sender returns the name color. Matching ignores case, and Own takes priority over the name.
+func (p palette) sender(m Message) string {
+	if m.Own {
+		return p.user
+	}
+	switch strings.ToLower(strings.TrimSpace(m.Author)) {
+	case "user", "you":
+		return p.user
+	case "claude":
+		return p.claude
+	case "codex":
+		return p.codex
+	default:
+		return p.other
+	}
+}
+
+// rgb returns the 24-bit foreground sequence for a #RRGGBB color.
+func rgb(hex string) string {
+	n, _ := strconv.ParseUint(strings.TrimPrefix(hex, "#"), 16, 24)
+	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", n>>16, n>>8&255, n&255)
 }
 
 func renderBody(value string, config ga.StyleConfig) string {
@@ -168,9 +204,8 @@ func prepare(doc ast.Node, source []byte) []byte {
 	return source
 }
 
-func styles(own bool, choice Style) ga.StyleConfig {
+func styles() ga.StyleConfig {
 	zero, bold, italic, crossed := uint(0), true, true, true
-	dim, sky, background := "#94A3B8", "#7DD3FC", "#283040"
 	s := ga.StyleConfig{
 		Document:       ga.StyleBlock{Margin: &zero},
 		Heading:        ga.StyleBlock{StylePrimitive: ga.StylePrimitive{Bold: &bold, BlockSuffix: "\n"}},
@@ -187,19 +222,11 @@ func styles(own bool, choice Style) ga.StyleConfig {
 		Enumeration:    ga.StylePrimitive{BlockPrefix: ". "},
 		Task:           ga.StyleTask{Ticked: "[x] ", Unticked: "[ ] "},
 		List:           ga.StyleList{LevelIndent: 2},
-		Code:           ga.StyleBlock{StylePrimitive: ga.StylePrimitive{Color: &dim}},
-		CodeBlock:      ga.StyleCodeBlock{StyleBlock: ga.StyleBlock{StylePrimitive: ga.StylePrimitive{Color: &dim}, Margin: &zero}},
+		CodeBlock:      ga.StyleCodeBlock{StyleBlock: ga.StyleBlock{Margin: &zero}},
 		BlockQuote:     ga.StyleBlock{StylePrimitive: ga.StylePrimitive{Prefix: "> "}},
 		Link:           ga.StylePrimitive{Format: "{{.text}}"},
 		Image:          ga.StylePrimitive{Format: "{{.text}}"},
 		HorizontalRule: ga.StylePrimitive{Format: "---\n"},
-	}
-	if own {
-		if choice == TextBackground || choice == BarBackground {
-			s.Document.BackgroundColor = &background
-		} else {
-			s.Document.Color = &sky
-		}
 	}
 	return s
 }

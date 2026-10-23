@@ -55,7 +55,6 @@ type viewClient struct {
 	changed                                chan struct{}
 	lost                                   bool
 	available                              bool
-	fixture                                bool   // a demo composer with no hub (composer_fixture.go)
 	Role                                   string // "transcript" for the printer of a pair; "" for the composer
 }
 
@@ -512,9 +511,6 @@ func (v *viewClient) run(ctx context.Context) {
 
 // closeView records an intentional close before the renderer exits.
 func (v *viewClient) closeView() error {
-	if v.fixture {
-		return nil
-	}
 	v.mu.Lock()
 	connected := v.w != nil
 	v.mu.Unlock()
