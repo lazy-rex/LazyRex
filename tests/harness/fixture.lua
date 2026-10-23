@@ -438,4 +438,8 @@ register()
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS opens (route TEXT NOT NULL)'})
 hub('hub.ui.tabs', {tabs = tabs})
+-- The kv row slow_label (seconds) delays the label: the plugin is registered but not reachable by
+-- its label in that interval (restart.lua).
+local slow = get('slow_label')
+if slow then rex.sleep(slow) end
 rex.call('client.set_label', {label = 'lazyrex-plugin:harnessfix'})
