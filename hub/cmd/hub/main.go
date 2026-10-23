@@ -602,6 +602,9 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	if err := h.identitySync(ctx); err != nil {
 		return nil, err
 	}
+	if err := h.identityRecover(ctx); err != nil {
+		return nil, err
+	}
 	go h.uiWorker(context.Background())
 	h.kickUI("")
 	if err := h.viewsStart(ctx); err != nil {

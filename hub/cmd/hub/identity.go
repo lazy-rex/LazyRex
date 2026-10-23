@@ -458,6 +458,33 @@ func (h *Hub) identityChildExited(ctx context.Context, block string) {
 	h.identityChanged(ctx)
 }
 
+// identityRecover ends the current identity of each pane whose recorded process is gone. An exit
+// while the hub was down sent the hub no event. Called at hub start, after identitySync; a pane
+// whose recorded process still runs keeps its identity (identityChildExited checks it).
+func (h *Hub) identityRecover(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT block_id FROM identity_panes WHERE current != ''`)
+	if err != nil {
+		return err
+	}
+	var blocks []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			rows.Close()
+			return err
+		}
+		blocks = append(blocks, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, b := range blocks {
+		h.identityChildExited(ctx, b)
+	}
+	return nil
+}
+
 // identityPaneClosed detaches the pane's current identity. Its record stays for a later resume.
 func (h *Hub) identityPaneClosed(ctx context.Context, block string) {
 	h.identMu.Lock()

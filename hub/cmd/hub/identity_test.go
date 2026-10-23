@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -123,6 +124,42 @@ func TestIdentityChangeIsAWorkersChange(t *testing.T) {
 	wait := changedNames(t, h)
 	h.identityChildExited(ctx, "block:1")
 	wait("agents", "workers")
+}
+
+// At hub start, a pane whose recorded process is gone loses its current identity (an exit while the
+// hub was down); a pane whose recorded process still runs keeps it.
+func TestIdentityRecoverEndsGoneProcesses(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.workersSchemaStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	self := os.Getpid()
+	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:1', 'session:1', ?, 'not-its-start', 'claude', 'claude:gone')`, self)
+	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:2', 'session:1', ?, ?, 'claude', 'claude:live')`, self, startTime(self))
+	h.db.Exec(`INSERT INTO identities VALUES ('claude:gone', 'claude', 'gone', 'current', 'block:1', '', '', 'x', 'x')`)
+	h.db.Exec(`INSERT INTO identities VALUES ('claude:live', 'claude', 'live', 'current', 'block:2', '', '', 'x', 'x')`)
+	// The live identity is already in memory (a kept binding): the sync reads no program status.
+	h.idents = map[string]*Agent{"claude:live": {ID: "claude:live", BlockID: "block:2", ChildPID: self, delivered: map[string]int64{}}}
+	if err := h.identityRecover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for block, want := range map[string]string{"block:1": "", "block:2": "claude:live"} {
+		if got, err := h.paneCurrent(ctx, block); err != nil || got != want {
+			t.Fatalf("%s: current %q (%v), want %q", block, got, err, want)
+		}
+	}
+	for id, want := range map[string]string{"claude:gone": "detached", "claude:live": "current"} {
+		var st string
+		if err := h.db.QueryRow(`SELECT state FROM identities WHERE identity = ?`, id).Scan(&st); err != nil || st != want {
+			t.Fatalf("%s: state %q (%v), want %s", id, st, err, want)
+		}
+	}
+	var n int
+	h.db.QueryRow(`SELECT COUNT(*) FROM identity_log WHERE identity = 'claude:gone' AND event = 'exited'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("exited events for claude:gone = %d, want 1", n)
+	}
 }
 
 // identitySync frees h.mu for the status reads of new bindings. A program status event in that
