@@ -301,3 +301,28 @@ func TestLabEnvGoCacheRefusals(t *testing.T) {
 		}
 	}
 }
+
+// test_source_runs: only -test accepts it, and each dir must be in test_roots.
+func TestCheckTestSourceRuns(t *testing.T) {
+	lab, _ := filepath.EvalSymlinks(t.TempDir())
+	plugin := filepath.Join(lab, "plugin")
+	if err := os.Mkdir(plugin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{Test: true, TestRoots: []string{lab}, TestSourceRuns: []string{plugin + "/"}}
+	if err := checkTestSourceRuns(cfg); err != nil || cfg.TestSourceRuns[0] != plugin {
+		t.Fatalf("%v %v", err, cfg.TestSourceRuns)
+	}
+	for _, c := range []struct {
+		cfg  Config
+		want string
+	}{
+		{Config{TestRoots: []string{lab}, TestSourceRuns: []string{plugin}}, "test_source_runs needs -test"},
+		{Config{Test: true, TestRoots: []string{plugin}, TestSourceRuns: []string{lab}}, "outside"},
+		{Config{Test: true, TestRoots: []string{lab}, TestSourceRuns: []string{"plugin"}}, "absolute"},
+	} {
+		if err := checkTestSourceRuns(&c.cfg); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%+v: got %v", c.cfg.TestSourceRuns, err)
+		}
+	}
+}

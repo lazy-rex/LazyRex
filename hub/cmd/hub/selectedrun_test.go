@@ -765,3 +765,44 @@ func TestLocalSnapshotExpectRunKeeps(t *testing.T) {
 		t.Fatalf("%v; spawns %d -> %d, state %s, run %+v", err, before, after, state, p1Run(h, pl))
 	}
 }
+
+// A source run (test_source_runs, lazyrex-hub test): with -test, the named local source runs from
+// its source dir, also at an automatic start. Without -test or the name, a run with no entry is
+// refused as before.
+func TestSourceRun(t *testing.T) {
+	t.Run("named", func(t *testing.T) {
+		h, pl, src := p1Local(t)
+		h.cfg.Test, h.cfg.TestSourceRuns = true, []string{src}
+		p1Spawned(t, h, pl, p1Start(t, h, pl), "")
+		if run := p1Run(h, pl); run.Entry != "" || run.Digest != "" || run.Dir != src || run.Path != filepath.Join(src, "p.lua") || len(p1Entries(t, h)) != 0 {
+			t.Fatalf("the run %+v; entries %v", run, p1Entries(t, h))
+		}
+		running(t, h, pl, "p-1")
+		// The armed create refuses the spawn: the automatic start passed checkRun and spawned.
+		log := p1Lose(t, h, pl)
+		if state, refusal, _ := p1State(h, pl); state == "refused" || !strings.Contains(log, "spawn p: refused: injected fault") {
+			t.Fatalf("the automatic start: state %s, refusal %q\n%s", state, refusal, log)
+		}
+		if run := p1Run(h, pl); run.Dir != src || run.Entry != "" {
+			t.Fatalf("the automatic start ran %+v", run)
+		}
+	})
+	gone := "plugin p: run  is no longer available; start it again"
+	for name, set := range map[string]func(h *Hub, src string){
+		"no -test":  func(h *Hub, src string) { h.cfg.TestSourceRuns = []string{src} },
+		"not named": func(h *Hub, src string) { h.cfg.Test = true },
+		"main is gone": func(h *Hub, src string) {
+			h.cfg.Test, h.cfg.TestSourceRuns = true, []string{src}
+			os.Remove(filepath.Join(src, "p.lua"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, _, src := p1Local(t)
+			set(h, src)
+			run := &pluginRun{Name: "p", Source: src, Dir: src, Path: filepath.Join(src, "p.lua")}
+			if err := h.checkRun(run); err == nil || err.Error() != gone {
+				t.Fatalf("checkRun: %v", err)
+			}
+		})
+	}
+}

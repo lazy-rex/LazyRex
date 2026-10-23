@@ -211,6 +211,12 @@ lazyrex-hub plugin sync`.
   start that fails after the publication stores no selected run and leaves the new entry for the
   prune; the hub never removes an entry. A plugin must not write into its own directory: the
   snapshot is read-only.
+- **Source runs** (test only). The hub config key `test_source_runs` is the only exception to "the
+  run's `dir` is the snapshot". It lists local source dirs. The hub accepts it only with `-test`,
+  and each dir must be in `test_roots`; a release rehearsal refuses it in a live config. A start
+  of a listed source runs from the source dir: no snapshot, and the run has no `entry` and no
+  `digest`. `lazyrex-hub test` lists only the plugin under test (section 9), so `${PLUGIN}` is the
+  dir it runs from. The home plugin and the `test.plugins` dependencies run from snapshots.
 - A future prune command also removes `.stage-*` and `.tmp/*` entries older than one hour (a CLI
   fetch ended by SIGKILL, or a manager fetch whose output did not finish). Until it exists, they
   stay as unused disk state; no lock names them.
@@ -643,6 +649,10 @@ reads no pin, so a lock change or a local edit takes effect at the next explicit
 - The run check: the published entry exists and has the run's digest (the whole entry), the
   plugin directory exists, and the hub can start its sdk. It reads no lock. Else `plugin <name>:
   run <commit or digest> is no longer available; start it again`.
+- A source run (section 4, "Source runs") has no published entry. The run check accepts it only
+  when the hub runs with `-test` and `test_source_runs` still lists its dir. Its one other check:
+  the dir and its main file exist. A run with no entry that is not a source run is refused with
+  the text above.
 - The selected graph uses only the depends of the selected runs. A cycle through the plugin
   refuses (`plugin <name>: dependency cycle among the selected runs (a -> b -> a); start it
   explicitly`). A dependency that no entry gives refuses (`plugin <name>: dependency <d> of run
@@ -737,7 +747,8 @@ Sections 3 to 7 give the other texts.
   applies the same name, main, dependency and cycle rules. A failure is a harness error (exit 2)
   with the same text.
 - The generated lab config has local `{"source": "<abs dir>", "args": ...}` entries only, so the
-  lab needs no lock.
+  lab needs no lock. Its `test_source_runs` lists only the dir of the plugin under test (section
+  4, "Source runs").
 - `test.args` stays keyed by the manifest name.
 - The harness adds the home plugin only when the plugin under test is not `lazyrex`. A
   `test.plugins` entry named `lazyrex` is a harness error. Any other duplicate name among
