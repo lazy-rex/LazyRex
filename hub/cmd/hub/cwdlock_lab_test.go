@@ -20,6 +20,7 @@ func TestCwdLockLivePanesLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { r.Close() })
 	go func() {
 		for range r.Events {
 		}
