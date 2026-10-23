@@ -602,11 +602,11 @@
  },
  "hub.test.operation": {
   "pane": "error: unknown action hub.test.operation",
-  "pane/test": "error: SQL logic error: no such column: effect_state (1)",
+  "pane/test": "ok",
   "plain": "error: unknown action hub.test.operation",
-  "plain/test": "error: SQL logic error: no such column: effect_state (1)",
+  "plain/test": "ok",
   "plugin": "error: unknown action hub.test.operation",
-  "plugin/test": "error: SQL logic error: no such column: effect_state (1)"
+  "plugin/test": "ok"
  },
  "hub.test.parity": {
   "pane": "error: unknown action hub.test.parity",
@@ -698,11 +698,11 @@
  },
  "hub.test.views": {
   "pane": "error: unknown action hub.test.views",
-  "pane/test": "error: SQL logic error: no such column: context (1)",
+  "pane/test": "ok",
   "plain": "error: unknown action hub.test.views",
-  "plain/test": "error: SQL logic error: no such column: context (1)",
+  "plain/test": "ok",
   "plugin": "error: unknown action hub.test.views",
-  "plugin/test": "error: SQL logic error: no such column: context (1)"
+  "plugin/test": "ok"
  },
  "hub.ui.describe": {
   "pane": "ok",

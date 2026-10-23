@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -109,42 +110,85 @@ var goldenCallers = []goldenCaller{
 	{"plugin", "c-p", 5000040},   // the registered instance of plugin p
 }
 
-// goldenHub is a hub for one golden call: a database with the hub's tables, a Rex that answers
-// every request with {}, one registered plugin p, and a fixed process tree. Every file is in the
-// test's own directory.
-func goldenHub(t *testing.T, r *rex.Rex, test bool) *Hub {
+// goldenHub is a hub for one golden call: the hub's full schema (the schema steps of the hub start,
+// without their background work), a Rex that answers every request with {}, one registered plugin
+// p, and a fixed process tree. Every file is in the test's own directory. No background worker
+// runs: plugin p's view worker is a kick channel without a goroutine, and the plugin manager's
+// queue has no loop, so the golden records only what the request itself does. close ends the SQL
+// service and closes the files.
+func goldenHub(t *testing.T, r *rex.Rex, test bool) (h *Hub, close func()) {
 	t.Helper()
+	ctx := context.Background()
 	dir := t.TempDir()
 	db, err := openDB(filepath.Join(dir, "hub.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
-	for _, s := range []string{workersSchema + identitySchema + spawnWindowSchema + grantsSchema + agentOpsSchema,
-		uiSchema, ensuredSchema, panelSchema, homeSchema, viewOpsSchema, watchSchema, pluginOpsSchema, promptAnswerSchema, formSchema} {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatal(err)
-		}
-	}
 	ev, err := openEvents(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ev.f.Close() })
 	cfg := Config{State: dir, path: filepath.Join(dir, "config.json"), managedPath: filepath.Join(dir, "plugins.json")}
-	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1),
+	h = &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1),
 		cfg: cfg, db: db, rex: r, ev: ev, calls: newCallLog(), clientID: "c-hub",
 		idents: map[string]*Agent{}, spawnAddrs: map[string]*spawnAddr{}, selfClosed: map[string]bool{},
 		plugins: map[string]*Plugin{"p": {Name: "p", ClientID: "c-p", ChildPID: 5000030, Desired: "running", entry: &configEntry{}}},
-		vs:      newViewSvc(), ui: &uiState{kick: make(chan struct{}, 1)}}
+		ui:      &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}, labeled: map[string]string{}, own: map[string]bool{}}}
 	h.peers = newPeerSet(cfg)
 	h.sql = newSQLService(dir, h.currentClient)
+	close = func() {
+		h.sql.close()
+		db.Close()
+		ev.f.Close()
+	}
+	// The schema part of uiStart, then the other start steps that make tables, in the hub's order.
+	steps := []func() error{
+		func() error { _, err := db.ExecContext(ctx, uiSchema); return err },
+		func() error { return formsStart(ctx, db) },
+		func() error { _, err := db.ExecContext(ctx, ensuredSchema); return err },
+		func() error { _, err := db.ExecContext(ctx, panelSchema); return err },
+		func() error { return h.slotStart(ctx) },
+		func() error { _, err := db.ExecContext(ctx, homeSchema); return err },
+		func() error { return h.workersSchemaStart(ctx) },
+		func() error { return h.viewsStart(ctx) },
+		func() error { return h.pluginOpsSchemaUp(ctx) },
+		func() error { return h.watchStart(ctx) },
+		func() error { _, err := db.ExecContext(ctx, promptAnswerSchema); return err },
+	}
+	for _, step := range steps {
+		if err := step(); err != nil {
+			close()
+			t.Fatal(err)
+		}
+	}
+	h.vs.workers["p"] = make(chan struct{}, 1)
+	h.pops.kick = make(chan struct{}, 1)
 	parents := map[int]int{5000040: 5000030, 5000030: 1, 5000500: 1}
 	h.procRead = func(pid int) (procRecord, error) { return procRecord{ppid: parents[pid]}, nil }
 	if test {
 		h.test = newTestState()
 	}
-	return h
+	return h, close
+}
+
+// goldenQuiet fails the test if a golden call left a goroutine of this package running (a view
+// worker of another plugin, a watch, a load): base is runtime.NumGoroutine before the call.
+func goldenQuiet(t *testing.T, call string, base int) {
+	t.Helper()
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if runtime.NumGoroutine() <= base {
+			return
+		}
+	}
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	var left []string
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "hub/cmd/hub.(*Hub)") {
+			left = append(left, g)
+		}
+	}
+	t.Errorf("%s left %d goroutines over %d; hub goroutines:\n%s", call, runtime.NumGoroutine()-base, base, strings.Join(left, "\n\n"))
 }
 
 // goldenCall runs one call and returns its outcome: "ok", "error: <text>" or "panic: <value>".
@@ -182,23 +226,29 @@ func TestActionDispatchGolden(t *testing.T) {
 	for _, name := range actionCallNames() {
 		for _, test := range []bool{false, true} {
 			for _, c := range goldenCallers {
-				h := goldenHub(t, r, test)
-				var p perform
-				p.Action, p.Args = name, json.RawMessage(`{}`)
-				p.Requester.ClientID, p.Requester.Principal.PID = c.client, c.pid
 				key := c.name
 				if test {
 					key += "/test"
 				}
+				base := runtime.NumGoroutine()
+				h, close := goldenHub(t, r, test)
+				var p perform
+				p.Action, p.Args = name, json.RawMessage(`{}`)
+				p.Requester.ClientID, p.Requester.Principal.PID = c.client, c.pid
 				add(name, key, goldenCall(func(ctx context.Context) (any, error) { return h.dispatch(ctx, p) }, h.cfg.State))
+				close()
+				goldenQuiet(t, name+" "+key, base)
 			}
 		}
 		if agent[name] {
-			h := goldenHub(t, r, false)
+			base := runtime.NumGoroutine()
+			h, close := goldenHub(t, r, false)
 			var p perform
 			p.Action, p.Args = name, json.RawMessage(`{}`)
 			p.Requester.Principal.PID = 5000500
 			add(name, "agent", goldenCall(func(ctx context.Context) (any, error) { return h.agentDispatch(ctx, p) }, h.cfg.State))
+			close()
+			goldenQuiet(t, name+" agent", base)
 		}
 	}
 	actionGolden(t, "dispatch.json", out)
