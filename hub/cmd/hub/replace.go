@@ -67,7 +67,7 @@ var openIntentText = map[string]string{
 
 func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error) {
 	for k := range args {
-		if k != "plugin" && k != "expect_instance" && k != "expect_run" && k != "attempt" {
+		if k != "plugin" && k != "expect_instance" && k != "expect_run" && k != "expect_entry" && k != "attempt" {
 			return nil, bad("invalid: unknown field %s", k)
 		}
 	}
@@ -79,6 +79,12 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	x, err := parseExpectRun(args)
 	if err != nil {
 		return nil, err
+	}
+	// expect_entry (hub lead, lead-c5-q1): the rules of hub.admin.start and hub.admin.stop.
+	want, guarded := args["expect_entry"]
+	wantEntry, _ := want.(string)
+	if guarded && wantEntry == "" {
+		return nil, refuse("invalid_input", "expect_entry must be a non-empty string")
 	}
 	attempt, err := parseAttempt(args)
 	if err != nil {
@@ -100,9 +106,18 @@ func (h *Hub) adminReplace(ctx context.Context, args map[string]any) (any, error
 	h.mu.Lock()
 	err = h.readPluginRow(ctx, pl)
 	target, block, session := pl.InstanceID, pl.BlockID, pl.SessionID
+	now := "none"
+	if pl.entry != nil {
+		now = entryIdentity(pl.entry)
+	}
 	h.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	// Under reloadMu and the lifecycle lock, the entry cannot change before the retire. The check
+	// comes before bindAttempt and sent_at, so a mismatch has no effect (proof not_applied).
+	if guarded && now != wantEntry {
+		return nil, refuse("entry_changed", "plugin %s is bound to entry %s, not %s; nothing was retired or spawned", name, now, wantEntry)
 	}
 	if attempt != "" {
 		if err := h.bindAttempt(ctx, attempt, "replace", target, block, session); err != nil {
