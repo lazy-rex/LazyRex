@@ -5,7 +5,7 @@
 -- composer with a saved draft (so Send is enabled), 3 is a thread whose history holds the rows of
 -- msgs(id, author, text) in insert order, 4 is a thread whose history holds the newest 40 rows of
 -- msgs with has_more and total; view.history serves the older rows in pages of 40. An action
--- records its name in clicked(name); a send records 'send'.
+-- records its name in clicked(name); a send records 'send', and its text in sent(text).
 -- A command opens only a /forms/ or /panels/ route (hub forms.go). The renderer decides its mode
 -- from the tree, never from the route, so stage 0 is a thread frame on this form route.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
@@ -102,6 +102,7 @@ rex.on('client_perform_requested', function(ctx, ev)
     end
     if ev.action == 'view.send' then
       hub('hub.sql.exec', {sql = 'INSERT INTO clicked (name) VALUES (?)', params = {'send'}})
+      hub('hub.sql.exec', {sql = 'INSERT INTO sent (text) VALUES (?)', params = {ev.args.text or ''}})
       return {}
     end
     if ev.action == 'view.history' then
@@ -125,5 +126,6 @@ hub('hub.register', {plugin = 'modelab', instance_id = instance_id,
 hub('hub.ui.tabs', {tabs = {{key = 'lab', title = 'Mode lab tab', route = '/thread/lab'}}})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS stage (n INTEGER)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS clicked (name TEXT)'})
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS sent (text TEXT)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS msgs (id TEXT, author TEXT, text TEXT)'})
 rex.call('client.set_label', {label = 'lazyrex-plugin:modelab'})

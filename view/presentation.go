@@ -428,10 +428,7 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 			border = p.accent
 		}
 		area := m.editorView(e)
-		hint := "Enter send · Shift+Enter newline"
-		if width < 60 {
-			hint = "Enter send"
-		}
+		hint, second := composerHint(width)
 		sendWidth := min(10, width-4)
 		var sendControl *control
 		if n.SendAction != nil && n.SendAction.Enabled && e.Area.Value() != "" && !e.Conflict && !e.Sending && !e.WantSend {
@@ -444,8 +441,8 @@ func (m *model) composerRowsFor(nodes []Node) []row {
 		muted := lipgloss.NewStyle().Foreground(p.muted)
 		footer := muted.Render(hint) + strings.Repeat(" ", max(0, innerWidth-sendWidth-lipgloss.Width(hint))) + m.buttonView(n.ID+":send", "Send ↑", sendWidth, true, sendControl != nil)
 		footerRows := 1
-		if width < 60 {
-			footer += "\n" + muted.Render(ansi.Truncate("Shift+Enter ↵", hintWidth, ""))
+		if second != "" {
+			footer += "\n" + muted.Render(ansi.Truncate(second, hintWidth, ""))
 			footerRows = 2
 		}
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).Padding(0, 1).Render(area + "\n" + footer)

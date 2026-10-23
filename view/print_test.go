@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -159,6 +160,13 @@ func startPrint(t *testing.T, term *testTerm) *printRun {
 // startPrintWith is startPrint with a setup of the model before the program starts.
 func startPrintWith(t *testing.T, term *testTerm, setup func(*model)) *printRun {
 	t.Helper()
+	return startPrintInput(t, term, setup, nil)
+}
+
+// startPrintInput is startPrintWith with a program input: Bubble Tea decodes its bytes as a
+// terminal's input (keys_test.go).
+func startPrintInput(t *testing.T, term *testTerm, setup func(*model), input io.Reader) *printRun {
+	t.Helper()
 	out := newPaneOut(term)
 	client := &viewClient{ViewID: "v1", Plugin: "messaging", Route: "/thread/42", Requests: make(chan mutation, 16), seen: make(chan struct{}, 1)}
 	client.outFailed = out.Failed
@@ -176,7 +184,7 @@ func startPrintWith(t *testing.T, term *testTerm, setup func(*model)) *printRun 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
-	r.p = tea.NewProgram(pm, tea.WithContext(ctx), tea.WithInput(nil), tea.WithOutput(out), tea.WithWindowSize(80, 20), tea.WithoutSignals())
+	r.p = tea.NewProgram(pm, tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(out), tea.WithWindowSize(80, 20), tea.WithoutSignals())
 	go func() {
 		select {
 		case <-out.fault:

@@ -397,3 +397,53 @@ func TestOpenWindowLab(t *testing.T) {
 		t.Fatalf("a message is marked late:\n%s", last)
 	}
 }
+
+// TestNewlineKeysLab (thread view plan item 5): a real pane in thread mode with a composer that
+// holds DRAFT-TEXT. Rex sends Shift+Enter, a, Alt+Enter, b, Ctrl+J, c, then Enter. Each newline key
+// inserts a line; Enter sends once: the plugin's view.send receives "DRAFT-TEXT\na\nb\nc".
+func TestNewlineKeysLab(t *testing.T) {
+	l := newModeLab(t)
+	pane := l.open("lazyrex_modelab_mode")
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last screen:\n%s", last)
+		}
+	})
+	l.waitFor("the thread frame", 30*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "LAB-NOTICE")
+	})
+	l.sql("UPDATE stage SET n = 2", true)
+	l.waitFor("the composer tree", 10*time.Second, func() bool {
+		last = l.screen(pane)
+		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Action w2")
+	})
+	// The renderer focuses the composer's editor first (model.apply), with the cursor at the end.
+	l.must("send-key", "-s", l.session, "-b", pane, "shift+enter", "a", "alt+enter", "b", "ctrl+j", "c")
+	l.waitFor("the three lines", 10*time.Second, func() bool {
+		last = l.screen(pane)
+		lines := strings.Split(last, "\n")
+		for i := range lines {
+			if strings.Contains(lines[i], "DRAFT-TEXT") && i+3 < len(lines) &&
+				strings.Contains(lines[i+1], " a ") && strings.Contains(lines[i+2], " b ") && strings.Contains(lines[i+3], " c ") {
+				return true
+			}
+		}
+		return false
+	})
+	if rows := l.sql("SELECT text FROM sent", false); len(rows) != 0 {
+		t.Fatalf("a newline key sent the draft: %v", rows)
+	}
+	l.key(pane, "enter")
+	var rows [][]any
+	l.waitFor("the send", 20*time.Second, func() bool {
+		rows = l.sql("SELECT text FROM sent", false)
+		return len(rows) > 0
+	})
+	time.Sleep(time.Second) // a second send would come within this time
+	rows = l.sql("SELECT text FROM sent", false)
+	if len(rows) != 1 || rows[0][0] != "DRAFT-TEXT\na\nb\nc" {
+		t.Fatalf("the plugin received %q, want one send of %q", rows, "DRAFT-TEXT\na\nb\nc")
+	}
+}

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -134,7 +133,7 @@ func newEditor(text, rev, kind string) *editor {
 	a.MinHeight = 1
 	a.SetHeight(4)
 	a.SetWidth(70)
-	a.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "ctrl+j"))
+	a.KeyMap.InsertNewline = newlineBinding()
 	a.SetValue(plain(text))
 	e := &editor{Area: a, Saved: text, Revision: rev, RemoteText: text, RemoteRevision: rev, Kind: kind}
 	if kind == "text" {

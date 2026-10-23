@@ -135,6 +135,16 @@ Page rules:
 - A close (Ctrl+Q or the hub), a reload or a retirement stops the fetch when it is requested, also while it waits for drafts or operation results. Until it ends, no tree starts a fetch. A failed close ends it: the view reads its current tree again and fetches again.
 - Seen stays closed while a fetch runs.
 
+### Keys (thread mode)
+
+The composer's keys are declared once (view/keys.go).
+
+- Enter sends the composer's text (send_action).
+- Shift+Enter, Alt+Enter and Ctrl+J insert a newline. Alt+Enter is a renderer binding: the keys that a Mac or a hardware iOS keyboard sends for it are not observed.
+- The footer hint names Shift+Enter, the first newline key: "Enter send · Shift+Enter newline", or below 60 columns "Enter send" and "Shift+Enter ↵".
+- The on-screen keyboard of the iOS app sends no modified Return (docs/rex-protocol.md). Multi-line input there is an accepted limit. A hardware keyboard on iOS is not tested.
+- Ctrl+O opens the menu, Ctrl+Q closes the view, and Tab and Shift+Tab move the focus. Thread mode has no mouse.
+
 ### The seen gate
 
 The renderer sends no `hub.view.seen` until the mode is decided.
