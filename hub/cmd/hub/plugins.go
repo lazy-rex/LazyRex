@@ -378,7 +378,7 @@ func (h *Hub) resolveLocked() []*configEntry {
 			// take an empty record as proof that no instance exists.
 			pl = &Plugin{Name: e.name, entry: e, source: e.Source}
 			if err := h.loadPluginRow(context.Background(), pl); err != nil {
-				log.Printf("plugin %s: load its row: %v", e.name, err) // startPlugin and the admin actions load it again
+				pluginLogf(e.name, opEntryKey(e), "load its row: %v", err) // startPlugin and the admin actions load it again
 			}
 			h.plugins[e.name] = pl
 		} else if pl.entry == nil {
@@ -458,7 +458,7 @@ func (h *Hub) recoverPlugins(ctx context.Context) {
 			continue
 		}
 		if err := h.startPlugin(ctx, pl); err != nil {
-			log.Printf("plugin %s: %v", pl.Name, err)
+			h.recordLogf(pl, "%v", err)
 		}
 		pl.lifecycle.Unlock()
 	}
@@ -515,7 +515,7 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 			pl.lifecycle.Lock()
 			defer pl.lifecycle.Unlock()
 			if err := h.startAutomatic(ctx, pl); err != nil {
-				log.Printf("plugin %s: restart after session loss: %v", pl.Name, err)
+				h.recordLogf(pl, "restart after session loss: %v", err)
 			}
 			return
 		}
@@ -523,7 +523,7 @@ func (h *Hub) restartAfterSessionLoss(pl *Plugin, lost string) {
 		select {
 		case <-recorded:
 		case <-deadline:
-			log.Printf("plugin %s: no work session after the loss of %s; restart the hub", pl.Name, lost)
+			h.recordLogf(pl, "no work session after the loss of %s; restart the hub", lost)
 			return
 		}
 	}
@@ -724,7 +724,7 @@ func (h *Hub) wakeWaiting(ctx context.Context) {
 		h.mu.Unlock()
 		if still {
 			if err := h.startAutomatic(ctx, pl); err != nil {
-				log.Printf("plugin %s: wake: %v", pl.Name, err)
+				h.recordLogf(pl, "wake: %v", err)
 			}
 		}
 		pl.lifecycle.Unlock()
@@ -1170,7 +1170,7 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 	}
 	h.fenceStoreWrites(pl)
 	h.ev.emit("plugin_exited", map[string]any{"plugin": pl.Name, "instance_id": instance, "block_id": blockID})
-	log.Printf("plugin %s exited: %s", pl.Name, payload)
+	h.recordLogf(pl, "exited: %s", payload)
 	// child_exited means the process ended in a block that is still open (a pane close sends
 	// block_closed instead), so this is a crash or exit, not a user stop.
 	h.mu.Lock()
@@ -1188,7 +1188,7 @@ func (h *Hub) pluginExited(ctx context.Context, pl *Plugin, blockID string, payl
 		return
 	}
 	if err := h.startAutomatic(ctx, pl); err != nil {
-		log.Printf("plugin %s: respawn: %v", pl.Name, err)
+		h.recordLogf(pl, "respawn: %v", err)
 	}
 }
 
@@ -1289,7 +1289,7 @@ func (h *Hub) classifyClose(pl *Plugin, block, sess string) {
 		return
 	}
 	h.ev.emit("plugin_close_unclassified", map[string]any{"plugin": pl.Name, "session_id": sess})
-	log.Printf("plugin %s: cannot tell whether its block closed alone or with session %s; not restarted. Use hub.admin.start or hub.admin.stop", pl.Name, sess)
+	h.recordLogf(pl, "cannot tell whether its block closed alone or with session %s; not restarted. Use hub.admin.start or hub.admin.stop", sess)
 }
 
 // adminTarget finds the record that hub.admin.start or hub.admin.stop names with "plugin". A start
