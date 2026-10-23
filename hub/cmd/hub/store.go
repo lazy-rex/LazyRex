@@ -8,9 +8,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -63,25 +60,18 @@ func openDB(path string) (*DB, error) {
 	if err := retireSchema(db); err != nil {
 		return nil, err
 	}
-	if err := retireStore(db, filepath.Join(filepath.Dir(path), "sql"), log.Printf); err != nil {
-		return nil, err
-	}
 	return &DB{db}, nil
 }
 
 // retiredStep is one step that removes a table or a column of hub.db.
 type retiredStep struct {
-	table, column string // what the step removes; column "" is the whole table
-	// conditional: a "may drop" that can wait. It has no check or statement; retireStore runs it.
-	conditional      bool
+	table, column    string // what the step removes; column "" is the whole table
 	check, statement string // the statement runs only while check counts more than 0
 }
 
-// retiredSchema is the list of every table and column that the hub removes from hub.db, and its one
-// source of truth: the release rehearsal lets a table or column of OLD go only when the NEW hub
-// names it here. A new drop of a hub table or column goes through this list, never a bare DROP
-// elsewhere. A step runs at most once on a database, and a new database skips it. A step goes when
-// no live hub.db needs it any more.
+// retiredSchema is the list of every table and column that the hub removes from hub.db. A new drop
+// of a hub table or column goes through this list, never a bare DROP elsewhere. A step runs at most
+// once on a database, and a new database skips it. A step goes when no live hub.db needs it any more.
 var retiredSchema = []retiredStep{
 	// plugins.entry_stamp: the guard against a rollback hub's writes (coord-reset-0 ended rollback).
 	{table: "plugins", column: "entry_stamp",
@@ -90,22 +80,21 @@ var retiredSchema = []retiredStep{
 	// such row, so the column goes.
 	{table: "ui_tabs", column: "rev_known",
 		check: `SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'rev_known'`, statement: `ALTER TABLE ui_tabs DROP COLUMN rev_known`},
-	// The hub.store removal: sql_returns (hub.admin.sql_return) and sql_notice_plugins (the notice
-	// move) have no reader. records and ops wait for the plugin databases (retireStore).
+	// The hub.store removal (D1): sql_returns (hub.admin.sql_return), sql_notice_plugins (the notice
+	// move), and records and ops (the old store) have no reader. Their rows go with them.
 	{table: "sql_returns",
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_returns'`, statement: `DROP TABLE sql_returns`},
 	{table: "sql_notice_plugins",
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sql_notice_plugins'`, statement: `DROP TABLE sql_notice_plugins`},
-	{table: "records", conditional: true},
-	{table: "ops", conditional: true},
+	{table: "records",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'records'`, statement: `DROP TABLE records`},
+	{table: "ops",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ops'`, statement: `DROP TABLE ops`},
 }
 
-// retireSchema runs the steps of retiredSchema that are still due, except the conditional ones.
+// retireSchema runs the steps of retiredSchema that are still due.
 func retireSchema(db *sql.DB) error {
 	for _, s := range retiredSchema {
-		if s.conditional {
-			continue
-		}
 		var n int
 		if err := db.QueryRow(s.check).Scan(&n); err != nil {
 			return fmt.Errorf("retire schema check %q: %w", s.check, err)
@@ -118,64 +107,6 @@ func retireSchema(db *sql.DB) error {
 		}
 	}
 	return nil
-}
-
-// retireStore runs the conditional steps of retiredSchema. It drops records and ops, the tables of
-// the removed hub.store, in one transaction when each namespace with a row in either table has its
-// hub.sql database (sqlDir/<namespace>.db). Else it keeps both tables, logs one line for each
-// namespace without a database, and tries again at the next open.
-// It is a backstop: a database file does not prove that the plugin imported its rows (D1 of the
-// hub.store removal). A database without the tables (a new one, or one after the drop) skips it.
-func retireStore(db *sql.DB, sqlDir string, logf func(string, ...any)) error {
-	var tables int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('records', 'ops')`).Scan(&tables); err != nil {
-		return fmt.Errorf("retire store check: %w", err)
-	}
-	if tables == 0 {
-		return nil
-	}
-	if tables != 2 {
-		return fmt.Errorf("retire store: hub.db has only one of records and ops")
-	}
-	rows, err := db.Query(`SELECT ns FROM records UNION SELECT ns FROM ops ORDER BY ns`)
-	if err != nil {
-		return fmt.Errorf("retire store namespaces: %w", err)
-	}
-	var missing []string
-	for rows.Next() {
-		var ns string
-		if err := rows.Scan(&ns); err != nil {
-			rows.Close()
-			return fmt.Errorf("retire store namespaces: %w", err)
-		}
-		st, err := os.Stat(filepath.Join(sqlDir, ns+".db"))
-		if err != nil || !st.Mode().IsRegular() {
-			missing = append(missing, ns)
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("retire store namespaces: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("retire store namespaces: %w", err)
-	}
-	if len(missing) > 0 {
-		for _, ns := range missing {
-			logf("hub.store tables kept: namespace %q has rows and no %s", ns, filepath.Join(sqlDir, ns+".db"))
-		}
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("retire store: %w", err)
-	}
-	defer tx.Rollback()
-	for _, s := range []string{`DROP TABLE records`, `DROP TABLE ops`} {
-		if _, err := tx.Exec(s); err != nil {
-			return fmt.Errorf("retire store %q: %w", s, err)
-		}
-	}
-	return tx.Commit()
 }
 
 // nextRev returns a fresh revision from the database-wide counter. Revisions never reset.

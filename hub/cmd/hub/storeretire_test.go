@@ -2,8 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,55 +70,23 @@ func TestNewHubDBHasNoStoreTables(t *testing.T) {
 	}
 }
 
-// D1: the open drops sql_returns and sql_notice_plugins at once, also with rows. It drops records
-// and ops only when each namespace with a row in either table has sql/<namespace>.db; it keeps
-// them, and logs each namespace without a database, until then. A directory is not a database.
+// D1: the open drops records, ops, sql_returns and sql_notice_plugins, also with rows, and with no
+// plugin database. Their rows are not kept. An open after the drop finds nothing to do.
 func TestRetireStoreTables(t *testing.T) {
-	state := t.TempDir()
-	path, sqlDir := filepath.Join(state, "hub.db"), filepath.Join(state, "sql")
+	path := filepath.Join(t.TempDir(), "hub.db")
 	oldStoreDB(t, path,
 		`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`,
 		`INSERT INTO ops VALUES ('beta', 'op', 'fp', '{}')`,
 		`INSERT INTO sql_returns VALUES ('alpha', 's')`,
 		`INSERT INTO sql_notice_plugins VALUES ('alpha')`)
-	if err := os.MkdirAll(filepath.Join(sqlDir, "beta.db"), 0o700); err != nil { // not a file
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sqlDir, "alpha.db"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	reopen(t, path)
-	if have := strings.Join(storeTables(t, path), " "); have != "records ops" {
-		t.Fatalf("beta has no database: the tables are %q, want records ops", have)
-	}
-	db, err := sql.Open("sqlite", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var logged []string
-	if err := retireStore(db, sqlDir, func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	if len(logged) != 1 || !strings.Contains(logged[0], `"beta"`) {
-		t.Errorf("the log: %q, want one line for beta", logged)
-	}
-
-	if err := os.Remove(filepath.Join(sqlDir, "beta.db")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sqlDir, "beta.db"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	reopen(t, path)
 	if have := storeTables(t, path); len(have) != 0 {
-		t.Errorf("each namespace has a database: the tables %v stay", have)
+		t.Errorf("the tables %v stay", have)
 	}
 	reopen(t, path) // an open after the drop
 }
 
-// Empty records and ops have no namespace, so the open drops them.
+// Empty tables go too.
 func TestRetireStoreTablesEmpty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hub.db")
 	oldStoreDB(t, path)
@@ -130,50 +96,8 @@ func TestRetireStoreTablesEmpty(t *testing.T) {
 	}
 }
 
-// A failed drop changes nothing: records, ops and their rows stay, and retireStore returns the
-// error (so the open fails); once the cause is gone, the next call drops both. Here a foreign key from another table
-// blocks the drop of ops, the second statement of the transaction.
-func TestRetireStoreFailedDropKeepsBoth(t *testing.T) {
-	state := t.TempDir()
-	path := filepath.Join(state, "hub.db")
-	oldStoreDB(t, path,
-		`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`,
-		`INSERT INTO ops VALUES ('alpha', 'op', 'fp', '{}')`,
-		`CREATE TABLE blocker (ns TEXT, key TEXT, FOREIGN KEY (ns, key) REFERENCES ops (ns, key))`,
-		`INSERT INTO blocker VALUES ('alpha', 'op')`)
-	if err := os.MkdirAll(filepath.Join(state, "sql"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(state, "sql", "alpha.db"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	if err := retireStore(db, filepath.Join(state, "sql"), t.Logf); err == nil || !strings.Contains(err.Error(), "DROP TABLE ops") {
-		t.Fatalf("the blocked drop: %v, want the error of DROP TABLE ops", err)
-	}
-	var n int
-	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM records) + (SELECT COUNT(*) FROM ops)`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("after the failed drop: %d rows, %v; want records and ops with their 2 rows", n, err)
-	}
-	if _, err := db.Exec(`DROP TABLE blocker`); err != nil {
-		t.Fatal(err)
-	}
-	if err := retireStore(db, filepath.Join(state, "sql"), t.Logf); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('records', 'ops')`).Scan(&n); err != nil || n != 0 {
-		t.Errorf("without the blocker: %d of the tables stay, %v", n, err)
-	}
-}
-
-// retiredSchema is well formed: one entry for each table or column; an unconditional entry has a
-// check and a statement that name what it removes; a conditional entry has neither, and it is a
-// table that retireStore drops.
+// retiredSchema is well formed: one entry for each table or column, with a check and a statement
+// that name what it removes.
 func TestRetiredSchemaIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for _, s := range retiredSchema {
@@ -185,12 +109,6 @@ func TestRetiredSchemaIsWellFormed(t *testing.T) {
 			t.Errorf("%q: an empty or duplicate entry", name)
 		}
 		seen[name] = true
-		if s.conditional {
-			if s.check != "" || s.statement != "" || s.column != "" || (s.table != "records" && s.table != "ops") {
-				t.Errorf("%s: a conditional entry is a table that retireStore drops, with no check or statement", name)
-			}
-			continue
-		}
 		if s.check == "" || !strings.Contains(s.check, "'"+s.table+"'") || !strings.Contains(s.statement, " "+s.table) {
 			t.Errorf("%s: the check or the statement does not name the table", name)
 		}
@@ -202,9 +120,9 @@ func TestRetiredSchemaIsWellFormed(t *testing.T) {
 			t.Errorf("%s: the statement %q is not %s", name, s.statement, drop)
 		}
 	}
-	for _, table := range []string{"records", "ops"} {
+	for _, table := range retiredStoreTables {
 		if !seen[table] {
-			t.Errorf("retireStore drops %s, and retiredSchema does not name it", table)
+			t.Errorf("retiredSchema does not name %s", table)
 		}
 	}
 }
@@ -234,8 +152,7 @@ func hubSchema(t *testing.T, path string) map[string]bool {
 }
 
 // An open removes only what retiredSchema names: every table or column of the old hub.db that is
-// gone after the open is a declared entry (the whole table, or that column); every unconditional
-// entry is gone; a conditional entry may stay (one namespace without a database) or go.
+// gone after the open is a declared entry (the whole table, or that column), and every entry is gone.
 func TestOpenRemovesOnlyDeclared(t *testing.T) {
 	declared := map[string]bool{}
 	for _, s := range retiredSchema {
@@ -245,56 +162,32 @@ func TestOpenRemovesOnlyDeclared(t *testing.T) {
 			declared[s.table+"."+s.column] = true
 		}
 	}
-	for _, missing := range []bool{false, true} {
-		t.Run(fmt.Sprintf("a namespace without a database %v", missing), func(t *testing.T) {
-			state := t.TempDir()
-			path := filepath.Join(state, "hub.db")
-			reopen(t, path) // the current schema, then each object that a step removes
-			oldStoreDB(t, path, `CREATE TABLE ui_tabs (key TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', rev_known INTEGER NOT NULL DEFAULT 0)`,
-				`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`,
-				`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`, `INSERT INTO ops VALUES ('beta', 'op', 'fp', '{}')`)
-			if err := os.MkdirAll(filepath.Join(state, "sql"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(state, "sql", "alpha.db"), nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if !missing {
-				if err := os.WriteFile(filepath.Join(state, "sql", "beta.db"), nil, 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			before := hubSchema(t, path)
-			reopen(t, path)
-			after := hubSchema(t, path)
-			for x := range before {
-				if after[x] {
-					continue
-				}
-				table, _, _ := strings.Cut(x, ".")
-				if !declared[x] && !declared[table] {
-					t.Errorf("the open removed %s, which retiredSchema does not name", x)
-				}
-			}
-			for _, s := range retiredSchema {
-				x := s.table
-				if s.column != "" {
-					x += "." + s.column
-				}
-				if !before[x] {
-					t.Errorf("the old hub.db of the test has no %s", x)
-				}
-				if s.conditional {
-					if after[x] != missing {
-						t.Errorf("%s after the open: %v, want %v", x, after[x], missing)
-					}
-				} else if after[x] {
-					t.Errorf("%s stays after the open", x)
-				}
-			}
-			if !after["ui_tabs.title"] {
-				t.Error("the column ui_tabs.title went with rev_known")
-			}
-		})
+	path := filepath.Join(t.TempDir(), "hub.db")
+	reopen(t, path) // the current schema, then each object that a step removes
+	oldStoreDB(t, path, `CREATE TABLE ui_tabs (key TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', rev_known INTEGER NOT NULL DEFAULT 0)`,
+		`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`,
+		`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`, `INSERT INTO ops VALUES ('beta', 'op', 'fp', '{}')`)
+	before := hubSchema(t, path)
+	reopen(t, path)
+	after := hubSchema(t, path)
+	for x := range before {
+		if after[x] {
+			continue
+		}
+		table, _, _ := strings.Cut(x, ".")
+		if !declared[x] && !declared[table] {
+			t.Errorf("the open removed %s, which retiredSchema does not name", x)
+		}
+	}
+	for x := range declared {
+		if !before[x] {
+			t.Errorf("the old hub.db of the test has no %s", x)
+		}
+		if after[x] {
+			t.Errorf("%s stays after the open", x)
+		}
+	}
+	if !after["ui_tabs.title"] {
+		t.Error("the column ui_tabs.title went with rev_known")
 	}
 }

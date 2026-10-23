@@ -28,11 +28,9 @@ hub.
   change `user_version`, and the plugin prints "The database has schema N; this plugin knows M.
   Update the plugin or delete its database." and stops.
 - `hub.db` has no plugin records since the hub.store removal. At each open, the hub drops the tables
-  `sql_returns` and `sql_notice_plugins`. It drops `records` and `ops` (the old store) only when each
-  namespace with a row in either table has its `<state>/sql/<name>.db` file. Else it keeps both
-  tables, logs `hub.store tables kept: namespace "<name>" has rows and no <path>` for each such
-  namespace, and tries again at the next open. The file check is a backstop: it does not prove an
-  import (`storeretire_test.go`).
+  `records` and `ops` (the old store), `sql_returns` and `sql_notice_plugins`, with their rows. It
+  keeps no row and checks no plugin database first (`retiredSchema` in `store.go`;
+  `storeretire_test.go`).
 
 ## 2. Actions (built)
 
