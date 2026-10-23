@@ -82,8 +82,9 @@ func TestPluginSDKRefusedWithoutSDKLab(t *testing.T) {
 	if st := s.status("sdkp"); !strings.Contains(st.Error, "no SDK directory") {
 		t.Fatalf("the refusal: %+v", st)
 	}
-	if p := s.pluginProcs(); len(p) != 1 || !strings.Contains(p[0], filepath.Join(s.src, "plain")) {
-		t.Errorf("plugin processes %q, want plain only", p)
+	plainSnap, _ := s.entry("plain")["dir"].(string)
+	if p := s.pluginProcs(); plainSnap == "" || len(p) != 1 || !strings.Contains(p[0], plainSnap) {
+		t.Errorf("plugin processes %q, want plain only (its run dir %q)", p, plainSnap)
 	}
 }
 
@@ -120,17 +121,19 @@ func TestHubRefusesABadSDKLab(t *testing.T) {
 	}
 }
 
-// pluginProcs returns the command lines of the processes whose argv names a source directory of
-// this lab: its plugin processes. TestPluginSDKRefusedWithoutSDKLab proves that it sees one.
+// pluginProcs returns the command lines of the processes whose argv names a source directory or a
+// local snapshot (<state>/plugins/local) of this lab: its plugin processes. A local plugin runs from
+// its snapshot. TestPluginSDKRefusedWithoutSDKLab proves that it sees one.
 func (s *startLab) pluginProcs() []string {
 	s.t.Helper()
+	snaps := filepath.Join(s.state(), "plugins", "local")
 	ps, err := exec.Command("ps", "-axww", "-o", "command=").Output()
 	if err != nil {
 		s.t.Fatal(err)
 	}
 	var found []string
 	for _, line := range strings.Split(string(ps), "\n") {
-		if strings.Contains(line, s.src) {
+		if strings.Contains(line, s.src) || strings.Contains(line, snaps) {
 			found = append(found, line)
 		}
 	}
