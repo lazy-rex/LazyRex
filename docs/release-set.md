@@ -73,6 +73,19 @@ There are three kinds of item:
 - `sql` (probe only): a read-only SELECT on the lab plugin database, with `params`. `rows` must be
   exactly equal. Use `[]` for no row.
 
+The order of the items in `seed` or `probe` is not always the run order:
+
+1. First, all `action` items run, in their written order, in one lab pane.
+2. Then the `view` and `sql` items run, in their written order.
+
+So an action item that comes after a view item in the list runs before that view item. If an item
+needs data from another item, put both in the order above. Owners must check this when they review
+the dependencies of seed and probe items.
+
+The tool uses `operation_key` as written for a seed item. For a probe item, it appends the phase
+(`<operation_key>-<phase>`), so each probe run has its own key. The replay of a view operation uses
+the same derived key.
+
 An `expect` is a list of `{"pointer": <JSON pointer>, "value": <JSON>}` or
 `{"pointer": ..., "empty": true}`. `value` is an exact comparison of canonical JSON. `empty` accepts
 `{}` and `[]`, because Lua encodes an empty table as either.
