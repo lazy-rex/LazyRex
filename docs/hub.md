@@ -2392,6 +2392,7 @@ Each hub pulls from its peers. A hub never pushes data.
 | `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB JSON-encoded) | `{seq, queued}` |
 | `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after` | `{envelopes: [{seq, plugin, key, body, created}], more}` |
 | `hub.peer.nudge` | a peer hub | `hub` | `{}` |
+| `hub.peer.plugins` | a peer hub | `hub` | `{pins, managed: [{id, source}]}` ("Plugin sync") |
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
 
 - **Send.** The body is opaque to the hub. The same `(peer, plugin, key)` with the same body returns
@@ -2408,7 +2409,7 @@ Each hub pulls from its peers. A hub never pushes data.
 - **Status.** Each peer row has `name`, `server`, `state` (`unknown`, `up`, `down`), `last_ok`,
   `last_error`, `outbox` (envelopes not acked), `oldest_age_s`, `after` (this hub's cursor for that
   peer), `more`, and `blocked_plugin` and `blocked_since` (null unless an envelope waits for a
-  plugin).
+  plugin). The `plugins_from` row also has `plugin_sync` ("Plugin sync").
 
 ### Delivery
 
@@ -2459,9 +2460,36 @@ servers on a network that you trust.
 
 ### Plugin sync
 
-A hub with `plugins_from` on a peer pulls that peer's GitHub plugin sources (`hub.peer.plugins`).
-The source hub wins. A new plugin waits for the user's confirmation; an update does not. A config
-source on the receiver is skipped with a log line. This part is in progress.
+A hub with `plugins_from` on a peer (the receiver) syncs the GitHub plugins of that peer (the source
+hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lead-fed-r1 item 4.
+
+- **Read.** The receiver calls `hub.peer.plugins {hub}` on the source hub when the hub starts, then
+  every minute. The source hub answers a configured peer only (else `unknown_hub`). The reply is
+  `{pins, managed}`: `pins` is the pin document of `lazyrex-hub plugin export` (plugin-sources.md,
+  section 6a), and `managed` is `[{id, source}]` of the source hub's managed GitHub entries. A failed
+  export (another plugin command holds the flocks, or an entry that does not verify) is `refused`,
+  and the receiver tries again at the next sync.
+- **Match.** For each pin, the receiver looks for its own GitHub entry of the same repository and
+  subdir (the lock key; the ref does not count). Only GitHub sources sync: the document has no
+  local source.
+  - A managed entry whose source and lock pin (commit and digest) are the pin's: in sync, no op.
+  - Another managed entry: a peer update op (origin `{kind: "peer", id: <peer>}`, scope
+    `peer:<peer>`, the pin as `target`; "A peer update" above). The source hub wins.
+  - A config entry: skipped, with one log line for each source.
+  - No entry: offered. The receiver adds nothing; the user adds the source. Until the panel has
+    confirm views, an offered source is only in `hub.peer.status`.
+  - An entry of the receiver that the document does not list is not changed.
+- **Ops.** The op key is `<sha256 of the pin>#<n>`; `n` counts the ops of that pin from that peer.
+  While a peer op of the entry runs, the sync makes no op. After a peer op of the same pin ended
+  (also `failed`, `conflict` or `unknown`), the next op of that pin waits 5 minutes. Another pin
+  makes an op at once. The rule reads `plugin_ops`, so it stays over a hub restart.
+- **Status.** The `plugins_from` row of `hub.peer.status` has `plugin_sync`: null before the first
+  sync, else `{last_ok, last_error, offered: [{id, source}], skipped: [{source, entry, why}],
+  updating: [{entry, op_id, phase}]}`. `offered`, `skipped` and `updating` are from the last sync
+  with no error. Other rows have no `plugin_sync`.
+- **Limit.** The release tag of a latest pin is the source hub's claim; the fetch checks only that
+  the commit's tree gives the pin's digest. With no puller authentication ("Trust limit"), any
+  client that reaches the source hub's Rex server can read its plugin sources and pins.
 
 ### Not in v1
 

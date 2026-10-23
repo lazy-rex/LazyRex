@@ -100,6 +100,8 @@ type peerLink struct {
 	blockSeq    int64
 	blockPlugin string
 	blockSince  time.Time
+	// sync: the plugin sync with a plugins_from peer (peersync.go); nil before its first try.
+	sync *peerSync
 }
 
 type peerSet struct {
@@ -324,6 +326,14 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 			if l.blockSeq > after {
 				row["blocked_plugin"], row["blocked_since"] = l.blockPlugin, l.blockSince.UTC().Format(time.RFC3339)
 			}
+			if p.PluginsFrom {
+				var s *peerSync
+				if l.sync != nil {
+					c := *l.sync
+					s = &c
+				}
+				row["plugin_sync"] = s // only on the plugins_from row; null before the first sync
+			}
 			l.mu.Unlock()
 			if t, err := time.Parse(time.RFC3339Nano, oldest.String); oldest.Valid && err == nil {
 				row["oldest_age_s"] = int(time.Since(t).Seconds())
@@ -350,6 +360,9 @@ func (h *Hub) peersRun(ctx context.Context) {
 	}
 	for _, l := range h.peers.links {
 		go h.peerLoop(ctx, l)
+		if l.cfg.PluginsFrom {
+			go h.peerPluginsLoop(ctx, l)
+		}
 	}
 }
 
