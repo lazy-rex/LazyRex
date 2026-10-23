@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -157,6 +158,11 @@ func (h *Hub) opUnpin(ctx context.Context, op *pluginOp) error {
 	if err != nil {
 		return done("kept", fmt.Sprintf("the config file %s does not read: %v", h.cfg.path, err))
 	}
+	// plugin sync reads the files that the config on disk names, under the flocks of its state. When
+	// they are not the hub's, the guards below do not see what sync sees.
+	if !samePath(cfg.managed, h.cfg.managedPath) || !samePath(cfg.lock, lockFile) || !samePath(cfg.state, h.cfg.State) {
+		return done("kept", fmt.Sprintf("the config file names the managed file %s, the lock %s and the state %s; the hub uses %s, %s and %s", cfg.managed, cfg.lock, cfg.state, h.cfg.managedPath, lockFile, h.cfg.State))
+	}
 	intended, err := op.intended()
 	if err != nil {
 		return done("kept", "the operation's entry does not read: "+err.Error())
@@ -199,4 +205,11 @@ func (h *Hub) opUnpin(ctx context.Context, op *pluginOp) error {
 		return err
 	}
 	return done("removed", "")
+}
+
+// samePath reports whether a and b name one path (both made absolute and clean).
+func samePath(a, b string) bool {
+	x, err1 := filepath.Abs(a)
+	y, err2 := filepath.Abs(b)
+	return err1 == nil && err2 == nil && x == y
 }

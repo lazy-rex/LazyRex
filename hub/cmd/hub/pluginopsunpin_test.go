@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -147,6 +148,12 @@ func TestPluginOpUnpinKept(t *testing.T) {
 		}},
 		{"the config file does not parse", "does not read", func(t *testing.T, h *Hub) {
 			os.WriteFile(h.cfg.path, []byte(`{`), 0o600)
+		}},
+		{"the config names another managed file", "the config file names the managed file", func(t *testing.T, h *Hub) {
+			other := filepath.Join(filepath.Dir(h.cfg.path), "other.json")
+			os.WriteFile(other, []byte(`{"plugins":[{"id":"other","source":"`+unpinLatest+`"}]}`), 0o600)
+			b, _ := json.Marshal(h.cfg.State)
+			os.WriteFile(h.cfg.path, []byte(`{"state":`+string(b)+`,"plugins":[],"managed_plugins":"other.json"}`), 0o600)
 		}},
 		{"the lock does not parse", "does not read", func(t *testing.T, h *Hub) {
 			os.WriteFile(lockPath(h.cfg.path, h.cfg.Lock), []byte(`{`), 0o600)
