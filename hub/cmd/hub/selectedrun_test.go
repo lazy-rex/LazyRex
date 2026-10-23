@@ -206,6 +206,11 @@ func TestSelectedRunGone(t *testing.T) {
 	if clock.count() != n {
 		t.Fatalf("a respawn after the refusal: %d timers", clock.count())
 	}
+	// plugin_respawn is the attempt (as in TestRespawnRefusedStartKeepsTimer): the refused attempt
+	// gives one, and no event comes after the refusal.
+	if got := len(eventsNamed(t, h.ev.f.Name(), "plugin_respawn")); got != 1 {
+		t.Fatalf("%d plugin_respawn events, want 1 (the refused attempt)", got)
+	}
 }
 
 // U2: a waiting explicit start at A; the lock moves to B; the dependency registers: the wake
