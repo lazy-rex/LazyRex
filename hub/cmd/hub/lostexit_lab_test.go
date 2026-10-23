@@ -66,7 +66,8 @@ func TestPluginExitBeforeMapLab(t *testing.T) {
 			t.Fatalf("the child_exited during the map hold was dropped: c stays %v with a dead block %s", s.entry("c")["state"], block)
 		}
 	}
-	if !strings.Contains(hubLog(), "plugin c: the child exited before the block was recorded") {
+	// The line has the entry key (pluginLogMarker), so the manager's log of entry src/c shows it.
+	if !strings.Contains(hubLog(), pluginLogMarker("c", "src/c")+"the child exited before the block was recorded") {
 		t.Fatal("plugin_exited came, but not from the recorded exit: hub.log has no take line")
 	}
 	if n := len(s.events("plugin_respawn_scheduled", "c")); n < 1 {
