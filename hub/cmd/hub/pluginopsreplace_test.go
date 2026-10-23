@@ -331,6 +331,7 @@ func TestPluginOpUpdateCaseB(t *testing.T) {
 		t.Fatalf("the @latest pin: %+v", p)
 	}
 	os.WriteFile(h.cfg.managedPath, []byte(`{"plugins":[{"id":"notes","source":"`+latest+`"}]}`), 0o600)
+	writeHubJSON(t, h, `[]`)
 	opsLoadEntries(t, h)
 	pl := &Plugin{Name: "notes", entry: opsEntry(t, h, "managed:notes")}
 	h.plugins["notes"] = pl
@@ -371,8 +372,12 @@ func TestPluginOpUpdateCaseB(t *testing.T) {
 		t.Fatalf("the end text %q, want %q", op.Result, text)
 	}
 	lock := readTestLock(t, h)
-	if le := lock.Plugins[target]; le == nil || le.Commit != p.Commit || le.RefKind != "tag" || le.Ref != "v1.0.0" || lock.Plugins[latest] == nil {
+	if le := lock.Plugins[target]; le == nil || le.Commit != p.Commit || le.RefKind != "tag" || le.Ref != "v1.0.0" || lock.Plugins[latest] != nil {
 		t.Fatalf("the lock: %+v", lock.Plugins)
+	}
+	// Unpinning removed the @latest key that the update stopped naming, so status has no orphan.
+	if lockOld(t, h, op.ID)["outcome"] != "removed" || !statusOK(t, h) {
+		t.Fatalf("unpinning: %v", lockOld(t, h, op.ID))
 	}
 	if managedSource(t, h, "notes") != target {
 		t.Fatalf("the managed source: %s", managedText(t, h))
