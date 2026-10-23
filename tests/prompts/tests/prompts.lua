@@ -83,6 +83,8 @@ test('answers write to the pane: keys with no Enter, text as a paste and Enter',
   expect(answer(p.prompt_id, 'k-keys', {keys = '2'}).phase).to_be('done')
   local e = try('hub.prompt.answer', {prompt_id = p.prompt_id, key = 'k-keys', input = {keys = '3'}})
   expect(e.error.code).to_be('operation_conflict')
+  expect(tostring(e.error.message):find('operation_conflict: key k-keys was used with another prompt_id or input', 1, true) ~= nil,
+    'the full message: ' .. tostring(e.error.message)).to_be(true)
   -- A closed prompt: refused, zero bytes.
   alice:program_status('working', {})
   no_prompt(alice.id)

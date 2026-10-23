@@ -212,8 +212,11 @@ local function domain(action, args, pid)
     register()
     return {}
   elseif action == 'fix.hub' then
-    -- The hub's answer as data, so a test can check the exact error code.
-    local res, err = rex.call('client.perform', {client_id = hub_id, action = args.action, args = args.args or {}, timeout_ms = 10000})
+    -- The hub's answer as data, so a test can check the exact error code. on_behalf = true sends
+    -- the pid of the agent call that this plugin answers now (hub.grant.create).
+    local a = args.args or {}
+    if args.on_behalf then a.on_behalf = pid end
+    local res, err = rex.call('client.perform', {client_id = hub_id, action = args.action, args = a, timeout_ms = 10000})
     if err then
       local text = type(err) == 'table' and (err.message or '') or tostring(err)
       local code = type(err) == 'table' and err.code or tostring(err):match('code=([%w_%-%.]+)%)%s*$')

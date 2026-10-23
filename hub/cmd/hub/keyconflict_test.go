@@ -10,22 +10,25 @@ import (
 	"testing"
 )
 
-// conflictSites names the test that asserts each file's key conflict (B3′: every hub keyed request
-// answers the same key with another request with operation_conflict). TestKeyConflictSitesCovered
-// fails when a file gains or loses a site, so a new site gets a test.
-var conflictSites = map[string]string{
-	"workers.go":      "TestKeyConflictCode",
-	"spawnwindow.go":  "TestKeyConflictCode",
-	"resume.go":       "TestKeyConflictCode",
-	"sessions.go":     "TestKeyConflictCode",
-	"viewsvc.go":      "TestKeyConflictCode",
-	"watchsvc.go":     "TestKeyConflictCode",
-	"peers.go":        "TestKeyConflictCode",
-	"identity.go":     "TestKeyConflictCode", // callerKeyRow directly: a dispatch needs a real pane
-	"grants.go":       "tests/harness/tests/grants.lua",
-	"pluginops.go":    "pluginops_test.go, pluginops_lab_test.go",
-	"sqlsvc.go":       "sqlsvc_test.go",
-	"promptanswer.go": "promptanswer_test.go",
+// conflictSites is the list of key conflict sites (lead-b3 B3': every hub keyed request answers the
+// same key with another request with operation_conflict), written once. Each site names its text
+// in the source and the test that calls its action twice through the real hub and Rex; that test
+// must hold the site's message. TestKeyConflictSitesCovered fails when a file gains or loses a site.
+// The agent-set check (identity.go) has no real-path test: its two owners need a spawn address and
+// an identity that used one key before they bound, so TestKeyConflictCode calls callerKeyRow.
+var conflictSites = []struct{ file, format, test, message string }{
+	{"workers.go", `"key %q was used for a different request"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-spawn" was used for a different request`},
+	{"spawnwindow.go", `"key %q was used for a different request"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-window" was used for a different request`},
+	{"resume.go", `"key %q was used for a different request"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-resume" was used for a different request`},
+	{"sessions.go", `"key %q was used with another name"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-ensure" was used with another name`},
+	{"grants.go", `"the grant key %q was used for another agent or other requests"`, "../../../tests/harness/tests/key_conflict.lua", `the grant key "kc-grant" was used for another agent or other requests`},
+	{"sqlsvc.go", `"the key %s was used with another fingerprint"`, "../../../tests/harness/tests/key_conflict.lua", `the key kc-sql was used with another fingerprint`},
+	{"viewsvc.go", `"key %q has different arguments"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-view" has different arguments`},
+	{"watchsvc.go", `"key %s has another spec; remove it first"`, "../../../tests/watch/tests/watch.lua", `operation_conflict: key idem has another spec; remove it first`},
+	{"promptanswer.go", `"key %s was used with another prompt_id or input"`, "../../../tests/prompts/tests/prompts.lua", `operation_conflict: key k-keys was used with another prompt_id or input`},
+	{"pluginops.go", `"key %q has a different operation"`, "pluginops_lab_test.go", `operation_conflict: key "rm-d" has a different operation`},
+	{"peers.go", `"key %q was sent to %s with another body"`, "peers_lab_test.go", `operation_conflict: key "k1" was sent to b with another body`},
+	{"identity.go", `"key %q was used by %s before they became one identity; use a new key"`, "keyconflict_test.go", `key "dup" was used by claude:x and by spawn:spawn-test before they became one identity; use a new key`},
 }
 
 func TestKeyConflictSitesCovered(t *testing.T) {
@@ -33,8 +36,18 @@ func TestKeyConflictSitesCovered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	site := regexp.MustCompile(`refuse\("operation_conflict"`)
-	found := map[string]bool{}
+	site := regexp.MustCompile(`refuse\("operation_conflict", ("[^"]*")`)
+	listed := map[string]bool{}
+	for _, s := range conflictSites {
+		listed[s.file+" "+s.format] = true
+		b, err := os.ReadFile(s.test)
+		if err != nil {
+			t.Errorf("%s: %v", s.file, err)
+		} else if !strings.Contains(string(b), s.message) {
+			t.Errorf("%s: %s does not hold %s", s.file, s.test, s.message)
+		}
+	}
+	n := 0
 	for _, f := range files {
 		name := f.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -44,20 +57,15 @@ func TestKeyConflictSitesCovered(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if n := len(site.FindAll(b, -1)); n > 0 {
-			found[name] = true
-			if n != 1 {
-				t.Errorf("%s has %d key conflict sites; the table counts one", name, n)
-			}
-			if conflictSites[name] == "" {
-				t.Errorf("%s has a key conflict site that no test covers", name)
+		for _, m := range site.FindAllSubmatch(b, -1) {
+			n++
+			if !listed[name+" "+string(m[1])] {
+				t.Errorf("%s: the site %s is not in conflictSites", name, m[1])
 			}
 		}
 	}
-	for name := range conflictSites {
-		if !found[name] {
-			t.Errorf("%s has no key conflict site now: remove it from the table", name)
-		}
+	if n != len(conflictSites) {
+		t.Errorf("%d sites in the source, %d in conflictSites", n, len(conflictSites))
 	}
 }
 
