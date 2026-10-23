@@ -382,7 +382,10 @@ func TestOfferConfirmLab(t *testing.T) {
 	}
 	fx := b.viewAt(ctx, "/forms/plugins/confirm/offer/"+fmt.Sprintf("%x", src2))
 	var shown *labViewNode
-	fx.waitNode("the confirm node of x", func() bool { shown = fx.node("offer/"); return shown != nil && strings.Contains(shown.Text, "managed:x") })
+	fx.waitNode("the confirm node of x", func() bool {
+		shown = fx.node("offer/")
+		return shown != nil && strings.Contains(shown.Text, "managed:x")
+	})
 	writeA(`{"id":"gh","source":"` + src + `"},{"id":"y","source":"` + src2 + `"}`)
 	b.waitLong("the offer is y", 90*time.Second, func() bool {
 		var list struct {
