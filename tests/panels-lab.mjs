@@ -15,7 +15,7 @@
 //    return row (a new ID) brings the panel back (Codex's review of fe64d25).
 // The unknown split outcome (late adoption, superseded late cleanup, user close after an
 // unanswered split) and the occupied-slot / no-focus return are in hub/cmd/hub/panels_lab_test.go
-// (PANELS_LAB_SOCKET; slotSplit loses the answer on demand). Stale resume is in the view tests.
+// (HARNESS_LAB=1; slotSplit loses the answer on demand). Stale resume is in the view tests.
 import {connectControl} from '../lib/rex-client.mjs';
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';

@@ -10,7 +10,7 @@ import (
 )
 
 // The return of a closed form in layer mode (contract v2.1, the hub lead with codex-17 and
-// codex-28, 2026-10-22). Lab only: PANELS_LAB_SOCKET, as panels_lab_test.go.
+// codex-28, 2026-10-22). Lab only (rexLab: HARNESS_LAB=1), as panels_lab_test.go.
 
 // sleepBlock is a lab block layout that runs nothing.
 func sleepBlock() map[string]any {

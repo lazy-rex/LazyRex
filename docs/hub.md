@@ -1362,7 +1362,7 @@ stops the config load. Both modes use the same block, label, rows and recovery; 
 differs (`slotPane`). A replacement in layer mode opens a new layer, then closes the old pane, and
 its layer goes with it. A transcript pair inside a layer is checked in that layer (`wrapPair`).
 The key goes away when the user decides. Tests: `TestUISlotConfig`, `TestSlotPaneLayer`,
-`TestSlotLayerLab` (`PANELS_LAB_SOCKET`).
+`TestSlotLayerLab` (`HARNESS_LAB=1`).
 
 The return of a closed form in layer mode (contract v2.1, 2026-10-22). When a form closes without
 an action (Esc, its exit, the user's close of its pane, a hub close), the hub opens the panel that

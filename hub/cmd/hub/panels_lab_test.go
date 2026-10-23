@@ -14,23 +14,14 @@ import (
 )
 
 // Side-slot recovery against a real Rex lab, with the new_split answer lost on demand (slotSplit).
-// Lab only: PANELS_LAB_SOCKET=/tmp/rexlab-*/rex.sock. The "renderer" is a script that sleeps, so
+// Lab only (rexLab: HARNESS_LAB=1). The "renderer" is a script that sleeps, so
 // no plugin or view runs; the tests check the hub's rows and the panes that Rex reports.
 func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 	t.Helper()
-	socket := os.Getenv("PANELS_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set PANELS_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
-	if real, err := filepath.EvalSymlinks(socket); err != nil || !strings.HasPrefix(real, "/private/tmp/rexlab-") && !strings.HasPrefix(real, "/tmp/rexlab-") {
-		t.Fatalf("refuse a socket that resolves outside the lab: %s %v", real, err)
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	r, err := rex.Dial(ctx, socket)
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +30,7 @@ func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 		}
 	}()
 	h, _ := workerTestHub(t)
-	h.rex = r
+	h.rex, h.cfg.Server = r, l.server
 	h.selfClosed = map[string]bool{}
 	h.vs = newViewSvc() // closeViewRow forgets the view's render state
 	view := filepath.Join(t.TempDir(), "view.sh")

@@ -10,7 +10,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// A reopen against a real Rex lab (PANELS_LAB_SOCKET, as the side-slot lab tests): the old tab
+// A reopen against a real Rex lab (rexLab, as the side-slot lab tests): the old tab
 // view's pane is the session's first pane, attached to a lab renderer that releases. The new pane
 // takes the old pane's place, and the old pane closes. With a lost split answer, the sweep finds the
 // pane by its label, and Rex gets one split only.
@@ -19,7 +19,7 @@ func TestReopenTabPaneLab(t *testing.T) {
 		h, r, sess, win := panelsLabHub(t)
 		ctx := context.Background()
 		h.ui.sess = map[string]string{sess: uiSessionKey}
-		lr := newLabRenderer(t, "released")
+		lr := newLabRenderer(t, h, "released")
 		blocks, err := h.blocksIn(ctx, sess)
 		if err != nil || len(blocks) != 1 {
 			t.Fatalf("lab panes: %v %v", blocks, err)

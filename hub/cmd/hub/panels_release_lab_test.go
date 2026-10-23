@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -38,11 +37,15 @@ type labRenderer struct {
 	got chan perform
 }
 
-func newLabRenderer(t *testing.T, release string) *labRenderer {
+func newLabRenderer(t *testing.T, h *Hub, release string) *labRenderer {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c, err := rex.Dial(ctx, os.Getenv("PANELS_LAB_SOCKET"))
+	socket, err := rex.SocketPath(h.cfg.Server) // the lab server of the hub under test
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := rex.Dial(ctx, socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +126,7 @@ func openFirstPanel(t *testing.T, h *Hub, sess, win string) string {
 // T2: a renderer that attached first gets view.release, as before.
 func TestSlotAttachedViewIsAskedLab(t *testing.T) {
 	h, _, sess, win := panelsLabHub(t)
-	lr := newLabRenderer(t, "released")
+	lr := newLabRenderer(t, h, "released")
 	old := openFirstPanel(t, h, sess, win)
 	attachedTo(t, h, old, lr)
 	out, err := h.openSlot(context.Background(), slotRequest{ReplID: "repl-second", Plugin: "p", Route: "/panels/b", Ctx: panel(sess, win)})
@@ -160,7 +163,7 @@ func TestSlotDetachedOrUnknownViewConflictLab(t *testing.T) {
 // T4: a renderer with unsaved input answers confirm; the row waits for the user.
 func TestSlotDirtyRendererConfirmsLab(t *testing.T) {
 	h, _, sess, win := panelsLabHub(t)
-	lr := newLabRenderer(t, "confirm")
+	lr := newLabRenderer(t, h, "confirm")
 	old := openFirstPanel(t, h, sess, win)
 	attachedTo(t, h, old, lr)
 	out, err := h.openSlot(context.Background(), slotRequest{ReplID: "repl-second", Plugin: "p", Route: "/panels/b", Ctx: panel(sess, win)})
@@ -176,7 +179,7 @@ func TestSlotDirtyRendererConfirmsLab(t *testing.T) {
 // when the new split is refused, the hub resumes that renderer, and the view stays attached.
 func TestSlotLateAttachAfterClaimIsResumedLab(t *testing.T) {
 	h, _, sess, win := panelsLabHub(t)
-	lr := newLabRenderer(t, "released")
+	lr := newLabRenderer(t, h, "released")
 	if err := h.viewsStart(context.Background()); err != nil { // viewAttach kicks the view workers
 		t.Fatal(err)
 	}
