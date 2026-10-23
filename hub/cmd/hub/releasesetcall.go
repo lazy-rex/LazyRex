@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -148,6 +149,9 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	}
 	session, block, err := h.batchSession(name, dir, script)
 	if err != nil {
+		if session != "" {
+			h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil)
+		}
 		return nil, relFail("the agent pane %s: %v", name, err)
 	}
 	// A closed pane does not free the agent name: a join from a new block is refused while the
@@ -365,21 +369,72 @@ func (h *rehearsal) batchSession(name, dir, script string) (string, string, erro
 			BlockID string `json:"block_id"`
 		} `json:"blocks"`
 	}
-	if err := h.l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": s.ID}, &out); err != nil || len(out.Blocks) != 1 {
-		return s.ID, "", fmt.Errorf("the batch session %s has the blocks %v (%v), not one", s.ID, out.Blocks, err)
+	if s.ID == "" {
+		return "", "", fmt.Errorf("session.create returned no session_id")
 	}
-	block := out.Blocks[0].BlockID
+	if err := h.l.r.Call(ctx, "session.list_blocks", map[string]any{"session_id": s.ID}, &out); err != nil {
+		return s.ID, "", fmt.Errorf("session.list_blocks %s: %v", s.ID, err)
+	}
+	var ids []string
+	for _, b := range out.Blocks {
+		ids = append(ids, b.BlockID)
+	}
+	block, err := batchPaneIDs(s.ID, ids)
+	if err != nil {
+		return s.ID, "", err
+	}
 	var last string
 	for i := 0; i < 75; i++ {
 		var pwd struct {
 			Pwd string `json:"pwd"`
 		}
 		err := h.l.r.BlockCall(ctx, "com.superlogical.terminal.pwd", s.ID, block, nil, &pwd)
-		last = fmt.Sprintf("%q (%v)", pwd.Pwd, err)
-		if err == nil && strings.Contains(pwd.Pwd, filepath.Base(h.lab)) {
-			return s.ID, block, nil
+		if err == nil {
+			if err = batchPaneAt(pwd.Pwd, dir); err == nil {
+				return s.ID, block, nil
+			}
 		}
+		last = err.Error()
 		time.Sleep(200 * time.Millisecond)
 	}
-	return s.ID, block, fmt.Errorf("the batch pane %s did not report a lab directory in 15 s: terminal.pwd %s", block, last)
+	return s.ID, block, fmt.Errorf("the batch pane %s did not report the batch directory in 15 s: %s", block, last)
+}
+
+// batchPaneIDs checks the replies of session.create and session.list_blocks for one batch: a
+// session id and exactly one block, with an id. It returns the block id.
+func batchPaneIDs(session string, blocks []string) (string, error) {
+	if session == "" {
+		return "", fmt.Errorf("session.create returned no session_id")
+	}
+	if len(blocks) != 1 {
+		return "", fmt.Errorf("the batch session %s has the blocks %q, not one", session, blocks)
+	}
+	if blocks[0] == "" {
+		return "", fmt.Errorf("the batch session %s has a block with no block_id", session)
+	}
+	return blocks[0], nil
+}
+
+// batchPaneAt checks that raw, the terminal.pwd value of a batch pane (the OSC 7 file URL), names
+// dir: a local file URL whose path is the same directory as dir after symlinks resolve.
+func batchPaneAt(raw, dir string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("terminal.pwd %q: %v", raw, err)
+	}
+	if u.Scheme != "file" || (u.Host != "" && u.Host != "localhost") || !filepath.IsAbs(u.Path) {
+		return fmt.Errorf("terminal.pwd %q is not a local file URL", raw)
+	}
+	got, err := filepath.EvalSymlinks(u.Path)
+	if err != nil {
+		return fmt.Errorf("terminal.pwd %q: %v", raw, err)
+	}
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("terminal.pwd %q is %s, not the batch directory %s", raw, got, want)
+	}
+	return nil
 }

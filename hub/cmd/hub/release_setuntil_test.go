@@ -327,3 +327,61 @@ func TestReleaseSetUntilWindow(t *testing.T) {
 		t.Fatalf("a pending second attempt: %v", err)
 	}
 }
+
+// The review of 9fd4c093 (codex-26): the batch pane must report the batch directory itself, not a
+// path that only contains the lab name, and the batch session must have a session id and one
+// block id.
+func TestReleaseSetBatchPane(t *testing.T) {
+	root := t.TempDir()
+	lab := filepath.Join(root, "rexlab-team")
+	dir := filepath.Join(lab, "batch-1")
+	outside := filepath.Join(root, "outside-rexlab-team-backup")
+	link := filepath.Join(root, "link")
+	for _, d := range []string{dir, outside, filepath.Join(dir, "sub")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	// The same directory: a plain path, a symlink to it, the empty host and a percent escape.
+	for _, raw := range []string{"file://localhost" + dir, "file://localhost" + link, "file://" + dir,
+		"file://localhost" + strings.Replace(dir, "batch-1", "batch%2D1", 1)} {
+		if err := batchPaneAt(raw, dir); err != nil {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+	for raw, want := range map[string]string{
+		"file://localhost" + outside:                    "not the batch directory",
+		"file://localhost" + lab:                        "not the batch directory",
+		"file://localhost" + filepath.Join(dir, "sub"):  "not the batch directory",
+		"file://localhost" + filepath.Join(lab, "none"): "no such file",
+		"file://otherhost" + dir:                        "not a local file URL",
+		"http://localhost" + dir:                        "not a local file URL",
+		dir:                                             "not a local file URL",
+		"":                                              "not a local file URL",
+	} {
+		if err := batchPaneAt(raw, dir); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v, want %q", raw, err, want)
+		}
+	}
+
+	if b, err := batchPaneIDs("session:1", []string{"block:1"}); err != nil || b != "block:1" {
+		t.Fatalf("one block: %q %v", b, err)
+	}
+	for _, c := range []struct {
+		session string
+		blocks  []string
+		want    string
+	}{
+		{"", []string{"block:1"}, "no session_id"},
+		{"session:1", nil, "not one"},
+		{"session:1", []string{"block:1", "block:2"}, "not one"},
+		{"session:1", []string{""}, "no block_id"},
+	} {
+		if _, err := batchPaneIDs(c.session, c.blocks); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q %q: %v, want %q", c.session, c.blocks, err, c.want)
+		}
+	}
+}
