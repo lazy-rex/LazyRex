@@ -709,7 +709,10 @@ harnessBinary). The tests behind their own gates (`PALETTE_LAB`, `SHUTDOWN_LAB`,
 
 The main lab is the full lab that runs on hub main after each push. It sets `HARNESS_LAB`,
 `PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and `HUBCTL_LAB` (together about 40 s more on Linux).
-The first lines of each main lab log name the tip and the envs.
+Then it runs the thread view labs: `MODE_LAB=1 go test . -count=1 -v -run 'Lab$'` in `view/`,
+with its own log and summary line. `RESIZE_BURST_LAB` stays off (a known limit). A red view step
+is a red main, as a red hub step is. The first lines of each main lab log name the tip and the
+envs.
 
 - A test that runs the hub binary uses `o.startLab` and `o.startHub` (`TestSessionRenameKeptLab`).
 - A test that runs an in-process `Hub` uses `rexLab(t)` (`rexlab_test.go`). It starts only the lab
