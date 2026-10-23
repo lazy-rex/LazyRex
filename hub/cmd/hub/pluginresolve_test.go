@@ -282,11 +282,11 @@ func TestCandidateChange(t *testing.T) {
 // to its run, has no candidate; a kept record reports its run commit.
 func TestPluginsListCommit(t *testing.T) {
 	h, _ := workerTestHub(t)
-	cand := &pluginRun{Name: "b", Commit: "c2", Dir: "/d2"}
+	cand := &pluginRun{Name: "b", Source: "s2", Commit: "c2", Dir: "/d2"}
 	es := []*configEntry{
 		{index: 1, Source: "s1", name: "a", seen: "a", err: errorString("plugin a: refused")},
 		{index: 2, Source: "s2", name: "b", seen: "b", cand: cand},
-		{index: 3, Source: "s3", name: "c", seen: "c", cand: &pluginRun{Name: "c", Commit: "c3", Dir: "/d3"}},
+		{index: 3, Source: "s3", name: "c", seen: "c", cand: &pluginRun{Name: "c", Source: "s3", Commit: "c3", Dir: "/d3"}},
 	}
 	h.entries = es
 	h.plugins = map[string]*Plugin{
@@ -304,8 +304,8 @@ func TestPluginsListCommit(t *testing.T) {
 	json.Unmarshal(b, &got)
 	want := []string{
 		`{"candidate":{"error":"plugin a: refused"},"commit":"c1","desired":"running","dir":"/d1","entry":1,"instance_id":"","instance_pending":false,"name":"a","pinned_commit":"","registered":false,"source":"s1","state":"running"}`,
-		`{"desired":"stopped","entry":2,"instance_id":"","instance_pending":false,"name":"b","pinned_commit":"","registered":false,"source":"s2","state":"stopped"}`,
-		`{"commit":"c3","desired":"stopped","dir":"/d3","entry":3,"instance_id":"","instance_pending":false,"name":"c","pinned_commit":"","registered":false,"source":"s3","state":"stopped"}`,
+		`{"desired":"stopped","entry":2,"expect_run":{"source":"s2"},"instance_id":"","instance_pending":false,"name":"b","pinned_commit":"","registered":false,"source":"s2","state":"stopped"}`,
+		`{"commit":"c3","desired":"stopped","dir":"/d3","entry":3,"expect_run":{"source":"s3"},"instance_id":"","instance_pending":false,"name":"c","pinned_commit":"","registered":false,"source":"s3","state":"stopped"}`,
 	}
 	for i, e := range got.Entries {
 		if b, _ := json.Marshal(e); string(b) != want[i] {
@@ -322,8 +322,8 @@ func TestPluginsListCommit(t *testing.T) {
 func TestPluginsListKindChange(t *testing.T) {
 	h, _ := workerTestHub(t)
 	es := []*configEntry{
-		{index: 1, Source: "/local/a", name: "a", seen: "a", cand: &pluginRun{Name: "a", Dir: "/local/a"}},
-		{index: 2, Source: "/local/b", name: "b", seen: "b", cand: &pluginRun{Name: "b", Commit: "c2", Dir: "/cache/b"}},
+		{index: 1, Source: "/local/a", name: "a", seen: "a", cand: &pluginRun{Name: "a", Source: "/local/a", Dir: "/local/a"}},
+		{index: 2, Source: "/local/b", name: "b", seen: "b", cand: &pluginRun{Name: "b", Source: "/local/b", Commit: "c2", Dir: "/cache/b"}},
 	}
 	h.entries = es
 	h.plugins = map[string]*Plugin{
@@ -338,8 +338,8 @@ func TestPluginsListKindChange(t *testing.T) {
 	var got struct{ Entries []map[string]any }
 	json.Unmarshal(b, &got)
 	want := []string{
-		`{"candidate":{"commit":null,"dir":"/local/a"},"commit":"c1","desired":"stopped","dir":"/cache/a","entry":1,"instance_id":"","instance_pending":false,"name":"a","pinned_commit":"","registered":false,"source":"/local/a","state":"stopped"}`,
-		`{"candidate":{"commit":"c2","dir":"/cache/b"},"desired":"stopped","dir":"/local/b","entry":2,"instance_id":"","instance_pending":false,"name":"b","pinned_commit":"","registered":false,"source":"/local/b","state":"stopped"}`,
+		`{"candidate":{"commit":null,"dir":"/local/a"},"commit":"c1","desired":"stopped","dir":"/cache/a","entry":1,"expect_run":{"source":"/local/a"},"instance_id":"","instance_pending":false,"name":"a","pinned_commit":"","registered":false,"source":"/local/a","state":"stopped"}`,
+		`{"candidate":{"commit":"c2","dir":"/cache/b"},"desired":"stopped","dir":"/local/b","entry":2,"expect_run":{"source":"/local/b"},"instance_id":"","instance_pending":false,"name":"b","pinned_commit":"","registered":false,"source":"/local/b","state":"stopped"}`,
 	}
 	for i, e := range got.Entries {
 		if b, _ := json.Marshal(e); string(b) != want[i] {
@@ -351,3 +351,56 @@ func TestPluginsListKindChange(t *testing.T) {
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+// expect_run (lead-c8-p2): every entry with a candidate reports the run that hub.admin.start
+// expect_run takes, also when the candidate is the running run. A GitHub candidate gives source,
+// commit and digest; a local candidate gives its source only. A refused entry has no expect_run.
+// Each value passes parseExpectRun as the read gives it, and the candidate field is unchanged.
+func TestPluginsListExpectRun(t *testing.T) {
+	h, _ := workerTestHub(t)
+	c1, d1 := strings.Repeat("1", 40), "sha256:"+strings.Repeat("a", 64)
+	c2, d2 := strings.Repeat("2", 40), "sha256:"+strings.Repeat("b", 64)
+	running := pluginRun{Name: "run", Source: "github:acme/run@v1", Commit: c2, Digest: d2, Dir: "/c/run"}
+	es := []*configEntry{
+		{index: 1, Source: "github:acme/off@v1", name: "off", seen: "off", github: true,
+			cand: &pluginRun{Name: "off", Source: "github:acme/off@v1", Commit: c1, Digest: d1, Dir: "/c/off"}},
+		{index: 2, Source: "github:acme/run@v1", name: "run", seen: "run", github: true, cand: &running},
+		{index: 3, Source: "/l/loc", name: "loc", seen: "loc", cand: &pluginRun{Name: "loc", Source: "/l/loc", Dir: "/l/loc"}},
+		{index: 4, Source: "/l/bad", err: errorString("plugin source /l/bad: no lazyrex.json")},
+	}
+	h.entries = es
+	h.plugins = map[string]*Plugin{
+		"off": {Name: "off", entry: es[0], Desired: "stopped"},
+		"run": {Name: "run", entry: es[1], Desired: "running", run: running},
+		"loc": {Name: "loc", entry: es[2], Desired: "stopped"},
+	}
+	out, err := h.pluginsList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	var got struct{ Entries []map[string]any }
+	json.Unmarshal(b, &got)
+	want := []string{
+		`{"commit":"` + c1 + `","digest":"` + d1 + `","source":"github:acme/off@v1"}`,
+		`{"commit":"` + c2 + `","digest":"` + d2 + `","source":"github:acme/run@v1"}`,
+		`{"source":"/l/loc"}`,
+		"",
+	}
+	for i, e := range got.Entries {
+		x, ok := e["expect_run"]
+		if b, _ := json.Marshal(x); ok != (want[i] != "") || ok && string(b) != want[i] {
+			t.Errorf("entry %d: expect_run %s (present %v), want %q", i+1, b, ok, want[i])
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if _, err := parseExpectRun(map[string]any{"expect_run": x}); err != nil {
+			t.Errorf("entry %d: parseExpectRun: %v", i+1, err)
+		}
+	}
+	if _, ok := got.Entries[1]["candidate"]; ok {
+		t.Errorf("the running candidate: a candidate change %v", got.Entries[1]["candidate"])
+	}
+}

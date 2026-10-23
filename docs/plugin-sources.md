@@ -1007,7 +1007,7 @@ are refused (`invalid`).
 `"expect_run": {"source": "<exact source>", "commit": "<40 hex>", "digest": "sha256:<64 hex>"}`.
 commit and digest are required for a GitHub source and refused for a local source (`invalid`). The
 source string binds owner, repo, subdir and ref, so the same commit in another subdir is another
-run. A writer of the lock (plugin use, the plugin manager) names the run that it wrote; a pin that
+run. `hub.plugins` gives each entry's candidate as `expect_run` (docs/hub.md), so a caller passes the read value unchanged. A writer of the lock (plugin use, the plugin manager) names the run that it wrote; a pin that
 another writer wrote later is then refused, not started.
 
 - replace: after the candidate check (step 7), the candidate must be the expected run, else

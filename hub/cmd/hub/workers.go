@@ -1567,6 +1567,15 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 		}
 		item := e.ref()
 		item["pinned_commit"] = ""
+		// expect_run (lead-c8-p2): the candidate as hub.admin.start expect_run takes it; a local
+		// candidate is its source only.
+		if e.cand != nil && e.err == nil {
+			x := map[string]any{"source": e.cand.Source}
+			if e.github {
+				x["commit"], x["digest"] = e.cand.Commit, e.cand.Digest
+			}
+			item["expect_run"] = x
+		}
 		if e.github && snap.err == nil { // a lock that does not read has no pins (snap.lock is nil)
 			if le := snap.lock.Plugins[e.Source]; le != nil {
 				item["pinned_commit"] = le.Commit

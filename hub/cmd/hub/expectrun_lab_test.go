@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -229,4 +231,67 @@ func TestExpectRunCrashingStartLab(t *testing.T) {
 	if n := len(s.events("plugin_spawned", "c")) - atStart; n != 0 {
 		t.Fatalf("%d spawns after the registered instance; want 0 (one instance)", n)
 	}
+}
+
+// The expect_run that hub.plugins gives (lead-c8-p2), passed unchanged to hub.admin.start: a
+// GitHub entry, running (its candidate is the run, so it has no candidate change) and then
+// stopped, starts with it. After a lock update and a reload, the new expect_run names the new
+// commit, and the old one is candidate_changed. A local entry gives its source only, and starts
+// with it.
+func TestExpectRunFromPluginsLab(t *testing.T) {
+	t.Run("github", func(t *testing.T) {
+		s := newStartLab(t)
+		gitTestEnv(t)
+		r := newTestRepo(t)
+		first := r.commit(map[string]string{"lazyrex.json": `{"name":"gh","main":"main.lua"}`, "main.lua": fmt.Sprintf(startFixture, "gh")})
+		const src = "github:lab/r@main"
+		s.setConfig("plugins", []any{map[string]any{"source": src}})
+		opts := pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
+		if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
+			t.Fatal(err)
+		}
+		s.start()
+		run, _ := s.startRun("gh")
+		e := s.expectEntry("gh")
+		x, _ := e["expect_run"].(map[string]any)
+		if _, ok := e["candidate"]; ok || x["source"] != src || x["commit"] != first || !strings.HasPrefix(fmt.Sprint(x["digest"]), "sha256:") || len(x) != 3 {
+			t.Fatalf("the running entry: %v", e)
+		}
+		s.must("hub.admin.stop", map[string]any{"plugin": "gh"})
+		if y := s.expectEntry("gh")["expect_run"]; fmt.Sprint(y) != fmt.Sprint(x) {
+			t.Fatalf("the stopped entry: expect_run %v, want %v", y, x)
+		}
+		s.must("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": x})
+		s.wait("gh registers", func() bool { st := s.status("gh"); return st.Registered && st.InstanceID != run.InstanceID })
+
+		second := r.commit(map[string]string{"main.lua": fmt.Sprintf(startFixture, "gh") + "-- second\n"})
+		var out bytes.Buffer
+		if err := runPluginCmd(context.Background(), "update", s.cfg, nil, opts, &out); err != nil {
+			t.Fatalf("update: %v %s", err, out.String())
+		}
+		s.must("hub.plugins.reload", nil)
+		y, _ := s.expectEntry("gh")["expect_run"].(map[string]any)
+		if y["commit"] != second {
+			t.Fatalf("after the update: expect_run %v, want commit %s", y, second)
+		}
+		// A start of a running plugin compares the running run; a stopped start, the candidate.
+		s.must("hub.admin.stop", map[string]any{"plugin": "gh"})
+		_, err := s.call("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": x})
+		s.refusedWith("the old expect_run after the update", err, "candidate_changed", "not "+src+" at "+first)
+		s.must("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": y})
+		s.wait("gh runs the second commit", func() bool { e := s.expectEntry("gh"); return s.status("gh").Registered && e["commit"] == second })
+	})
+	t.Run("local", func(t *testing.T) {
+		s := newStartLab(t, "a")
+		s.writeSource("a", `{"name":"a","main":"main.lua"}`, "a")
+		s.start()
+		s.startRun("a")
+		s.must("hub.admin.stop", map[string]any{"plugin": "a"})
+		x, _ := s.expectEntry("a")["expect_run"].(map[string]any)
+		if len(x) != 1 || x["source"] != "src/a" {
+			t.Fatalf("the local entry: expect_run %v", x)
+		}
+		s.must("hub.admin.start", map[string]any{"plugin": "a", "expect_run": x})
+		s.wait("a registers", func() bool { return s.status("a").Registered })
+	})
 }
