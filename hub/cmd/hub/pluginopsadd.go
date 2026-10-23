@@ -165,6 +165,10 @@ type opResolved struct {
 	Tag      string `json:"tag"` // the release tag of a latest source, else ""
 	Commit   string `json:"commit"`
 	FetchRef string `json:"fetch_ref"`
+	// A peer target (peersync.go): the peer's digest, which the fetch must give, and a fetch by the
+	// commit ID. Absent on a resolved target.
+	Digest string `json:"digest,omitempty"`
+	ByID   bool   `json:"by_id,omitempty"`
 }
 
 // opNewSource is the source of an update: the entry's source up to its last "@", then the new ref.
