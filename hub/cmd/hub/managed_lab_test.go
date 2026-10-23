@@ -231,7 +231,7 @@ func TestManagedReloadLab(t *testing.T) {
 	}
 	s.same("m", second, start)
 	e := s.managedEntry("mid")
-	if e == nil || e["dir"] != filepath.Join(s.src, "m") || fmt.Sprint(e["candidate"]) != fmt.Sprint(map[string]any{"dir": filepath.Join(s.src, "m2")}) {
+	if e == nil || !s.snapshot(e["dir"]) || fmt.Sprint(e["candidate"]) != fmt.Sprint(map[string]any{"dir": filepath.Join(s.src, "m2")}) {
 		t.Errorf("the changed entry: %v", e)
 	}
 	if refused := s.must("hub.plugins", nil)["refused"].([]any); len(refused) != 0 {
@@ -240,7 +240,7 @@ func TestManagedReloadLab(t *testing.T) {
 	s.must("hub.admin.stop", map[string]any{"plugin": "m"})
 	s.must("hub.admin.start", map[string]any{"plugin": "m"})
 	s.registered("m")
-	if e := s.managedEntry("mid"); e["dir"] != filepath.Join(s.src, "m2") || e["candidate"] != nil {
+	if e := s.managedEntry("mid"); !s.snapshot(e["dir"]) || e["candidate"] != nil {
 		t.Errorf("the restarted entry: %v", e)
 	}
 	before(t, s.order(), "plugins_reloaded", "plugin_spawn_intent m")
@@ -250,8 +250,8 @@ func TestManagedReloadLab(t *testing.T) {
 //   - b (managed, depends on the managed a) is removed, and its manifest gains a missing
 //     dependency. The re-add reports the error; the instance runs on, retained. hub.admin.start b
 //     is refused by the check (b does not wait).
-//   - a is removed while b runs: b runs on. A crash of b: the respawn is refused (a is not
-//     configured). The re-add of a keeps its instance, and does not restart b. hub.admin.start b
+//   - a is removed while b runs: b runs on. A crash of b: the respawn is refused (no entry gives
+//     a). The re-add of a keeps its instance, and does not restart b. hub.admin.start b
 //     spawns it.
 func TestManagedReloadDependentsLab(t *testing.T) {
 	s := newStartLab(t)
@@ -294,7 +294,7 @@ func TestManagedReloadDependentsLab(t *testing.T) {
 	}
 	s.exit("b")
 	s.wait("the respawn of b is refused", func() bool { return s.status("b").State == "refused" })
-	if st := s.status("b"); !strings.Contains(st.Error, "dependency a is not configured") {
+	if st := s.status("b"); !strings.HasPrefix(st.Error, "plugin b: dependency a of run sha256:") || !strings.HasSuffix(st.Error, " is not available") {
 		t.Errorf("b after the crash: %+v", st)
 	}
 	r = s.reload("ma=a", "mb=b")
