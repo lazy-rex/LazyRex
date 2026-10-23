@@ -101,7 +101,7 @@ func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]s
 	h.faults = &faults{}
 	h.test = &testState{}
 	h.ui.sess["session:home"] = uiSessionKey
-	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
+	h.vs = newViewSvc()
 	call := changedCall
 	t.Cleanup(func() { changedCall = call })
 	t.Cleanup(func() { waitIdle(t, h) }) // no delivery outlives the fake
