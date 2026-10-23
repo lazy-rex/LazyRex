@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,15 @@ func TestRunnerMalformedParityRoutesLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("rex", "-S", l.server, "--autostart=false", "--timeout", "30s", "do",
+	// rex do needs a session target, as lazyrex-hub test gives it (testcmd.go).
+	var sess struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := l.r.Call(context.Background(), "session.create", map[string]any{"label": "tests", "initial_windows": []any{map[string]any{"window_label": "runner",
+		"layout": map[string]any{"block": map[string]any{"flavor": "com.superlogical.terminal.shell", "options": map[string]any{"command": []string{"/bin/sleep", "100000"}}}}}}}, &sess); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("rex", "-S", l.server, "--autostart=false", "--timeout", "30s", "do", "-s", sess.SessionID,
 		filepath.Join(root, "lab", "test", "runner.lua"), "file="+filepath.Join(root, "tests", "harness", "tests", "assertions.lua"),
 		"lib="+filepath.Join(root, "lab", "test"), "parity_routes=[\"/a\",")
 	var stderr bytes.Buffer
