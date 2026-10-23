@@ -29,7 +29,7 @@ func TestSpawnFocusValidation(t *testing.T) {
 // TestSpawnFocusLab exercises the real spawn path and Rex's server-side focus state.
 // It does not claim that an app changes its selected session or tab.
 func TestSpawnFocusLab(t *testing.T) {
-	r, ctx := labRex(t)
+	r, ctx, server := labRex(t)
 	realCreate := spawnCreate
 	t.Cleanup(func() { spawnCreate = realCreate })
 	newTab := func(t *testing.T, session string) (string, string) {
@@ -65,7 +65,7 @@ func TestSpawnFocusLab(t *testing.T) {
 		return out.Window
 	}
 	setup := func(t *testing.T) (*Hub, perform, string, string, string) {
-		h, p, session := labSpawnHub(t, r, ctx)
+		h, p, session := labSpawnHub(t, r, ctx, server)
 		if _, err := h.db.Exec(`DELETE FROM spawns`); err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +160,7 @@ func TestSpawnFocusLab(t *testing.T) {
 	})
 	t.Run("source-in-another-session", func(t *testing.T) {
 		h, p, session, source, _ := setup(t)
-		_, _, foreignSession := labSpawnHub(t, r, ctx)
+		_, _, foreignSession := labSpawnHub(t, r, ctx, server)
 		foreignWindow, _ := newTab(t, foreignSession)
 		spawn(t, h, p, request(session, foreignWindow))
 		if active(t, session) != source {

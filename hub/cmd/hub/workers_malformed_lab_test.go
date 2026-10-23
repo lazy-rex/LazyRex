@@ -3,37 +3,32 @@ package main
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// labRex dials the lab server named by SPAWN_LAB_SOCKET (an isolated /tmp/rexlab-* socket).
-func labRex(t *testing.T) (*rex.Rex, context.Context) {
-	socket := os.Getenv("SPAWN_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set SPAWN_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
+// labRex starts a lab Rex server (rexLab: HARNESS_LAB=1) and dials it. It returns the connection,
+// a 45 s context, and the server address for the Hub's cfg.Server.
+func labRex(t *testing.T) (*rex.Rex, context.Context, string) {
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	r, err := rex.Dial(ctx, socket)
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { r.Close() })
 	go func() {
 		for range r.Events {
 		}
 	}()
-	return r, ctx
+	return r, ctx, l.server
 }
 
 // labSpawnHub is a hub on the lab server with one work session and the accessory profile "probe".
-func labSpawnHub(t *testing.T, r *rex.Rex, ctx context.Context) (*Hub, perform, string) {
+func labSpawnHub(t *testing.T, r *rex.Rex, ctx context.Context, server string) (*Hub, perform, string) {
 	var sess struct {
 		ID string `json:"session_id"`
 	}
@@ -42,7 +37,7 @@ func labSpawnHub(t *testing.T, r *rex.Rex, ctx context.Context) (*Hub, perform, 
 	}
 	t.Cleanup(func() { r.Call(context.Background(), "session.destroy", map[string]any{"session_id": sess.ID}, nil) })
 	h, _ := workerTestHub(t)
-	h.rex = r
+	h.rex, h.cfg.Server = r, server
 	h.ui = &uiState{sess: map[string]string{sess.ID: uiSessionKey}, kick: make(chan struct{}, 1)}
 	h.selfClosed = map[string]bool{}
 	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{"test": make(chan struct{}, 1)}}
@@ -58,8 +53,8 @@ func labSpawnHub(t *testing.T, r *rex.Rex, ctx context.Context) (*Hub, perform, 
 
 // A success answer without exactly one block is not a failure: Rex said yes, so a pane may exist.
 func TestSpawnMalformedSuccessLab(t *testing.T) {
-	r, ctx := labRex(t)
-	h, p, _ := labSpawnHub(t, r, ctx)
+	r, ctx, server := labRex(t)
+	h, p, _ := labSpawnHub(t, r, ctx, server)
 	real := spawnCreate
 	t.Cleanup(func() { spawnCreate = real })
 	garble := func(ctx context.Context, h *Hub, method string, req map[string]any, out any) error {

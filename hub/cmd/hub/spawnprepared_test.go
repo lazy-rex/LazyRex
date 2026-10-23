@@ -104,8 +104,8 @@ func rejectSending(t *testing.T, h *Hub) func() {
 // A failed sending transition sends no create request: the spawn fails as not created, and a new
 // key spawns normally.
 func TestSpawnNotCreatedLab(t *testing.T) {
-	r, ctx := labRex(t)
-	h, p, _ := labSpawnHub(t, r, ctx)
+	r, ctx, server := labRex(t)
+	h, p, _ := labSpawnHub(t, r, ctx, server)
 	real := spawnCreate
 	t.Cleanup(func() { spawnCreate = real })
 	sent := 0
