@@ -30,7 +30,8 @@ func identityFieldsHub(t *testing.T, attach *atomic.Int32, attachFails bool) *Hu
 				return nil, "internal"
 			}
 		case "session.list_blocks":
-			return map[string]any{"blocks": []any{map[string]any{"block_id": "b", "window_id": "w"}}}, ""
+			// b3 is the pane of the resumed spawn (TestWorkerIdentityFieldsResumeNewSpawn).
+			return map[string]any{"blocks": []any{map[string]any{"block_id": "b", "window_id": "w"}, map[string]any{"block_id": "b3", "window_id": "w"}}}, ""
 		case "com.superlogical.terminal.process":
 			return map[string]any{"child": map[string]any{"pid": 4242}}, ""
 		case "com.superlogical.terminal.program_status":
