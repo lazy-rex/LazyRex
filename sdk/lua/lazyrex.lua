@@ -690,7 +690,7 @@ function M.plugin(name)
   app.dir = args.main and args.main:match('^(.*)/[^/]*$')
   S.app = app
   local actions, order, panels, views, commands, starts, migrations = {}, {}, {}, {}, {}, {}, {}
-  local migrate_base = 1 -- the schema version of migrations[1]
+  local migrate_base, migrate_called = 1, false -- the schema version of migrations[1]; a call came
   local listeners = {}
 
   -- app.hub(action, args) calls the hub. A hub error raises {code, message}: a refusal stays final.
@@ -740,15 +740,23 @@ function M.plugin(name)
   -- SDK runs the new ones in order, in one transaction, and sets PRAGMA user_version.
   -- {base = N, sql, ...}: entry 1 makes schema version N in one step, and entry i is version
   -- N + i - 1. Only a new database runs the base (docs/plugin-sdk.md, "Migrations").
+  -- PRAGMA user_version is a 32-bit signed integer in SQLite, so base and the last version are at most
+  -- MAX_VERSION. The range check also refuses NaN and infinity.
+  local MAX_VERSION = 2147483647
   function db.migrate(list)
     if list.base ~= nil then
-      if type(list.base) ~= 'number' or list.base < 1 or list.base ~= math.floor(list.base) then
-        error('app.db.migrate: base must be an integer of 1 or more', 2)
+      local b = list.base
+      if type(b) ~= 'number' or not (b >= 1 and b <= MAX_VERSION) or b ~= math.floor(b) then
+        error('app.db.migrate: base must be an integer from 1 to ' .. MAX_VERSION, 2)
       end
-      if #migrations > 0 then error('app.db.migrate: give base in the first call', 2) end
-      migrate_base = list.base
+      if migrate_called then error('app.db.migrate: give base in the first call', 2) end
+      migrate_base = b
     end
+    migrate_called = true
     for _, step in ipairs(list) do migrations[#migrations + 1] = step end
+    if migrate_base + #migrations - 1 > MAX_VERSION then
+      error('app.db.migrate: the last schema version must be at most ' .. MAX_VERSION, 2)
+    end
   end
 
   -- app.action(name, schema, fn, opts): an action for agents (and the user). opts: user_only,

@@ -115,7 +115,17 @@ test('base: a rollback above the last version runs on with one line', function()
 end)
 
 test('base must be an integer of 1 or more, in the first call: the plugin fails at load', function()
+  -- PRAGMA user_version is a 32-bit signed integer in SQLite: base and the last version must fit.
+  local INT = 'base must be an integer from 1 to 2147483647'
+  local want = {zero = INT, fraction = INT, text = INT, infinity = INT, nan = INT, big = INT,
+    last = 'the last schema version must be at most 2147483647'}
   for name, src in pairs({
+    infinity = "app.db.migrate {base = math.huge, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
+    nan = "app.db.migrate {base = 0 / 0, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
+    big = "app.db.migrate {base = 2147483648, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
+    last = "app.db.migrate {base = 2147483647, 'CREATE TABLE a (id INTEGER PRIMARY KEY)', 'CREATE TABLE b (id INTEGER PRIMARY KEY)'}",
+    empty_first = "app.db.migrate {}\napp.db.migrate {base = 5, 'CREATE TABLE b (id INTEGER PRIMARY KEY)'}",
+    base_only_first = "app.db.migrate {base = 5}\napp.db.migrate {base = 6, 'CREATE TABLE b (id INTEGER PRIMARY KEY)'}",
     zero = "app.db.migrate {base = 0, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
     fraction = "app.db.migrate {base = 1.5, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
     text = "app.db.migrate {base = '5', 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
@@ -123,8 +133,11 @@ test('base must be an integer of 1 or more, in the first call: the plugin fails 
   }) do
     local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. src})
     expect(s.loaded, name).to_be(false)
-    expect(tostring(s.load_error), name).to_match(name == 'second' and 'give base in the first call' or 'base must be an integer of 1 or more')
+    expect(tostring(s.load_error), name).to_match(want[name] or 'give base in the first call')
   end
+  -- The largest version loads.
+  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.db.migrate {base = 2147483647, ' .. "'CREATE TABLE a (id INTEGER PRIMARY KEY)'}"})
+  expect(s.loaded, tostring(s.load_error)).to_be(true)
 end)
 
 -- Agent actions ----------------------------------------------------------------------------------

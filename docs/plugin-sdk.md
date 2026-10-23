@@ -92,7 +92,11 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   - A database at version N or above runs only the entries above its version.
   - A database at a version from 1 to N - 1, or at version 0 with tables, refuses to start, and
     nothing changes. The base never runs over a part of the old steps or over data.
-  - Without `base`, nothing changes (`base = 1`). Give `base` in the first `app.db.migrate` call.
+  - Without `base`, nothing changes (`base = 1`). Give `base` in the first `app.db.migrate` call
+    (an empty call counts as a call).
+  - `base` is an integer from 1 to 2147483647, and the last version is at most 2147483647:
+    SQLite keeps `PRAGMA user_version` as a 32-bit signed integer (a larger value is kept as 0;
+    observed with the sqlite3 CLI 3.54.0). Otherwise the plugin fails at load.
 
   **The order rule.** Set `base = N` only when every live database is already at version N or above.
   So a base collapses only the steps that a release before it shipped: N is at most the last version
