@@ -1,5 +1,6 @@
--- The isolation probe of the dependency isodep (docs/testing.md, "Isolation"). A local plugin reads
--- only its own directory (docs/plugin-sources.md, section 2), so isodep does not load ../probe.lua.
+-- The isolation probe of the dependency isodep (docs/testing.md, "Isolation"). The source snapshot
+-- of a local plugin contains only its own directory (docs/plugin-sources.md, section 2), so isodep
+-- does not load ../probe.lua.
 -- At load it writes what it sees to $HOME/<name>-env.json with the same fields as ../probe.lua, and
 -- it writes <name>-cwd with a relative path. It has no views and no actions.
 local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
