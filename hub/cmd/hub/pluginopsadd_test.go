@@ -163,21 +163,34 @@ func TestPluginOpRestartAdmission(t *testing.T) {
 	}
 }
 
-// The pin column: a lab store from before it gets it at the manager's start.
-func TestPluginOpsPinColumn(t *testing.T) {
+// The manager's tables on a new store: every column comes from the CREATE TABLE (no release had
+// these tables, so there is no migration), and a second run changes nothing.
+func TestPluginOpsSchema(t *testing.T) {
 	h, _ := workerTestHub(t)
-	if _, err := h.db.Exec(strings.Replace(pluginOpsSchema, "\n  pin TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));", "\n  UNIQUE (scope, key));", 1)); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
-	if err := h.pluginOpsSchemaUp(ctx); err != nil {
-		t.Fatal(err)
+	columns := func() string {
+		t.Helper()
+		rows, err := h.db.Query(`SELECT name FROM pragma_table_info('plugin_ops') ORDER BY cid`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var n string
+			rows.Scan(&n)
+			names = append(names, n)
+		}
+		return strings.Join(names, " ")
 	}
-	if _, err := h.db.Exec(`SELECT pin FROM plugin_ops`); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.pluginOpsSchemaUp(ctx); err != nil {
-		t.Fatalf("a second schema run: %v", err)
+	for i := 0; i < 2; i++ {
+		if err := h.pluginOpsSchemaUp(ctx); err != nil {
+			t.Fatalf("schema run %d: %v", i+1, err)
+		}
+		want := "op_id scope key fingerprint origin kind entry name expect input target phase rev confirmed base output entry_identity result error created updated pin lock_base"
+		if got := columns(); got != want {
+			t.Fatalf("schema run %d: plugin_ops columns %q, want %q", i+1, got, want)
+		}
 	}
 }
 
