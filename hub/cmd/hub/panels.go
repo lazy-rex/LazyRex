@@ -45,16 +45,22 @@ import (
 // cancelled, superseded (an unresolved row that a newer open in its window replaced; the old view
 // was resumed with the old ID first; the hub still closes the late pane), user_closed (the user
 // closed the old view while the row waited; the hub closes a late pane), late_closed, skipped (a
-// closed form's return in layer mode whose focus check failed; terminal, no pane was asked for).
+// closed form's return in layer mode whose focus check failed; terminal, no pane was asked for),
+// expired (kind tab only: no pane appeared within reopenBound of the pane request; reopen.go).
 // kept is 1 when the user kept the old view at the confirm step.
 // return_of is the closed form of such a return (” for every other row).
+// kind is slot (the side slot of a window) or tab (a tab view's pane, reopen.go). split_at is the
+// time of the one pane request, or ” before it.
 const panelSchema = `
 CREATE TABLE IF NOT EXISTS ui_replacements (repl_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
   window_id TEXT NOT NULL, old_view TEXT NOT NULL DEFAULT '', new_view TEXT NOT NULL, plugin TEXT NOT NULL,
   route TEXT NOT NULL, context TEXT NOT NULL, focus INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL,
   next_title TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, kept INTEGER NOT NULL DEFAULT 0,
-  return_of TEXT NOT NULL DEFAULT '');
+  return_of TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'slot', split_at TEXT NOT NULL DEFAULT '');
 `
+
+// activeStates are the states in which a replacement row owns its views.
+const activeStates = `('releasing', 'confirming', 'opening', 'closing')`
 
 // slotReturn is the panel that a form replaced. The form's end opens it again.
 type slotReturn struct {
@@ -64,8 +70,9 @@ type slotReturn struct {
 }
 
 type slotState struct {
-	mu   sync.Mutex
-	wins map[string]*sync.Mutex // window -> lock; one replacement at a time per window
+	mu    sync.Mutex
+	wins  map[string]*sync.Mutex // window -> lock; one replacement at a time per window
+	watch map[string]bool        // tab rows with a timer (reopen.go watchTabRow)
 }
 
 func (h *Hub) windowLock(window string) *sync.Mutex {
@@ -102,14 +109,14 @@ type slotRequest struct {
 }
 
 type slotRow struct {
-	ID, Session, Window, Old, New, Plugin, Route, Context, State, Title, ReturnOf string
-	Focus                                                                         bool
+	ID, Session, Window, Old, New, Plugin, Route, Context, State, Title, ReturnOf, Kind, SplitAt string
+	Focus                                                                                        bool
 }
 
 func (h *Hub) slotRow(ctx context.Context, q querier, id string) (*slotRow, error) {
 	var r slotRow
-	err := q.QueryRowContext(ctx, `SELECT repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title, return_of
-		FROM ui_replacements WHERE repl_id = ?`, id).Scan(&r.ID, &r.Session, &r.Window, &r.Old, &r.New, &r.Plugin, &r.Route, &r.Context, &r.Focus, &r.State, &r.Title, &r.ReturnOf)
+	err := q.QueryRowContext(ctx, `SELECT repl_id, session_id, window_id, old_view, new_view, plugin, route, context, focus, state, next_title, return_of, kind, split_at
+		FROM ui_replacements WHERE repl_id = ?`, id).Scan(&r.ID, &r.Session, &r.Window, &r.Old, &r.New, &r.Plugin, &r.Route, &r.Context, &r.Focus, &r.State, &r.Title, &r.ReturnOf, &r.Kind, &r.SplitAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -160,8 +167,9 @@ func (h *Hub) openSlot(ctx context.Context, req slotRequest) (map[string]any, er
 // newSlotRow records a replacement: it checks the slot, supersedes an unresolved row of the same
 // window, and keeps a panel's return on a form that replaces it.
 func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error) {
+	// Side-slot rows only: a tab replacement in the same window (reopen.go) owns another pane.
 	var busy int
-	h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE window_id = ? AND state IN ('releasing', 'confirming', 'closing')`, req.Ctx.WindowID).Scan(&busy)
+	h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE kind = 'slot' AND window_id = ? AND state IN ('releasing', 'confirming', 'closing')`, req.Ctx.WindowID).Scan(&busy)
 	if busy > 0 {
 		return nil, refuse("conflict", "the side panel of this tab is changing; try again")
 	}
@@ -169,7 +177,7 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 		// A return opens only into an empty slot: a view the user opened after the form closed
 		// (or one still opening) keeps it. The window lock makes this exact.
 		var n int
-		h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE window_id = ? AND state = 'opening'`, req.Ctx.WindowID).Scan(&n)
+		h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE kind = 'slot' AND window_id = ? AND state = 'opening'`, req.Ctx.WindowID).Scan(&n)
 		if old, _, _, err := h.slotOccupant(ctx, req.Ctx.WindowID); err != nil {
 			return nil, err
 		} else if old != "" || n > 0 {
@@ -178,7 +186,7 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 	}
 	// An unresolved row of this window is superseded. Its old renderer is frozen for it: the hub
 	// resumes it with the old ID before it asks for a new release.
-	prevRows, err := h.db.QueryContext(ctx, `SELECT repl_id FROM ui_replacements WHERE window_id = ? AND state = 'opening'`, req.Ctx.WindowID)
+	prevRows, err := h.db.QueryContext(ctx, `SELECT repl_id FROM ui_replacements WHERE kind = 'slot' AND window_id = ? AND state = 'opening'`, req.Ctx.WindowID)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +278,12 @@ func (h *Hub) setSlotState(ctx context.Context, r *slotRow, to string) error {
 	}
 	r.State = to
 	h.ev.emit("slot_state", map[string]any{"replacement_id": r.ID, "state": to})
-	if (to == "cancelled" || to == "superseded") && r.Old != "" {
+	if r.Kind == "tab" {
+		// The reopen effect waits on this row without holding the plugin's operations; each state
+		// change wakes the view worker, which runs the effect on (reopen.go).
+		h.kickViews(r.Plugin, 0)
+	}
+	if (to == "cancelled" || to == "superseded" || to == "expired") && r.Old != "" {
 		// The replacement ended without the slot: a view it claimed can attach as new again. A view
 		// that attached meanwhile stays attached and gets view.resume. The claim stays while another
 		// replacement of the view is active: that one can hold it (a loser's cancel must not undo the
@@ -419,12 +432,13 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 		return answer("pending_confirmation"), nil
 	case "cancelled":
 		return nil, refuse("conflict", "the replacement was cancelled")
-	case "superseded", "user_closed":
-		// A newer open replaced this one (the old view was resumed), or the user closed the old
-		// view: a new pane that exists is closed, never kept.
+	case "superseded", "user_closed", "expired":
+		// A newer open replaced this one (the old view was resumed), the user closed the old
+		// view, or the pane did not appear in time (a tab row): a new pane that exists is closed,
+		// never kept.
 		var status string
 		h.db.QueryRowContext(ctx, `SELECT status FROM views WHERE view_id = ?`, r.New).Scan(&status)
-		if status == "open" && h.closeForm(ctx, r.New, "late") == nil {
+		if (status == "open" || status == "exited") && h.slotClose(ctx, r, r.New, "late") == nil {
 			h.setSlotState(ctx, r, "late_closed")
 		}
 		return nil, refuse("conflict", "the side panel changed while this one opened")
@@ -461,7 +475,7 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 	}
 	if r.State == "closing" {
 		if r.Old != "" {
-			if err := h.closeForm(ctx, r.Old, "replaced"); err != nil {
+			if err := h.slotClose(ctx, r, r.Old, "replaced"); err != nil {
 				return nil, err
 			}
 		}
@@ -475,6 +489,9 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 // spawnSlot asks Rex for the new pane, once per row. A definite refusal cancels the row and
 // resumes the old view; an unknown outcome leaves the view row 'sending' and the row 'opening'.
 func (h *Hub) spawnSlot(ctx context.Context, r *slotRow) error {
+	if r.Kind == "tab" {
+		return h.spawnTabPane(ctx, r)
+	}
 	if r.ReturnOf != "" {
 		// The last check before new_layer, under the window lock. The read and the open are not
 		// one step: the focus can still move in between (docs/hub.md).
@@ -653,6 +670,9 @@ func (h *Hub) slotRefused(ctx context.Context, r *slotRow, cause error) error {
 // adopted (opening -> closing), or closed when a newer open superseded the row. It reports
 // whether the row moved on.
 func (h *Hub) resolveSlotPane(ctx context.Context, r *slotRow) bool {
+	if r.Kind == "tab" {
+		return h.resolveTabPane(ctx, r)
+	}
 	block, found, err := h.findFormBlock(ctx, r.Session, r.New)
 	if err != nil || !found {
 		return false
@@ -662,8 +682,8 @@ func (h *Hub) resolveSlotPane(ctx context.Context, r *slotRow) bool {
 	if err := h.adoptForm(ctx, &view{ID: r.New, Plugin: r.Plugin, Tab: formTab, Route: r.Route}, fc, block); err != nil {
 		return false
 	}
-	if r.State == "superseded" || r.State == "user_closed" {
-		if h.closeForm(ctx, r.New, "late") == nil {
+	if r.State == "superseded" || r.State == "user_closed" || r.State == "expired" {
+		if h.slotClose(ctx, r, r.New, "late") == nil {
 			h.setSlotState(ctx, r, "late_closed")
 		}
 		return true
@@ -673,7 +693,7 @@ func (h *Hub) resolveSlotPane(ctx context.Context, r *slotRow) bool {
 
 // slotSweep moves unresolved rows on. It runs at start and on layout changes of their sessions.
 func (h *Hub) slotSweep(ctx context.Context) {
-	rows, err := h.db.QueryContext(ctx, `SELECT repl_id, window_id FROM ui_replacements WHERE state IN ('opening', 'closing', 'superseded', 'user_closed')`)
+	rows, err := h.db.QueryContext(ctx, `SELECT repl_id, window_id FROM ui_replacements WHERE state IN ('opening', 'closing', 'superseded', 'user_closed', 'expired')`)
 	if err != nil {
 		return
 	}
@@ -693,10 +713,10 @@ func (h *Hub) slotSweep(ctx context.Context) {
 			var status string
 			h.db.QueryRowContext(ctx, `SELECT status FROM views WHERE view_id = ?`, r.New).Scan(&status)
 			switch {
-			case status == "sending":
+			case status == "sending" || (r.Kind == "tab" && r.State == "expired"):
 				h.resolveSlotPane(ctx, r)
-			case (r.State == "superseded" || r.State == "user_closed") && status == "open":
-				if h.closeForm(ctx, r.New, "late") == nil {
+			case (r.State == "superseded" || r.State == "user_closed" || r.State == "expired") && (status == "open" || status == "exited"):
+				if h.slotClose(ctx, r, r.New, "late") == nil {
 					h.setSlotState(ctx, r, "late_closed")
 				}
 			}
@@ -713,7 +733,7 @@ func (h *Hub) slotSweep(ctx context.Context) {
 // slotSessions reports whether sess has an unresolved replacement (its layout events matter).
 func (h *Hub) slotSessions(ctx context.Context, sess string) bool {
 	var n int
-	h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE session_id = ? AND state IN ('opening', 'closing', 'superseded', 'user_closed')`, sess).Scan(&n)
+	h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ui_replacements WHERE session_id = ? AND state IN ('opening', 'closing', 'superseded', 'user_closed', 'expired')`, sess).Scan(&n)
 	return n > 0
 }
 
@@ -750,7 +770,7 @@ func (h *Hub) releaseConfirm(ctx context.Context, p perform, args map[string]any
 		return nil, err
 	}
 	answer := func() map[string]any {
-		return map[string]any{"replacement": map[string]any{"state": r.State, "next_title": r.Title}}
+		return map[string]any{"replacement": map[string]any{"state": rendererState(r.State), "next_title": r.Title}}
 	}
 	if r.State != "confirming" {
 		return answer(), nil // a repeat, or a state that moved on: the row's state is the answer
@@ -788,7 +808,7 @@ func (h *Hub) slotAttachState(ctx context.Context, viewID, repl string) map[stri
 	} else if err != nil {
 		return nil
 	}
-	return map[string]any{"replacement_id": id, "state": state, "next_title": title}
+	return map[string]any{"replacement_id": id, "state": rendererState(state), "next_title": title}
 }
 
 // viewReplacement handles hub.view.replacement {view_id, attachment, replacement_id}: the durable
@@ -812,12 +832,20 @@ func (h *Hub) viewReplacement(ctx context.Context, p perform, args map[string]an
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"replacement": map[string]any{"replacement_id": repl, "state": state, "next_title": title}}, nil
+	return map[string]any{"replacement": map[string]any{"replacement_id": repl, "state": rendererState(state), "next_title": title}}, nil
 }
 
 // slotStart runs at hub start: a row still releasing sent no split, so it is cancelled. Rows
 // that are confirming stay (the renderer shows its prompt again on reattach).
 func (h *Hub) slotStart(ctx context.Context) error {
+	for _, m := range []string{
+		`ALTER TABLE ui_replacements ADD COLUMN kind TEXT NOT NULL DEFAULT 'slot'`,
+		`ALTER TABLE ui_replacements ADD COLUMN split_at TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
 	_, err := h.db.ExecContext(ctx, `UPDATE ui_replacements SET state = 'cancelled' WHERE state = 'releasing'`)
 	if err != nil {
 		return err

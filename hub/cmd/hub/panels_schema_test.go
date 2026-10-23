@@ -57,6 +57,9 @@ func TestPanelSchemaColumns(t *testing.T) {
 		panelSchema,
 		`ALTER TABLE ui_replacements ADD COLUMN kept INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE ui_replacements ADD COLUMN return_of TEXT NOT NULL DEFAULT ''`,
+		// slotStart (reopen.go)
+		`ALTER TABLE ui_replacements ADD COLUMN kind TEXT NOT NULL DEFAULT 'slot'`,
+		`ALTER TABLE ui_replacements ADD COLUMN split_at TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := old.db.Exec(q); err != nil {
 			t.Fatal(err)

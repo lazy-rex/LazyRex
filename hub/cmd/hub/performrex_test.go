@@ -30,6 +30,9 @@ type performRex struct {
 	calls   []performCall
 	methods []string          // every request method, in arrival order
 	replies []json.RawMessage // the payload of each client.reply, in arrival order
+	// other answers every request that is not client.perform: a payload, or an error code. Nil: an
+	// empty payload.
+	other func(method string, payload json.RawMessage) (result any, code string)
 }
 
 func newPerformRex(t *testing.T, answer func(c performCall) (result any, code string)) *performRex {
@@ -84,7 +87,26 @@ func newPerformRex(t *testing.T, answer func(c performCall) (result any, code st
 			}
 			fr.mu.Unlock()
 			if f.Method != "client.perform" {
-				write(map[string]any{"type": "response", "id": f.ID, "payload": map[string]any{}})
+				fr.mu.Lock()
+				other := fr.other
+				fr.mu.Unlock()
+				if other == nil {
+					write(map[string]any{"type": "response", "id": f.ID, "payload": map[string]any{}})
+					continue
+				}
+				var raw struct{ Payload json.RawMessage }
+				json.Unmarshal(data, &raw)
+				go func(id, method string, payload json.RawMessage) {
+					result, code := other(method, payload)
+					if code != "" {
+						write(map[string]any{"type": "response", "id": id, "error": map[string]any{"code": code, "message": "test"}})
+						return
+					}
+					if result == nil {
+						result = map[string]any{}
+					}
+					write(map[string]any{"type": "response", "id": id, "payload": result})
+				}(f.ID, f.Method, raw.Payload)
 				continue
 			}
 			pc := performCall{f.Payload.ClientID, f.Payload.Action, f.Payload.Args}

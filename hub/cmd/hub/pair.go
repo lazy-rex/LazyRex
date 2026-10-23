@@ -684,9 +684,9 @@ func (h *Hub) transcriptCaller(ctx context.Context, p perform, args map[string]a
 	}
 	var v boundView
 	var client, attachment string
-	err := h.db.QueryRowContext(ctx, `SELECT v.plugin, v.route, v.context, t.client_id, t.attachment FROM view_transcripts t
+	err := h.db.QueryRowContext(ctx, `SELECT v.plugin, v.route, v.context, v.open_args, t.client_id, t.attachment FROM view_transcripts t
 		JOIN views v ON v.view_id = t.view_id WHERE t.view_id = ? AND t.status = 'open' AND v.status = 'open'`, id).
-		Scan(&v.Plugin, &v.Route, &v.Context, &client, &attachment)
+		Scan(&v.Plugin, &v.Route, &v.Context, &v.Open, &client, &attachment)
 	if err != nil || att != attachment || client != p.Requester.ClientID {
 		return nil, false
 	}

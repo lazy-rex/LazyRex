@@ -45,9 +45,10 @@ CREATE TABLE IF NOT EXISTS views (view_id TEXT PRIMARY KEY, plugin TEXT NOT NULL
   status TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', window_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '',
   child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL DEFAULT '',
   attachment TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '',
-  attach_state TEXT NOT NULL DEFAULT 'unknown');
+  attach_state TEXT NOT NULL DEFAULT 'unknown', open_args TEXT NOT NULL DEFAULT '');
 -- attach_state (panels.go): never (a new view, no renderer yet), attached, or claimed (a replacement
 -- took the never-attached view). Every insert names it; 'unknown' counts as attached.
+-- open_args (reopen.go): the args of the reopen that made the view, JSON, or '' for none.
 `
 
 var errRetry = errors.New("retry")
@@ -524,6 +525,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		// A reopen (reopen.go) owns its tab while its row is active: this pass opens no view for it and
+		// closes neither of its views. The row closes the old view; its end kicks a normal pass.
+		reserved := h.reservedTabs(ctx, plugin)
 		for _, g := range groups {
 			sess, tabs, views, inApp := g.sess, g.tabs, g.views, g.sess == appSess
 			blocks, err := h.blocksIn(ctx, sess)
@@ -554,6 +558,24 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 						h.retryLater() // a retirement or a failed close needs no other event to go on
 					}
 					continue
+				}
+				if r := reserved[v.Tab]; r != nil {
+					if v.ID == r.New {
+						continue // the row adopts or abandons its new view
+					}
+					if v.ID == r.Old {
+						if _, ok := blocks[v.Block]; !ok && v.Status == "open" {
+							h.tabReplOldGone(ctx, r) // a waiting row ends; a later row keeps the view
+						}
+						if r, _ = h.slotRow(ctx, h.db, r.ID); r != nil && r.Active() {
+							if b, ok := blocks[v.Block]; ok && v.Status == "open" {
+								h.placed(ctx, v, b)
+							}
+							byTab[v.Tab] = v
+							continue
+						}
+						delete(reserved, v.Tab)
+					}
 				}
 				switch v.Status {
 				case "prepared":
@@ -606,6 +628,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// A layout change converts the view in place: the composer stays, and only the
 			// transcript pane comes or goes (an unsaved draft survives a config change).
 			for key, v := range byTab {
+				if reserved[key] != nil {
+					continue // no close and no layout change while the reopen runs
+				}
 				t, ok := want[key]
 				if !ok || t.Route != v.Route {
 					h.closeView(ctx, v, "undeclared")
@@ -629,6 +654,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				v := byTab[t.Key]
 				if v == nil && legacyTab[t.Key] {
 					continue // the legacy view retires first (its exit kicks a new pass)
+				}
+				if v == nil && reserved[t.Key] != nil {
+					continue // the reopen opens the view
 				}
 				if v == nil {
 					if h.spawnBudget(&more) {
@@ -1058,6 +1086,7 @@ func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool
 		h.closeViewRow(ctx, id, "user")
 		h.db.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 1, closed_revision = revision WHERE plugin = ? AND tab = ?`, plugin, tabKey)
 		h.ev.emit("view_closed", map[string]any{"plugin": plugin, "view_id": id, "tab": tabKey, "by": "user"})
+		h.tabReplUserClosed(ctx, id) // the user closed the tab: a reopen of it ends
 	}
 	h.kickUI(plugin)
 	return true
@@ -1128,6 +1157,7 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 	}
 	h.forgetView(v.ID)
 	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": tabKey, "by": "user", "from": "view"})
+	h.tabReplUserClosed(ctx, v.ID)
 	// The renderer exits after the answer; its pane is closed here. If this fails, the pane stays
 	// with no child: the user closes it, and its close changes nothing (the row is closed).
 	go func() {
@@ -1175,6 +1205,7 @@ func (h *Hub) uiChildExited(ctx context.Context, blockID string) bool {
 		h.kickUI(v.Plugin)
 		return true
 	}
+	h.tabReplExited(ctx, v.ID) // before the pane request a reopen ends; later it goes on
 	h.db.ExecContext(ctx, `UPDATE views SET status = 'exited', client_id = '', attachment = '' WHERE view_id = ? AND status = 'open'`, v.ID)
 	var crashes int
 	h.db.QueryRowContext(ctx, `UPDATE ui_tabs SET crashes = crashes + 1 WHERE plugin = ? AND tab = ? RETURNING crashes`, v.Plugin, v.Tab).Scan(&crashes)

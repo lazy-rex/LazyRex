@@ -75,6 +75,7 @@ func (h *Hub) viewsStart(ctx context.Context) error {
 		`ALTER TABLE view_ops ADD COLUMN effect_state TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE view_ops ADD COLUMN effect_error TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE view_ops ADD COLUMN effect_nav INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE view_ops ADD COLUMN effect_reopen INTEGER NOT NULL DEFAULT 0`, // the reopen step ended done
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -193,6 +194,7 @@ func (h *Hub) markSeen(plugin, route, reason string) {
 type boundView struct {
 	ID, Plugin, Route string
 	Context           string // a form's stored context (JSON); empty for a tab
+	Open              string // the view's open_args (JSON, reopen.go); empty for none
 }
 
 // boundCaller checks that the caller is the renderer attached to the view.
@@ -201,8 +203,8 @@ func (h *Hub) boundCaller(ctx context.Context, p perform, args map[string]any) (
 	att, _ := args["attachment"].(string)
 	var v boundView
 	var client, attachment, status string
-	err := h.db.QueryRowContext(ctx, `SELECT plugin, route, client_id, attachment, status, context FROM views WHERE view_id = ?`, id).
-		Scan(&v.Plugin, &v.Route, &client, &attachment, &status, &v.Context)
+	err := h.db.QueryRowContext(ctx, `SELECT plugin, route, client_id, attachment, status, context, open_args FROM views WHERE view_id = ?`, id).
+		Scan(&v.Plugin, &v.Route, &client, &attachment, &status, &v.Context, &v.Open)
 	if err != nil || status != "open" {
 		return nil, bad("stale_view: view %q is not open", id)
 	}
@@ -229,8 +231,12 @@ func (h *Hub) snapshotOf(v *boundView) map[string]any {
 	if s.status != "" {
 		status = json.RawMessage(s.status)
 	}
-	return map[string]any{"schema_version": 1, "view_id": v.ID, "route": v.Route, "revision": revString(s.rev), "tree": s.tree, "status": status,
+	snap := map[string]any{"schema_version": 1, "view_id": v.ID, "route": v.Route, "revision": revString(s.rev), "tree": s.tree, "status": status,
 		"layout": s.layout}
+	if v.Open != "" {
+		snap["open"] = json.RawMessage(v.Open) // the reopen args, before the renderer's first fetch (reopen.go)
+	}
+	return snap
 }
 
 func (h *Hub) viewSubscribe(ctx context.Context, p perform, args map[string]any) (any, error) {
@@ -287,7 +293,7 @@ func (h *Hub) viewHistory(ctx context.Context, p perform, args map[string]any) (
 	}
 	f := &historyFetch{started: time.Now()}
 	h.vs.history[key] = f
-	work := viewArgs(v.ID, v.Route, v.Context)
+	work := viewArgs(v.ID, v.Route, v.Context, v.Open)
 	work["before"] = before
 	go func() {
 		var out map[string]any
@@ -323,7 +329,7 @@ func (h *Hub) viewAdmit(ctx context.Context, kind string, p perform, args map[st
 	if v.Plugin == restartFormOwner {
 		vctx = ""
 	}
-	work := viewArgs(v.ID, v.Route, vctx)
+	work := viewArgs(v.ID, v.Route, vctx, v.Open)
 	work["node_id"], work["operation_key"] = node, key
 	switch kind {
 	case "action":
@@ -584,11 +590,16 @@ func (h *Hub) runOps(ctx context.Context, plugin string) bool {
 }
 
 // viewArgs are the arguments that every view.render, view.action, view.draft.save and view.send
-// call starts with. view_id lets a plugin keep state for one view, for example a form's draft.
-func viewArgs(viewID, route, context string) map[string]any {
+// call starts with. view_id lets a plugin keep state for one view, for example a form's draft. A
+// reopen makes a new view_id (reopen.go), so such state starts empty in the new view. open is the
+// view's reopen args ({full}), as args.open.
+func viewArgs(viewID, route, context, open string) map[string]any {
 	args := map[string]any{"view_id": viewID, "route": route, "user": viewUser}
 	if context != "" {
 		args["context"] = json.RawMessage(context) // a form's stored context
+	}
+	if open != "" {
+		args["open"] = json.RawMessage(open)
 	}
 	return args
 }
@@ -602,17 +613,17 @@ var viewRenderHook func(h *Hub, ctx context.Context, plugin string, args map[str
 var renderPruneHook func()
 
 func (h *Hub) renderViews(ctx context.Context, plugin string) {
-	rows, err := h.db.QueryContext(ctx, `SELECT v.view_id, v.route, v.client_id, v.attachment, v.context, COALESCE(t.status, ''), `+effectiveLayout+`
+	rows, err := h.db.QueryContext(ctx, `SELECT v.view_id, v.route, v.client_id, v.attachment, v.context, v.open_args, COALESCE(t.status, ''), `+effectiveLayout+`
 		FROM views v LEFT JOIN ui_tabs t ON t.plugin = v.plugin AND t.tab = v.tab LEFT JOIN view_transcripts x ON x.view_id = v.view_id
 		WHERE v.plugin = ? AND v.status = 'open' AND v.attachment != ''`, plugin)
 	if err != nil {
 		return
 	}
-	type target struct{ id, route, client, attachment, context, status, layout string }
+	type target struct{ id, route, client, attachment, context, open, status, layout string }
 	var targets []target
 	for rows.Next() {
 		var t target
-		rows.Scan(&t.id, &t.route, &t.client, &t.attachment, &t.context, &t.status, &t.layout)
+		rows.Scan(&t.id, &t.route, &t.client, &t.attachment, &t.context, &t.open, &t.status, &t.layout)
 		targets = append(targets, t)
 	}
 	rows.Close()
@@ -666,7 +677,7 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		}
 		gen := h.testRenderStart(t.id) // test mode: the requested render that this one covers
 		h.testRenderAttempt(plugin, t.id, t.route, causes)
-		args := viewArgs(t.id, t.route, t.context)
+		args := viewArgs(t.id, t.route, t.context, t.open)
 		rid := h.openRenderID(plugin, h.pluginClient(plugin), t.id, epoch)
 		args["render"] = rid
 		var err error

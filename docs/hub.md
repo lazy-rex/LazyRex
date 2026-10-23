@@ -65,6 +65,7 @@ Transport failures remain uncertain and use reconnect backoff.
 ### Snapshots and invalidation
 
 `hub.view.subscribe` and `hub.view.get` return `{schema_version: 1, view_id, route, revision, tree}`.
+A view that a reopen made also has `open`: the args of the reopen ("Reopen", below).
 `revision` is a decimal string. It increases within the current `hub_generation`.
 The renderer compares revisions numerically, without converting them to floating-point values.
 A hub restart requires a new attachment, subscription, and snapshot.
@@ -1380,6 +1381,66 @@ form preserves the source view. The hub commits the operation result before it
 closes the form. A successful navigation from a form closes that form afterward.
 Escape and Cancel discard unsubmitted form values. Cancellation waits while an
 operation is unresolved. The source view and its draft remain in another pane.
+
+#### Reopen
+
+A form action result can contain `{reopen: {args?: {full: bool}}}`. The hub then
+replaces the pane of the form's source tab view with a new view of the same tab and
+route, in the same place (hub/cmd/hub/reopen.go).
+
+- Only a form can return `reopen`. A tab view's own action or a panel's action gets
+  `invalid_input` ("reopen is valid only from a form"). The hub creates no row and
+  asks no renderer before this check.
+- `args` is absent, `null`, or an object whose only key is `full`, with the JSON
+  literal `true` or `false`. The renderer decodes open args with the same rules
+  (`view.OpenArgs`). Any other value is `invalid_input`. `{}` and `full: false`
+  store no args.
+- The effects run in this order: `navigate`, `reopen`, `form`, `close_form`. A
+  failed reopen stops the later effects: the form stays open and shows the error.
+- The new view has a new `view_id`, a new pane and a new attachment. Drafts are
+  keyed by user and thread, so the new view reads the same draft.
+- The new view gets the args as `args.open` in each render, and as `open` in its
+  snapshot. A view without args has neither. A view that the hub opens later for
+  the tab (after a crash, a user close or a navigation) has no args.
+
+The reopen is a `ui_replacements` row of kind `tab`, on the side-slot lifecycle:
+
+1. The hub asks the old renderer to release (`view.release`, `next_title`
+   "Reopening"). A never-attached old view is claimed without a renderer.
+2. The hub writes the pane request time, then the new views row, then sends one
+   `session.new_split` anchored at the old pane, with the label
+   `lazyrex-view:<new view_id>`. The new pane gets the focus only if the old pane
+   had it. An unknown outcome is resolved only by the label. The hub never sends a
+   second request.
+3. After the new pane exists, the hub closes the old pane and its row. A failed
+   `block.close` keeps the row in `closing`, and the hub tries again.
+
+The operation waits while the row is active. The wait does not block the plugin's
+other operations. A retry of the same operation key finds the same row:
+
+| Row state | Effect result |
+|---|---|
+| `done` | The effect succeeds. |
+| active | The effect waits. |
+| `cancelled`, kept | `conflict` "the view has unsaved input; it was not reopened" |
+| `cancelled`, other | `conflict` "the view did not reopen; try again" (or "the source view is closed") |
+| `expired` | `conflict` "the view did not reopen; try again" |
+| `user_closed`, `superseded`, `late_closed` | `conflict` "the source view is closed" |
+
+A second reopen of the same tab while a row is active (for example during the
+confirmation) gets `conflict` "the view is reopening".
+
+If no pane appears within 30 seconds of the pane request, and a complete
+`session.list_blocks` does not contain the label, the row expires. The new views
+row closes, the old view resumes, and the hub closes a pane that appears later. An
+incomplete inventory proves nothing. A renderer sees `expired` as `cancelled`.
+
+While the row is active, it owns its tab. The reconcile pass opens no other view for
+the tab, does not change its layout, and closes neither view. It can restore a
+detached old pane. A user close of either pane (the pane's close or Ctrl+Q) closes
+the tab as any user close does, and ends the row. An exit of the old renderer
+before the pane request cancels the row; after the pane request the row goes on.
+Crash counts stay in the exit handler.
 
 Acceptance: test palette entry, session filtering, form submit, cancel, restart,
 stale source context, and preservation of dirty source input in an isolated Rex

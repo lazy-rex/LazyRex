@@ -87,11 +87,11 @@ func TestCleanTitle(t *testing.T) {
 }
 
 func TestViewArgsCarryViewID(t *testing.T) {
-	a := viewArgs("view-form-1", "/forms/start", `{"session_id":"s"}`)
+	a := viewArgs("view-form-1", "/forms/start", `{"session_id":"s"}`, "")
 	if a["view_id"] != "view-form-1" || a["route"] != "/forms/start" || a["user"] != viewUser || string(a["context"].(json.RawMessage)) != `{"session_id":"s"}` {
 		t.Fatalf("form args: %v", a)
 	}
-	if b := viewArgs("view-tab", "/", ""); b["view_id"] != "view-tab" || b["context"] != nil {
+	if b := viewArgs("view-tab", "/", "", ""); b["view_id"] != "view-tab" || b["context"] != nil {
 		t.Fatalf("tab args: %v", b)
 	}
 }

@@ -91,6 +91,7 @@ func formsStart(ctx context.Context, db *DB) error {
 	}
 	for _, m := range []string{
 		`ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE views ADD COLUMN open_args TEXT NOT NULL DEFAULT ''`, // reopen.go
 	} {
 		if _, err := db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -697,10 +698,11 @@ type viewEffects struct {
 	CloseForm  bool           `json:"close_form"`
 	Panel      map[string]any `json:"panel"`       // {command} | {route} | {plugin, command} (panels.go)
 	ClosePanel bool           `json:"close_panel"` // closes the panel that ran the action
+	Reopen     reopenEffect   `json:"reopen"`      // {args?: {full: bool}}: a new view of the form's source (reopen.go)
 }
 
 func (e viewEffects) any() bool {
-	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel
+	return e.Navigate.set || e.Form != "" || e.CloseForm || e.Panel != nil || e.ClosePanel || e.Reopen.set
 }
 
 // navTarget is a navigate effect: a tab key of the plugin that ran the action ("thread/a"), or
@@ -758,8 +760,8 @@ func decodeEffects(result []byte) (viewEffects, error) {
 	return e, nil
 }
 
-// applyEffects runs the effects of one succeeded view action, in order: navigate, open a form,
-// then close the form that ran the action. Progress is kept in view_ops (effect_state 'pending',
+// applyEffects runs the effects of one succeeded view action, in order: navigate, reopen the
+// form's source view, open a form, then close the form that ran the action. Progress is kept in view_ops (effect_state 'pending',
 // effect_nav), so a retry or a hub restart goes on from the last finished step and repeats no
 // step that is unsafe to repeat. The new form's view ID comes from the operation key, so opening
 // it again finds it. A failure that a retry cannot fix ends as effect_state 'failed' with the
@@ -767,8 +769,8 @@ func decodeEffects(result []byte) (viewEffects, error) {
 // open. It returns true when a step must run again later.
 func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, result json.RawMessage) bool {
 	e, decodeErr := decodeEffects(result)
-	var navDone int
-	if err := h.db.QueryRowContext(ctx, `SELECT effect_nav FROM view_ops WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key).Scan(&navDone); err != nil {
+	var navDone, reopenDone int
+	if err := h.db.QueryRowContext(ctx, `SELECT effect_nav, effect_reopen FROM view_ops WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key).Scan(&navDone, &reopenDone); err != nil {
 		log.Printf("views %s: effects of %s: %v (retry)", plugin, key, err)
 		return true
 	}
@@ -808,6 +810,20 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 		}
 		if set(`UPDATE view_ops SET effect_nav = 1 WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key) {
 			return true // navigation repeats safely
+		}
+	}
+	if e.Reopen.set && reopenDone == 0 {
+		done, err := h.reopenStep(ctx, plugin, key, viewID, e.Reopen)
+		if err != nil {
+			return fail(err) // the later effects do not run: the form stays, with the error
+		}
+		if !done {
+			// The row waits (for the user's choice or for its pane). The effect stays pending without
+			// holding the plugin's later operations; the row's next state wakes this worker.
+			return false
+		}
+		if set(`UPDATE view_ops SET effect_reopen = 1 WHERE plugin = ? AND user = ? AND op_key = ?`, plugin, viewUser, key) {
+			return true // a retry finds the done row (reopenStep)
 		}
 	}
 	fc, isForm := h.formOf(ctx, viewID)
