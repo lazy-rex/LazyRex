@@ -280,7 +280,6 @@ type oldStep struct {
 // oldSteps: main a1d13d7c ("ui_tabs.rev_known goes through retireSchema") drops ui_tabs.rev_known
 // at each open, and OLD's ui.go migration adds it again.
 var oldSteps = []oldStep{
-	{table: "ui_tabs", column: "rev_known", def: "INTEGER NOT NULL DEFAULT 0", typ: "INTEGER", notnull: "1", dflt: "0"},
 }
 
 // afterOld is the schema s with oldSteps applied as SQLite stores an ADD COLUMN: the definition
