@@ -454,18 +454,13 @@ local function run(spec, fn, ...)
   return result
 end
 
--- with_replay runs fn in a frame, after it checks the saved reply of key, then of each key in
--- spec.legacy_keys (the same key of the caller's legacy IDs). A call without a key, or with
--- store = false, always runs fn. A new reply is saved under key only.
+-- with_replay runs fn in a frame, after it checks the saved reply of key. A call without a key, or
+-- with store = false, always runs fn.
 local function with_replay(spec, fn, ...)
   spec.reply = true
   if spec.key ~= nil and spec.store ~= false then
     local saved = hub('hub.sql.replay', {key = spec.key, fingerprint = spec.fingerprint})
     if saved.found then return saved.reply end
-    for _, k in ipairs(spec.legacy_keys or {}) do
-      saved = hub('hub.sql.replay', {key = k, fingerprint = spec.fingerprint})
-      if saved.found then return saved.reply end
-    end
   end
   return run(spec, fn, ...)
 end
@@ -1049,7 +1044,7 @@ function M.plugin(name)
   local function identify(pid)
     local r = hub('hub.identify', {pid = pid})
     if r.found ~= true or type(r.agent) ~= 'string' or r.agent == '' then fail('refused', 'The hub does not recognize this agent') end
-    return {agent = r.agent, session_id = r.session_id, block_id = r.block_id, spawn_id = r.spawn_id, requester_pid = pid, aliases = r.legacy or {}, identity = r}
+    return {agent = r.agent, session_id = r.session_id, block_id = r.block_id, spawn_id = r.spawn_id, requester_pid = pid, identity = r}
   end
   -- The saved-reply key of a caller: the user and each agent have their own key space.
   local function op_key(ctx, key)
@@ -1070,10 +1065,7 @@ function M.plugin(name)
     local inner = {}
     for k, v in pairs(call_args) do if k ~= 'key' then inner[k] = v end end
     local fp = a.opts.fingerprint and a.opts.fingerprint(inner) or M.fingerprint({action = a.name, args = inner})
-    local spec = {tx = a.opts.tx ~= false, store = a.opts.store, key = op_key(ctx, ctx.key), fingerprint = fp, legacy_keys = {}}
-    if ctx.key ~= nil then
-      for _, id in ipairs(ctx.aliases or {}) do spec.legacy_keys[#spec.legacy_keys + 1] = op_key({agent = id}, ctx.key) end
-    end
+    local spec = {tx = a.opts.tx ~= false, store = a.opts.store, key = op_key(ctx, ctx.key), fingerprint = fp}
     return with_replay(spec, a.fn, ctx, inner)
   end
   local function exported(n) local a = actions[n]; return a and not a.opts.user_only end
