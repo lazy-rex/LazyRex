@@ -91,13 +91,17 @@ func oneHub(t *testing.T) (*Hub, *fakeClock, string, *Plugin) {
 
 // running records an instance of pl that the hub spawned now, as spawn does: from the published
 // run of its candidate, which becomes the selected run of the automatic starts.
-func running(h *Hub, pl *Plugin, instance string) {
+func running(t *testing.T, h *Hub, pl *Plugin, instance string) {
+	t.Helper()
 	h.mu.Lock()
 	e := pl.entry
 	h.mu.Unlock()
 	var run *pluginRun
 	if e != nil && e.cand != nil {
-		run, _ = h.publishLocal(e, e.cand)
+		var err error
+		if run, err = h.publishLocal(e, e.cand); err != nil {
+			t.Fatalf("publish the run of %s: %v", pl.Name, err)
+		}
 	}
 	h.mu.Lock()
 	if run != nil {
@@ -105,8 +109,12 @@ func running(h *Hub, pl *Plugin, instance string) {
 		// row retires nothing (a retirement calls Rex).
 		pl.run, pl.selected = *run, &selectedRun{Entry: entryIdentity(e), Run: *run}
 		sel, _ := json.Marshal(pl.selected)
-		h.ensurePluginRow(context.Background(), pl.Name)
-		h.db.Exec(`UPDATE plugins SET selected_run = ? WHERE name = ?`, string(sel), pl.Name)
+		if err := h.ensurePluginRow(context.Background(), pl.Name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.db.Exec(`UPDATE plugins SET selected_run = ? WHERE name = ?`, string(sel), pl.Name); err != nil {
+			t.Fatal(err)
+		}
 	}
 	pl.Desired, pl.InstanceID, pl.BlockID, pl.ClientID = "running", instance, "block:"+instance, "client:"+instance
 	pl.respawn.spawned = h.clock()
@@ -143,7 +151,7 @@ func TestRespawnDelays(t *testing.T) {
 	want := []time.Duration{1, 2, 4, 8, 16, 32, 60, 60}
 	for i, w := range want {
 		id := "p-" + string(rune('a'+i))
-		running(h, pl, id)
+		running(t, h, pl, id)
 		clock.advance(time.Second)
 		exited(h, pl, ctx, `{"exit_code":1,"error":"exit status 1"}`)
 		tm, n := clock.last(t)
@@ -157,7 +165,7 @@ func TestRespawnDelays(t *testing.T) {
 			t.Fatalf("exit %d: state %s, instance %s, block %s", i+1, state, inst, block)
 		}
 	}
-	running(h, pl, "p-long")
+	running(t, h, pl, "p-long")
 	clock.advance(respawnReset)
 	exited(h, pl, ctx, `{"exit_code":1}`)
 	if tm, _ := clock.last(t); tm.d != respawnFirst {
@@ -170,7 +178,7 @@ func TestRespawnDelays(t *testing.T) {
 func TestRespawnDuplicateExit(t *testing.T) {
 	h, clock, events, pl := oneHub(t)
 	ctx := context.Background()
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, ctx, `{"exit_code":1}`)
 	due, delay, gen := respawnFields(h, pl)
 	clock.advance(300 * time.Millisecond)
@@ -189,7 +197,7 @@ func TestRespawnDuplicateExit(t *testing.T) {
 func TestRespawnStopWhileCrashing(t *testing.T) {
 	h, clock, events, pl := oneHub(t)
 	ctx := context.Background()
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, ctx, `{"exit_code":1}`)
 	tm, _ := clock.last(t)
 	pl.lifecycle.Lock()
@@ -215,7 +223,7 @@ func TestRespawnStopWhileCrashing(t *testing.T) {
 func TestRespawnFiredDuringStop(t *testing.T) {
 	h, clock, events, pl := oneHub(t)
 	ctx := context.Background()
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, ctx, `{"exit_code":1}`)
 	tm, _ := clock.last(t)
 	pl.lifecycle.Lock() // the stop handler holds the lifecycle lock until markStopped returns
@@ -249,9 +257,9 @@ func TestRespawnPassingStartCancels(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			h, clock, events, pl := oneHub(t)
 			ctx := context.Background()
-			running(h, pl, "p-1")
+			running(t, h, pl, "p-1")
 			exited(h, pl, ctx, `{"exit_code":1}`)
-			running(h, pl, "p-2")
+			running(t, h, pl, "p-2")
 			clock.advance(time.Second)
 			exited(h, pl, ctx, `{"exit_code":1}`)
 			tm, _ := clock.last(t)
@@ -300,7 +308,7 @@ func TestRespawnRefusedStartKeepsTimer(t *testing.T) {
 			})
 			pl := h.plugins["p"]
 			ctx := context.Background()
-			running(h, pl, "p-1")
+			running(t, h, pl, "p-1")
 			exited(h, pl, ctx, `{"exit_code":1}`)
 			tm, _ := clock.last(t)
 			due, delay, gen := respawnFields(h, pl)
@@ -338,7 +346,7 @@ func TestRespawnIntoWaitingAddsNoTimer(t *testing.T) {
 	})
 	pl := h.plugins["p"]
 	ctx := context.Background()
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, ctx, `{"exit_code":1}`)
 	tm, n := clock.last(t)
 	dropForTest(h, pl)
@@ -356,7 +364,7 @@ func TestRespawnIntoWaitingAddsNoTimer(t *testing.T) {
 func TestRespawnFailureReschedules(t *testing.T) {
 	h, clock, events, pl := oneHub(t)
 	ctx := context.Background()
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	exited(h, pl, ctx, `{"exit_code":3,"error":"exit status 3"}`)
 	tm, _ := clock.last(t)
 	dropForTest(h, pl)
@@ -392,7 +400,7 @@ func TestRespawnStaleRecordAndShutdown(t *testing.T) {
 			h, clock, events, pl := oneHub(t)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			running(h, pl, "p-1")
+			running(t, h, pl, "p-1")
 			exited(h, pl, ctx, `{"exit_code":1}`)
 			tm, _ := clock.last(t)
 			h.mu.Lock()
@@ -415,7 +423,7 @@ func TestRespawnPluginsFields(t *testing.T) {
 	if _, ok := item["last_exit"]; ok {
 		t.Fatalf("last_exit before any exit: %v", item)
 	}
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	clock.advance(1500 * time.Millisecond)
 	long := strings.Repeat("é", 150) // 300 bytes
 	exited(h, pl, ctx, `{"exit_code":2,"error":"line one\nline two `+long+`"}`)
