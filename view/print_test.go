@@ -322,6 +322,33 @@ func TestPrintQueuedThenReattach(t *testing.T) {
 	once(t, tt.String(), "TEXT-1")
 }
 
+// TestPrintWaitingBatchSurvivesReattach: m1 prints behind a gate and m2 waits when the view
+// reattaches. The new attachment's frame queues nothing again; m2 prints after m1, once, and its
+// receipt opens the gate.
+func TestPrintWaitingBatchSurvivesReattach(t *testing.T) {
+	tt := &testTerm{}
+	r := startPrint(t, tt)
+	gate := r.holdNextPrint()
+	r.p.Send(threadTree(msgs(1)))
+	r.p.Send(threadTree(msgs(1, 2)))
+	r.wait("m2 waits", func(s probeState) bool { return s.waiting == 1 })
+	r.m.client.mu.Lock()
+	r.m.client.seenOK, r.m.client.attachment = false, "B"
+	r.m.client.mu.Unlock()
+	r.p.Send(threadTree(msgs(1, 2)))
+	r.wait("B's frame", func(s probeState) bool { return s.waiting == 1 && !s.seenOK })
+	close(gate)
+	s := r.wait("all printed", printedAll(1, 2))
+	if !s.seenOK {
+		t.Fatal("the print of the newest ID did not open the gate")
+	}
+	r.stop()
+	once(t, tt.String(), "TEXT-1", "TEXT-2")
+	if strings.Index(tt.String(), "TEXT-1") > strings.Index(tt.String(), "TEXT-2") {
+		t.Fatal("m2 printed before m1")
+	}
+}
+
 // TestPrintPendingThenEmptyHistory: an empty page comes while the print of m1 is pending. The
 // current tree has no newest ID, so m1's receipt commits m1 and opens no gate.
 func TestPrintPendingThenEmptyHistory(t *testing.T) {
