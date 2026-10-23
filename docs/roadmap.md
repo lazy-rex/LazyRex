@@ -135,3 +135,7 @@ One line per item: what, its owner, and why it waits.
   `identity_panes.session_id` (identity.go), so a moved agent pane shows its old session until its
   next report. Owner: Hub Features. Waits: a Rex fact: does Rex send an event when a block moves to
   another session?
+- Rex calls on the hub run context with no bound: `identityReport`'s `paneOfHint` and `paneName`
+  (and any other found by a grep for `rex.Call`/`BlockCall` on `h.ctx`). Owner: Hub Fixes. Waits:
+  one audit for all; the lostexit series (900e3f0c, `pluginChildRead`) bounds only the plugin
+  child read.
