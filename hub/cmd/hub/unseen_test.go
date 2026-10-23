@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
@@ -160,5 +161,41 @@ func TestUnseenEventWinsAtLimit(t *testing.T) {
 	h.db.QueryRow(`SELECT count(*) FROM views WHERE plugin = 'p' AND tab = 'main' AND status != 'closed'`).Scan(&n)
 	if nv != nil || err != nil || n != 0 {
 		t.Fatalf("a suppressed tab got a view: %v %v, %d rows not closed", nv, err, n)
+	}
+}
+
+// A view in a session that is not its tab's target (a home that the tab left) closes its pane
+// first, then its row (closeMoved). When block.close fails, the row stays open, with no
+// view_closed, so the pass opens no second view; a later close succeeds (codex-25's review of the
+// view.retire removal).
+func TestMovedViewClosesItsPaneFirst(t *testing.T) {
+	ctx := context.Background()
+	h, x, fr := reopenTestHub(t)
+	v := &view{ID: "old", Plugin: "p", Tab: "main", Session: "other", Block: "b-old"}
+	fail := true
+	fr.mu.Lock()
+	base := fr.other
+	fr.other = func(m string, p json.RawMessage) (any, string) {
+		if m == "block.close" && fail {
+			return nil, "internal"
+		}
+		return base(m, p)
+	}
+	fr.mu.Unlock()
+	if h.closeMoved(ctx, v) {
+		t.Fatal("closeMoved reported a close that failed")
+	}
+	if s, _, _ := viewStatus(h, "old"); s != "open" || len(loggedEvents(t, h, "view_closed")) != 0 {
+		t.Fatalf("a failed pane close: the row is %s, events %v; want open and no view_closed", s, loggedEvents(t, h, "view_closed"))
+	}
+	fr.mu.Lock()
+	fail = false
+	fr.mu.Unlock()
+	if !h.closeMoved(ctx, v) {
+		t.Fatal("closeMoved failed after the pane close succeeded")
+	}
+	e := loggedEvents(t, h, "view_closed")
+	if s, by, _ := viewStatus(h, "old"); s != "closed" || by != "hub" || len(e) != 1 || e[0]["why"] != "moved" || len(x.closed) != 1 {
+		t.Fatalf("after the close: the row is %s by %s, events %v, closed panes %v", s, by, e, x.closed)
 	}
 }

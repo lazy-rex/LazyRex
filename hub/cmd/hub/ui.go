@@ -547,11 +547,16 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			}
 
 			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone. A view in a
-			// session that is not its tab's target closes: its tab opens again here.
+			// session that is not its tab's target closes (closeMoved): its tab opens again here once
+			// its pane is closed.
 			byTab := map[string]*view{}
+			movedTab := map[string]bool{} // tabs whose moved view's pane is not closed yet: no new view
 			for _, v := range views {
 				if v.Session != "" && v.Session != sess {
-					h.closeView(ctx, v, "moved")
+					if !h.closeMoved(ctx, v) {
+						movedTab[v.Tab] = true
+						h.retryLater() // a failed close needs no other event to go on
+					}
 					continue
 				}
 				if r := reserved[v.Tab]; r != nil {
@@ -640,6 +645,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 					continue
 				}
 				v := byTab[t.Key]
+				if v == nil && movedTab[t.Key] {
+					continue // the moved view's pane closes first: no second renderer
+				}
 				if v == nil && reserved[t.Key] != nil {
 					continue // the reopen opens the view
 				}
@@ -930,6 +938,22 @@ func (h *Hub) closeView(ctx context.Context, v *view, why string) {
 	}
 	h.closeViewRow(ctx, v.ID, "hub")
 	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "by": "hub", "why": why})
+}
+
+// closeMoved closes a view that is in a session that is not its tab's target: its exact pane
+// first, then its row. It reports whether both are done. A failed pane close keeps the row, so the
+// tab opens no second view and a later pass tries again (codex-25's review of the view.retire
+// removal). A pane that is already gone counts as closed (closeBlock).
+func (h *Hub) closeMoved(ctx context.Context, v *view) bool {
+	if v.Block != "" {
+		if err := h.closeBlock(ctx, v.Session, v.Block); err != nil {
+			log.Printf("ui: close moved %s: %v", v.ID, err)
+			return false
+		}
+	}
+	h.closeViewRow(ctx, v.ID, "hub")
+	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "by": "hub", "why": "moved"})
+	return true
 }
 
 // titleTabs writes each open tab's declared title to its window label.
