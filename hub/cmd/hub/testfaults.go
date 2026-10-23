@@ -75,7 +75,7 @@ type testFault struct {
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
 	"plugin-create": {"refuse", "lose-answer", "hold-send", "hold-map"}, "resume-prompt": {"hold", "lose-answer"},
-	"prompt-answer": {"close", "refuse", "lose-reply"}, "view-render": {"hold"}, "op-call": {"hold-after-sent"}}
+	"prompt-answer": {"close", "refuse", "lose-reply"}, "view-render": {"hold"}, "op-call": {"hold-after-sent", "hold-before-retire"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
@@ -129,7 +129,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send, hold-map), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer), view-render (hold) or op-call (hold-after-sent)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send, hold-map), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer), view-render (hold) or op-call (hold-after-sent, hold-before-retire)")
 	}
 	if f.Point == "op-call" && f.HoldMS > 60000 {
 		return nil, bad("invalid: hold_ms of op-call must be 1 to 60000")
@@ -480,13 +480,17 @@ func (h *Hub) startFault(plugin, mode string) {
 	h.waitRelease(f)
 }
 
-// opCallFault holds the stop handler of plugin at an armed op-call fault (hold-after-sent): after
-// the attempt's sent_at commit, before the first effect. fault_state reports held while it waits,
-// and the event fault_held marks the start of the wait. The stop handler holds no h.mu and is not
-// the request queue, so other actions run during the hold. It does nothing outside test mode.
-func (h *Hub) opCallFault(plugin string) {
+// opCallFault holds a manager call of plugin at an armed op-call fault of mode:
+//   - hold-after-sent: the stop handler, after the attempt's sent_at commit, before the first effect;
+//   - hold-before-retire: the replace handler, after sent_at and its early checks, immediately before
+//     the retire (a lab test closes the block there).
+//
+// fault_state reports held while it waits, and the event fault_held marks the start of the wait.
+// Neither handler holds h.mu there, and neither is the request queue, so other actions run during
+// the hold. It does nothing outside test mode.
+func (h *Hub) opCallFault(plugin, mode string) {
 	f := h.takeFault(func(f *testFault) bool {
-		return f.Point == "op-call" && f.Mode == "hold-after-sent" && (f.Key == "" || f.Key == plugin)
+		return f.Point == "op-call" && f.Mode == mode && (f.Key == "" || f.Key == plugin)
 	})
 	if f == nil {
 		return
