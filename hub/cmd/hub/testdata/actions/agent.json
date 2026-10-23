@@ -1,0 +1,287 @@
+[
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes waiting for it (outbox, oldest_age_s), the cursor of what this hub took from it (after) and whether it holds more. A remote agent's address is \"\u003cagent\u003e@\u003chub\u003e\".",
+  "kind": "client",
+  "name": "hub.peer.status",
+  "title": "Peer hubs"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "description": "List the named commands (profiles) that can start in a new tab, with their kind (agent or accessory), their default cwd (empty: the home directory) and how many run now. args lists the named values that hub.spawn accepts for the profile (name, label, default, required).",
+  "kind": "client",
+  "name": "hub.profiles",
+  "title": "List profiles"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "args": {
+     "additionalProperties": {
+      "maxLength": 16000,
+      "type": "string"
+     },
+     "description": "Named values for the profile, for example {\"task\": \"Fix the login test\"}. hub.profiles lists each profile's args.",
+     "type": "object"
+    },
+    "cwd": {
+     "description": "An existing absolute directory to start in, for example a worktree from worktree_create. Replaces the profile's cwd.",
+     "minLength": 1,
+     "type": "string"
+    },
+    "for": {
+     "type": "string"
+    },
+    "key": {
+     "maxLength": 128,
+     "minLength": 1,
+     "type": "string"
+    },
+    "placement": {
+     "additionalProperties": false,
+     "description": "Default: a new tab in the work session. Choose another session, split beside a placed block, or start detached.",
+     "properties": {
+      "beside": {
+       "description": "A placed block ID in the target session.",
+       "minLength": 1,
+       "type": "string"
+      },
+      "detached": {
+       "description": "Start without a tab. Cannot be combined with beside.",
+       "type": "boolean"
+      },
+      "direction": {
+       "description": "Requires beside. Default: right.",
+       "enum": [
+        "right",
+        "left",
+        "above",
+        "below"
+       ],
+       "type": "string"
+      },
+      "focus": {
+       "additionalProperties": false,
+       "description": "User spawns only. Focus on the first successful open, only while this source tab is still active in the target session. Never focus after an unknown outcome or on retry.",
+       "properties": {
+        "source_window_id": {
+         "minLength": 1,
+         "type": "string"
+        }
+       },
+       "required": [
+        "source_window_id"
+       ],
+       "type": "object"
+      },
+      "ratio": {
+       "description": "Requires beside. Fraction for the new pane. Default: 0.5.",
+       "exclusiveMaximum": 1,
+       "exclusiveMinimum": 0,
+       "type": "number"
+      },
+      "session": {
+       "description": "Target session ID.",
+       "minLength": 1,
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "profile": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "title": {
+     "maxLength": 60,
+     "type": "string"
+    }
+   },
+   "required": [
+    "profile",
+    "key"
+   ],
+   "type": "object"
+  },
+  "description": "Start a profile in a new tab, beside a block, or detached, in the chosen session. An agent profile gets its own agent ID, so it can message you. Choose a key; after an unknown outcome, retry with the same key. Returns spawn_id, session_id, status (open, pending, failed or closed) and agent_id.",
+  "kind": "client",
+  "name": "hub.spawn",
+  "title": "Start a profile"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "spawn_id": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status. An agent worker also has identity_seen (true once its pane has had a current conversation identity), and, when open, identity: current or none, with identity_id (the current identity's ID) when current. With spawn_id: only that worker; not_found when it is closed or unknown.",
+  "kind": "client",
+  "name": "hub.workers",
+  "title": "List workers"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "for": {
+     "type": "string"
+    },
+    "key": {
+     "maxLength": 128,
+     "type": "string"
+    },
+    "spawn_id": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "spawn_id"
+   ],
+   "type": "object"
+  },
+  "description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. Any agent can stop any worker, also one that another agent or the user started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
+  "kind": "client",
+  "name": "hub.stop",
+  "title": "Stop a worker"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "all": {
+     "type": "boolean"
+    },
+    "session_id": {
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "List the agents you can message: \"user\" (the human) and each conversation (id \"\u003ckind\u003e:\u003cconversation id\u003e\", name = its tab label, state current, detached or superseded). Set all=true to include superseded conversations and the agent spawns that wait for their first report (id \"spawn:\u003cspawn_id\u003e\", state starting). Each entry has session_id, the Rex session of its pane (empty when unknown); set session_id to list only that session's agents.",
+  "kind": "client",
+  "name": "hub.agents",
+  "title": "List agents"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "to": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "to"
+   ],
+   "type": "object"
+  },
+  "description": "Turn a name into an agent ID: an exact ID, an agent spawn address (\"spawn:\u003cspawn_id\u003e\"), a unique ID prefix (\"claude:7a18\"), or a unique tab name. An ambiguous name lists the candidates.",
+  "kind": "client",
+  "name": "hub.agents.resolve",
+  "title": "Resolve an agent"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "entry": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "expect": {
+     "additionalProperties": false,
+     "properties": {
+      "args": {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "type": "object"
+      },
+      "watch_roots": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "input": {
+     "additionalProperties": false,
+     "properties": {
+      "args": {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "type": "object"
+      },
+      "watch_roots": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "type": "object"
+    },
+    "key": {
+     "maxLength": 128,
+     "minLength": 1,
+     "type": "string"
+    },
+    "op": {
+     "enum": [
+      "start",
+      "stop",
+      "restart",
+      "settings",
+      "remove"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "key",
+    "op",
+    "entry"
+   ],
+   "type": "object"
+  },
+  "description": "Start, stop, restart, remove or change the settings of a plugin entry. restart replaces the running instance with the same run; it is refused (and stops nothing) when the plugin does not run or has a new candidate (use update for new code). entry is \"managed:\u003cid\u003e\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=\u003cop_id\u003e. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
+  "kind": "client",
+  "name": "hub.plugins.op",
+  "title": "Run a plugin operation"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "op_id": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "The plugin operations: one by op_id, or the 50 newest. Each has op, entry, origin, phase (queued, a working phase, then done, failed, conflict or unknown), result and error.",
+  "kind": "client",
+  "name": "hub.plugins.ops",
+  "title": "List plugin operations"
+ }
+]

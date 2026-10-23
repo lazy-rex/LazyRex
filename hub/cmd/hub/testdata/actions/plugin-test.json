@@ -1,0 +1,697 @@
+[
+ {
+  "kind": "client",
+  "name": "hub.register",
+  "title": "hub.register"
+ },
+ {
+  "kind": "client",
+  "name": "hub.identify",
+  "title": "hub.identify"
+ },
+ {
+  "kind": "client",
+  "name": "hub.agents",
+  "title": "hub.agents"
+ },
+ {
+  "kind": "client",
+  "name": "hub.agents.resolve",
+  "title": "hub.agents.resolve"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.start",
+  "title": "hub.admin.start"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.stop",
+  "title": "hub.admin.stop"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.replace",
+  "title": "hub.admin.replace"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.shutdown",
+  "title": "hub.admin.shutdown"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.relaunch",
+  "title": "hub.admin.relaunch"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.resume",
+  "title": "hub.admin.resume"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.restart",
+  "title": "hub.admin.restart"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.restart.form",
+  "title": "hub.admin.restart.form"
+ },
+ {
+  "kind": "client",
+  "name": "hub.info",
+  "title": "hub.info"
+ },
+ {
+  "kind": "client",
+  "name": "hub.ui.tabs",
+  "title": "hub.ui.tabs"
+ },
+ {
+  "kind": "client",
+  "name": "hub.ui.navigate",
+  "title": "hub.ui.navigate"
+ },
+ {
+  "kind": "client",
+  "name": "hub.ui.reload",
+  "title": "hub.ui.reload"
+ },
+ {
+  "kind": "client",
+  "name": "hub.ui.describe",
+  "title": "hub.ui.describe"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.attach",
+  "title": "hub.view.attach"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.subscribe",
+  "title": "hub.view.subscribe"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.get",
+  "title": "hub.view.get"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.history",
+  "title": "hub.view.history"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.action",
+  "title": "hub.view.action"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.draft.save",
+  "title": "hub.view.draft.save"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.send",
+  "title": "hub.view.send"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.operation",
+  "title": "hub.view.operation"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.effect.retry",
+  "title": "hub.view.effect.retry"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.seen",
+  "title": "hub.view.seen"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.close",
+  "title": "hub.view.close"
+ },
+ {
+  "kind": "client",
+  "name": "hub.session.list",
+  "title": "hub.session.list"
+ },
+ {
+  "kind": "client",
+  "name": "hub.session.ensure",
+  "title": "hub.session.ensure"
+ },
+ {
+  "kind": "client",
+  "name": "hub.plugins",
+  "title": "hub.plugins"
+ },
+ {
+  "kind": "client",
+  "name": "hub.plugins.reload",
+  "title": "hub.plugins.reload"
+ },
+ {
+  "kind": "client",
+  "name": "hub.plugins.ops",
+  "title": "hub.plugins.ops"
+ },
+ {
+  "kind": "client",
+  "name": "hub.plugins.tags",
+  "title": "hub.plugins.tags"
+ },
+ {
+  "kind": "client",
+  "name": "hub.plugins.log",
+  "title": "hub.plugins.log"
+ },
+ {
+  "kind": "client",
+  "name": "hub.digest",
+  "title": "hub.digest"
+ },
+ {
+  "kind": "client",
+  "name": "hub.navigate.worker",
+  "title": "hub.navigate.worker"
+ },
+ {
+  "kind": "client",
+  "name": "hub.navigate.agent",
+  "title": "hub.navigate.agent"
+ },
+ {
+  "kind": "client",
+  "name": "hub.cwd.check",
+  "title": "hub.cwd.check"
+ },
+ {
+  "kind": "client",
+  "name": "hub.cwd.lock",
+  "title": "hub.cwd.lock"
+ },
+ {
+  "kind": "client",
+  "name": "hub.cwd.unlock",
+  "title": "hub.cwd.unlock"
+ },
+ {
+  "kind": "client",
+  "name": "hub.admin.unlock",
+  "title": "hub.admin.unlock"
+ },
+ {
+  "kind": "client",
+  "name": "hub.ui.invalidate",
+  "title": "hub.ui.invalidate"
+ },
+ {
+  "kind": "client",
+  "name": "hub.identity.report",
+  "title": "hub.identity.report"
+ },
+ {
+  "kind": "client",
+  "name": "hub.identity.list",
+  "title": "hub.identity.list"
+ },
+ {
+  "kind": "client",
+  "name": "hub.palette.run",
+  "title": "hub.palette.run"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.release_confirm",
+  "title": "hub.view.release_confirm"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.replacement",
+  "title": "hub.view.replacement"
+ },
+ {
+  "kind": "client",
+  "name": "hub.view.app_action",
+  "title": "hub.view.app_action"
+ },
+ {
+  "kind": "client",
+  "name": "hub.app.select_session",
+  "title": "hub.app.select_session"
+ },
+ {
+  "kind": "client",
+  "name": "hub.app.remote_control",
+  "title": "hub.app.remote_control"
+ },
+ {
+  "kind": "client",
+  "name": "hub.spawn_window",
+  "title": "hub.spawn_window"
+ },
+ {
+  "kind": "client",
+  "name": "hub.spawn.spec",
+  "title": "hub.spawn.spec"
+ },
+ {
+  "kind": "client",
+  "name": "hub.grant.create",
+  "title": "hub.grant.create"
+ },
+ {
+  "kind": "client",
+  "name": "hub.grant.get",
+  "title": "hub.grant.get"
+ },
+ {
+  "kind": "client",
+  "name": "hub.grant.revoke",
+  "title": "hub.grant.revoke"
+ },
+ {
+  "kind": "client",
+  "name": "hub.watch.ensure",
+  "title": "hub.watch.ensure"
+ },
+ {
+  "kind": "client",
+  "name": "hub.watch.read",
+  "title": "hub.watch.read"
+ },
+ {
+  "kind": "client",
+  "name": "hub.watch.ack",
+  "title": "hub.watch.ack"
+ },
+ {
+  "kind": "client",
+  "name": "hub.watch.remove",
+  "title": "hub.watch.remove"
+ },
+ {
+  "kind": "client",
+  "name": "hub.watch.list",
+  "title": "hub.watch.list"
+ },
+ {
+  "kind": "client",
+  "name": "hub.prompts",
+  "title": "hub.prompts"
+ },
+ {
+  "kind": "client",
+  "name": "hub.prompt.answer",
+  "title": "hub.prompt.answer"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.begin",
+  "title": "hub.sql.begin"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.exec",
+  "title": "hub.sql.exec"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.query",
+  "title": "hub.sql.query"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.batch",
+  "title": "hub.sql.batch"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.commit",
+  "title": "hub.sql.commit"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.rollback",
+  "title": "hub.sql.rollback"
+ },
+ {
+  "kind": "client",
+  "name": "hub.sql.replay",
+  "title": "hub.sql.replay"
+ },
+ {
+  "kind": "client",
+  "name": "hub.reply.part",
+  "title": "hub.reply.part"
+ },
+ {
+  "kind": "client",
+  "name": "hub.peer.send",
+  "title": "hub.peer.send"
+ },
+ {
+  "kind": "client",
+  "name": "hub.peer.pull",
+  "title": "hub.peer.pull"
+ },
+ {
+  "kind": "client",
+  "name": "hub.peer.nudge",
+  "title": "hub.peer.nudge"
+ },
+ {
+  "kind": "client",
+  "name": "hub.peer.plugins",
+  "title": "hub.peer.plugins"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes waiting for it (outbox, oldest_age_s), the cursor of what this hub took from it (after) and whether it holds more. A remote agent's address is \"\u003cagent\u003e@\u003chub\u003e\".",
+  "kind": "client",
+  "name": "hub.peer.status",
+  "title": "Peer hubs"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "render": {
+     "description": "The render ID of view.render. The SDK sends it in a render.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "List the named commands (profiles) that can start in a new tab, with their kind (agent or accessory), their default cwd (empty: the home directory) and how many run now. args lists the named values that hub.spawn accepts for the profile (name, label, default, required).",
+  "kind": "client",
+  "name": "hub.profiles",
+  "title": "List profiles"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "args": {
+     "additionalProperties": {
+      "maxLength": 16000,
+      "type": "string"
+     },
+     "description": "Named values for the profile, for example {\"task\": \"Fix the login test\"}. hub.profiles lists each profile's args.",
+     "type": "object"
+    },
+    "cwd": {
+     "description": "An existing absolute directory to start in, for example a worktree from worktree_create. Replaces the profile's cwd.",
+     "minLength": 1,
+     "type": "string"
+    },
+    "for": {
+     "type": "string"
+    },
+    "key": {
+     "maxLength": 128,
+     "minLength": 1,
+     "type": "string"
+    },
+    "on_behalf": {
+     "type": "integer"
+    },
+    "placement": {
+     "additionalProperties": false,
+     "description": "Default: a new tab in the work session. Choose another session, split beside a placed block, or start detached.",
+     "properties": {
+      "beside": {
+       "description": "A placed block ID in the target session.",
+       "minLength": 1,
+       "type": "string"
+      },
+      "detached": {
+       "description": "Start without a tab. Cannot be combined with beside.",
+       "type": "boolean"
+      },
+      "direction": {
+       "description": "Requires beside. Default: right.",
+       "enum": [
+        "right",
+        "left",
+        "above",
+        "below"
+       ],
+       "type": "string"
+      },
+      "focus": {
+       "additionalProperties": false,
+       "description": "User spawns only. Focus on the first successful open, only while this source tab is still active in the target session. Never focus after an unknown outcome or on retry.",
+       "properties": {
+        "source_window_id": {
+         "minLength": 1,
+         "type": "string"
+        }
+       },
+       "required": [
+        "source_window_id"
+       ],
+       "type": "object"
+      },
+      "ratio": {
+       "description": "Requires beside. Fraction for the new pane. Default: 0.5.",
+       "exclusiveMaximum": 1,
+       "exclusiveMinimum": 0,
+       "type": "number"
+      },
+      "session": {
+       "description": "Target session ID.",
+       "minLength": 1,
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "profile": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "title": {
+     "maxLength": 60,
+     "type": "string"
+    }
+   },
+   "required": [
+    "profile",
+    "key"
+   ],
+   "type": "object"
+  },
+  "description": "Start a profile in a new tab, beside a block, or detached, in the chosen session. An agent profile gets its own agent ID, so it can message you. Choose a key; after an unknown outcome, retry with the same key. Returns spawn_id, session_id, status (open, pending, failed or closed) and agent_id.",
+  "kind": "client",
+  "name": "hub.spawn",
+  "title": "Start a profile"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "render": {
+     "description": "The render ID of view.render. The SDK sends it in a render.",
+     "type": "string"
+    },
+    "spawn_id": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status. An agent worker also has identity_seen (true once its pane has had a current conversation identity), and, when open, identity: current or none, with identity_id (the current identity's ID) when current. With spawn_id: only that worker; not_found when it is closed or unknown.",
+  "kind": "client",
+  "name": "hub.workers",
+  "title": "List workers"
+ },
+ {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "for": {
+     "type": "string"
+    },
+    "key": {
+     "maxLength": 128,
+     "type": "string"
+    },
+    "on_behalf": {
+     "type": "integer"
+    },
+    "spawn_id": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "spawn_id"
+   ],
+   "type": "object"
+  },
+  "description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. Any agent can stop any worker, also one that another agent or the user started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
+  "kind": "client",
+  "name": "hub.stop",
+  "title": "Stop a worker"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.status",
+  "title": "hub.test.status"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.sql",
+  "title": "hub.test.sql"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.chunk",
+  "title": "hub.test.chunk"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.notice",
+  "title": "hub.test.notice"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.notice_renudge",
+  "title": "hub.test.notice_renudge"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.stats",
+  "title": "hub.test.stats"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.tabs",
+  "title": "hub.test.tabs"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.views",
+  "title": "hub.test.views"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.operation",
+  "title": "hub.test.operation"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.inject",
+  "title": "hub.test.inject"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.inject.cancel",
+  "title": "hub.test.inject.cancel"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.injection",
+  "title": "hub.test.injection"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.view.render",
+  "title": "hub.test.view.render"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.view.result",
+  "title": "hub.test.view.result"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.parity",
+  "title": "hub.test.parity"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.finish",
+  "title": "hub.test.finish"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.commands",
+  "title": "hub.test.commands"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.events",
+  "title": "hub.test.events"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.app",
+  "title": "hub.test.app"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.app.calls",
+  "title": "hub.test.app.calls"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.calls",
+  "title": "hub.test.calls"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.renders",
+  "title": "hub.test.renders"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.app.close",
+  "title": "hub.test.app.close"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.fault",
+  "title": "hub.test.fault"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.fault_state",
+  "title": "hub.test.fault_state"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.fault_release",
+  "title": "hub.test.fault_release"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.recover",
+  "title": "hub.test.recover"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.peer.deliver",
+  "title": "hub.test.peer.deliver"
+ },
+ {
+  "kind": "client",
+  "name": "hub.test.peer.delivery",
+  "title": "hub.test.peer.delivery"
+ }
+]

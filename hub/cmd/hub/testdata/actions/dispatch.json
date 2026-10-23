@@ -1,0 +1,908 @@
+{
+ "hub.admin.relaunch": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: invalid_input: expect_exec is the exec count from hub.info",
+  "plain/test": "error: invalid_input: expect_exec is the exec count from hub.info",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.replace": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: invalid: replace needs plugin and a nonempty expect_instance",
+  "plain/test": "error: invalid: replace needs plugin and a nonempty expect_instance",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.restart": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: key is required (at most 128 characters)",
+  "plain/test": "error: key is required (at most 128 characters)",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.restart.form": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: kind must be claude or codex",
+  "plain/test": "error: kind must be claude or codex",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.resume": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: key is required (at most 128 characters)",
+  "plain/test": "error: key is required (at most 128 characters)",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.shutdown": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.start": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: unknown plugin \"\"",
+  "plain/test": "error: unknown plugin \"\"",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.stop": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: unknown plugin \"\"",
+  "plain/test": "error: unknown plugin \"\"",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.admin.unlock": {
+  "pane": "error: admin actions are refused from agent and plugin panes",
+  "pane/test": "error: admin actions are refused from agent and plugin panes",
+  "plain": "error: path (absolute) and key are required",
+  "plain/test": "error: path (absolute) and key are required",
+  "plugin": "error: admin actions are refused from agent and plugin panes",
+  "plugin/test": "error: admin actions are refused from agent and plugin panes"
+ },
+ "hub.agents": {
+  "agent": "ok",
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.agents.resolve": {
+  "agent": "error: invalid: to is required",
+  "pane": "error: invalid: to is required",
+  "pane/test": "error: invalid: to is required",
+  "plain": "error: invalid: to is required",
+  "plain/test": "error: invalid: to is required",
+  "plugin": "error: invalid: to is required",
+  "plugin/test": "error: invalid: to is required"
+ },
+ "hub.app.remote_control": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.app.select_session": {
+  "pane": "error: only a registered plugin may switch the app",
+  "pane/test": "error: only a registered plugin may switch the app",
+  "plain": "error: only a registered plugin may switch the app",
+  "plain/test": "error: only a registered plugin may switch the app",
+  "plugin": "error: view_id, session_id and window_id are required",
+  "plugin/test": "error: view_id, session_id and window_id are required"
+ },
+ "hub.cwd.check": {
+  "pane": "error: only a registered plugin instance may call hub.cwd.check",
+  "pane/test": "error: only a registered plugin instance may call hub.cwd.check",
+  "plain": "error: only a registered plugin instance may call hub.cwd.check",
+  "plain/test": "error: only a registered plugin instance may call hub.cwd.check",
+  "plugin": "error: \"\" must be an absolute directory path",
+  "plugin/test": "error: \"\" must be an absolute directory path"
+ },
+ "hub.cwd.lock": {
+  "pane": "error: only a registered plugin instance may call hub.cwd.lock",
+  "pane/test": "error: only a registered plugin instance may call hub.cwd.lock",
+  "plain": "error: only a registered plugin instance may call hub.cwd.lock",
+  "plain/test": "error: only a registered plugin instance may call hub.cwd.lock",
+  "plugin": "error: \"\" must be an absolute directory path",
+  "plugin/test": "error: \"\" must be an absolute directory path"
+ },
+ "hub.cwd.unlock": {
+  "pane": "error: only a registered plugin instance may call hub.cwd.unlock",
+  "pane/test": "error: only a registered plugin instance may call hub.cwd.unlock",
+  "plain": "error: only a registered plugin instance may call hub.cwd.unlock",
+  "plain/test": "error: only a registered plugin instance may call hub.cwd.unlock",
+  "plugin": "error: path (absolute) and key are required",
+  "plugin/test": "error: path (absolute) and key are required"
+ },
+ "hub.digest": {
+  "pane": "error: forbidden: hub.digest needs the registered current instance of a configured plugin",
+  "pane/test": "error: forbidden: hub.digest needs the registered current instance of a configured plugin",
+  "plain": "error: forbidden: hub.digest needs the registered current instance of a configured plugin",
+  "plain/test": "error: forbidden: hub.digest needs the registered current instance of a configured plugin",
+  "plugin": "error: forbidden: hub.digest needs the registered current instance of a configured plugin",
+  "plugin/test": "error: forbidden: hub.digest needs the registered current instance of a configured plugin"
+ },
+ "hub.grant.create": {
+  "pane": "error: only a registered plugin instance may call hub.grant.create",
+  "pane/test": "error: only a registered plugin instance may call hub.grant.create",
+  "plain": "error: only a registered plugin instance may call hub.grant.create",
+  "plain/test": "error: only a registered plugin instance may call hub.grant.create",
+  "plugin": "error: on_behalf is required: a grant is made only while the agent's forwarded call runs",
+  "plugin/test": "error: on_behalf is required: a grant is made only while the agent's forwarded call runs"
+ },
+ "hub.grant.get": {
+  "pane": "error: only a registered plugin instance may call hub.grant.get",
+  "pane/test": "error: only a registered plugin instance may call hub.grant.get",
+  "plain": "error: only a registered plugin instance may call hub.grant.get",
+  "plain/test": "error: only a registered plugin instance may call hub.grant.get",
+  "plugin": "error: hub.grant.get takes only key",
+  "plugin/test": "error: hub.grant.get takes only key"
+ },
+ "hub.grant.revoke": {
+  "pane": "error: only a registered plugin instance may call hub.grant.revoke",
+  "pane/test": "error: only a registered plugin instance may call hub.grant.revoke",
+  "plain": "error: only a registered plugin instance may call hub.grant.revoke",
+  "plain/test": "error: only a registered plugin instance may call hub.grant.revoke",
+  "plugin": "error: hub.grant.revoke takes only grant_id",
+  "plugin/test": "error: hub.grant.revoke takes only grant_id"
+ },
+ "hub.identify": {
+  "pane": "error: only a registered plugin instance may call hub.identify",
+  "pane/test": "error: only a registered plugin instance may call hub.identify",
+  "plain": "error: only a registered plugin instance may call hub.identify",
+  "plain/test": "error: only a registered plugin instance may call hub.identify",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.identity.list": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.identity.report": {
+  "pane": "error: invalid: kind must be claude or codex",
+  "pane/test": "error: invalid: kind must be claude or codex",
+  "plain": "error: invalid: kind must be claude or codex",
+  "plain/test": "error: invalid: kind must be claude or codex",
+  "plugin": "error: invalid: kind must be claude or codex",
+  "plugin/test": "error: invalid: kind must be claude or codex"
+ },
+ "hub.info": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.navigate.agent": {
+  "pane": "error:  has no open tab",
+  "pane/test": "error:  has no open tab",
+  "plain": "error:  has no open tab",
+  "plain/test": "error:  has no open tab",
+  "plugin": "error:  has no open tab",
+  "plugin/test": "error:  has no open tab"
+ },
+ "hub.navigate.worker": {
+  "pane": "error: no spawn \"\"",
+  "pane/test": "error: no spawn \"\"",
+  "plain": "error: no spawn \"\"",
+  "plain/test": "error: no spawn \"\"",
+  "plugin": "error: no spawn \"\"",
+  "plugin/test": "error: no spawn \"\""
+ },
+ "hub.nope": {
+  "agent": "error: unknown action hub.nope (run `rex -C lazyrex actions`)",
+  "pane": "error: only a registered plugin instance may call hub.nope",
+  "pane/test": "error: only a registered plugin instance may call hub.nope",
+  "plain": "error: only a registered plugin instance may call hub.nope",
+  "plain/test": "error: only a registered plugin instance may call hub.nope",
+  "plugin": "error: unknown action hub.nope",
+  "plugin/test": "error: unknown action hub.nope"
+ },
+ "hub.palette.run": {
+  "pane": "error: unknown command \"\"",
+  "pane/test": "error: unknown command \"\"",
+  "plain": "error: unknown command \"\"",
+  "plain/test": "error: unknown command \"\"",
+  "plugin": "error: unknown command \"\"",
+  "plugin/test": "error: unknown command \"\""
+ },
+ "hub.peer.nudge": {
+  "pane": "error: unknown_hub: \"\" is not a configured peer",
+  "pane/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plain": "error: unknown_hub: \"\" is not a configured peer",
+  "plain/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin/test": "error: unknown_hub: \"\" is not a configured peer"
+ },
+ "hub.peer.plugins": {
+  "pane": "error: unknown_hub: \"\" is not a configured peer",
+  "pane/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plain": "error: unknown_hub: \"\" is not a configured peer",
+  "plain/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin/test": "error: unknown_hub: \"\" is not a configured peer"
+ },
+ "hub.peer.pull": {
+  "pane": "error: unknown_hub: \"\" is not a configured peer",
+  "pane/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plain": "error: unknown_hub: \"\" is not a configured peer",
+  "plain/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin/test": "error: unknown_hub: \"\" is not a configured peer"
+ },
+ "hub.peer.send": {
+  "pane": "error: not_plugin: hub.peer.send is for plugins",
+  "pane/test": "error: not_plugin: hub.peer.send is for plugins",
+  "plain": "error: not_plugin: hub.peer.send is for plugins",
+  "plain/test": "error: not_plugin: hub.peer.send is for plugins",
+  "plugin": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin/test": "error: unknown_hub: \"\" is not a configured peer"
+ },
+ "hub.peer.status": {
+  "agent": "ok",
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.plugins": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.plugins.log": {
+  "pane": "error: only a registered plugin instance may call hub.plugins.log",
+  "pane/test": "error: only a registered plugin instance may call hub.plugins.log",
+  "plain": "error: only a registered plugin instance may call hub.plugins.log",
+  "plain/test": "error: only a registered plugin instance may call hub.plugins.log",
+  "plugin": "error: only the home plugin reads the plugin tags and logs",
+  "plugin/test": "error: only the home plugin reads the plugin tags and logs"
+ },
+ "hub.plugins.op": {
+  "agent": "error: the caller is not a reported conversation",
+  "pane": "error: only a registered plugin instance may call hub.plugins.op",
+  "pane/test": "error: only a registered plugin instance may call hub.plugins.op",
+  "plain": "error: only a registered plugin instance may call hub.plugins.op",
+  "plain/test": "error: only a registered plugin instance may call hub.plugins.op",
+  "plugin": "error: unknown action hub.plugins.op",
+  "plugin/test": "error: unknown action hub.plugins.op"
+ },
+ "hub.plugins.ops": {
+  "agent": "error: the caller is not a reported conversation",
+  "pane": "error: only a registered plugin instance may call hub.plugins.ops",
+  "pane/test": "error: only a registered plugin instance may call hub.plugins.ops",
+  "plain": "error: only a registered plugin instance may call hub.plugins.ops",
+  "plain/test": "error: only a registered plugin instance may call hub.plugins.ops",
+  "plugin": "error: only the home plugin reads the plugin operations",
+  "plugin/test": "error: only the home plugin reads the plugin operations"
+ },
+ "hub.plugins.reload": {
+  "pane": "error: hub.plugins.reload is refused from agent panes and from plugin processes that are not the registered instance",
+  "pane/test": "error: hub.plugins.reload is refused from agent panes and from plugin processes that are not the registered instance",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.plugins.tags": {
+  "pane": "error: only a registered plugin instance may call hub.plugins.tags",
+  "pane/test": "error: only a registered plugin instance may call hub.plugins.tags",
+  "plain": "error: only a registered plugin instance may call hub.plugins.tags",
+  "plain/test": "error: only a registered plugin instance may call hub.plugins.tags",
+  "plugin": "error: only the home plugin reads the plugin tags and logs",
+  "plugin/test": "error: only the home plugin reads the plugin tags and logs"
+ },
+ "hub.profiles": {
+  "agent": "ok",
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.prompt.answer": {
+  "pane": "error: only a registered plugin instance may call hub.prompt.answer",
+  "pane/test": "error: only a registered plugin instance may call hub.prompt.answer",
+  "plain": "error: only a registered plugin instance may call hub.prompt.answer",
+  "plain/test": "error: only a registered plugin instance may call hub.prompt.answer",
+  "plugin": "error: not_granted: the hub config gives plugin p no prompts grant",
+  "plugin/test": "error: not_granted: the hub config gives plugin p no prompts grant"
+ },
+ "hub.prompts": {
+  "pane": "error: only a registered plugin instance may call hub.prompts",
+  "pane/test": "error: only a registered plugin instance may call hub.prompts",
+  "plain": "error: only a registered plugin instance may call hub.prompts",
+  "plain/test": "error: only a registered plugin instance may call hub.prompts",
+  "plugin": "error: not_granted: the hub config gives plugin p no prompts grant",
+  "plugin/test": "error: not_granted: the hub config gives plugin p no prompts grant"
+ },
+ "hub.register": {
+  "pane": "error: unknown plugin \"\"",
+  "pane/test": "error: unknown plugin \"\"",
+  "plain": "error: unknown plugin \"\"",
+  "plain/test": "error: unknown plugin \"\"",
+  "plugin": "error: unknown plugin \"\"",
+  "plugin/test": "error: unknown plugin \"\""
+ },
+ "hub.reply.part": {
+  "pane": "error: only a registered plugin instance may call hub.reply.part",
+  "pane/test": "error: only a registered plugin instance may call hub.reply.part",
+  "plain": "error: only a registered plugin instance may call hub.reply.part",
+  "plain/test": "error: only a registered plugin instance may call hub.reply.part",
+  "plugin": "error: invalid_input: part set : hub.reply.part takes id (at most 128 bytes of [A-Za-z0-9._:-]), index, count and data (a string)",
+  "plugin/test": "error: invalid_input: part set : hub.reply.part takes id (at most 128 bytes of [A-Za-z0-9._:-]), index, count and data (a string)"
+ },
+ "hub.session.ensure": {
+  "pane": "error: only a registered plugin instance may call hub.session.ensure",
+  "pane/test": "error: only a registered plugin instance may call hub.session.ensure",
+  "plain": "error: only a registered plugin instance may call hub.session.ensure",
+  "plain/test": "error: only a registered plugin instance may call hub.session.ensure",
+  "plugin": "error: key must be text of 1 to 1024 bytes",
+  "plugin/test": "error: key must be text of 1 to 1024 bytes"
+ },
+ "hub.session.list": {
+  "pane": "error: only a registered plugin instance may call hub.session.list",
+  "pane/test": "error: only a registered plugin instance may call hub.session.list",
+  "plain": "error: only a registered plugin instance may call hub.session.list",
+  "plain/test": "error: only a registered plugin instance may call hub.session.list",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.spawn": {
+  "agent": "error: the caller is not a reported conversation",
+  "pane": "error: the caller is not a reported conversation",
+  "pane/test": "error: the caller is not a reported conversation",
+  "plain": "error: the caller is not a reported conversation",
+  "plain/test": "error: the caller is not a reported conversation",
+  "plugin": "error: the caller is not a reported conversation",
+  "plugin/test": "error: the caller is not a reported conversation"
+ },
+ "hub.spawn.spec": {
+  "pane": "error: only a registered plugin may read a spawn spec",
+  "pane/test": "error: only a registered plugin may read a spawn spec",
+  "plain": "error: only a registered plugin may read a spawn spec",
+  "plain/test": "error: only a registered plugin may read a spawn spec",
+  "plugin": "error: block_id is required",
+  "plugin/test": "error: block_id is required"
+ },
+ "hub.spawn_window": {
+  "pane": "error: the caller is not a reported conversation",
+  "pane/test": "error: the caller is not a reported conversation",
+  "plain": "error: the caller is not a reported conversation",
+  "plain/test": "error: the caller is not a reported conversation",
+  "plugin": "error: the caller is not a reported conversation",
+  "plugin/test": "error: the caller is not a reported conversation"
+ },
+ "hub.sql.batch": {
+  "pane": "error: only a registered plugin instance may call hub.sql.batch",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.batch",
+  "plain": "error: only a registered plugin instance may call hub.sql.batch",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.batch",
+  "plugin": "error: invalid_input: statements is a non-empty array of {sql, params?, expect_changes?}",
+  "plugin/test": "error: invalid_input: statements is a non-empty array of {sql, params?, expect_changes?}"
+ },
+ "hub.sql.begin": {
+  "pane": "error: only a registered plugin instance may call hub.sql.begin",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.begin",
+  "plain": "error: only a registered plugin instance may call hub.sql.begin",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.begin",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.sql.commit": {
+  "pane": "error: only a registered plugin instance may call hub.sql.commit",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.commit",
+  "plain": "error: only a registered plugin instance may call hub.sql.commit",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.commit",
+  "plugin": "error: invalid_input: tx is required",
+  "plugin/test": "error: invalid_input: tx is required"
+ },
+ "hub.sql.exec": {
+  "pane": "error: only a registered plugin instance may call hub.sql.exec",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.exec",
+  "plain": "error: only a registered plugin instance may call hub.sql.exec",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.exec",
+  "plugin": "error: invalid_input: sql is a string",
+  "plugin/test": "error: invalid_input: sql is a string"
+ },
+ "hub.sql.query": {
+  "pane": "error: only a registered plugin instance may call hub.sql.query",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.query",
+  "plain": "error: only a registered plugin instance may call hub.sql.query",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.query",
+  "plugin": "error: invalid_input: sql is a string",
+  "plugin/test": "error: invalid_input: sql is a string"
+ },
+ "hub.sql.replay": {
+  "pane": "error: only a registered plugin instance may call hub.sql.replay",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.replay",
+  "plain": "error: only a registered plugin instance may call hub.sql.replay",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.replay",
+  "plugin": "error: invalid_input: key is required",
+  "plugin/test": "error: invalid_input: key is required"
+ },
+ "hub.sql.rollback": {
+  "pane": "error: only a registered plugin instance may call hub.sql.rollback",
+  "pane/test": "error: only a registered plugin instance may call hub.sql.rollback",
+  "plain": "error: only a registered plugin instance may call hub.sql.rollback",
+  "plain/test": "error: only a registered plugin instance may call hub.sql.rollback",
+  "plugin": "error: invalid_input: tx is required",
+  "plugin/test": "error: invalid_input: tx is required"
+ },
+ "hub.stop": {
+  "agent": "error: the caller is not a reported conversation",
+  "pane": "error: the caller is not a reported conversation",
+  "pane/test": "error: the caller is not a reported conversation",
+  "plain": "error: the caller is not a reported conversation",
+  "plain/test": "error: the caller is not a reported conversation",
+  "plugin": "error: the caller is not a reported conversation",
+  "plugin/test": "error: the caller is not a reported conversation"
+ },
+ "hub.test.app": {
+  "pane": "error: unknown action hub.test.app",
+  "pane/test": "error: invalid: name is required",
+  "plain": "error: unknown action hub.test.app",
+  "plain/test": "error: invalid: name is required",
+  "plugin": "error: unknown action hub.test.app",
+  "plugin/test": "error: invalid: name is required"
+ },
+ "hub.test.app.calls": {
+  "pane": "error: unknown action hub.test.app.calls",
+  "pane/test": "error: invalid: no fake app \"\"",
+  "plain": "error: unknown action hub.test.app.calls",
+  "plain/test": "error: invalid: no fake app \"\"",
+  "plugin": "error: unknown action hub.test.app.calls",
+  "plugin/test": "error: invalid: no fake app \"\""
+ },
+ "hub.test.app.close": {
+  "pane": "error: unknown action hub.test.app.close",
+  "pane/test": "error: invalid: no fake app \"\"",
+  "plain": "error: unknown action hub.test.app.close",
+  "plain/test": "error: invalid: no fake app \"\"",
+  "plugin": "error: unknown action hub.test.app.close",
+  "plugin/test": "error: invalid: no fake app \"\""
+ },
+ "hub.test.calls": {
+  "pane": "error: unknown action hub.test.calls",
+  "pane/test": "error: invalid: unknown plugin \"\"",
+  "plain": "error: unknown action hub.test.calls",
+  "plain/test": "error: invalid: unknown plugin \"\"",
+  "plugin": "error: unknown action hub.test.calls",
+  "plugin/test": "error: invalid: unknown plugin \"\""
+ },
+ "hub.test.chunk": {
+  "pane": "error: unknown action hub.test.chunk",
+  "pane/test": "error: invalid: source must be render",
+  "plain": "error: unknown action hub.test.chunk",
+  "plain/test": "error: invalid: source must be render",
+  "plugin": "error: unknown action hub.test.chunk",
+  "plugin/test": "error: invalid: source must be render"
+ },
+ "hub.test.commands": {
+  "pane": "error: unknown action hub.test.commands",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.commands",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.commands",
+  "plugin/test": "ok"
+ },
+ "hub.test.events": {
+  "pane": "error: unknown action hub.test.events",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.events",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.events",
+  "plugin/test": "ok"
+ },
+ "hub.test.fault": {
+  "pane": "error: unknown action hub.test.fault",
+  "pane/test": "error: invalid: unknown plugin \"\"",
+  "plain": "error: unknown action hub.test.fault",
+  "plain/test": "error: invalid: unknown plugin \"\"",
+  "plugin": "error: unknown action hub.test.fault",
+  "plugin/test": "error: invalid: unknown plugin \"\""
+ },
+ "hub.test.fault_release": {
+  "pane": "error: unknown action hub.test.fault_release",
+  "pane/test": "error: invalid: no fault 0",
+  "plain": "error: unknown action hub.test.fault_release",
+  "plain/test": "error: invalid: no fault 0",
+  "plugin": "error: unknown action hub.test.fault_release",
+  "plugin/test": "error: invalid: no fault 0"
+ },
+ "hub.test.fault_state": {
+  "pane": "error: unknown action hub.test.fault_state",
+  "pane/test": "error: invalid: no fault 0",
+  "plain": "error: unknown action hub.test.fault_state",
+  "plain/test": "error: invalid: no fault 0",
+  "plugin": "error: unknown action hub.test.fault_state",
+  "plugin/test": "error: invalid: no fault 0"
+ },
+ "hub.test.finish": {
+  "pane": "error: unknown action hub.test.finish",
+  "pane/test": "error: the agent face is not connected",
+  "plain": "error: unknown action hub.test.finish",
+  "plain/test": "error: the agent face is not connected",
+  "plugin": "error: unknown action hub.test.finish",
+  "plugin/test": "error: the agent face is not connected"
+ },
+ "hub.test.inject": {
+  "pane": "error: unknown action hub.test.inject",
+  "pane/test": "error: invalid: unknown plugin \"\"",
+  "plain": "error: unknown action hub.test.inject",
+  "plain/test": "error: invalid: unknown plugin \"\"",
+  "plugin": "error: unknown action hub.test.inject",
+  "plugin/test": "error: invalid: unknown plugin \"\""
+ },
+ "hub.test.inject.cancel": {
+  "pane": "error: unknown action hub.test.inject.cancel",
+  "pane/test": "error: invalid: no injection \u003cnil\u003e",
+  "plain": "error: unknown action hub.test.inject.cancel",
+  "plain/test": "error: invalid: no injection \u003cnil\u003e",
+  "plugin": "error: unknown action hub.test.inject.cancel",
+  "plugin/test": "error: invalid: no injection \u003cnil\u003e"
+ },
+ "hub.test.injection": {
+  "pane": "error: unknown action hub.test.injection",
+  "pane/test": "error: invalid: no injection \u003cnil\u003e",
+  "plain": "error: unknown action hub.test.injection",
+  "plain/test": "error: invalid: no injection \u003cnil\u003e",
+  "plugin": "error: unknown action hub.test.injection",
+  "plugin/test": "error: invalid: no injection \u003cnil\u003e"
+ },
+ "hub.test.nope": {
+  "pane": "error: unknown action hub.test.nope",
+  "pane/test": "error: unknown action hub.test.nope",
+  "plain": "error: unknown action hub.test.nope",
+  "plain/test": "error: unknown action hub.test.nope",
+  "plugin": "error: unknown action hub.test.nope",
+  "plugin/test": "error: unknown action hub.test.nope"
+ },
+ "hub.test.notice": {
+  "pane": "error: unknown action hub.test.notice",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.notice",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.notice",
+  "plugin/test": "ok"
+ },
+ "hub.test.notice_renudge": {
+  "pane": "error: unknown action hub.test.notice_renudge",
+  "pane/test": "error: invalid: notice_renudge needs a whole ms of at least 1",
+  "plain": "error: unknown action hub.test.notice_renudge",
+  "plain/test": "error: invalid: notice_renudge needs a whole ms of at least 1",
+  "plugin": "error: unknown action hub.test.notice_renudge",
+  "plugin/test": "error: invalid: notice_renudge needs a whole ms of at least 1"
+ },
+ "hub.test.operation": {
+  "pane": "error: unknown action hub.test.operation",
+  "pane/test": "error: SQL logic error: no such column: effect_state (1)",
+  "plain": "error: unknown action hub.test.operation",
+  "plain/test": "error: SQL logic error: no such column: effect_state (1)",
+  "plugin": "error: unknown action hub.test.operation",
+  "plugin/test": "error: SQL logic error: no such column: effect_state (1)"
+ },
+ "hub.test.parity": {
+  "pane": "error: unknown action hub.test.parity",
+  "pane/test": "error: the agent face is not connected",
+  "plain": "error: unknown action hub.test.parity",
+  "plain/test": "error: the agent face is not connected",
+  "plugin": "error: unknown action hub.test.parity",
+  "plugin/test": "error: the agent face is not connected"
+ },
+ "hub.test.peer.deliver": {
+  "pane": "error: unknown action hub.test.peer.deliver",
+  "pane/test": "error: invalid: unknown plugin \"\"",
+  "plain": "error: unknown action hub.test.peer.deliver",
+  "plain/test": "error: invalid: unknown plugin \"\"",
+  "plugin": "error: unknown action hub.test.peer.deliver",
+  "plugin/test": "error: invalid: unknown plugin \"\""
+ },
+ "hub.test.peer.delivery": {
+  "pane": "error: unknown action hub.test.peer.delivery",
+  "pane/test": "error: invalid: unknown delivery \u003cnil\u003e",
+  "plain": "error: unknown action hub.test.peer.delivery",
+  "plain/test": "error: invalid: unknown delivery \u003cnil\u003e",
+  "plugin": "error: unknown action hub.test.peer.delivery",
+  "plugin/test": "error: invalid: unknown delivery \u003cnil\u003e"
+ },
+ "hub.test.recover": {
+  "pane": "error: unknown action hub.test.recover",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.recover",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.recover",
+  "plugin/test": "ok"
+ },
+ "hub.test.renders": {
+  "pane": "error: unknown action hub.test.renders",
+  "pane/test": "error: invalid: unknown plugin \"\"",
+  "plain": "error: unknown action hub.test.renders",
+  "plain/test": "error: invalid: unknown plugin \"\"",
+  "plugin": "error: unknown action hub.test.renders",
+  "plugin/test": "error: invalid: unknown plugin \"\""
+ },
+ "hub.test.sql": {
+  "pane": "error: unknown action hub.test.sql",
+  "pane/test": "error: invalid: unknown plugin \"\"",
+  "plain": "error: unknown action hub.test.sql",
+  "plain/test": "error: invalid: unknown plugin \"\"",
+  "plugin": "error: unknown action hub.test.sql",
+  "plugin/test": "error: invalid: unknown plugin \"\""
+ },
+ "hub.test.stats": {
+  "pane": "error: unknown action hub.test.stats",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.stats",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.stats",
+  "plugin/test": "ok"
+ },
+ "hub.test.status": {
+  "pane": "error: unknown action hub.test.status",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.status",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.status",
+  "plugin/test": "ok"
+ },
+ "hub.test.tabs": {
+  "pane": "error: unknown action hub.test.tabs",
+  "pane/test": "ok",
+  "plain": "error: unknown action hub.test.tabs",
+  "plain/test": "ok",
+  "plugin": "error: unknown action hub.test.tabs",
+  "plugin/test": "ok"
+ },
+ "hub.test.view.render": {
+  "pane": "error: unknown action hub.test.view.render",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: unknown action hub.test.view.render",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: unknown action hub.test.view.render",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.test.view.result": {
+  "pane": "error: unknown action hub.test.view.result",
+  "pane/test": "error: invalid: view \"\" has no requested generation \u003cnil\u003e in the last 32",
+  "plain": "error: unknown action hub.test.view.result",
+  "plain/test": "error: invalid: view \"\" has no requested generation \u003cnil\u003e in the last 32",
+  "plugin": "error: unknown action hub.test.view.result",
+  "plugin/test": "error: invalid: view \"\" has no requested generation \u003cnil\u003e in the last 32"
+ },
+ "hub.test.views": {
+  "pane": "error: unknown action hub.test.views",
+  "pane/test": "error: SQL logic error: no such column: context (1)",
+  "plain": "error: unknown action hub.test.views",
+  "plain/test": "error: SQL logic error: no such column: context (1)",
+  "plugin": "error: unknown action hub.test.views",
+  "plugin/test": "error: SQL logic error: no such column: context (1)"
+ },
+ "hub.ui.describe": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.ui.invalidate": {
+  "pane": "error: only a registered plugin instance may call hub.ui.invalidate",
+  "pane/test": "error: only a registered plugin instance may call hub.ui.invalidate",
+  "plain": "error: only a registered plugin instance may call hub.ui.invalidate",
+  "plain/test": "error: only a registered plugin instance may call hub.ui.invalidate",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.ui.navigate": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.ui.reload": {
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.ui.tabs": {
+  "pane": "error: only a registered plugin instance may call hub.ui.tabs",
+  "pane/test": "error: only a registered plugin instance may call hub.ui.tabs",
+  "plain": "error: only a registered plugin instance may call hub.ui.tabs",
+  "plain/test": "error: only a registered plugin instance may call hub.ui.tabs",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.view.action": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.app_action": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.attach": {
+  "pane": "error: unsupported_schema: this hub speaks schema version 1",
+  "pane/test": "error: unsupported_schema: this hub speaks schema version 1",
+  "plain": "error: unsupported_schema: this hub speaks schema version 1",
+  "plain/test": "error: unsupported_schema: this hub speaks schema version 1",
+  "plugin": "error: unsupported_schema: this hub speaks schema version 1",
+  "plugin/test": "error: unsupported_schema: this hub speaks schema version 1"
+ },
+ "hub.view.close": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.draft.save": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.effect.retry": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.get": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.history": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.operation": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.release_confirm": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.replacement": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.seen": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.send": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.view.subscribe": {
+  "pane": "error: stale_view: view \"\" is not open",
+  "pane/test": "error: stale_view: view \"\" is not open",
+  "plain": "error: stale_view: view \"\" is not open",
+  "plain/test": "error: stale_view: view \"\" is not open",
+  "plugin": "error: stale_view: view \"\" is not open",
+  "plugin/test": "error: stale_view: view \"\" is not open"
+ },
+ "hub.watch.ack": {
+  "pane": "error: only a registered plugin instance may call hub.watch.ack",
+  "pane/test": "error: only a registered plugin instance may call hub.watch.ack",
+  "plain": "error: only a registered plugin instance may call hub.watch.ack",
+  "plain/test": "error: only a registered plugin instance may call hub.watch.ack",
+  "plugin": "error: key and watch_id are required",
+  "plugin/test": "error: key and watch_id are required"
+ },
+ "hub.watch.ensure": {
+  "pane": "error: only a registered plugin instance may call hub.watch.ensure",
+  "pane/test": "error: only a registered plugin instance may call hub.watch.ensure",
+  "plain": "error: only a registered plugin instance may call hub.watch.ensure",
+  "plain/test": "error: only a registered plugin instance may call hub.watch.ensure",
+  "plugin": "error: key must match [a-z0-9_.-]{1,64}",
+  "plugin/test": "error: key must match [a-z0-9_.-]{1,64}"
+ },
+ "hub.watch.list": {
+  "pane": "error: only a registered plugin instance may call hub.watch.list",
+  "pane/test": "error: only a registered plugin instance may call hub.watch.list",
+  "plain": "error: only a registered plugin instance may call hub.watch.list",
+  "plain/test": "error: only a registered plugin instance may call hub.watch.list",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
+ "hub.watch.read": {
+  "pane": "error: only a registered plugin instance may call hub.watch.read",
+  "pane/test": "error: only a registered plugin instance may call hub.watch.read",
+  "plain": "error: only a registered plugin instance may call hub.watch.read",
+  "plain/test": "error: only a registered plugin instance may call hub.watch.read",
+  "plugin": "error: key and watch_id are required",
+  "plugin/test": "error: key and watch_id are required"
+ },
+ "hub.watch.remove": {
+  "pane": "error: only a registered plugin instance may call hub.watch.remove",
+  "pane/test": "error: only a registered plugin instance may call hub.watch.remove",
+  "plain": "error: only a registered plugin instance may call hub.watch.remove",
+  "plain/test": "error: only a registered plugin instance may call hub.watch.remove",
+  "plugin": "error: key and watch_id are required",
+  "plugin/test": "error: key and watch_id are required"
+ },
+ "hub.workers": {
+  "agent": "ok",
+  "pane": "ok",
+  "pane/test": "ok",
+  "plain": "ok",
+  "plain/test": "ok",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ }
+}

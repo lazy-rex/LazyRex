@@ -1,0 +1,10 @@
+[
+ "hub.agents",
+ "hub.agents.resolve",
+ "hub.peer.status",
+ "hub.plugins.op",
+ "hub.profiles",
+ "hub.spawn",
+ "hub.stop",
+ "hub.workers"
+]
