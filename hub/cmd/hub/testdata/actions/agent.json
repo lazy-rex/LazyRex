@@ -231,6 +231,10 @@
        },
        "type": "object"
       },
+      "to": {
+       "minLength": 1,
+       "type": "string"
+      },
       "watch_roots": {
        "items": {
         "type": "string"
@@ -251,7 +255,8 @@
       "stop",
       "restart",
       "settings",
-      "remove"
+      "remove",
+      "update"
      ],
      "type": "string"
     }
@@ -263,7 +268,7 @@
    ],
    "type": "object"
   },
-  "description": "Start, stop, restart, remove or change the settings of a plugin entry. restart replaces the running instance with the same run; it is refused (and stops nothing) when the plugin does not run or has a new candidate (use update for new code). entry is \"managed:\u003cid\u003e\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=\u003cop_id\u003e. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
+  "description": "Start, stop, restart, remove, update or change the settings of a plugin entry. restart replaces the running instance with the same run; it is refused (and stops nothing) when the plugin does not run or has a new candidate (use update for new code). entry is \"managed:\u003cid\u003e\" (a managed entry) or the exact source of a config entry; settings and remove change only managed entries. settings takes input {args, watch_roots}; they apply at the next start. settings can also take expect {args, watch_roots}, the values that you read: if the entry has other values now, the hub refuses with conflict. An input equal to the current values ends done with result \"no change\". update (a managed GitHub entry) takes input {to}: \"@\" fetches the entry's own ref again (a branch gives its tip, latest the newest release, a tag the commit the tag names now (no change unless the tag was moved)), \"latest\" moves the entry to the newest release, and a tag name moves it to that tag; an entry already at the target ends done with result \"already at \u003csource\u003e \u003ccommit\u003e\". The hub runs the operation in the background: read its phase with hub.plugins.ops op_id=\u003cop_id\u003e. Choose a key; after an unknown outcome, retry with the same key. A start of a GitHub entry runs only the plugin's last run; new GitHub code needs the user's confirm in the plugins panel (user_confirmation_required). The home plugin cannot be stopped or removed.",
   "kind": "client",
   "name": "hub.plugins.op",
   "title": "Run a plugin operation"
