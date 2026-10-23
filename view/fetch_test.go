@@ -472,3 +472,50 @@ func TestFetchDropsAStalePage(t *testing.T) {
 	r.stop()
 	wantSequence(t, r.term.String(), span(1301, 1800))
 }
+
+// TestFetchOpenNewMessageInsideTheHeldRange (codex-29 blocker at 1a8ddd57): the open holds 601..900
+// and waits for the page before 601. The current page becomes 651..700, m9001, 701..950: the thread
+// puts the new m9001 between 700 and 701. The run takes the page's order for its range, so the
+// print is the newest 500 in thread order, 452..700, 9001, 701..950, with no late mark.
+func TestFetchOpenNewMessageInsideTheHeldRange(t *testing.T) {
+	f := &fakePages{thread: msgs(span(1, 950)...), size: 300}
+	gate := f.holdNext()
+	r := startFetchRun(t, f)
+	r.p.Send(page(msgs(span(601, 900)...), true, 950))
+	r.wait("the open fetch waits", func(s probeState) bool { return s.fetching })
+	moved := append(append(msgs(span(651, 700)...), msgs(9001)...), msgs(span(701, 950)...)...)
+	r.p.Send(page(moved, true, 951))
+	r.wait("the moved page", func(s probeState) bool { return s.fetching })
+	close(gate)
+	r.wait("printed", func(s probeState) bool { return idle(s) && s.printed["m950"] })
+	r.stop()
+	out := r.term.String()
+	wantSequence(t, out, append(append(span(452, 700), 9001), span(701, 950)...))
+	if strings.Contains(out, "(late)") {
+		t.Fatal("the open marked a message late")
+	}
+}
+
+// TestFetchGapNewMessageInsideTheHeldRange: the same order rule for a gap fill. 1..500 printed;
+// the fill for 1001..1100 waits; the current page becomes 1001..1050, m9001, 1051..1101. The fill
+// prints 501..1050, 9001, 1051..1101 in thread order, not late.
+func TestFetchGapNewMessageInsideTheHeldRange(t *testing.T) {
+	f := &fakePages{thread: msgs(span(1, 1100)...), size: 300}
+	r := startFetchRun(t, f)
+	r.p.Send(page(msgs(span(1, 500)...), false, 500))
+	r.wait("1..500", func(s probeState) bool { return idle(s) && s.printed["m500"] })
+	gate := f.holdNext()
+	r.p.Send(page(msgs(span(1001, 1100)...), true, 1100))
+	r.wait("the fill waits", func(s probeState) bool { return s.fetching })
+	moved := append(append(msgs(span(1001, 1050)...), msgs(9001)...), msgs(span(1051, 1101)...)...)
+	r.p.Send(page(moved, true, 1102))
+	r.wait("the moved page", func(s probeState) bool { return s.fetching })
+	close(gate)
+	r.wait("the fill", func(s probeState) bool { return idle(s) && s.printed["m1101"] })
+	r.stop()
+	out := r.term.String()
+	wantSequence(t, out, append(append(span(1, 1050), 9001), span(1051, 1101)...))
+	if strings.Contains(out, "(late)") {
+		t.Fatal("the fill marked a message late")
+	}
+}
