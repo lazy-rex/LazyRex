@@ -206,6 +206,53 @@ func TestPluginOpAddRowCrashReplay(t *testing.T) {
 	}
 }
 
+// A crash after the managed rename (lead-c4e 3; codex-27's probe
+// TestReviewerWrittenAddChecksRowOwner): the replay finds the file written, and it goes on only
+// while the add owns its row. An older hub that changes instance_id and keeps the stored stamp
+// makes the row not owned: conflict, no reload. The entry is in the file, so the row stays as it is.
+func TestPluginOpAddRowWrittenReplay(t *testing.T) {
+	ctx := context.Background()
+	renamed := func(t *testing.T, h *Hub, key string) *pluginOp {
+		t.Helper()
+		op := writingAdd(t, h, key, toolsSource, "tools")
+		h.pops.fault = func(p string) bool { return p == "plugin-op-after-rename" }
+		err := h.opWrite(ctx, op)
+		h.pops.fault = nil
+		if !errors.Is(err, errOpCrash) || managedSource(t, h, "tools") != toolsSource {
+			t.Fatalf("the crash after the rename: %v, file %s", err, managedText(t, h))
+		}
+		return opsOf(t, h, op.ID)
+	}
+	t.Run("an owned row", func(t *testing.T) {
+		h := rowHub(t)
+		op := renamed(t, h, "renamed-owned")
+		before := *rowCols(t, h, "notes")
+		if err := h.opWrite(ctx, op); err != nil || op.Phase != "reloading" {
+			t.Fatalf("the replay: %+v %v", op, err)
+		}
+		if after := rowCols(t, h, "notes"); *after != before {
+			t.Fatalf("the replay wrote the row: %+v -> %+v", before, after)
+		}
+	})
+	t.Run("a row that the add does not own", func(t *testing.T) {
+		h := rowHub(t)
+		op := renamed(t, h, "renamed-changed")
+		if _, err := h.db.Exec(`UPDATE plugins SET instance_id = 'another-instance' WHERE name = 'notes'`); err != nil {
+			t.Fatal(err)
+		}
+		before := *rowCols(t, h, "notes")
+		if err := h.opWrite(ctx, op); err != nil {
+			t.Fatal(err)
+		}
+		if op.Phase != "conflict" || op.Error != "the record of notes is not the one that the add wrote; nothing more was written" {
+			t.Fatalf("%+v, want the owner conflict", op)
+		}
+		if after := rowCols(t, h, "notes"); after == nil || *after != before || managedSource(t, h, "tools") != toolsSource {
+			t.Fatalf("the end changed the row or the file: %+v -> %+v, file %s", before, after, managedText(t, h))
+		}
+	})
+}
+
 // The cleanup (addendum 1, 1d; codex-27's correction B): an add that ends without its managed entry
 // after its row write deletes an inserted row, and writes back a reused row's prior values, only
 // while it owns the row. Here a CLI writer changes the key's pin after the crash, so the replay
