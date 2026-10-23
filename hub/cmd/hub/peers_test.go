@@ -343,6 +343,76 @@ func TestPeerPullNotInstalled(t *testing.T) {
 	}
 }
 
+// TestPeerPullPluginWait (lead-fed-r2): an envelope for a desired-stopped plugin is skipped at once,
+// and the next envelope, for another plugin, is delivered. An envelope for a desired-running plugin
+// that does not run blocks the peer, shown in hub.peer.status, for at most peerBlockMax; then it is
+// skipped.
+func TestPeerPullPluginWait(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	a := peerHub(t, "a", "b", nil)
+	b := peerHub(t, "b", "a", func(args map[string]any) (any, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, args["key"].(string))
+		return map[string]any{}, ""
+	})
+	for _, h := range []*Hub{a, b} {
+		h.mu.Lock()
+		h.plugins["other"] = &Plugin{Name: "other", ClientID: "o-" + h.cfg.HubName, entry: &configEntry{}}
+		h.mu.Unlock()
+	}
+	linkHubs(a, b, func() bool { return false })
+	ctx, l := context.Background(), b.peers.links["a"]
+	send := func(client, key string) {
+		t.Helper()
+		if _, err := peerSendAs(a, client, "b", key, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setMessaging := func(desired, client string) {
+		b.mu.Lock()
+		b.plugins["messaging"].Desired, b.plugins["messaging"].ClientID = desired, client
+		b.mu.Unlock()
+	}
+
+	setMessaging("stopped", "")
+	send("c-a", "m1")
+	send("o-a", "o1")
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := b.peerAfter(ctx, "a"); after != 2 || strings.Join(got, ",") != "o1" {
+		t.Fatalf("a stopped plugin: cursor %d, delivered %v; want 2 and o1", after, got)
+	}
+
+	setMessaging("running", "") // starting or crashing
+	send("c-a", "m2")
+	send("o-a", "o2")
+	if _, err := b.peerPull(ctx, l); err == nil || !strings.Contains(err.Error(), "does not run here") {
+		t.Fatalf("a waiting plugin: %v", err)
+	}
+	st, err := b.peerStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := st.(map[string]any)["peers"].([]any)[0].(map[string]any)
+	if after, _ := b.peerAfter(ctx, "a"); after != 2 || row["blocked_plugin"] != "messaging" || row["blocked_since"] == nil {
+		t.Fatalf("a waiting plugin: cursor %d, status %v", after, row)
+	}
+	l.mu.Lock()
+	l.blockSince = l.blockSince.Add(-peerBlockMax) // the wait ran out
+	l.mu.Unlock()
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = b.peerStatus(ctx)
+	row = st.(map[string]any)["peers"].([]any)[0].(map[string]any)
+	if after, _ := b.peerAfter(ctx, "a"); after != 4 || strings.Join(got, ",") != "o1,o2" || row["blocked_plugin"] != nil {
+		t.Fatalf("after the wait: cursor %d, delivered %v, status %v; want 4, o1,o2 and no block", after, got, row)
+	}
+}
+
 // TestPeerSendSizes: the body limit counts encoded bytes, and each accepted envelope fits alone in
 // one pull reply, also on a Rex connection with the 64 KiB reference limit.
 func TestPeerSendSizes(t *testing.T) {
