@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeHubJSON writes the hub's config file, as the CLI reads it (readPluginCmdConfig), with the
@@ -403,5 +405,40 @@ func TestPluginOpUnpinLoadedWriter(t *testing.T) {
 	<-done
 	if err != nil || op.Phase != "done" || lockOld(t, h, op.ID)["outcome"] != "removed" {
 		t.Fatalf("the update: %+v %v, %v", op, err, lockOld(t, h, op.ID))
+	}
+}
+
+// A reload that read an older managed file (it names the old key) is held before its apply while
+// the op's intended file is back on disk and unpinning runs (the hub lead's lead-unpin-order).
+// unpinning waits for reloadMu, then the reload's loaded entry names the key: kept. Without
+// reloadMu, unpinning removed the key, and the reload then bound an entry with no pin.
+func TestPluginOpUnpinHeldReload(t *testing.T) {
+	read, apply, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	h, _, op := unpinUpdate(t, func(h *Hub) {
+		intended, _ := os.ReadFile(h.cfg.managedPath)
+		os.WriteFile(h.cfg.managedPath, []byte(`{"plugins":[{"id":"notes","source":"`+unpinLatest+`"}]}`), 0o600)
+		hook := reloadBeforeApply
+		reloadBeforeApply = func() {
+			reloadBeforeApply = hook
+			close(read)
+			<-apply
+		}
+		go func() {
+			defer close(done)
+			h.reload(context.Background(), nil, "")
+		}()
+		<-read
+		os.WriteFile(h.cfg.managedPath, intended, 0o600)
+		go func() {
+			time.Sleep(300 * time.Millisecond) // unpinning runs (or waits) meanwhile
+			close(apply)
+		}()
+	})
+	t.Cleanup(func() { reloadBeforeApply = func() {} })
+	h.runOp(context.Background(), op)
+	<-done
+	rec := lockOld(t, h, op.ID)
+	if rec["outcome"] != "kept" || !strings.Contains(fmt.Sprint(rec["reason"]), "managed:notes names it") || readTestLock(t, h).Plugins[unpinLatest] == nil {
+		t.Fatalf("the record %v; the lock %v", rec, readTestLock(t, h).Plugins)
 	}
 }
