@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -46,14 +47,20 @@ func TestBackgroundOpenProbeLab(t *testing.T) {
 	if err := l.owner.call(l.ctx, "session.own_block", map[string]any{"session_id": l.session, "block_ids": []string{pane}, "mode": "take"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, size := range [][2]int{{80, 24}, {48, 23}, {80, 24}} {
-		l.resize(pane, size[0], size[1])
+	// The sizes of one step come with no wait between them, as an app gives a pane that it lays out.
+	for _, sizes := range [][][2]int{{{80, 24}}, {{80, 2}, {48, 23}}, {{120, 40}}, {{30, 5}, {80, 24}}, {{48, 23}},
+		{{100, 3}}, {{100, 30}}, {{40, 24}}, {{120, 24}}, {{20, 1}, {80, 2}, {60, 20}}} {
+		step := ""
+		for _, size := range sizes {
+			step += fmt.Sprintf("%dx%d ", size[0], size[1])
+			l.resize(pane, size[0], size[1])
+		}
 		time.Sleep(2 * time.Second)
 		last := l.screen(pane)
-		t.Logf("capture at %dx%d:\n%s", size[0], size[1], last)
+		t.Logf("capture after %s:\n%s", step, last)
 		for _, text := range []string{"╭", "DRAFT-TEXT", "Ctrl+Q quit"} {
 			if n := strings.Count(last, text); n != 1 {
-				t.Errorf("%dx%d: %d copies of %q, want 1", size[0], size[1], n, text)
+				t.Errorf("%s: %d copies of %q, want 1", step, n, text)
 			}
 		}
 	}
