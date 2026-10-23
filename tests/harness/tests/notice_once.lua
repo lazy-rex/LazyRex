@@ -80,3 +80,12 @@ test('an unread nudge is written once more after the repeat time, then not again
   expect(written(id), 'no second repeat').to_be(2)
   H.hub('hub.test.notice_renudge', {ms = 1800000})
 end)
+
+-- The hub checks the notices of a commit before it takes the writer, so a refused commit leaves
+-- its transaction open: fix.notify rolls it back (Codex review of acacb830). sql_write fails with
+-- busy at once while the plugin has an open transaction.
+test('a refused notice commit leaves no open transaction', function()
+  local r = agent('alice'):call('fix.notify', {notices = {{agent = 'claude:refused', pending = 'yes'}}})
+  expect(r.error and r.error.message or '', 'the refusal').to_match('boolean pending')
+  expect(sql_write('INSERT INTO kv VALUES (?, ?)', {'after-refusal', '1'}).changes).to_be(1)
+end)
