@@ -14,7 +14,8 @@
 //	  last 10 key messages. With -box N, the live region has N more rows "B<nn>|" + 60 cells + "|":
 //	  a frame of several rows, each wider than 50 columns. With -trace, Bubble Tea logs each
 //	  write of its renderer to FILE (TEA_TRACE). With -park, the view puts the (visible) cursor on
-//	  the first row of the live region, so the renderer starts each frame from there.
+//	  the first row of the live region, so the renderer starts each frame from there. With -fill,
+//	  each -box row is 4 cells narrower than the pane, as the view's composer box rows.
 //	teaprobe raw
 //	  Puts the terminal in raw mode and prints the bytes of each read in hex. Ctrl+C quits.
 //
@@ -42,6 +43,7 @@ type model struct {
 	mode         string
 	box          int
 	park         bool
+	fill         bool
 	w, h, redraw int
 	printed      int
 	keys         []string
@@ -99,7 +101,11 @@ func (m *model) View() tea.View {
 		s += "\n  key " + k
 	}
 	for i := range m.box {
-		s += fmt.Sprintf("\nB%02d|%s|", i+1, strings.Repeat("=", 60))
+		cells := 60
+		if m.fill {
+			cells = max(1, m.w-10) // the row is 4 cells narrower than the pane, as the view's box rows
+		}
+		s += fmt.Sprintf("\nB%02d|%s|", i+1, strings.Repeat("=", cells))
 	}
 	v := tea.NewView(s)
 	v.AltScreen = m.alt
@@ -161,6 +167,7 @@ func main() {
 	box := fs.Int("box", 0, "the number of wide rows in the live region")
 	trace := fs.String("trace", "", "the Bubble Tea trace file (TEA_TRACE)")
 	park := fs.Bool("park", false, "keep the cursor on the first row of the live region")
+	fill := fs.Bool("fill", false, "make each -box row follow the width (the width minus 4)")
 	if len(os.Args) > 1 {
 		fs.Parse(os.Args[2:])
 	}
@@ -183,7 +190,7 @@ func main() {
 		defer term.Restore(os.Stdin.Fd(), old)
 		opts = append(opts, tea.WithInput(tee{os.Stdin, log}))
 	}
-	p := tea.NewProgram(&model{mode: *mode, box: *box, park: *park}, opts...)
+	p := tea.NewProgram(&model{mode: *mode, box: *box, park: *park, fill: *fill}, opts...)
 	go func() { time.Sleep(*delay); p.Send(firstTree{}) }()
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

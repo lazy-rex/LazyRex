@@ -346,6 +346,35 @@ func TestTeaProbeA5ShortPane(t *testing.T) {
 	}
 }
 
+// A6: rows that follow the width, with the cursor parked, through a burst of two sizes with no
+// wait between them (the view's TestLiveRegionResizeLab burst; codex-29 saw stale rows there). Each
+// round notes the copies of each frame row; the trace has each write.
+func TestTeaProbeA6Burst(t *testing.T) {
+	trace := filepath.Join(os.TempDir(), fmt.Sprintf("teaprobe-trace-%d.log", time.Now().UnixNano()))
+	l := newTeaLab(t, 90, 26, "tea", "-delay", "500ms", "-mode", "inline", "-box", "4", "-fill", "-park", "-trace", trace)
+	l.note("trace: %s", trace)
+	l.waitScreen("the first tree", func(s string) bool { return strings.Contains(s, "| tree alt=false") })
+	l.keys("p", "p", "p")
+	l.waitScreen("3 printed", printedCount(3))
+	for round := 1; round <= 6; round++ {
+		for _, size := range [][2]int{{120, 40}, {70, 18}} {
+			if err := l.owner.call(l.ctx, "block.method", map[string]any{"session_id": l.session, "block_id": l.pane, "method": "resize", "args": map[string]int{"columns": size[0], "rows": size[1]}}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(1500 * time.Millisecond)
+		text := l.capture(fmt.Sprintf("round-%d-at-70x18", round))
+		var counts []string
+		for i := 1; i <= 4; i++ {
+			mark := fmt.Sprintf("B%02d|", i)
+			counts = append(counts, fmt.Sprintf("%s %d", mark, strings.Count(text, mark)))
+		}
+		l.note("round %d frame rows: %v; LIVE rows %d", round, counts, strings.Count(text, "LIVE "))
+		l.resize(90, 26)
+		time.Sleep(1500 * time.Millisecond)
+	}
+}
+
 func a4FrameWidth(t *testing.T, park bool) {
 	trace := filepath.Join(os.TempDir(), fmt.Sprintf("teaprobe-trace-%d.log", time.Now().UnixNano()))
 	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline", "-box", "6", "-trace", trace, fmt.Sprintf("-park=%v", park))
