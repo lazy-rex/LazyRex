@@ -165,6 +165,7 @@ type releaser struct {
 	ctx    context.Context
 	env    []string // the child environment (childEnv)
 	unlock func()   // releases the operator flock
+	branch string   // freeze -branch: the release branch that holds H; "": main
 
 	// Hooks for the unit tests. Nil: the real implementation.
 	exec       func(c relCmd) (stdout, stderr []byte, err error)

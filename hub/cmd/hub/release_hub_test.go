@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ type fakeCommit struct {
 	mainGo    bool   // hub/cmd/hub/main.go is a blob
 	expectRun bool   // git grep finds "expect_run"
 	onMain    bool
+	branches  []string // the release branches of origin that hold the commit
 }
 
 type fakeRun struct {
@@ -275,7 +277,8 @@ func (w *relWorld) git(a []string) ([]byte, []byte, error) {
 	case "fetch":
 		return nil, nil, nil
 	case "merge-base":
-		if c := w.commits[a[2]]; c != nil && c.onMain {
+		b := strings.TrimPrefix(a[3], "refs/remotes/origin/")
+		if c := w.commits[a[2]]; c != nil && ((b == "main" && c.onMain) || slices.Contains(c.branches, b)) {
 			return nil, nil, nil
 		}
 		return nil, nil, exitErr(1)

@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -171,6 +172,31 @@ func writeJSON(path string, v any) error {
 	return replaceFile(path, append(b, '\n'))
 }
 
+// relBranchRe is the form of a release branch that can hold H (freeze -branch).
+var relBranchRe = regexp.MustCompile(`^release/[0-9]+\.[0-9]+$`)
+
+// hubProvenance checks that H is on the branch that the operator chose: main, or with branch
+// (freeze -branch) that release branch. There is no fallback to main. It fetches the branch by its
+// full name into its remote-tracking ref, so a stale ref or a fetch config without the branch
+// cannot answer for it.
+func (r *releaser) hubProvenance(h, branch string) error {
+	b := "main"
+	if branch != "" {
+		if !relBranchRe.MatchString(branch) {
+			return relFail("the branch %q is not a release branch (release/<major>.<minor>)", branch)
+		}
+		b = branch
+	}
+	ref := "refs/remotes/origin/" + b
+	if _, err := r.git("fetch", "-q", "origin", "+refs/heads/"+b+":"+ref); err != nil {
+		return relFail("fetching the branch %s from origin: %v", b, err)
+	}
+	if _, err := r.git("merge-base", "--is-ancestor", h, ref); err != nil {
+		return relFail("H %s is not on origin/%s", h, b)
+	}
+	return nil
+}
+
 // hubFreeze reads the live files and the release clone, read only except for a git fetch, and
 // writes the frozen candidate, the pin documents and the verify lists.
 func hubFreeze(r *releaser) error {
@@ -185,8 +211,8 @@ func hubFreeze(r *releaser) error {
 	if _, err := r.git("fetch", "-q", "origin"); err != nil {
 		return err
 	}
-	if _, err := r.git("merge-base", "--is-ancestor", h, "origin/main"); err != nil {
-		return relFail("H %s is not on origin/main", h)
+	if err := r.hubProvenance(h, r.branch); err != nil {
+		return err
 	}
 	if r.treeHas(old, "hub/cmd/hub/main.go") != "blob" {
 		return relFail("the OLD tree %s has no hub/cmd/hub/main.go", old)
@@ -205,7 +231,7 @@ func hubFreeze(r *releaser) error {
 	default:
 		return relFail("git grep in the OLD tree failed: %v", gerr)
 	}
-	c := &relCandidate{Kind: "hub"}
+	c := &relCandidate{Kind: "hub", Branch: r.branch}
 	for _, commit := range []string{old, h} {
 		dev, err := r.fileAt(commit, "dev.sh")
 		if err != nil {
@@ -1116,19 +1142,32 @@ func hubResume(r *releaser) error {
 	return nil
 }
 
-// openFreeze is the open of freeze: -spec <file> -run <dir>; the run directory must not exist.
+// openFreeze is the open of freeze: -spec <file> -run <dir> [-branch release/<major>.<minor>];
+// the run directory must not exist. Without -branch, H must be on main.
 func openFreeze(name string, args []string, stdout, stderr io.Writer) (*releaser, int) {
 	fs := flag.NewFlagSet("release "+name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	spec := fs.String("spec", "", "the spec file (required)")
 	dir := fs.String("run", "", "the new run directory (required)")
-	if err := fs.Parse(args); err != nil || *spec == "" || *dir == "" || fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "usage: lazyrex-hub release %s -spec <file> -run <new dir>\n", name)
+	branch := fs.String("branch", "", "a hub release: the release branch that holds H, release/<major>.<minor> (default: main)")
+	usage := func() (*releaser, int) {
+		fmt.Fprintf(stderr, "usage: lazyrex-hub release %s -spec <file> -run <new dir> [-branch release/<major>.<minor>]\n", name)
 		return nil, relUsage
+	}
+	if err := fs.Parse(args); err != nil || *spec == "" || *dir == "" || fs.NArg() > 0 {
+		return usage()
+	}
+	if *branch != "" && !relBranchRe.MatchString(*branch) {
+		fmt.Fprintf(stderr, "release %s: -branch %q is not a release branch (release/<major>.<minor>)\n", name, *branch)
+		return usage()
 	}
 	if err := createRun(*dir, *spec); err != nil {
 		fmt.Fprintf(stderr, "release %s: FAILED: %v\n", name, err)
 		return nil, relFailed
 	}
-	return openStep(name, []string{"-run", *dir}, stdout, stderr)
+	r, code := openStep(name, []string{"-run", *dir}, stdout, stderr)
+	if r != nil {
+		r.branch = *branch
+	}
+	return r, code
 }

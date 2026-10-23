@@ -38,7 +38,8 @@ type relCandidate struct {
 	Files    map[string]string `json:"files"`
 	LockPins string            `json:"lockpins"` // sha256 of the lock without its cache dirs
 	// Hub release only.
-	Inherited []string `json:"inherited"` // dependencies that OLD or H brings, for example python3
+	Inherited []string `json:"inherited"`        // dependencies that OLD or H brings, for example python3
+	Branch    string   `json:"branch,omitempty"` // the release branch that holds H (freeze -branch); "": main
 	// Plugin release only: the hub that runs FROM and TO (it does not change), and the manifests.
 	HubCommit string   `json:"hub_commit,omitempty"` // vcs.revision of <state>/dev/hub (vcs.modified=false)
 	HubSHA256 string   `json:"hub_sha256,omitempty"` // sha256 of <state>/dev/hub

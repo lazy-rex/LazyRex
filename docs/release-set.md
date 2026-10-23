@@ -24,7 +24,13 @@ The code is in `hub/cmd/hub/releaseset*.go`, `releasesnap.go` and `releaserehear
    reviews those exact bytes.
 4. Add the owner's review to the entry: `{"by", "msg_id", "entry_sha256", "from", "to"}`. `from` and
    `to` must equal the entry's commits. `entry_sha256` must equal the hash from step 2.
-5. Freeze the live hub run as for any hub release.
+5. Freeze the live hub run as for any hub release. By default, H must be on `main` of origin.
+   When H is on a release branch instead, name it: `lazyrex-hub release freeze -spec <file> -run
+   <dir> -branch release/<major>.<minor>`. The name must have exactly that form. The freeze fetches
+   that branch by its full name, so a stale remote-tracking ref or a fetch config with only `main`
+   cannot answer for it. It refuses H that is not on the named branch, and it does not try `main`
+   then. The candidate records the branch, and the lab freeze of the rehearsal uses the same
+   branch. A plugin freeze refuses `-branch`.
 6. Rehearse the hub run with the set:
 
    ```sh

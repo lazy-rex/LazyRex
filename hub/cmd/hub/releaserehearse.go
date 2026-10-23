@@ -424,7 +424,12 @@ func (h *rehearsal) setup() error {
 		return err
 	}
 	h.run = filepath.Join(L, "run")
-	if err := h.child("freeze", nil, "-spec", specPath, "-run", h.run); err != nil {
+	// The lab freeze checks H on the same branch as the live freeze (the candidates must be equal).
+	freeze := []string{"-spec", specPath, "-run", h.run}
+	if h.c.Branch != "" {
+		freeze = append(freeze, "-branch", h.c.Branch)
+	}
+	if err := h.child("freeze", nil, freeze...); err != nil {
 		return err
 	}
 	if err := h.sameCandidate(); err != nil {

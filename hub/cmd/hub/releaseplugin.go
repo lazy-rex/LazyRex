@@ -284,6 +284,9 @@ func (r *releaser) liveHub() (h *relHub, commit, sum, sdk string, err error) {
 }
 
 func relPluginFreeze(r *releaser) error {
+	if r.branch != "" {
+		return relFail("-branch is for a hub release; a plugin release uses its pinned commit")
+	}
 	l, err := readLock(r.cfg.lock)
 	if err != nil {
 		return err
