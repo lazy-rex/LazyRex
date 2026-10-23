@@ -223,10 +223,20 @@ func (m *model) focusWindow(rows []row, bound int) []row {
 		return rows
 	}
 	h := bound - 2
+	// A composer's editor and Send are one span: the window holds them together.
+	composer := func(c control) bool { return c.Field == "" && (c.Kind == "edit" || c.Kind == "send") }
+	focusNode := ""
+	for _, r := range rows {
+		for _, c := range r.rowControls() {
+			if c.ID == m.focus && composer(c) {
+				focusNode = c.Node
+			}
+		}
+	}
 	first, last := -1, -1
 	for i, r := range rows {
 		for _, c := range r.rowControls() {
-			if c.ID == m.focus {
+			if c.ID == m.focus || focusNode != "" && c.Node == focusNode && composer(c) {
 				if first < 0 {
 					first = i
 				}

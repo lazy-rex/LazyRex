@@ -469,6 +469,17 @@ func TestShortThreadPaneKeepsEditorAndSend(t *testing.T) {
 		}
 		check(fmt.Sprintf("Shift+Tab %d", i))
 	}
+	// The focus wraps: the window jumps from the first action to Send, and back.
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.focus != "composer:send" {
+		t.Fatalf("Shift+Tab from the first control: focus %q", m.focus)
+	}
+	check("Shift+Tab wraps to Send")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.focus != ids[0] {
+		t.Fatalf("Tab from Send: focus %q", m.focus)
+	}
+	check("Tab wraps to the first control")
 	m.setFocus("edit:composer")
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	check("tall pane")
