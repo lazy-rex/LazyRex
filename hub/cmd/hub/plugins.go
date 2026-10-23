@@ -312,9 +312,9 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 // resolution. A row from before the source was recorded has source "": only an entry that gives
 // the same name adopts it (migration rule).
 func (h *Hub) loadKept(ctx context.Context) error {
-	// Hub start: no selected run survives a hub stop. A value that this hub stored before, or that a
-	// rollback hub kept (it does not know the column), never reaches an automatic start: only an
-	// explicit start of this process selects a run (selectedrun.go).
+	// Hub start: no selected run survives a hub stop. A value that an earlier process stored never
+	// reaches an automatic start: only an explicit start of this process selects a run
+	// (selectedrun.go).
 	if _, err := h.db.ExecContext(ctx, `UPDATE plugins SET selected_run = '' WHERE selected_run != ''`); err != nil {
 		return err
 	}
