@@ -253,8 +253,6 @@ func (w *relWorld) exec(r *releaser) func(c relCmd) ([]byte, []byte, error) {
 			return w.hubBinCmd(a[1:])
 		case a[0] == "rex":
 			return w.rex(a[6:])
-		case a[0] == "/bin/zsh":
-			return nil, nil, nil
 		}
 		return nil, []byte("unknown command " + a[0]), errors.New("exit status 127")
 	}

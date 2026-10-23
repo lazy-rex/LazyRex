@@ -362,16 +362,12 @@ func (r *releaser) currentBackup() (string, error) {
 }
 
 // fetchRole: LAZYREX_FETCH_ROLE (the fetch child role of the hub) must be unset in this process,
-// in a login zsh (the shell of the dev pane), and dev.sh must not set it.
+// and dev.sh must not set it. The dev pane command unsets it (devPaneCommand).
 func (r *releaser) fetchRole() error {
 	for _, kv := range r.env {
 		if strings.HasPrefix(kv, "LAZYREX_FETCH_ROLE=") {
 			return relFail("LAZYREX_FETCH_ROLE is set in this shell")
 		}
-	}
-	o, _, _ := r.runCmd(relCmd{Argv: []string{"/bin/zsh", "-lc", "printenv LAZYREX_FETCH_ROLE"}})
-	if strings.TrimSpace(string(o)) != "" {
-		return relFail("a login zsh sets LAZYREX_FETCH_ROLE")
 	}
 	b, err := os.ReadFile(filepath.Join(r.relClone(), "dev.sh"))
 	if err != nil {

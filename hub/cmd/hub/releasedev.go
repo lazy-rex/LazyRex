@@ -256,8 +256,27 @@ func (r *releaser) devStop(p relPane) error {
 	return nil
 }
 
-// goBinDir is the directory of the go command on the child PATH. dev.sh builds the hub, and a
-// login zsh does not always have go on its PATH.
+// devPaneCommand is the command of a dev pane, for every spec, live and lab: /bin/sh -c with a
+// POSIX command (dev.sh has its own #!/bin/sh). No login shell runs, so no profile changes the
+// pane. The PATH is the child PATH of this release, with the go directory first;
+// LAZYREX_FETCH_ROLE is unset; DEV_REAL=1 only for a real spec.
+func (r *releaser) devPaneCommand(gobin, devsh string) []string {
+	real := ""
+	if r.spec.Real {
+		real = "DEV_REAL=1 "
+	}
+	path := gobin
+	for _, kv := range r.env {
+		if p, ok := strings.CutPrefix(kv, "PATH="); ok && p != "" {
+			path += ":" + p
+		}
+	}
+	cmd := fmt.Sprintf("unset LAZYREX_FETCH_ROLE; export PATH=%s; %sexec %s %s 2>&1 | tee -a %s",
+		shQuote(path), real, shQuote(devsh), shQuote(r.cfg.path), shQuote(r.spec.DevLog))
+	return []string{"/bin/sh", "-c", cmd}
+}
+
+// goBinDir is the directory of the go command on the child PATH. dev.sh builds the hub.
 func (r *releaser) goBinDir() (string, error) {
 	if d := r.pathDir("go"); d != "" {
 		return d, nil
@@ -296,13 +315,8 @@ func (r *releaser) devStart(op, devsh string) (*relHub, error) {
 	if err != nil {
 		return nil, err
 	}
-	real := ""
-	if r.spec.Real {
-		real = "DEV_REAL=1 "
-	}
-	cmd := fmt.Sprintf("export PATH=%s:$PATH; %sexec %s %s 2>&1 | tee -a %s", shQuote(gobin), real, shQuote(devsh), shQuote(r.cfg.path), shQuote(r.spec.DevLog))
 	arg, _ := json.Marshal(map[string]any{"session_id": strings.TrimSpace(string(sb)), "flavor": "com.superlogical.terminal.shell", "label": devPaneLabel,
-		"options": map[string]any{"command": []string{"/bin/zsh", "-lc", cmd}, "login": false, "exit": map[string]bool{"on_completion": false}}})
+		"options": map[string]any{"command": r.devPaneCommand(gobin, devsh), "login": false, "exit": map[string]bool{"on_completion": false}}})
 	if err := r.appendJournal(op, "sent", map[string]string{"label": devPaneLabel}); err != nil {
 		return nil, err
 	}
