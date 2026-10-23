@@ -2455,7 +2455,9 @@ an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
 
 v1 has no puller authentication. Any client that reaches the Rex server of hub A can call
 `hub.peer.pull` with any peer name. That client can read the envelopes for that peer, and can ack
-them, which removes their bodies. The network (the tailnet) is the boundary. Connect only Rex
+them, which removes their bodies. The same client can call `hub.peer.plugins` with any peer name
+and read the hub's plugin sources and pins ("Plugin sync"). The peer check of both actions is a
+name check, not authentication. The network (the tailnet) is the boundary. Connect only Rex
 servers on a network that you trust.
 
 ### Plugin sync
@@ -2464,7 +2466,10 @@ A hub with `plugins_from` on a peer (the receiver) syncs the GitHub plugins of t
 hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lead-fed-r1 item 4.
 
 - **Read.** The receiver calls `hub.peer.plugins {hub}` on the source hub when the hub starts, then
-  every minute. The source hub answers a configured peer only (else `unknown_hub`). The reply is
+  every minute. The source hub checks only that `hub` names a configured peer (else `unknown_hub`).
+  This is a name check, not authentication ("Trust limit"): any client that reaches the source
+  hub's Rex server can name a peer and read the reply. Pins are not secret, so v1 accepts this
+  (lead-fsync). The reply is
   `{pins, managed}`: `pins` is the pin document of `lazyrex-hub plugin export` (plugin-sources.md,
   section 6a), and `managed` is `[{id, source}]` of the source hub's managed GitHub entries. A failed
   export (another plugin command holds the flocks, or an entry that does not verify) is `refused`,
@@ -2488,8 +2493,7 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
   updating: [{entry, op_id, phase}]}`. `offered`, `skipped` and `updating` are from the last sync
   with no error. Other rows have no `plugin_sync`.
 - **Limit.** The release tag of a latest pin is the source hub's claim; the fetch checks only that
-  the commit's tree gives the pin's digest. With no puller authentication ("Trust limit"), any
-  client that reaches the source hub's Rex server can read its plugin sources and pins.
+  the commit's tree gives the pin's digest.
 
 ### Not in v1
 
