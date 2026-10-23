@@ -40,7 +40,7 @@ func opsTestHub(t *testing.T, managed string) (*Hub, *opsCalls, string) {
 	h.cfg.Home = "home"
 	h.plugins = map[string]*Plugin{}
 	h.noticeKick = make(chan struct{}, 1)
-	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
+	h.vs = newViewSvc()
 	if managed != "" {
 		writeManaged(t, dir, managed)
 	}
