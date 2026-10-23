@@ -80,7 +80,7 @@ func tagsKey(source string) (string, error) {
 
 // runTagsLoad is the load of one repository key ("owner/repo"), in a fetch child, with the hub's
 // limit, in a temporary directory of the plugin cache.
-func (h *Hub) runTagsLoad(ctx context.Context, key string) (any, bool, error) {
+func (h *Hub) runTagsLoad(ctx context.Context, key string, _ any) (any, bool, error) {
 	owner, repo, _ := strings.Cut(key, "/")
 	o := h.pops.cmd
 	if o.git == nil {
