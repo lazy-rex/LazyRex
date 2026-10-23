@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS notices (ns TEXT NOT NULL, agent TEXT NOT NULL, pendi
 CREATE TABLE IF NOT EXISTS notice_deliveries (ns TEXT NOT NULL, agent TEXT NOT NULL, intent_rev INTEGER NOT NULL, at INTEGER NOT NULL, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL, repeated INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (ns, agent));
 -- hub.sql notices (sqlnotice.go): a receipt for each applied outbox row.
 CREATE TABLE IF NOT EXISTS notice_receipts (plugin TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (plugin, seq));
-CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
 -- status: prepared (request not sent), sending (outcome unknown until resolved), created, abandoned
 CREATE TABLE IF NOT EXISTS spawn_intents (instance_id TEXT PRIMARY KEY, plugin TEXT NOT NULL, status TEXT NOT NULL, block_id TEXT NOT NULL DEFAULT '');
@@ -46,10 +45,9 @@ func openDB(path string) (*DB, error) {
 	for _, m := range []string{
 		`ALTER TABLE plugins ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE spawn_intents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE bindings ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`,    // Plugin.run as JSON; '' = no run
-		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`, // the exact source of the entry that bound the name
-		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`, // the agent read since the last revision
+		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`,            // Plugin.run as JSON; '' = no run
+		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`,         // the exact source of the entry that bound the name
+		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`,         // the agent read since the last revision
 		`ALTER TABLE plugins ADD COLUMN entry_identity TEXT NOT NULL DEFAULT ''`, // entryIdentity of the entry that the record was last saved with; '' = unknown
 		`ALTER TABLE plugins ADD COLUMN selected_run TEXT NOT NULL DEFAULT ''`,   // Plugin.selected as JSON; '' = none (selectedrun.go)
 	} {
@@ -98,6 +96,13 @@ var retiredSchema = []retiredStep{
 		check: `SELECT COUNT(*) FROM pragma_table_info('views') WHERE name = 'layout'`, statement: `ALTER TABLE views DROP COLUMN layout`},
 	{table: "ui_tabs", column: "layout",
 		check: `SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'layout'`, statement: `ALTER TABLE ui_tabs DROP COLUMN layout`},
+	// The legacy agents (the identity removal, coord-reset-0): no data is kept.
+	{table: "bindings",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'bindings'`, statement: `DROP TABLE bindings`},
+	{table: "dyn_agents",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dyn_agents'`, statement: `DROP TABLE dyn_agents`},
+	{table: "identity_aliases",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'identity_aliases'`, statement: `DROP TABLE identity_aliases`},
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.

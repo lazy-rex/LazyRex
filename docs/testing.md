@@ -137,7 +137,6 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
   "notice": "New message. Call messaging_read.",
   "test": {
     "plugins": [{"source": "../Profiles"}],
-    "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}],
     "parity_fixture": "tests/parity_fixture.lua",
     "parity_routes": ["/forms/thread-menu"],
     "env": {"GIT_AUTHOR_NAME": "Lab", "WT_CACHE": "${LAB}/cache"},
@@ -154,7 +153,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `events` | `session` (default) or `all`: the Rex events that the plugin receives. |
 | `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin No control characters (the hub pastes it, then sends CR). Without it, a `notify` op of the plugin fails with code `no_notice`, and nothing in that batch is written. |
 | `test.plugins` | Other plugins that the hub loads for the tests: `[{"source": "<dir>"}]`. Each source is a directory relative to the manifest directory, with its own `lazyrex.json`. The names come from those manifests. `lazyrex` is refused (the harness adds the home plugin), and so is a name used twice. |
-| `test.agents` | Roster agents in the test hub config. `user` is always there. |
+| `test.agents` | Removed: the manifest refuses it. Test agents report identities (see "Agents"). |
 | `test.ui_slot` | The hub config `ui_slot` option: `"split"` or `"layer"` (an experiment; docs/hub.md). Another value fails at the manifest load. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. A route with no query (`/forms/worktree`) is checked by a render of that path with any query or none. A route with a query (`/forms/automation/new?profile=worker`) is checked only by a render of exactly that route. |
@@ -166,7 +165,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
 
 The file is one JSON object of at most 65536 bytes. Unknown fields are refused. The harness owns the rest of the hub config (`server`, `state`,
-`rex`, `view`, `home`, `agents`, `plugins`, `palette_lua`, `profiles`,
+`rex`, `view`, `home`, `plugins`, `palette_lua`, `profiles`,
 `test_roots`). The manifest cannot set them.
 
 ## Isolation
@@ -197,7 +196,7 @@ do not need them (observed on the Rex build 88fd41c of 2026-10-16). If a tool ne
 
 Rules for `test.env` and `test.args`:
 
-- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `LAZYREX_AGENT`, `GOCACHE`, `GOMODCACHE`, any
+- `test.env` cannot set `PATH`, `HOME`, `TMPDIR`, `GOCACHE`, `GOMODCACHE`, any
   `XDG_*` or any `REX_*`.
 - A value can name `${LAB}` (the lab dir) and `${PLUGIN}` (the dir of `main`). Any other
   placeholder is an error. `~` is not expanded and is refused.
@@ -244,15 +243,11 @@ end)
 ### Agents
 
 `agent(name, opts)` opens a test agent: a real lab pane that runs `lazyrex-hub testagent`. The hub
-sees real pane ancestry for its calls. The suite's manifest sets the mode of all its agents:
-
-- Roster mode: the manifest has the `test.agents` key (also as an empty list; it refuses `null`).
-  The agent joins the roster agent `join`, and `a.id` is `name`.
-- Identity mode: the manifest has no `test.agents` key. The agent reports the conversation
-  identity `<kind>:<name>` from its pane (`a:report`, source `startup`). `agent` returns when
-  `hub.identity.list` shows that identity current in the agent's pane, and fails after 15 s. If
-  the identity is current in another pane, `agent` fails at once and names both panes. A failure
-  closes the pane, and a later call opens a new one. `a.id` is the identity.
+sees real pane ancestry for its calls. The agent reports the conversation identity
+`<kind>:<name>` from its pane (`a:report`, source `startup`). `agent` returns when
+`hub.identity.list` shows that identity current in the agent's pane, and fails after 15 s. If the
+identity is current in another pane, `agent` fails at once and names both panes. A failure closes
+the pane, and a later call opens a new one. `a.id` is the identity.
 
 A second call with the same name returns the same agent. A call with another `kind` or `report`
 option is an error. After `a:exit()`, the same name opens a new pane. A second pane that reports
@@ -261,21 +256,18 @@ has no current identity. That is a move, not "superseded" (another conversation 
 
 Options:
 
-- `join` (roster mode only): the roster agent to join as (default `name`). `false`: do not join.
-  Identity mode refuses `join`.
-- `kind` (identity mode only): `claude` (default) or `codex`. Roster mode refuses `kind`.
-- `report` (identity mode only): `false` sends no report, and `a.id` is nil until a test reports
-  (`a:report` sets `a.id` to the reported identity). Roster mode refuses `report`. `a.id` is the
-  identity the agent reported last; another pane can report it later and make it current there.
+- `kind`: `claude` (default) or `codex`.
+- `report`: `false` sends no report, and `a.id` is nil until a test reports (`a:report` sets
+  `a.id` to the reported identity). `a.id` is the identity the agent reported last; another pane
+  can report it later and make it current there.
 - `title`: the tab label (default `name`). The hub uses it as the identity name.
 - `unnamed`: `true` gives the tab no label, so Rex shows its generated label. The hub then names an identity after the terminal title (`a:title`).
 - `keep_open`: `true` keeps the pane after the agent process exits (by default Rex closes the pane). Use it with `a:exit()`.
 - `session`: the session of the pane (default: the tests session).
+- `join` is removed and refused: an agent gets its ID from its report.
 
-To move a suite to identity mode, delete `test.agents` from its manifest. A literal agent ID in a
-test (`'alice'`) becomes `alice.id`, and `join = false` becomes `report = false`. The roster mode
-ends when the hub removes `hub.join` and the roster (step (d) of the join removal); the manifest
-then refuses `test.agents`.
+The manifest refuses `test.agents` (also an empty list and `null`): the roster mode is removed (the
+identity removal, step (d)). A literal agent ID in a test (`'alice'`) becomes `alice.id`.
 
 Methods:
 

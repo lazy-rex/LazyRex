@@ -105,7 +105,7 @@ func TestWorkerIdentityFields(t *testing.T) {
 	// log has a started row. A new Hub on the same database reads the same answer.
 	mustExec(t, h, `DELETE FROM identity_panes`)
 	wantFields(t, "no pane row, a started log row", readWorker(t, h, ""), "none", nil, true)
-	again := &Hub{db: h.db, ev: h.ev, agents: h.agents, ui: h.ui, rex: h.rex}
+	again := &Hub{db: h.db, ev: h.ev, idents: h.idents, spawnAddrs: map[string]*spawnAddr{}, ui: h.ui, rex: h.rex}
 	wantFields(t, "a new hub on the same database", readWorker(t, again, ""), "none", nil, true)
 
 	// The event list: each event that makes an identity current counts by itself.
@@ -149,7 +149,7 @@ func TestWorkerIdentityFieldsResumeNewSpawn(t *testing.T) {
 	// (resume.go also sets resume_of, which the test schema does not have; the fields do not read it).
 	mustExec(t, h, `UPDATE identity_panes SET current = '' WHERE block_id = 'b'`)
 	mustExec(t, h, `INSERT INTO spawns (spawn_id, caller, key, request, profile, title, agent_id, parent, status, created, session_id, window_id, block_id)
-		VALUES ('spawn-new', 'user', 'key3', '{}', 'agent', 'Agent 1', 'agent-1', 'user', 'open', '2026-10-16T23:00:02Z', 's', 'w', 'b3')`)
+		VALUES ('spawn-new', 'user', 'key3', '{}', 'agent', 'Agent 1', 'spawn:spawn-new', 'user', 'open', '2026-10-16T23:00:02Z', 's', 'w', 'b3')`)
 	wantFields(t, "the new spawn before its pane reports", readWorker(t, h, "spawn-new"), "none", nil, false)
 	wantFields(t, "the old spawn after the resume", readWorker(t, h, "spawn-test"), "none", nil, true)
 
@@ -206,8 +206,7 @@ func TestWorkersSpawnFilter(t *testing.T) {
 	}
 }
 
-// hub.identify gives spawn_id in the pane of an open agent spawn, for both branches (a current
-// identity and a legacy agent), and none in another pane.
+// hub.identify gives spawn_id in the pane of an open agent spawn, and none in another pane.
 func TestIdentifySpawnID(t *testing.T) {
 	h := identityFieldsHub(t, nil, false)
 	pid := os.Getpid()
@@ -215,13 +214,11 @@ func TestIdentifySpawnID(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		idents map[string]*Agent
-		agents map[string]*Agent
 	}{
-		{"a current identity", map[string]*Agent{"claude:c1": {ID: "claude:c1", IdState: "current", BlockID: "b", ChildPID: pid, ChildStart: startTime(pid)}}, map[string]*Agent{}},
-		{"a legacy agent", map[string]*Agent{}, map[string]*Agent{"agent-1": {ID: "agent-1", BlockID: "b", ChildPID: pid, ChildStart: startTime(pid)}}},
+		{"a current identity", map[string]*Agent{"claude:c1": {ID: "claude:c1", IdState: "current", BlockID: "b", ChildPID: pid, ChildStart: startTime(pid)}}},
 	} {
 		h.mu.Lock()
-		h.idents, h.agents = c.idents, c.agents
+		h.idents = c.idents
 		h.mu.Unlock()
 		out, err := h.identify(ctx, pid)
 		if err != nil || out["found"] != true || out["spawn_id"] != "spawn-test" {
@@ -230,7 +227,7 @@ func TestIdentifySpawnID(t *testing.T) {
 		for _, other := range []string{
 			`UPDATE spawns SET block_id = 'b-other'`,          // another pane
 			`UPDATE spawns SET block_id = 'b', agent_id = ''`, // not an agent spawn
-			`UPDATE spawns SET agent_id = 'agent-1', status = 'closed'`,
+			`UPDATE spawns SET agent_id = 'spawn:spawn-test', status = 'closed'`,
 		} {
 			mustExec(t, h, other)
 			out, err := h.identify(ctx, pid)
@@ -238,7 +235,7 @@ func TestIdentifySpawnID(t *testing.T) {
 				t.Errorf("%s, after %q: %v, %v; want found and no spawn_id", c.name, other, out, err)
 			}
 		}
-		mustExec(t, h, `UPDATE spawns SET status = 'open', block_id = 'b', agent_id = 'agent-1'`)
+		mustExec(t, h, `UPDATE spawns SET status = 'open', block_id = 'b', agent_id = 'spawn:spawn-test'`)
 	}
 	mustExec(t, h, `DROP TABLE spawns`)
 	if out, err := h.identify(ctx, pid); err == nil {

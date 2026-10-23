@@ -22,7 +22,7 @@ import (
 // a profile env cannot set it.
 func reservedEnvKey(k string) bool {
 	switch k {
-	case "PATH", "HOME", "TMPDIR", "LAZYREX_AGENT", "GOCACHE", "GOMODCACHE":
+	case "PATH", "HOME", "TMPDIR", "GOCACHE", "GOMODCACHE":
 		return true
 	}
 	return strings.HasPrefix(k, "XDG_") || strings.HasPrefix(k, "REX_")
@@ -280,7 +280,7 @@ func (m *manifest) checkIsolation(manifestDir string) error {
 	dummy := map[string]string{"LAB": "/lab", "PLUGIN": "/plugin"}
 	for k, v := range m.Test.Env {
 		if !envName.MatchString(k) || reservedEnvKey(k) {
-			return fmt.Errorf("test.env %q is not allowed (reserved: PATH, HOME, TMPDIR, XDG_*, REX_*, LAZYREX_AGENT, GOCACHE, GOMODCACHE)", k)
+			return fmt.Errorf("test.env %q is not allowed (reserved: PATH, HOME, TMPDIR, XDG_*, REX_*, GOCACHE, GOMODCACHE)", k)
 		}
 		if _, err := expandValue(v, dummy); err != nil {
 			return fmt.Errorf("test.env %s: %w", k, err)

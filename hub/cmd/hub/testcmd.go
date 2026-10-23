@@ -70,11 +70,10 @@ type manifest struct {
 	Test    struct {
 		// Plugins are the other plugins that the hub loads for the tests: local directories,
 		// relative to the manifest directory, each with its own lazyrex.json.
-		Plugins       []testPlugin    `json:"plugins"`
-		Agents        []manifestAgent `json:"agents"`
-		UISlot        string          `json:"ui_slot"`        // the hub config ui_slot: "split" or "layer"
-		ParityFixture string          `json:"parity_fixture"` // a Lua file that renders the contextual routes
-		ParityRoutes  []string        `json:"parity_routes"`  // contextual routes that the fixture must render
+		Plugins       []testPlugin `json:"plugins"`
+		UISlot        string       `json:"ui_slot"`        // the hub config ui_slot: "split" or "layer"
+		ParityFixture string       `json:"parity_fixture"` // a Lua file that renders the contextual routes
+		ParityRoutes  []string     `json:"parity_routes"`  // contextual routes that the fixture must render
 		// Env adds variables to the lab environment (isolation.go). Args are plugin args (hub config
 		// plugins[].args), keyed by plugin name. Values may name ${LAB} and ${PLUGIN}.
 		Env  map[string]string            `json:"env"`
@@ -105,22 +104,6 @@ type testDep struct {
 	m         *pluginManifest
 }
 
-type manifestAgent struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// agentMode is the mode of the suite's test agents (docs/testing.md): "roster" when the manifest
-// has the test.agents key, even as an empty list (encoding/json gives a non-nil empty slice for
-// []), and "identity" when it has no such key (a nil slice; loadManifest refuses a null). The
-// harness reads it as the runner arg agent_mode.
-func (m *manifest) agentMode() string {
-	if m.Test.Agents != nil {
-		return "roster"
-	}
-	return "identity"
-}
-
 // checkNotice checks a manifest notice. The hub pastes it into an agent pane and then sends CR,
 // so a control character (a newline) would submit or change the agent's input.
 func checkNotice(s string) error {
@@ -140,6 +123,16 @@ func loadManifest(dir string) (*manifest, error) {
 	b, err := readManifestBytes(dir)
 	if err != nil {
 		return nil, err
+	}
+	// The roster mode is gone (the identity removal): a suite's agents report identities. This
+	// check runs before the strict decode, so the refusal names the removed key.
+	var raw struct {
+		Test struct {
+			Agents json.RawMessage `json:"agents"`
+		} `json:"test"`
+	}
+	if json.Unmarshal(b, &raw) == nil && raw.Test.Agents != nil {
+		return nil, fmt.Errorf("%s: test.agents is removed: the test agents report identities (docs/testing.md, \"Agents\"); delete the key", path)
 	}
 	var m manifest
 	if err := decodeManifest(path, b, &m); err != nil {
@@ -169,20 +162,6 @@ func loadManifest(dir string) (*manifest, error) {
 		}
 		names[d.m.Name] = true
 		m.deps = append(m.deps, d)
-	}
-	// A null test.agents decodes like an absent key, so agentMode could not tell them apart.
-	var raw struct {
-		Test struct {
-			Agents json.RawMessage `json:"agents"`
-		} `json:"test"`
-	}
-	if json.Unmarshal(b, &raw) == nil && string(raw.Test.Agents) == "null" {
-		return nil, fmt.Errorf("%s: test.agents is null: give a list, or delete the key for the identity mode", path)
-	}
-	for _, a := range m.Test.Agents {
-		if a.ID == "" || a.ID == "user" {
-			return nil, fmt.Errorf("%s: test.agents need an id other than user", path)
-		}
 	}
 	if err := m.checkIsolation(dir); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -545,15 +524,13 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		add(d.dir, d.m.Name)
 	}
 	add(o.dir, o.m.Name)
-	agents := []manifestAgent{{ID: "user", Name: "User"}}
-	agents = append(agents, o.m.Test.Agents...)
 	view := filepath.Join(l.dir, "testview.sh")
 	script := "#!/bin/sh\nexec " + shellQuote(o.self) + " testview -hold " + shellQuote(filepath.Join(l.dir, "testview-hold")) + " \"$@\"\n"
 	if err := os.WriteFile(view, []byte(script), 0o700); err != nil {
 		return "", err
 	}
 	cfg := map[string]any{"server": l.server, "state": filepath.Join(l.dir, "hub"), "rex": o.rexBin, "view": view,
-		"agents": agents, "plugins": plugins,
+		"plugins":  plugins,
 		"profiles": l.profiles, "test_roots": o.m.roots(o.dir, l.dir), "test_source_runs": []string{o.dir}}
 	if o.m.Test.UISlot != "" {
 		cfg["ui_slot"] = o.m.Test.UISlot
@@ -686,7 +663,7 @@ func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileR
 	}
 	args := []string{"-S", l.server, "--autostart=false", "do", filepath.Join(o.lazyrex, "lab", "test", "runner.lua"), "-s", sess.SessionID,
 		"file=" + file, "lib=" + filepath.Join(o.lazyrex, "lab", "test"), "sdk=" + filepath.Join(o.lazyrex, "sdk", "lua"), "hub_bin=" + o.self, "plugin=" + o.m.Name, "tests_session=" + sess.SessionID,
-		"lab=" + l.dir, "profiles=" + l.profiles, "agent_mode=" + o.m.agentMode()}
+		"lab=" + l.dir, "profiles=" + l.profiles}
 	if o.run != "" && !parity {
 		args = append(args, "run="+o.run)
 	}
