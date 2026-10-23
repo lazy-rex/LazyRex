@@ -170,15 +170,26 @@ func (h *Hub) opUnpin(ctx context.Context, op *pluginOp) error {
 	if cur := canonicalEntry(managedByID(list, op.managedID())); cur != intended {
 		return done("kept", fmt.Sprintf("the managed file does not have the operation's %s of %s: it has %s", op.Kind, op.Entry, cur))
 	}
-	h.entriesMu.Lock()
-	loaded := append([]*configEntry{}, h.entries...)
-	h.entriesMu.Unlock()
-	for _, group := range [][]*configEntry{cfg.config, list, loaded} {
+	for _, group := range [][]*configEntry{cfg.config, list} {
 		for _, e := range group {
 			if e.Source == old {
 				return done("kept", opEntryKey(e)+" names it")
 			}
 		}
+	}
+	// A reload changes a loaded entry in place (updateManaged), so the fields are read under
+	// entriesMu, and the result is stored after the unlock.
+	h.entriesMu.Lock()
+	loaded := ""
+	for _, e := range h.entries {
+		if e.Source == old {
+			loaded = opEntryKey(e)
+			break
+		}
+	}
+	h.entriesMu.Unlock()
+	if loaded != "" {
+		return done("kept", loaded+" names it")
 	}
 	var snap map[string]string
 	base, ok := "", json.Unmarshal([]byte(op.LockBase), &snap) == nil
