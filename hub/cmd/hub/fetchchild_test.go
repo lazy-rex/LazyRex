@@ -327,9 +327,8 @@ func TestFetchChildStalledBeforeExit(t *testing.T) {
 }
 
 // Repeated fetches, normal and cancelled, leave no file descriptor and no goroutine of the hub
-// behind. GC is off, so no finalizer closes a leaked pipe.
+// behind. GC is off during the fetches, so no finalizer closes a leaked pipe.
 func TestFetchChildNoLeak(t *testing.T) {
-	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	fds := func() int {
 		e, err := os.ReadDir("/dev/fd")
 		if err != nil {
@@ -344,7 +343,24 @@ func TestFetchChildNoLeak(t *testing.T) {
 		}
 		return n
 	}
-	fd0, g0 := fds(), runtime.NumGoroutine()
+	// fd0 starts from a settled state (the hub lead's ruling lead-fdleak): a file of an earlier
+	// test that waits for a finalizer must close before the count, not during it (main lab
+	// 900e3f0c: "fds 11 -> 8"). Two GCs queue those finalizers, and the count must hold for 200 ms.
+	// Then GC goes off.
+	raw := fds()
+	runtime.GC()
+	runtime.GC()
+	fd0 := fds()
+	for held, end := time.Now(), time.Now().Add(5*time.Second); time.Since(held) < 200*time.Millisecond; time.Sleep(10 * time.Millisecond) {
+		if n := fds(); n != fd0 {
+			fd0, held = n, time.Now()
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the fd count does not settle before the test: %d", fd0)
+		}
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	g0 := runtime.NumGoroutine()
 	for i := 0; i < 10; i++ {
 		if res, err := runFetchChild(context.Background(), fetchCmd{Argv: []string{"/usr/bin/true"}}, func(context.Context, int, int) error { return nil }); err != nil || !res.OK() {
 			t.Fatalf("normal %d: %+v %v", i, res, err)
@@ -363,7 +379,7 @@ func TestFetchChildNoLeak(t *testing.T) {
 		}
 	}
 	fd1, g1 := fds(), settle(g0, runtime.NumGoroutine)
-	t.Logf("fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
+	t.Logf("fds %d before the settle, %d -> %d; goroutines %d -> %d", raw, fd0, fd1, g0, g1)
 	if fd1 != fd0 || g1 > g0 {
 		t.Fatalf("leak: fds %d -> %d, goroutines %d -> %d", fd0, fd1, g0, g1)
 	}
