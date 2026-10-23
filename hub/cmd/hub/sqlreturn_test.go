@@ -23,7 +23,7 @@ type sqlReturnHub struct {
 func newSQLReturnHub(t *testing.T) *sqlReturnHub {
 	h, _ := workerTestHub(t)
 	h.cfg.State = t.TempDir()
-	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
+	h.vs = newViewSvc()
 	h.faults = &faults{}
 	h.agents["a"] = &Agent{ID: "a", delivered: map[string]int64{}}
 	pl := &Plugin{Name: "p", ClientID: "c1", Desired: "running", run: pluginRun{Notice: "n"}}
