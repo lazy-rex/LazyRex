@@ -46,20 +46,16 @@ test('a second start runs no migration again', function()
   expect(again.registered ~= nil, 'registered').to_be(true)
 end)
 
-test('a database with a newer schema: the start runs on, keeps user_version and logs one line', function()
-  -- Expand/contract (docs/sql.md section 1): a rollback runs the previous release on the newer schema.
+test('a database with a newer schema: the start fails, and the schema and user_version stay', function()
   local s = sandbox(sdk_dir, base, {main = TODO})
   s.sql.state.user_version = 2
   s.sql.state.tables.todos = {columns = {'id', 'text', 'done', 'note'}, rows = {}, seq = 0} -- schema 2 added note
-  local ok, err = pcall(function() s:start() end)
-  expect(ok, tostring(err)).to_be(true)
-  expect(s.exited, 'the plugin runs on').to_be(nil)
-  expect(s.registered ~= nil, 'registered').to_be(true)
-  expect(action_names(s), 'no migration and no user_version write').to_be('hub.sql.begin hub.sql.query hub.sql.commit')
-  expect(s.sql.state.user_version, 'not lowered').to_be(2)
-  expect(#s.printed).to_be(1)
-  expect(s.printed[1]).to_be('lazyrex: the database has schema 2; this plugin knows 1; running on (expand-only rule, docs/sql.md)')
-  expect(s:agent('todo.add', {text = 'buy milk'}).result).to_equal({id = 1})
+  s:start()
+  expect(s.exited, 'the start fails').to_be(1)
+  expect(s.printed[#s.printed]).to_match(('The database has schema 2; this plugin knows 1. Update the plugin or delete its database.'):gsub('%p', '%%%0'))
+  expect(s.registered ~= nil, 'it registered first').to_be(true)
+  expect(s.sql.state.user_version, 'not changed').to_be(2)
+  expect(#s.sql.state.tables.todos.columns, 'the table stays').to_be(4)
 end)
 
 -- based loads a plugin with migrations {base = 5, a, b} (versions 5 and 6) over a database that has
@@ -107,11 +103,11 @@ test('base: a database below the base, or at version 0 with tables, refuses to s
   end
 end)
 
-test('base: a rollback above the last version runs on with one line', function()
+test('base: a database above the last version fails the start', function()
   local s = based(function(db) db.user_version = 7; db.tables.a = tbl(); db.tables.b = tbl() end)
-  expect(s.exited).to_be(nil)
+  expect(s.exited).to_be(1)
   expect(s.sql.state.user_version).to_be(7)
-  expect(s.printed[1]).to_be('lazyrex: the database has schema 7; this plugin knows 6; running on (expand-only rule, docs/sql.md)')
+  expect(s.printed[#s.printed]).to_match(('The database has schema 7; this plugin knows 6. Update the plugin or delete its database.'):gsub('%p', '%%%0'))
 end)
 
 test('base must be an integer of 1 or more, in the first call: the plugin fails at load', function()

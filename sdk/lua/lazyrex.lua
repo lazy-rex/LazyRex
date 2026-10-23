@@ -1209,9 +1209,9 @@ function M.plugin(name)
     local last = migrate_base + #migrations - 1
     run({tx = true}, function()
       local have = tonumber((db.first('PRAGMA user_version') or {}).user_version) or 0
-      -- Expand/contract (docs/sql.md section 1): a newer schema is a rollback to this release. Run on.
+      -- A newer schema than this plugin knows: the start fails (docs/sql.md section 1).
       if have > last then
-        print('lazyrex: the database has schema ' .. have .. '; this plugin knows ' .. last .. '; running on (expand-only rule, docs/sql.md)')
+        M.fail('internal', 'The database has schema ' .. have .. '; this plugin knows ' .. last .. '. Update the plugin or delete its database.')
       end
       -- The base runs only on a new database: version 0 and no schema object of the plugin. It
       -- never runs over a part of the old steps or over data (hub lead, 2026-10-22).
