@@ -421,16 +421,11 @@ func TestNewlineKeysLab(t *testing.T) {
 	})
 	// The renderer focuses the composer's editor first (model.apply), with the cursor at the end.
 	l.must("send-key", "-s", l.session, "-b", pane, "shift+enter", "a", "alt+enter", "b", "ctrl+j", "c")
-	l.waitFor("the three lines", 10*time.Second, func() bool {
+	// The live region shows the editor row with the cursor: "│ c". The plugin's one send below
+	// proves the three newlines (a lab run at 1bf675c1 showed only that row).
+	l.waitFor("the typed c", 10*time.Second, func() bool {
 		last = l.screen(pane)
-		lines := strings.Split(last, "\n")
-		for i := range lines {
-			if strings.Contains(lines[i], "DRAFT-TEXT") && i+3 < len(lines) &&
-				strings.Contains(lines[i+1], " a ") && strings.Contains(lines[i+2], " b ") && strings.Contains(lines[i+3], " c ") {
-				return true
-			}
-		}
-		return false
+		return strings.Contains(last, "│ c ")
 	})
 	if rows := l.sql("SELECT text FROM sent", false); len(rows) != 0 {
 		t.Fatalf("a newline key sent the draft: %v", rows)
