@@ -115,3 +115,25 @@ test('a malformed profile file reaches the profile loader', function()
   write_profiles('{"profiles":[]}')
   expect(#alice:call('hub.profiles', {}).profiles, 'only the builtin shell').to_be(1)
 end)
+
+-- ${PLUGIN} in test.env is the dir of main (docs/testing.md), and the plugin under test runs from
+-- that dir (hub config test_source_runs): a plugin can compare a ${PLUGIN} path with its own dir.
+-- A crash respawns it (the crash backoff, an automatic start) from the same dir.
+test('${PLUGIN} is the dir that the plugin under test runs from, also after a crash respawn', function()
+  local function probe(what, fn)
+    return wait(what, function()
+      local t = read(home .. '/isofix-env.json')
+      local e = t and rex.json.decode(t)
+      if e and fn(e) then return e end
+    end, 20)
+  end
+  local first = probe('isofix writes its probe file', function() return true end)
+  expect(first.own, 'LRT_OWN names a file in the dir isofix runs from').to_be(first.own_dir .. '/tests/isolation.lua')
+  local st = H.hub('hub.test.status', {}).plugins.isofix
+  expect(st.instance_id, 'the status names the probed instance').to_be(first.instance_id)
+  expect(type(st.child_pid) == 'number' and st.child_pid > 0, 'isofix has a child pid').to_be(true)
+  rex.exec({'kill', '-9', tostring(math.floor(st.child_pid))})
+  local again = probe('the crash backoff respawns isofix', function(e) return e.instance_id ~= first.instance_id end)
+  expect(again.own_dir, 'the respawn runs from the same dir').to_be(first.own_dir)
+  expect(again.own, 'LRT_OWN still names a file in its dir').to_be(again.own_dir .. '/tests/isolation.lua')
+end)
