@@ -101,7 +101,7 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
     observed with the sqlite3 CLI 3.54.0). Otherwise the plugin fails at load.
 
   **Collapsing.** A plugin may collapse its steps to a base at any time: live runs main, and data
-  loss is accepted (the coordinator, 2026-10-23). A database below the base fails at load, as
+  loss is accepted (the coordinator, 2026-10-23). A database below the base refuses to start, as
   above; delete it or keep the steps. The commit that collapses the steps has a test that compares the
   schema from the base with the schema from the old steps 1 to N (`sqlite_master`: type, name and
   the normalized SQL). The reviewer sees it pass with the old steps, before they go.
