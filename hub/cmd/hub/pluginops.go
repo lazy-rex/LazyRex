@@ -828,8 +828,19 @@ func (op *pluginOp) managedID() string { return strings.TrimPrefix(op.Entry, "ma
 
 // opIntended is the entry that the op's write leaves in the file: the canonical entry, or "absent".
 func (op *pluginOp) intended() (string, error) {
-	if op.Kind == "remove" {
+	switch op.Kind {
+	case "remove":
 		return "absent", nil
+	case "add", "update":
+		var t opResolved
+		if err := json.Unmarshal([]byte(op.Target), &t); err != nil {
+			return "", fmt.Errorf("the stored target: %v", err)
+		}
+		m, err := op.newManaged(t)
+		if err != nil {
+			return "", err
+		}
+		return canonicalEntry(&configEntry{managed: m.ID, Source: m.Source, Args: m.Args, WatchRoots: m.WatchRoots}), nil
 	}
 	var m managedFileEntry
 	if err := json.Unmarshal([]byte(op.Base), &m); err != nil {
@@ -954,21 +965,30 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 			return h.setOpPhase(ctx, op, "conflict", "", msg+"; the plugin is stopped")
 		}
 	}
-	// The new file: every other entry as the locked read gave it, in its order.
+	if op.Kind == "add" || op.Kind == "update" {
+		if stop, err := h.writeChecks(ctx, op); stop || err != nil {
+			return err
+		}
+	}
+	// The new file: every other entry as the locked read gave it, in its order. An add's entry
+	// comes last.
 	var file struct {
 		Plugins []managedFileEntry `json:"plugins"`
 	}
 	file.Plugins = []managedFileEntry{}
+	var m managedFileEntry
+	json.Unmarshal([]byte(intended), &m)
 	for _, e := range list {
 		if e.managed != id {
 			file.Plugins = append(file.Plugins, fileEntry(e))
 			continue
 		}
-		if op.Kind == "settings" {
-			var m managedFileEntry
-			json.Unmarshal([]byte(intended), &m)
+		if op.Kind == "settings" || op.Kind == "update" {
 			file.Plugins = append(file.Plugins, m)
 		}
+	}
+	if op.Kind == "add" {
+		file.Plugins = append(file.Plugins, m)
 	}
 	nb, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
