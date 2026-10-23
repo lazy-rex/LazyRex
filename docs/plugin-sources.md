@@ -679,8 +679,9 @@ are a malformed config, so a source names one entry. A hub restart works too.
   A candidate of another source is: `"dir"` gives the new source dir.
 
 Example: P runs C1. An update locks C2, and C2 fails its graph check. The hub keeps `run` = C1.
-`hub.admin.start` on a running plugin changes nothing. To apply an update, use
-`hub.admin.replace` (section 14), or `hub.admin.stop` and then `hub.admin.start`. In the example
+`hub.admin.start` on a running plugin changes nothing. (One exception: a local `expect_run` on a
+running local plugin compares the snapshot digest of the current source, section 14.) To apply an
+update, use `hub.admin.replace` (section 14), or `hub.admin.stop` and then `hub.admin.start`. In the example
 the replace is refused and C1 runs on; after a stop, the start is refused, and the stop has
 cleared `run` (no instance).
 
@@ -1002,10 +1003,26 @@ another writer wrote later is then refused, not started.
 - start of a running plugin: its run must be the expected run, else `candidate_changed`, "plugin
   <p> runs <run>, not <expected>; nothing was started". A run saved before the digest field has no
   digest, so it does not match a GitHub expectation: replace it.
+- start of a running local plugin (a local `expect_run`, the lead's ruling of 2026-10-22): the
+  expectation names the source, and a local run is identified by its snapshot digest. So the
+  start makes the snapshot of the current source (section 4, the same bounds), under the start
+  lease:
+  - the digest of the running run: the instance is kept (no restart);
+  - another digest: the start replaces the instance with the new snapshot, as a start of a
+    stopped plugin does, and the selected run names the new snapshot. A later crash respawn runs
+    it;
+  - a failed snapshot, or a candidate that does not pass its check: code `refused`, "...; the
+    running instance <id> is unchanged". The instance, its state and its selected run do not
+    change.
+  A plain `hub.admin.start` (no `expect_run`) of a running plugin changes nothing, for both
+  source kinds.
 - The candidate and the run carry the digest of the lock entry (`digest` in the run JSON).
 
 Tests: `replace_test.go` (TestExpectRunArguments) and `expectrun_lab_test.go` (local sources:
-replace and stopped start, refused and accepted, a running start, `dependency_not_ready`; a GitHub
+replace and stopped start, refused and accepted, a running start, `dependency_not_ready`;
+`selectedrun_lab_test.go` TestSelectedRunLocalExpectRunLab: a running local start with an
+unchanged source, a plain start, a failed snapshot, a candidate that does not read, and the new
+digest with a crash after it; a GitHub
 source: the same commit in another subdir, on replace and on a stopped start; a dependency that
 stops between the resolution and the final admission: `dependency_not_ready`, and no later start).
 

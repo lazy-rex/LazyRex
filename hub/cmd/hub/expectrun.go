@@ -89,10 +89,34 @@ func candidateChanged(name string, cand *pluginRun, x *expectRun, unchanged stri
 //  4. Spawn from cand. A dependency that stops after step 2 does not make this start wait (as in a
 //     replace): no later wake starts another candidate.
 //
+// With running (a running local plugin; hub.admin.start sends one here only with a local
+// expect_run), the start first makes the snapshot of the current source: a local expect_run names
+// the source, and a local run is identified by its snapshot digest. A failed snapshot refuses, and
+// a snapshot with the digest of the running run keeps the instance; neither changes the instance,
+// its state or its selected run. A new digest replaces the instance, from step 2.
+//
 // The caller holds pl.lifecycle and the start lease.
-func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive bool, x *expectRun, e *configEntry, cand *pluginRun, lease *startLease) error {
+func (h *Hub) startExpected(ctx context.Context, pl *Plugin, keepLive, running bool, x *expectRun, e *configEntry, cand *pluginRun, lease *startLease) error {
 	if !x.matches(cand) {
 		return candidateChanged(pl.Name, cand, x, "nothing was retired or spawned")
+	}
+	if running {
+		h.mu.Lock()
+		id, digest := pl.InstanceID, pl.run.Digest
+		h.mu.Unlock()
+		snap, err := h.publishLocal(e, cand)
+		if err != nil {
+			return refuse("refused", "%s; the running instance %s is unchanged", strings.TrimPrefix(err.Error(), "refused: "), id)
+		}
+		if snap.Digest == digest {
+			return nil
+		}
+		// The first effect of this call (adminattempt.go): hub.admin.start sends no sent_at for a
+		// running plugin.
+		if err := h.attemptSent(ctx, pl.opAttempt); err != nil {
+			return err
+		}
+		cand = snap
 	}
 	h.mu.Lock()
 	if pl.entry != e {
