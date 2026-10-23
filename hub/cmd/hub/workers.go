@@ -804,6 +804,14 @@ func (h *Hub) openSpawn(ctx context.Context, s *spawnRow, window, block string) 
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
+		// An adoption (a join or an identity report from the pane) can open the spawn while its
+		// create request is in flight. The same block is the same pane: the spawn is open, and
+		// its binding and events were written once already.
+		cur, err := scanSpawn(tx.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE spawn_id = ?`, s.ID))
+		if err == nil && cur.Status == "open" && cur.Block == block {
+			*s = *cur
+			return nil
+		}
 		return fmt.Errorf("spawn %s is no longer sending", s.ID)
 	}
 	if s.Agent != "" {

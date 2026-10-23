@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -140,5 +142,57 @@ func TestWorkerBlocksIgnoresARowWithoutASession(t *testing.T) {
 		if row.Status != status || row.Error != "" || row.Session != "" {
 			t.Fatalf("%s: the row changed: status %q, error %q, session %q", status, row.Status, row.Error, row.Session)
 		}
+	}
+}
+
+// An adoption (a join or an identity report from the pane) can open a spawn while its create
+// request is still in flight. The create answer then names the same block: the spawn stays open,
+// sendSpawn returns it, and spawn_opened is not written twice. Another block is an error.
+func TestSendSpawnAfterAdoption(t *testing.T) {
+	for _, tc := range []struct{ name, adopted string }{{"same block", "block:b1"}, {"other block", "block:b2"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s := workerTestHub(t)
+			ctx := context.Background()
+			if _, err := h.db.Exec(`UPDATE spawns SET status = 'prepared', session_id = 'session:test'`); err != nil {
+				t.Fatal(err)
+			}
+			s.Status, s.Session = "prepared", "session:test"
+			real := spawnCreate
+			t.Cleanup(func() { spawnCreate = real })
+			spawnCreate = func(ctx context.Context, h *Hub, method string, req map[string]any, out any) error {
+				other, err := h.spawnByID(ctx, s.ID)
+				if err != nil {
+					return err
+				}
+				if err := h.openSpawn(ctx, other, "window:w1", tc.adopted); err != nil {
+					return err
+				}
+				return json.Unmarshal([]byte(`{"window_id":"window:w1","block_ids":["block:b1"]}`), out)
+			}
+			err := h.sendSpawn(ctx, s, workerPlacement{}, []string{"/bin/true"})
+			stored, rerr := h.spawnByID(ctx, s.ID)
+			if rerr != nil || stored.Status != "open" || stored.Block != tc.adopted {
+				t.Fatalf("stored: %+v %v", stored, rerr)
+			}
+			if tc.adopted != "block:b1" {
+				if err == nil || !strings.Contains(err.Error(), "no longer sending") {
+					t.Fatalf("another block: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("send after adoption: %v", err)
+			}
+			if r := s.result(); r["status"] != "open" || r["block_id"] != "block:b1" || r["window_id"] != "window:w1" {
+				t.Fatalf("result: %v", r)
+			}
+			log, err := os.ReadFile(h.ev.f.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(string(log), `"event":"spawn_opened"`); n != 1 {
+				t.Fatalf("spawn_opened written %d times:\n%s", n, log)
+			}
+		})
 	}
 }
