@@ -156,6 +156,17 @@ func (h *Hub) addRow(ctx context.Context, op *pluginOp, name, identity string) (
 	return false, nil
 }
 
+// entryRow is addRow for the add's intended entry (canonical JSON): the row of the pin's manifest
+// name, with the entry's identity. opWrite calls it before the rename, and on a replay that finds
+// the file written, so the add goes on only while it owns the row.
+func (h *Hub) entryRow(ctx context.Context, op *pluginOp, intended string) (stop bool, err error) {
+	var m managedFileEntry
+	var pin lockEntry
+	json.Unmarshal([]byte(intended), &m)
+	json.Unmarshal([]byte(op.Pin), &pin)
+	return h.addRow(ctx, op, pin.Name, entryIdentity(&configEntry{managed: m.ID, Source: m.Source}))
+}
+
 // endAddRow stores the end (phase failed, conflict or unknown) of an add that wrote its row. When
 // the managed file has no entry of the add, the same transaction removes the row's write (1d): it
 // deletes an inserted row, or writes back the prior values of a reused row, only while the add
