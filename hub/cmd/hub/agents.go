@@ -13,11 +13,6 @@ import (
 	"time"
 )
 
-// sessionBlocks returns the block IDs in the hub's session.
-func (h *Hub) sessionBlocks(ctx context.Context) (map[string]bool, error) {
-	return h.sessionBlocksIn(ctx, h.workSession())
-}
-
 // sessionLive reports whether a session exists. A session_not_found answer is false.
 func (h *Hub) sessionLive(ctx context.Context, sess string) (bool, error) {
 	if sess == "" {
@@ -89,11 +84,6 @@ func (h *Hub) sessionBlocksIn(ctx context.Context, sess string) (map[string]bool
 		m[b.BlockID] = true
 	}
 	return m, nil
-}
-
-// childPID returns the pid of a block's child process, or 0 if it has none (exited).
-func (h *Hub) childPID(ctx context.Context, blockID string) (int, error) {
-	return h.childPIDIn(ctx, h.workSession(), blockID)
 }
 
 func (h *Hub) childPIDIn(ctx context.Context, sess, blockID string) (int, error) {
