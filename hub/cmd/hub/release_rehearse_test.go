@@ -584,3 +584,45 @@ func TestReleaseFileProbes(t *testing.T) {
 		t.Errorf("a probe file that writes no row: %v", err)
 	}
 }
+
+// labHubDB is a lab hub.db made by the hub's own openDB, so it has the schema of this hub, and a
+// back verify list with the plugins alpha and beta.
+func labHubDB(t *testing.T) *rehearsal {
+	t.Helper()
+	h := &rehearsal{lab: t.TempDir(), run: t.TempDir(), r: &releaser{out: &bytes.Buffer{}}}
+	os.MkdirAll(filepath.Join(h.lab, relLabState), 0o700)
+	db, err := openDB(filepath.Join(h.lab, relLabState, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	b, _ := json.Marshal([]relVerifyEntry{{Name: "alpha"}, {Name: "beta"}})
+	if err := os.WriteFile(filepath.Join(h.run, relVerifyBack), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// The setup and phase steps of the rehearsal on the lab hub.db run on the schema of this hub (2d:
+// a new hub.db has no records or ops table). A lab hub.db with an agent binding refuses.
+func TestReleaseLabHubDB(t *testing.T) {
+	h := labHubDB(t)
+	if err := h.writeProbes(); err != nil {
+		t.Fatalf("the setup step on a new lab hub.db: %v", err)
+	}
+	if err := h.data("setup"); err != nil {
+		t.Fatalf("the phase step on a new lab hub.db: %v", err)
+	}
+	h = labHubDB(t)
+	db, err := h.hubDB(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO bindings VALUES ('a', 'block:1', 1, 's')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.writeProbes(); err == nil || !strings.Contains(err.Error(), "agent bindings") {
+		t.Errorf("a lab hub.db with an agent binding: %v", err)
+	}
+}
