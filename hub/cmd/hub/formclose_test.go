@@ -25,7 +25,7 @@ func formCloseHub(t *testing.T, n int, fail string) *Hub {
 		t.Fatal(err)
 	}
 	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}}
-	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}} // closeViewRow forgets the view's render state
+	h.vs = newViewSvc() // closeViewRow forgets the view's render state
 	h.selfClosed = map[string]bool{}
 	h.rex = answerRex(t, fail)
 	for i := range n {

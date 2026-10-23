@@ -72,9 +72,6 @@ func (h *Hub) tellViewChanged(plugin, role, client, viewID, attachment string, r
 			vs.retireLocked(old, n)
 		}
 	}
-	if vs.senders == nil {
-		vs.senders = map[notifyKey]*viewNotifier{}
-	}
 	parent := vs.ctx
 	if parent == nil {
 		parent = context.Background()
