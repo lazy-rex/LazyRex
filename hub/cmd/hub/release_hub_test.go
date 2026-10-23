@@ -78,6 +78,8 @@ type relWorld struct {
 	performN    int         // client.perform calls
 	buildRec    []string    // the build record of the dev hub
 	performHook func(n int) // runs at each client.perform, after its answer is chosen
+	pluginsN    int         // hub.plugins calls
+	pluginsHook func(n int) // runs at each hub.plugins call, before its answer
 	out         *bytes.Buffer
 }
 
@@ -432,6 +434,10 @@ func (w *relWorld) hubAction(action string, args map[string]any) ([]byte, []byte
 	srcOf := map[string]string{"lazyrex": homeSrc, "other": otherSrc}
 	switch action {
 	case "hub.plugins":
+		w.pluginsN++
+		if w.pluginsHook != nil {
+			w.pluginsHook(w.pluginsN)
+		}
 		var entries []map[string]any
 		for _, n := range []string{"lazyrex", "other"} {
 			r := w.runs[n]
@@ -930,6 +936,68 @@ func TestReleaseHubReplaceRows(t *testing.T) {
 	w.runs["lazyrex"].commit, w.runs["lazyrex"].digest, w.runs["lazyrex"].registered = commitH, digestH, false
 	if err := w.step("replace"); err == nil || w.replaceCalls != 0 {
 		t.Errorf("a target that never registers: %v, %d calls", err, w.replaceCalls)
+	}
+}
+
+// The replace after a hub start (the 4.2 rehearsal at fbe88273): the new hub first lists the
+// durable FROM row of the old hub, registered = true, and only then spawns and registers its own
+// instance. The replace waits until the current instance is registered after the last
+// hub_started (registeredNow), and takes that instance. A row that never gets a current
+// registration fails at the bound with no replace call. A hub_started of another client during
+// the wait, or events that cannot be read, stop the step with no replace call.
+func TestReleaseHubReplaceAfterStart(t *testing.T) {
+	stale := func() *relWorld {
+		w := newRelWorld(t)
+		w.freeze()
+		w.must("precheck", "stop", "backup", "checkout", "pull", "start")
+		// The old hub's row: its registration is before the last hub_started only.
+		w.event(map[string]any{"event": "plugin_registered", "plugin": "lazyrex", "instance_id": "inst-old", "client_id": "client:inst-old"})
+		w.event(map[string]any{"event": "hub_started", "client_id": w.client, "pid": w.hubPID})
+		w.runs["lazyrex"] = &fakeRun{commit: commitOld, digest: digestOld, instance: "inst-old", desired: "running", registered: true}
+		w.event(map[string]any{"event": "plugin_registered", "plugin": "other", "instance_id": w.runs["other"].instance, "client_id": "client:" + w.runs["other"].instance})
+		return w
+	}
+
+	w := stale()
+	var fresh string
+	w.pluginsHook = func(n int) {
+		if n == 2 { // the new hub spawns and registers its own instance at FROM
+			w.spawnAt("lazyrex", pinOld)
+			fresh = w.runs["lazyrex"].instance
+		}
+	}
+	w.must("replace")
+	if w.replaceCalls != 1 || w.replaceArgs[0]["expect_instance"] != fresh || w.runs["lazyrex"].commit != commitH {
+		t.Fatalf("stale FROM, then the current instance: %d calls %v (current %s), home %s", w.replaceCalls, w.replaceArgs, fresh, w.runs["lazyrex"].commit[:6])
+	}
+	w.must("verify")
+
+	w = stale()
+	err := w.step("replace")
+	if err == nil || !strings.Contains(err.Error(), "not registered by its current instance") || w.replaceCalls != 0 || w.pluginsN < 61 {
+		t.Errorf("a stale FROM row that never registers: %v, %d calls, %d polls", err, w.replaceCalls, w.pluginsN)
+	}
+
+	w = stale()
+	w.pluginsHook = func(n int) {
+		if n == 1 { // a hub restart during the wait
+			w.event(map[string]any{"event": "hub_started", "client_id": "client:another", "pid": w.hubPID})
+		}
+	}
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "names \"client:another\", not the hub") || w.replaceCalls != 0 {
+		t.Errorf("events of another hub: %v, %d calls", err, w.replaceCalls)
+	}
+
+	w = stale()
+	ev := filepath.Join(w.state, "events.jsonl")
+	w.pluginsHook = func(n int) {
+		if n == 1 { // after the step guard read them: open works, read fails
+			os.Rename(ev, ev+".kept")
+			os.Mkdir(ev, 0o700)
+		}
+	}
+	if err := w.step("replace"); err == nil || !strings.Contains(err.Error(), "the hub events: ") || w.replaceCalls != 0 {
+		t.Errorf("unreadable events: %v, %d calls", err, w.replaceCalls)
 	}
 }
 
