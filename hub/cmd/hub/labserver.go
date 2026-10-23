@@ -63,6 +63,7 @@ func (l *lab) startServer(ctx context.Context, self, rexBin string) error {
 	if err != nil {
 		return err
 	}
+	defer logf.Close() // the started keeper has its own copy
 	l.srv, err = startKept(self, "lab server", []string{rexBin, "-v", "server", "run", "--listen", l.server,
 		"--state-dir", filepath.Join(l.dir, "state"), "--block-dir", filepath.Join(l.dir, "blocks"), "--config", "/dev/null"},
 		l.env, l.home(), logf, logf)
@@ -122,6 +123,9 @@ func watch(c *exec.Cmd) *waiter {
 			if pid == w.pid || err != nil {
 				w.reaped = true
 				w.mu.Unlock()
+				// Wait4 reaps the process, but only Wait or Release frees c.Process (its pidfd on
+				// Linux). Without Release, a GC finalizer closes the pidfd at a random time.
+				c.Process.Release()
 				switch {
 				case err != nil:
 					w.done <- err

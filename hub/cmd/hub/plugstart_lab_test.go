@@ -163,6 +163,7 @@ func (s *startLab) start() {
 	if err != nil {
 		s.t.Fatal(err)
 	}
+	defer logf.Close() // the started keeper has its own copy
 	if s.l.hub, err = startKept(s.bin, "hub", append([]string{s.bin, "-config", s.cfg, "-test"}, s.args...), s.l.env, s.l.home(), logf, logf); err != nil {
 		s.t.Fatal(err)
 	}

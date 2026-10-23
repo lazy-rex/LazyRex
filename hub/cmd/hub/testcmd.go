@@ -576,6 +576,7 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 	if err != nil {
 		return err
 	}
+	defer logf.Close() // the started keeper has its own copy
 	l.hub, err = startKept(o.self, "hub", []string{o.self, "-config", cfg, "-test", "-sdk", filepath.Join(o.lazyrex, "sdk", "lua")},
 		l.env, l.home(), logf, logf)
 	if err != nil {

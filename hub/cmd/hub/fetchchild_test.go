@@ -330,20 +330,8 @@ func TestFetchChildStalledBeforeExit(t *testing.T) {
 // Repeated fetches, normal and cancelled, leave no file descriptor and no goroutine of the hub
 // behind. GC is off during the fetches, so no finalizer closes a leaked pipe.
 func TestFetchChildNoLeak(t *testing.T) {
-	// fds is the fd table: each open fd and its target (readlink), so a closed fd cannot hide a new
-	// one in a count. The read's own directory fd is in it too, the same in each read.
-	fds := func() map[string]string {
-		e, err := os.ReadDir("/dev/fd")
-		if err != nil {
-			t.Fatal(err)
-		}
-		m := map[string]string{}
-		for _, x := range e {
-			l, _ := os.Readlink("/dev/fd/" + x.Name())
-			m[x.Name()] = l
-		}
-		return m
-	}
+	// fds is the fd table with each fd's target, so a closed fd cannot hide a new one in a count.
+	fds := func() map[string]string { return fdTable(t) }
 	settle := func(want int, now func() int) int {
 		n := now()
 		for end := time.Now().Add(2 * time.Second); n > want && time.Now().Before(end); n = now() {

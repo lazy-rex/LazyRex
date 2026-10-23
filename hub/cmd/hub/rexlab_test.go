@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -61,4 +62,41 @@ func rexLab(t *testing.T) *lab {
 	}
 	t.Setenv("REX_SERVER", l.server)
 	return l
+}
+
+// fdTable is the fd table of the test process: each open fd and its target (readlink). The read's
+// own directory fd is in it too, the same in each read.
+func fdTable(t *testing.T) map[string]string {
+	t.Helper()
+	e, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]string{}
+	for _, x := range e {
+		l, _ := os.Readlink("/dev/fd/" + x.Name())
+		m[x.Name()] = l
+	}
+	return m
+}
+
+// A lab's start and stop leave no fd of the lab in the test process: no file in the lab dir and
+// no pidfd of a keeper (Linux). GC is off, so no finalizer closes a leaked fd (the hub lead,
+// lead-fdleak4). The subtest ends the lab: its cleanups run before the check.
+func TestLabStopLeavesNoFdLab(t *testing.T) {
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	fd0 := fdTable(t)
+	var dir string
+	t.Run("lab", func(t *testing.T) { dir = rexLab(t).dir })
+	if dir == "" {
+		t.Skip("no lab")
+	}
+	for fd, target := range fdTable(t) {
+		if fd0[fd] == target {
+			continue
+		}
+		if strings.HasPrefix(target, dir+"/") || target == "anon_inode:[pidfd]" {
+			t.Errorf("fd %s of the lab stays open after its stop: %s", fd, target)
+		}
+	}
 }
