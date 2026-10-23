@@ -123,8 +123,7 @@ The rest of this README is for work on LazyRex itself.
 | `hub/` | The hub (Go): plugin host, SQL databases, view service, agent identity |
 | `view/` | The renderer (Go, Bubble Tea): forms, lists, thread composer, transcript pane |
 | `plugins/lazyrex/` | The home plugin (plugins, agents and workers) and its tests |
-| `lib/rex-client.mjs` | A dependency-free Rex control and data client for Node tests |
-| `lab/` | `server.sh` starts an isolated Rex server for tests; `lab.mjs` checks the lab socket; `test/` is the Lua test runner and API |
+| `lab/` | `server.sh` starts an isolated Rex server for tests; `test/` is the Lua test runner and API |
 | `tests/` | Hub and renderer tests (most need a lab server) |
 | `hooks/`, `skills/` | Agent session hook and the LazyRex skill for agents |
 | `docs/` | Architecture, decisions, the Rex protocol notes and the hub design |
@@ -184,8 +183,7 @@ are the sibling checkouts. (Setup writes a user's `hub.json` with released plugi
 
 `dev.sh` builds the hub and the renderer, watches the sources, and reloads what changed.
 
-Legacy developer tools: `dev.sh` needs python3, and the Node tests (`tests/*.mjs`, `lab/lab.mjs`,
-`lib/rex-client.mjs`) need Node 22 or later. They are being removed. They are not requirements of
+Legacy developer tool: `dev.sh` needs python3. It is being removed. It is not a requirement of
 LazyRex: install, setup and start need only Rex, git, an agent CLI and, while the repositories are
 private, the GitHub CLI. A build from source also needs Go.
 
@@ -195,6 +193,5 @@ Plugin tests are Lua files that run against the real hub on an isolated lab serv
 `lazyrex-hub test` in the plugin repository (see [docs/testing.md](docs/testing.md)).
 
 - `cd hub && go test ./...` and `cd view && go test ./...`
-- Node tests (legacy) need an isolated lab server:
-  `lab/server.sh /tmp/rexlab`, then `REX_SERVER=unix:///tmp/rexlab/rex.sock node tests/<name>.mjs`.
-  Never point tests at your own Rex server.
+- The lab tests start their own lab servers (`HARNESS_LAB=1` and the other gates in
+  [docs/testing.md](docs/testing.md)). Never point tests at your own Rex server.
