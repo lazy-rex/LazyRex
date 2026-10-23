@@ -14,21 +14,23 @@ import (
 // same key with another request with operation_conflict), written once. Each site names its text
 // in the source and the test that calls its action twice through the real hub and Rex; that test
 // must hold the site's message. TestKeyConflictSitesCovered fails when a file gains or loses a site.
-// The agent-set check (identity.go) has no real-path test: its two owners need a spawn address and
-// an identity that used one key before they bound, so TestKeyConflictCode calls callerKeyRow.
-var conflictSites = []struct{ file, format, test, message string }{
-	{"workers.go", `"key %q was used for a different request"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-spawn" was used for a different request`},
-	{"spawnwindow.go", `"key %q was used for a different request"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-window" was used for a different request`},
-	{"resume.go", `"key %q was used for a different request"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-resume" was used for a different request`},
-	{"sessions.go", `"key %q was used with another name"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-ensure" was used with another name`},
-	{"grants.go", `"the grant key %q was used for another agent or other requests"`, "../../../tests/harness/tests/key_conflict.lua", `the grant key "kc-grant" was used for another agent or other requests`},
-	{"sqlsvc.go", `"the key %s was used with another fingerprint"`, "../../../tests/harness/tests/key_conflict.lua", `the key kc-sql was used with another fingerprint`},
-	{"viewsvc.go", `"key %q has different arguments"`, "../../../tests/harness/tests/key_conflict.lua", `key "kc-view" has different arguments`},
-	{"watchsvc.go", `"key %s has another spec; remove it first"`, "../../../tests/watch/tests/watch.lua", `operation_conflict: key idem has another spec; remove it first`},
-	{"promptanswer.go", `"key %s was used with another prompt_id or input"`, "../../../tests/prompts/tests/prompts.lua", `operation_conflict: key k-keys was used with another prompt_id or input`},
-	{"pluginops.go", `"key %q has a different operation"`, "pluginops_lab_test.go", `operation_conflict: key "rm-d" has a different operation`},
-	{"peers.go", `"key %q was sent to %s with another body"`, "peers_lab_test.go", `operation_conflict: key "k1" was sent to b with another body`},
-	{"identity.go", `"key %q was used by %s before they became one identity; use a new key"`, "keyconflict_test.go", `key "dup" was used by claude:x and by spawn:spawn-test before they became one identity; use a new key`},
+// path "real": the test calls the action twice through the real hub and Rex. path "direct": the
+// agent-set check (identity.go) has no real-path test (lead-b3c): its two owners need a spawn
+// address and an identity that used one key before they bound, so TestKeyConflictCode calls
+// callerKeyRow.
+var conflictSites = []struct{ file, format, path, test, message string }{
+	{"workers.go", `"key %q was used for a different request"`, "real", "../../../tests/harness/tests/key_conflict.lua", `key "kc-spawn" was used for a different request`},
+	{"spawnwindow.go", `"key %q was used for a different request"`, "real", "../../../tests/harness/tests/key_conflict.lua", `key "kc-window" was used for a different request`},
+	{"resume.go", `"key %q was used for a different request"`, "real", "../../../tests/harness/tests/key_conflict.lua", `key "kc-resume" was used for a different request`},
+	{"sessions.go", `"key %q was used with another name"`, "real", "../../../tests/harness/tests/key_conflict.lua", `key "kc-ensure" was used with another name`},
+	{"grants.go", `"the grant key %q was used for another agent or other requests"`, "real", "../../../tests/harness/tests/key_conflict.lua", `the grant key "kc-grant" was used for another agent or other requests`},
+	{"sqlsvc.go", `"the key %s was used with another fingerprint"`, "real", "../../../tests/harness/tests/key_conflict.lua", `the key kc-sql was used with another fingerprint`},
+	{"viewsvc.go", `"key %q has different arguments"`, "real", "../../../tests/harness/tests/key_conflict.lua", `key "kc-view" has different arguments`},
+	{"watchsvc.go", `"key %s has another spec; remove it first"`, "real", "../../../tests/watch/tests/watch.lua", `operation_conflict: key idem has another spec; remove it first`},
+	{"promptanswer.go", `"key %s was used with another prompt_id or input"`, "real", "../../../tests/prompts/tests/prompts.lua", `operation_conflict: key k-keys was used with another prompt_id or input`},
+	{"pluginops.go", `"key %q has a different operation"`, "real", "pluginops_lab_test.go", `operation_conflict: key "rm-d" has a different operation`},
+	{"peers.go", `"key %q was sent to %s with another body"`, "real", "peers_lab_test.go", `operation_conflict: key "k1" was sent to b with another body`},
+	{"identity.go", `"key %q was used by %s before they became one identity; use a new key"`, "direct", "keyconflict_test.go", `key "dup" was used by claude:x and by spawn:spawn-test before they became one identity; use a new key`},
 }
 
 func TestKeyConflictSitesCovered(t *testing.T) {
