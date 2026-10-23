@@ -77,10 +77,10 @@ func TestNewDatabaseHasTheUIColumns(t *testing.T) {
 		}
 	}
 	for table, cols := range map[string][]string{
-		"ui_tabs":         {"session_id", "revision", "closed_revision", "status", "layout"},
+		"ui_tabs":         {"session_id", "revision", "closed_revision", "status"},
 		"ui_homes":        {"label_at"},
 		"ui_replacements": {"kept", "return_of"},
-		"views":           {"context", "layout", "attach_state"},
+		"views":           {"context", "attach_state"},
 	} {
 		for _, c := range cols {
 			var n int
