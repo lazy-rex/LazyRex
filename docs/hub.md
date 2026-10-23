@@ -1073,8 +1073,8 @@ Observed on Rex `0.0.1792158932-g88fd41` in the Worktrees Codex lab: a running a
 stayed pending, blocked later actions, and resumed with identical input through a
 fresh hub object. Final success and refusal ended the operations. Directory advice
 found an unmanaged terminal and a worker with an unknown directory, and created
-no lock. Run `tests/worktrees-contract-lab.sh` with `WORKTREE_LAB_SOCKET` set to an
-isolated `/tmp/rexlab-worktrees-<name>/rex.sock`. Set `GO_BIN` if Go is not on PATH.
+no lock. Run `HARNESS_LAB=1 go test ./cmd/hub -run 'TestWorktree(RunningViewAction|CwdCheck)Lab'` from
+hub/; each test starts its own lab Rex server.
 
 `plugins/worktrees.lua` exports these agent tools:
 
@@ -1168,9 +1168,9 @@ The second test uses the real hub, a real agent pane, and SQLite storage.
 Set `GIT_SOURCE` for the second test to use an owned shared clone of an existing repository.
 The test does not add a worktree or branch to that source repository.
 
-`tests/worktrees-contract-lab.sh` checks the hub's pending-operation consumer and directory guards.
-Run it with `sh` and set `WORKTREE_LAB_SOCKET` to `/tmp/rexlab-worktrees-<name>/rex.sock`.
-Set `GO_BIN` if `go` is not on `PATH`.
+TestWorktreeRunningViewActionLab and TestWorktreeCwdCheckLab (hub/cmd/hub/worktree_contract_lab_test.go)
+check the hub's pending-operation consumer and directory guards. They run under `HARNESS_LAB=1`
+and start their own lab Rex server.
 `tests/worktrees-panel-lab.mjs` checks the palette, panel, forms, shell launches, and agent launch through the renderer.
 Its header gives the lab setup commands.
 

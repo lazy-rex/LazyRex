@@ -6,36 +6,37 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-func worktreeLab(t *testing.T) (context.Context, *rex.Rex) {
+// worktreeLab starts a lab Rex server (rexLab: HARNESS_LAB=1) and returns a 45 s context and the
+// lab. worktreeDial opens one more connection to it.
+func worktreeLab(t *testing.T) (context.Context, *lab) {
 	t.Helper()
-	socket := os.Getenv("WORKTREE_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set WORKTREE_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-worktrees-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-worktrees-lab socket")
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	r, err := rex.Dial(ctx, socket)
+	return ctx, l
+}
+
+func worktreeDial(t *testing.T, ctx context.Context, l *lab) *rex.Rex {
+	t.Helper()
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ctx, r
+	t.Cleanup(func() { r.Close() })
+	return r
 }
 
 // Exercise the actual operation consumer over Rex, with a controlled plugin response.
 // A running answer must preserve the stored request and prevent later operations overtaking it.
 func TestWorktreeRunningViewActionLab(t *testing.T) {
-	ctx, r := worktreeLab(t)
-	_, plugin := worktreeLab(t)
+	ctx, l := worktreeLab(t)
+	r, plugin := worktreeDial(t, ctx, l), worktreeDial(t, ctx, l)
 	go func() {
 		for range r.Events {
 		}
@@ -89,7 +90,7 @@ func TestWorktreeRunningViewActionLab(t *testing.T) {
 		}
 	}()
 	h, _ := workerTestHub(t)
-	h.rex = r
+	h.rex, h.cfg.Server = r, l.server
 	h.plugins = map[string]*Plugin{"worktrees": {Name: "worktrees", ClientID: welcome.Client.ID}}
 	if err := h.viewsStart(ctx); err != nil {
 		t.Fatal(err)
@@ -158,13 +159,14 @@ func TestWorktreeRunningViewActionLab(t *testing.T) {
 
 // Advice sees unmanaged terminal panes and workers, but creates no lock or spawn record.
 func TestWorktreeCwdCheckLab(t *testing.T) {
-	ctx, r := worktreeLab(t)
+	ctx, l := worktreeLab(t)
+	r := worktreeDial(t, ctx, l)
 	go func() {
 		for range r.Events {
 		}
 	}()
 	h, _ := workerTestHub(t)
-	h.rex = r
+	h.rex, h.cfg.Server = r, l.server
 	h.ui = &uiState{sess: map[string]string{}}
 	if _, err := h.db.Exec(`DELETE FROM spawns`); err != nil {
 		t.Fatal(err)
