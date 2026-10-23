@@ -707,6 +707,18 @@ goes with the hub.store removal.
 harnessBinary). The tests behind their own gates (`PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and
 `HUBCTL_LAB`) also start their own servers, but they skip unless their gate is set.
 
+The thread view's lab tests (`view/*_lab_test.go`) build the view and the hub and start their own
+lab server too:
+
+| Gate | Command (in `view/`) | What it runs |
+| --- | --- | --- |
+| `MODE_LAB=1` | `go test -count=1 -v -run 'Lab$' .` | The thread-view labs on a real pane: FocusWindow, ShortPane, Print, ReloadLeavesNoLiveRows, OpenWindow, NewlineKeys, Resize, LateMessage, LiveRegionResize and ComposerGrow (lead-labenv2: part of the main lab). |
+| `CHUNK_LAB=1` | `go test -count=1 -v -run 'Lab$' .` | The reply parts labs (TestReplyPartsHoldLab, TestReplyPartsTimingLab); not in the main lab. |
+| `HUBUNAVAIL_LAB=1` | `go test -count=1 -v -run 'TestNoHubTextLab$' .` | The view text when no hub answers; not in the main lab. |
+| `RESIZE_BURST_LAB=1` (with `MODE_LAB=1`) | `go test -count=1 -v -run 'TestLiveRegionResizeBurstLab$' .` | The no-wait resize burst, a known limit (view/README.md); off in the main lab. |
+| `TEAPROBE_LAB=1` | `go test -count=1 -v -run 'TestTeaProbe' .` | The Bubble Tea and Rex facts (docs/rex-protocol.md); it records, and fails only when the lab fails. |
+| `VIEW_TEA_TRACE=1` (with a gate above) | | Each view process logs its renderer writes to `<lab>/tea-<pid>.log`. |
+
 The main lab is the full lab that runs on hub main after each push. It sets `HARNESS_LAB`,
 `PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and `HUBCTL_LAB` (together about 40 s more on Linux).
 Then it runs the thread view labs: `MODE_LAB=1 go test . -count=1 -v -run 'Lab$'` in `view/`,
