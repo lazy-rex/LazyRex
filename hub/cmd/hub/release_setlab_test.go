@@ -125,4 +125,33 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 	if _, err := os.Stat(lab); err == nil {
 		t.Errorf("the lab %s is still there after a pass", lab)
 	}
+	if t.Failed() {
+		return
+	}
+
+	// Lab B: a second rehearsal of the same fixture in another lab dir, so other paths, its own
+	// server, clones and mirrors. Its steps are the real freeze output of each plugin step. Each must
+	// equal the step of the first record under the gate's own comparison (compareSetStep), while
+	// the paths differ. The setup of each rehearsal already checks that the lab lock, lock without
+	// cache dirs, base and hub candidate equal the live fixture.
+	first := rec
+	labB := lab + "-b"
+	if out, err := labRehearse(t, bin, f, run, labB, nil, "-set", setPath); err != nil {
+		t.Fatalf("lab B rehearse -set: %v (log %s; the lab %s is kept)", err, out, labB)
+	}
+	var second relRehearsal
+	if err := json.Unmarshal(mustReadFile(filepath.Join(run, relRehearsalFile)), &second); err != nil {
+		t.Fatal(err)
+	}
+	if !second.Pass || len(second.SetSteps) != len(first.SetSteps) {
+		t.Fatalf("lab B record: pass %v, %d steps", second.Pass, len(second.SetSteps))
+	}
+	for i, s := range second.SetSteps {
+		if err := compareSetStep(&s.Candidate, s.BasePins, first.SetSteps[i]); err != nil {
+			t.Errorf("lab B step %d (%s): %v", i+1, s.Plugin, err)
+		}
+		if s.Candidate.SDKDir == first.SetSteps[i].Candidate.SDKDir || s.Candidate.SDKDir == "" {
+			t.Errorf("lab B step %d: the SDK dirs %q and %q are not two lab paths", i+1, s.Candidate.SDKDir, first.SetSteps[i].Candidate.SDKDir)
+		}
+	}
 }
