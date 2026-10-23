@@ -11,7 +11,7 @@ import (
 )
 
 // The release-set lab test: a hub release from the live hub commit to an H with tests/sdk-parts,
-// then a set of three real 4.2 plugin steps in live order (Tunnels, Messaging, Templates) with lab-made seeds.
+// then a set of four real 4.2 plugin steps in set order (Tunnels, Messaging, Templates, Profiles) with lab-made seeds.
 // Lab only: RELEASE_LAB=1. It needs the network (GitHub), go and rex, and runs for many minutes.
 const (
 	setLabOld = "25f8c7db5b41d7024db050d434204e1444228404" // the live hub commit on 2026-10-22
@@ -24,6 +24,7 @@ var setLabPlugins = []struct {
 	{"tunnels", "github:lazy-rex/Tunnels", "b41fa4f64ca7b44566e2e5d595c276357b841555", "78658739c0b9e0b769c50e49d8e596e85c898a5d"},
 	{"messaging", "github:lazy-rex/Messaging", "66a31533fd6c047ef60e23eb59e47cdce532a9aa", "a2cc4483652c1be27580bfa0f147d45a80c351d3"},
 	{"templates", "github:lazy-rex/Templates", "59b40b539ea863ea87def91055f036346341f724", "3d93b3980786bf486432c09d23431a718d96ecf3"},
+	{"profiles", "github:lazy-rex/Profiles", "dbc8b3b67e44489bb0fdbc7c51f7dc8ca54c52b4", "132e63af1a8cfed22e8364f749f5a5f479ba9d6c"},
 }
 
 // setLabTemplates are the seed, probe and changes items of the 4.2 Templates kit entry (owner review
@@ -34,9 +35,15 @@ var setLabPlugins = []struct {
 // reference snapshot.
 const setLabTemplates = `{"seed":[{"action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","panes":{"<BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"kind":"action"},{"action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","key":"seed-start-1"},"kind":"action"},{"kind":"action","action":"templates.runs","args":{},"until":[{"pointer":"/runs/0/status","value":"blocked"}]},{"action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"kind":"action"}],"probe":[{"kind":"action","action":"templates.list","args":{},"expect":[{"pointer":"/templates/0/name","value":"lab-seed"},{"pointer":"/templates/0/tabs","value":1}]},{"kind":"action","action":"templates.get","args":{"template":"lab-seed"},"expect":[{"pointer":"/template/name","value":"lab-seed"},{"pointer":"/template/tabs/0/layout/launch/profile","value":"lab-inert-missing"}]},{"kind":"action","action":"templates.runs","args":{},"expect":[{"pointer":"/runs/0/id","value":"1"},{"pointer":"/runs/0/template","value":"lab-seed"},{"pointer":"/runs/0/status","value":"dismissed"},{"pointer":"/runs/0/tabs","value":1},{"pointer":"/runs/0/next_tab","value":1},{"pointer":"/runs/0/session_id","value":"<SEED_SESSION_ID>"}]},{"kind":"action","action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","panes":{"<SEED_BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"expect":[{"pointer":"/name","value":"lab-seed"}]},{"kind":"action","action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"expect":[{"pointer":"/run_id","value":"1"},{"pointer":"/status","value":"dismissed"}]},{"kind":"action","action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","key":"seed-start-1"},"expect":[{"pointer":"/run_id","value":"1"}]}],"changes":[{"table":"runs","key":{"id":"1"},"column":"ver","expect":{"sql":":new = :old + 1 AND (SELECT value -> '$.grant_revoked' FROM runs WHERE id = '1') = 'true'"}},{"table":"runs","key":{"id":"1"},"column":"value","expect":{"sql":"json_valid(:old) AND json_valid(:new) AND (:old -> '$.grant_revoked') IS NULL AND (:new -> '$.grant_revoked') = 'true' AND json_remove(:new, '$.grant_revoked') = json_remove(:old, '$.grant_revoked')"}}]}`
 
+// setLabProfiles are the seed, probe, keys, changes and inserts of the 4.2 Profiles kit entry (owner
+// review profiles-kit42-approve-1): a view item opens profiles.start_accessory from a source pane in
+// <LAB>/src and chooses the default directory; the lab test runs the user path of a view.
+const setLabProfiles = `{"seed":[{"kind":"view","pane_dir":"<LAB>/src","command":"profiles.start_accessory","route":"/forms/start-accessory","node_id":"dir_choices","action":"default","input":{"item_id":"default"},"operation_key":"profiles-seed-dir","expect":[{"pointer":"","empty":true}]}],"probe":[{"kind":"view","pane_dir":"<LAB>/src","command":"profiles.start_accessory","route":"/forms/start-accessory","node_id":"dir_choices","action":"default","input":{"item_id":"default"},"operation_key":"profiles-probe-dir","expect":[{"pointer":"","empty":true}]}],"keys":{},"changes":[],"inserts":[{"table":"drafts","max":3,"invariants":["SELECT view_id FROM drafts WHERE dir IS NOT NULL OR dir_source IS NOT NULL OR dir_rev <> 1"]}]}`
+
 // setLabFile is the set file of the test: Tunnels with no seed and a list probe; Messaging with one
 // message to the seed agent itself, and action and sql probes, and an until item in the seed and the probes.
-// Templates with the items of its kit entry (setLabTemplates).
+// Templates and Profiles with the items of their kit entries (setLabTemplates, setLabProfiles); the
+// Profiles items are view items.
 func setLabFile(t *testing.T) []byte {
 	act := func(action string, args map[string]any, expect ...map[string]any) map[string]any {
 		it := map[string]any{"kind": "action", "action": action, "args": args}
@@ -61,6 +68,16 @@ func setLabFile(t *testing.T) []byte {
 	if err := json.Unmarshal([]byte(setLabTemplates), &tpl); err != nil {
 		t.Fatal(err)
 	}
+	// kitEntry is entry i with the seed, probe, keys, changes and inserts of a kit entry.
+	kitEntry := func(i int, raw string) map[string]any {
+		var e map[string]any
+		if err := json.Unmarshal([]byte(raw), &e); err != nil {
+			t.Fatal(err)
+		}
+		p := setLabPlugins[i]
+		e["plugin"], e["from"], e["to"] = p.name, p.from, p.to
+		return seal(t, e)
+	}
 	return setBytes(
 		entry(0, []any{}, []any{act("tunnels.list", map[string]any{}, empty("/forwards"), empty("/pending"), empty("/cleanups"))}, map[string]any{}, []any{}),
 		entry(1, []any{act("messaging.send", send), history}, []any{
@@ -70,6 +87,7 @@ func setLabFile(t *testing.T) []byte {
 			map[string]any{"kind": "sql", "sql": "SELECT body, sender FROM messages ORDER BY seq", "rows": []any{[]any{"lab seed one", relSeedAgent}}},
 		}, map[string]any{"clock": []any{"one"}, "messages": []any{"id"}}, []any{}),
 		entry(2, tpl.Seed, tpl.Probe, map[string]any{}, tpl.Changes),
+		kitEntry(3, setLabProfiles),
 	)
 }
 
@@ -160,13 +178,14 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 	got := strings.Join(phases, "|")
 	for _, want := range []string{"seed", "seeded", "probes on FROM", "tunnels fault failed-forward rollback", "tunnels fault failed-forward probes on FROM", "tunnels fault interrupted-replace rerun", "tunnels fault interrupted-replace rollback", "tunnels fault interrupted-replace probes on FROM", "tunnels backup", "tunnels replace", "tunnels verify", "tunnels rerun",
 		"tunnels probes on TO", "messaging rerun", "messaging probes on TO", "chunking probe", "messaging rollback",
-		"templates probes on TO", "templates rollback", "templates probes after the rollback",
+		"templates probes on TO", "profiles probes on TO", "profiles rollback", "profiles probes after the rollback",
+		"templates rollback", "templates probes after the rollback",
 		"messaging probes after the rollback", "tunnels rollback", "tunnels probes after the rollback"} {
 		if !strings.Contains("|"+got+"|", "|"+want+"|") {
 			t.Errorf("record: no check point %q in %s", want, got)
 		}
 	}
-	if strings.Index(got, "templates rollback") > strings.Index(got, "messaging rollback") || strings.Index(got, "messaging rollback") > strings.Index(got, "tunnels rollback") {
+	if strings.Index(got, "profiles rollback") > strings.Index(got, "templates rollback") || strings.Index(got, "templates rollback") > strings.Index(got, "messaging rollback") || strings.Index(got, "messaging rollback") > strings.Index(got, "tunnels rollback") {
 		t.Errorf("record: the rollback is not newest first: %s", got)
 	}
 	if _, err := os.Stat(lab); err == nil {
@@ -248,5 +267,38 @@ INSERT INTO runs VALUES ('1', 5, 'dismissed', '{"by":"relseed","grant_id":"g-1",
 				t.Fatalf("got %v; want an error with %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestReleaseSetLabKitEntries: the lab test runs the exact owner-approved bytes of the Templates
+// and Profiles kit entries (the entry hash is that of the review).
+func TestReleaseSetLabKitEntries(t *testing.T) {
+	var f struct{ Plugins []map[string]any }
+	if err := json.Unmarshal(setLabFile(t), &f); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range map[int]string{
+		2: "8b6b99c7a2186ddb5c51afa5fdafa9e6a885e4b8ababef5e3fe3f7d5a7ea2eab", // tpl-kit42-entry-3
+		3: "5352eef8685c6cfc08aa642cfa945f9f0ffe49f884aa01464f011f4718019627", // profiles-kit42-approve-1
+	} {
+		e := f.Plugins[i]
+		delete(e, "review")
+		b, _ := json.Marshal(e)
+		if got, err := setEntryHash(b); err != nil || got != want {
+			t.Errorf("%s: entry_sha256 %s (%v), want the approved %s", e["plugin"], got, err, want)
+		}
+	}
+}
+
+// viewShows finds the pane only in a layer of a window, as the hub's formWindow does.
+func TestReleaseSetViewShows(t *testing.T) {
+	view := json.RawMessage(`{"active_window_id":"w1","windows":[{"window_id":"w1","layers":[{"blocks":[{"block_id":"b1"}]}]}],"blocks":[{"block_id":"b2"}]}`)
+	for block, want := range map[string]bool{"b1": true, "b2": false, "": false} {
+		if got := viewShows(view, block); got != want {
+			t.Errorf("%q: %v", block, got)
+		}
+	}
+	if viewShows(json.RawMessage(`not json`), "b1") || viewShows(json.RawMessage(`{"windows":[]}`), "b1") {
+		t.Error("a bad or empty view shows the pane")
 	}
 }

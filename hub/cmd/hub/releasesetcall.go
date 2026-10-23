@@ -164,7 +164,7 @@ func (h *rehearsal) agentBatch(plugin, phase string, calls []relSetItem) ([]relC
 	if err := os.WriteFile(script, []byte(batchScript(dir, h.l.server, client, calls)), 0o700); err != nil {
 		return nil, err
 	}
-	session, block, err := h.batchSession(name, dir, script)
+	session, block, err := h.paneSession(name, dir, []string{"/bin/sh", script})
 	if err != nil {
 		if session != "" {
 			h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil)
@@ -386,18 +386,19 @@ func jsonPointer(v any, p string) (any, error) {
 	return v, nil
 }
 
-// batchSession makes the lab session of one agent batch: one window with one pane, which runs the
-// batch script in dir. A plugin that reads the caller's session (Templates saves each pane of it)
-// sees only this pane. batchSession returns after the pane reported its directory (OSC 7), which
-// is in the lab.
-func (h *rehearsal) batchSession(name, dir, script string) (string, string, error) {
+// paneSession makes a new lab session with one window that shows one pane, which runs command in
+// dir: the pane of an agent batch or the source pane of a view item. A plugin that reads the
+// caller's session (Templates saves each pane of it) sees only this pane, and the hub finds the
+// pane in a window (a palette command refuses a source block that no window shows). paneSession
+// returns after the pane reported dir (OSC 7).
+func (h *rehearsal) paneSession(name, dir string, command []string) (string, string, error) {
 	ctx := context.Background()
 	var s struct {
 		ID string `json:"session_id"`
 	}
 	if err := h.l.r.Call(ctx, "session.create", map[string]any{"label": relAgentLabel + "-" + name, "initial_windows": []any{map[string]any{"window_label": name,
 		"layout": map[string]any{"block": map[string]any{"flavor": "com.superlogical.terminal.shell",
-			"options": map[string]any{"command": []string{"/bin/sh", script}, "cwd": dir, "login": false, "exit": map[string]bool{"on_completion": false}}}}}}}, &s); err != nil {
+			"options": map[string]any{"command": command, "cwd": dir, "login": false, "exit": map[string]bool{"on_completion": false}}}}}}}, &s); err != nil {
 		return "", "", fmt.Errorf("session.create: %v", err)
 	}
 	var out struct {
@@ -424,6 +425,14 @@ func (h *rehearsal) batchSession(name, dir, script string) (string, string, erro
 	if err != nil {
 		return s.ID, "", err
 	}
+	// The window must show the pane, as the hub reads it (formWindow): a session.view layer.
+	var view json.RawMessage
+	if err := h.l.r.Call(ctx, "session.view", map[string]any{"session_id": s.ID}, &view); err != nil {
+		return s.ID, block, fmt.Errorf("session.view %s: %v", s.ID, err)
+	}
+	if !viewShows(view, block) {
+		return s.ID, block, fmt.Errorf("no window of the session %s shows the pane %s: %s", s.ID, block, view)
+	}
 	var last string
 	for i := 0; i < 75; i++ {
 		var pwd struct {
@@ -438,7 +447,7 @@ func (h *rehearsal) batchSession(name, dir, script string) (string, string, erro
 		last = err.Error()
 		time.Sleep(200 * time.Millisecond)
 	}
-	return s.ID, block, fmt.Errorf("the batch pane %s did not report the batch directory in 15 s: %s", block, last)
+	return s.ID, block, fmt.Errorf("the pane %s did not report its directory %s in 15 s: %s", block, dir, last)
 }
 
 // batchPaneIDs checks the replies of session.create and session.list_blocks for one batch: a
@@ -454,6 +463,33 @@ func batchPaneIDs(session string, blocks []string) (string, error) {
 		return "", fmt.Errorf("the batch session %s has a block with no block_id", session)
 	}
 	return blocks[0], nil
+}
+
+// viewShows reports whether a session.view reply has block in a layer of a window, the place
+// where the hub looks for the source block of a palette command (formWindow).
+func viewShows(view json.RawMessage, block string) bool {
+	var sv struct {
+		Windows []struct {
+			Layers []struct {
+				Blocks []struct {
+					BlockID string `json:"block_id"`
+				} `json:"blocks"`
+			} `json:"layers"`
+		} `json:"windows"`
+	}
+	if json.Unmarshal(view, &sv) != nil {
+		return false
+	}
+	for _, w := range sv.Windows {
+		for _, l := range w.Layers {
+			for _, b := range l.Blocks {
+				if b.BlockID == block {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // batchPaneAt checks that raw, the terminal.pwd value of a batch pane (the OSC 7 file URL), names

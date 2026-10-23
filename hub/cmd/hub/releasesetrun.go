@@ -430,44 +430,37 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if phase != "seed" {
 		key += "-" + phase
 	}
-	sb, err := os.ReadFile(filepath.Join(h.run, "session"))
-	if err != nil {
-		return err
-	}
-	session := strings.TrimSpace(string(sb))
-	// The source pane reports its directory with OSC 7, as a shell does.
-	osc := fmt.Sprintf(`printf '\033]7;file://localhost%%s\033\\' "$PWD"; exec sleep 3600`)
-	arg, _ := json.Marshal(map[string]any{"session_id": session, "flavor": "com.superlogical.terminal.shell", "label": relAgentLabel + "-source",
-		"options": map[string]any{"command": []string{"/bin/sh", "-c", osc}, "cwd": dir, "login": false, "exit": map[string]bool{"on_completion": false}}})
-	var block, hubClient string
+	var hubClient string
 	if err := h.withLab(func(lr *releaser) error {
 		hub, err := lr.currentHub()
-		if err != nil {
-			return err
+		if err == nil {
+			hubClient = hub.Client
 		}
-		hubClient = hub.Client
-		out, err := lr.rex("api", "call", "session.new_block", string(arg))
-		if err != nil {
-			return err
-		}
-		var nb struct {
-			BlockID string `json:"block_id"`
-		}
-		if json.Unmarshal(out, &nb) != nil || nb.BlockID == "" {
-			return relFail("session.new_block gave no block_id: %s", out)
-		}
-		block = nb.BlockID
-		return nil
+		return err
 	}); err != nil {
+		return relFail("the source pane: %v", err)
+	}
+	// The source pane: a new lab session whose one window shows it, in dir. The hub refuses a
+	// palette command from a block that no window shows. The pane reports its directory with
+	// OSC 7, as a shell does, and paneSession waits for that report.
+	osc := `printf '\033]7;file://localhost%s\033\\' "$PWD"; exec sleep 3600`
+	session, block, err := h.paneSession("source-"+key, dir, []string{"/bin/sh", "-c", osc})
+	if err != nil {
+		if session != "" {
+			h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil)
+		}
 		return relFail("the source pane: %v", err)
 	}
 	// A failed cleanup fails the item, unless the item already failed.
 	defer func() {
-		if cerr := h.closePane(session, block, ""); cerr != nil && err == nil {
+		cerr := h.closePane(session, block, "")
+		if cerr == nil {
+			cerr = h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil)
+		}
+		if cerr != nil && err == nil {
 			err = relFail("closing the source pane: %v", cerr)
 		}
 	}()
-	time.Sleep(500 * time.Millisecond) // the pane's first output (the OSC 7 directory)
 	c := &helperConn{r: h.l.r}
 	self, err := h.runnerClient(ctx, c)
 	if err != nil {
