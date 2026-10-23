@@ -95,7 +95,8 @@ rex.on('client_perform_requested', function(ctx, ev)
   end
 end)
 
-hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)'})
 hub('hub.register', {plugin = 'harnessfix', instance_id = instance_id, exports = {'fix.put', 'fix.hub'}})
+-- After the registration: hub.sql needs a registered plugin. Before the tabs: /home reads kv.
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)'})
 hub('hub.ui.tabs', {tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}})
 rex.call('client.set_label', {label = 'lazyrex-plugin:harnessfix'})
