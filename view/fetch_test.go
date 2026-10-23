@@ -444,7 +444,11 @@ func TestFetchDropsAStalePage(t *testing.T) {
 	old := f.holdNext()
 	r := startFetchRun(t, f)
 	r.p.Send(page(msgs(span(601, 900)...), true, 1800))
-	r.wait("the open fetch waits", func(s probeState) bool { return s.fetching })
+	// The first call took the first hold, so the next hold is for the restarted fetch's call.
+	r.wait("the first call waits", func(s probeState) bool {
+		calls, _ := f.counts()
+		return s.fetching && calls == 1
+	})
 	current := f.holdNext()
 	r.p.Send(page(msgs(span(1501, 1800)...), true, 1800))
 	r.wait("the restarted fetch waits", func(s probeState) bool {
