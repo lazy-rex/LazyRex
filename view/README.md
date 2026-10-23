@@ -87,7 +87,11 @@ A frame row above the cursor can then take two rows, and the move up stops insid
 With the cursor on the first row, every rewrapped row is below the cursor, and the erase removes it.
 The view draws its own caret, so the pane never shows the terminal cursor. The process's first write is the clear and the cursor hide (ESC[?25l), before Bubble Tea starts (paneStart; one write, so a failure is one output failure). Then the pane output drops each "show cursor" sequence (ESC[?25h) (output.go). Nothing shows the cursor at the exit: the pane closes with the process.
 The lab TestLiveRegionResizeLab checks that each live node is on the pane at most once after each size change.
-A known limit: when the new pane is shorter than the old frame (after the rewrap), Rex pushes the old frame's top rows into the scrollback, and no frame can erase them there (docs/rex-protocol.md, A5).
+
+Known limits (the inline frame contract, v1.2 item 1f, is not met in these cases):
+
+- A shorter pane. When the new pane is shorter than the old frame (after the rewrap), Rex pushes the old frame's top rows into the scrollback, and no frame can erase them there (docs/rex-protocol.md, A5). A phone pane with the keyboard open was 48x23 on live (iOS, 2026-10-23), taller than the frame.
+- A resize burst (lead-tvburst2). Two sizes with no wait between them can leave stale frame rows. codex-29 observed it once on Linux at 027b8718: after 120x40 then 70x18, the old frame's first 4 rows (Action w1, a blank row, Action w2, a blank row) stayed above the new frame, so the pane had 2 copies of each action. It did not repeat in 10 later runs of the lab with the same resize code (b54683d9 and 9688f1c1: 7 by claude-52, 3 by codex-29 with VIEW_TEA_TRACE=1), nor in 6 rounds of teaprobe A6. The explanation is UNPROVEN: Bubble Tea drew one frame for 120 columns, and Rex applied 70 columns before those bytes; each box row of 114 cells then wrapped once, the frame took 4 more rows than Bubble Tea counted, and the move back to the first row stopped 4 rows low. TestLiveRegionResizeLab waits between sizes; TestLiveRegionResizeBurstLab keeps the no-wait burst and runs only with RESIZE_BURST_LAB=1.
 
 ### The clear at process start
 
