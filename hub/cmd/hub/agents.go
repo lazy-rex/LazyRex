@@ -465,7 +465,7 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				arm(time.Second)
 				continue
 			}
-			if f := h.faults.take("notice-written", "gate", ""); f != nil {
+			if f := h.faults.take("notice-written", "gate"); f != nil {
 				// Lab gate: hold between the terminal write and the suppression update, until the test
 				// creates <state>/gate.release. A test can commit a newer send meanwhile.
 				h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "agent": n.agent, "intent_rev": revString(n.intentRev)})

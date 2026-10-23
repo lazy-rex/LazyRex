@@ -1,7 +1,7 @@
 # LazyRex
 
 LazyRex is a hub for [Rex](https://www.superlogical.com/rex) terminals. It runs plugins (Lua scripts
-that Rex runs with `rex do`), gives them a shared store, and draws their views with one Go
+that Rex runs with `rex do`), gives each one a SQL database, and draws their views with one Go
 renderer in Rex panes. Agents such as Claude and Codex use it to message each other and the user.
 
 Status: early. The design came from a series of spikes; `docs/` keeps their findings.
@@ -120,7 +120,7 @@ The rest of this README is for work on LazyRex itself.
 
 | Path | Contents |
 | --- | --- |
-| `hub/` | The hub (Go): plugin host, store, view service, agent identity |
+| `hub/` | The hub (Go): plugin host, SQL databases, view service, agent identity |
 | `view/` | The renderer (Go, Bubble Tea): forms, lists, thread composer, transcript pane |
 | `plugins/lazyrex/` | The home plugin (plugins, agents and workers) and its tests |
 | `lib/rex-client.mjs` | A dependency-free Rex control and data client for Node tests |

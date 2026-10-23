@@ -12,8 +12,7 @@ hub.
 ## 1. The database (built)
 
 - One file for each plugin name: `<state>/sql/<name>.db` (with `-wal` and `-shm`). A replace, a
-  stop, a source change and a hub restart keep the file. The hub never deletes it;
-  `hub.admin.sql_return` (section 11) moves it aside.
+  stop, a source change and a hub restart keep the file. The hub never deletes it.
 - Settings: WAL, `synchronous = FULL`, `foreign_keys = ON`, `trusted_schema = OFF`, defensive mode,
   no ATTACH (`SQLITE_LIMIT_ATTACHED = 0`), `max_page_count` for 1 GiB. A plugin cannot change them.
 - Two connections: a writer (all writes and handler transactions) and a read-only reader (a query
@@ -43,15 +42,11 @@ hub.
 | `hub.sql.commit` | `{tx, key?, fingerprint?, reply? or reply_parts?, notices?}` | `{}`, or `{replayed = true, reply}` |
 | `hub.sql.rollback` | `{tx}` | `{}` (also for an unknown or ended token) |
 | `hub.sql.replay` | `{key, fingerprint}` | `{found = false}` or `{found = true, reply}` |
-| `hub.store.ops_scan` | `{after?, limit? (1 to 500)}` | `{ops = [{key, fingerprint, result}], next?}` |
 
 - Without `tx`: an exec or a batch runs in a transaction of its own (a batch is all or nothing); a
   query reads the committed state.
 - `rows` are arrays in column order. `id` is `last_insert_rowid()`, in the integer form of a cell: beyond 2^53 it is `{"int": "<decimal>"}`. `changes` counts the statement's
   own rows; it is 0 when the statement changed nothing.
-- `hub.store.ops_scan` lists the caller's saved hub.store operations in key order, one snapshot per
-  page, with the page rules of `hub.store.scan`. A plugin uses it once, to import its saved replies
-  into SQL. `hub.store.op` stays for exact-key reads.
 
 ## 3. Values (built; observed through Rex Lua)
 
@@ -129,17 +124,16 @@ authorized at CREATE.
 - Errors are Rex action errors with a code: `invalid_input`, `refused`, `sql_error` (the text has
   the SQLite code name), `conflict` (`expect_changes`, `expect_rows`), `operation_conflict`,
   `too_large`, `timeout`, `busy`, `tx_expired`, `stale_instance`, `unsupported_value`,
-  `no_notice`, `notices_moved`, `unavailable`. Only `timeout` and `unavailable` leave the outcome
+  `no_notice`, `unavailable`. Only `timeout` and `unavailable` leave the outcome
   unknown; every other error means that nothing was committed.
 
 ## 7. Notices (built)
 
-- `hub.sql.commit {notices = [...]}` takes the three forms of a `hub.store.batch` notify op
-  (docs/hub.md, "Notices (notify ops)"): `{agent, pending}` (the SDK's `app.notice`),
-  `{agent, pending = true, once = true}` (`app.notice(agent, true, {once = true})`) and
-  `{agent, read = true}` (`app.notice_read`). The admission has the rules of a notify op: the
-  manifest's `notice`, a known agent, one entry for each agent, no other field. The hub applies each
-  form with the same rules as a notify op.
+- `hub.sql.commit {notices = [...]}` takes three forms (docs/hub.md, "Notices"): `{agent, pending}`
+  (the SDK's `app.notice`), `{agent, pending = true, once = true}`
+  (`app.notice(agent, true, {once = true})`) and `{agent, read = true}` (`app.notice_read`). The
+  admission needs the manifest's `notice`, a known agent, one entry for each agent and no other
+  field.
 - The notices go into `lazyrex_notice_outbox` in the handler's transaction: a rollback has none.
 - After the commit the hub applies the rows to hub.db in `seq` order, in one hub.db transaction that
   writes a receipt `(plugin, seq)` for each row; then it deletes the rows, then the receipts. A row
@@ -147,10 +141,6 @@ authorized at CREATE.
   AUTOINCREMENT, so a seq is not used again in one file.
 - A failed apply does not fail the call: the commit stands, and a timer retries (1 s to 60 s). The
   hub start applies every outbox in `<state>/sql`, also of plugins that are not configured now.
-- One notice path for each plugin: after a commit with notices, the hub refuses `hub.store.batch`
-  notify ops of that plugin (`notices_moved`). The hub checks it under the store fence, and the move
-  holds that fence exclusively: a store notify in flight commits before the move, and no store
-  notice lands after the first SQL notice.
 
 ## 8. Saved replies (built)
 
@@ -194,46 +184,14 @@ authorized at CREATE.
 - Any other `refresh` value is a declaration error (docs/hub.md, "SQL read tracking"): the view gets
   no table set, and `view_deps_invalid` names the value.
 
-## 11. Rollback: hub.admin.sql_return (built)
-
-`hub.admin.sql_return {plugin}` takes a plugin back from hub.sql to its store version. The admin
-guard applies. Reply: `{returned = "<directory>"}` (the backup of this return), or `""` when there
-was no file. The plugin's SQL data written after the cutover is not in the store version: that loss
-is accepted (coordinator decision).
-
-- It refuses while the plugin is running or desired running (`refused`): stop it first. It holds
-  the plugin's lifecycle lock, so the plugin does not start during the call.
-- The steps, each safe to run again:
-  1. A marker `sql_returns(plugin, stamp)` in hub.db. While it exists, the hub does not open the
-     file (`hub.sql.*` gives `unavailable`), and the start drain skips it.
-  2. The outbox drains under the plugin's SQL lock. If a row stays, the call fails
-     (`unavailable`) and moves nothing.
-  3. The hub closes its writer and reader of the file. No independent copy of a live file is made.
-  4. `<name>.db`, then `-wal` and `-shm`, move to `<state>/sql-returned/<name>-<stamp>/`, outside
-     `<state>/sql`. A file that is already moved is skipped. Both directories are synced.
-  5. One hub.db transaction deletes the plugin's `sql_notice_plugins` row, its `notice_receipts`
-     and the marker. Then `hub.store.batch` notify ops of the plugin work again.
-- A crash between two steps leaves the marker: no start drains the outbox or opens the file, and
-  the next call continues with the same stamp.
-- A later forward starts with a new, empty file. The first SQL notice moves the notice path again.
-- Rollback procedure: `hub.admin.stop`; `hub.admin.sql_return`; move the release clone back;
-  `hub.admin.start`.
-
 ## 10. Tests
 
 Unit (`go test ./cmd/hub -run TestSQL`, also `-race`): values and tags, refusals, one statement,
 time types, isolation and commit, waiting calls, idle and total limits, busy, stale instance and the
-fence, saved replies, batches, paging, notices (outbox, retry, receipts, notices_moved),
-`hub.store.ops_scan`.
+fence, saved replies, batches, paging, notices (outbox, retry, receipts).
 
 Lab (`HARNESS_LAB=1 go test ./cmd/hub -run TestSQLWireLab`): a Rex Lua plugin; NULL in the middle and
-at the end of a row, a large integer, a handler transaction, `hub.test.sql`, the commit faults,
-`hub.admin.sql_return` (refused while running; after a stop, the file moves, and the next start has
-an empty file).
-
-Unit `TestSQLReturn`: a crash after each step of `hub.admin.sql_return`, then a restart of the SQL
-service (a call is `unavailable`), then the call again; each outbox row reaches hub.db once; store
-notices after the return; a later forward.
+at the end of a row, a large integer, a handler transaction, `hub.test.sql`, the commit faults.
 
 Harness (docs/testing.md): `sql()`, `sql_write()`, `inject{match = {sql_commit_writes = t}}`.
 

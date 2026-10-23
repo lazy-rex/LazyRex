@@ -135,3 +135,7 @@ One line per item: what, its owner, and why it waits.
   `identity_panes.session_id` (identity.go), so a moved agent pane shows its old session until its
   next report. Owner: Hub Features. Waits: a Rex fact: does Rex send an event when a block moves to
   another session?
+- A lab fault after a `hub.sql` commit and before its reply (exit or pause), as `store-commit` was
+  for `hub.store.batch` before the hub.store removal. Today no lab test ends the hub between a SQL
+  commit and its reply. Owner: Hub Fixes. Waits: no test in this repository used `store-commit`,
+  so the removal does not add the SQL point; a plugin test that needs it asks for it.

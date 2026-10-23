@@ -3,8 +3,8 @@ package main
 // The call record (test mode only). The hub records each call of a registered current plugin
 // instance, except hub.test.*, once, when it arrives (dispatchFaulted): before the action faults
 // and the action run, so a call that a fault or the action fails is recorded too. A test reads the
-// record to prove what a plugin did not call, for example that a migration never scans message/
-// records. A seq belongs to one hub process: a hub restart starts again from 1 with an empty record.
+// record to prove what a plugin did not call, for example that a view render never
+// calls hub.sql.exec. A seq belongs to one hub process: a hub restart starts again from 1 with an empty record.
 //
 // hub.test.calls {plugin, action?, after?} -> {calls: [{seq, action, instance_id, args}], next, dropped}
 //   after: only calls with seq > after (default 0). action: only calls of this action.

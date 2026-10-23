@@ -130,7 +130,6 @@ type Plugin struct {
 	waiting   []string     // the dependencies that are not registered (state waiting)
 	attempted bool         // a start attempt (startPlugin) ran in this hub process: recovery skips the record
 	lifecycle sync.Mutex   // serializes replace, start and stop
-	writes    sync.RWMutex // the store fence: a store write holds it to read (fencedBatch)
 	respawn   respawnState // the crash backoff (respawn.go); h.mu guards it
 	commands  commandState // the admitted palette commands (plugins.go); h.mu guards it
 }
@@ -297,7 +296,7 @@ var pluginArgReserved = map[string]bool{"hub_client_id": true, "instance_id": tr
 
 // hubActionNames are the hub's own client actions, beside hubToolActions and the test actions.
 var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub.agents.resolve", "hub.join",
-	"hub.store.get", "hub.store.scan", "hub.store.batch", "hub.store.op", "hub.store.ops_scan", "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.admin.relaunch", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.info",
+	"hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.shutdown", "hub.admin.relaunch", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.info",
 	"hub.ui.tabs", "hub.ui.navigate", "hub.ui.reload", "hub.ui.describe", "hub.view.attach", "hub.view.subscribe", "hub.view.get", "hub.view.history",
 	"hub.view.action", "hub.view.draft.save", "hub.view.send", "hub.view.operation", "hub.view.effect.retry", "hub.view.seen", "hub.view.close", "hub.session.list", "hub.session.ensure",
 	"hub.plugins", "hub.plugins.reload", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
@@ -554,7 +553,6 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		return h.db.dropNoticeReceipts(context.Background(), plugin, seq)
 	}
 	h.sql.notified = h.kickNotices
-	h.sql.returning = h.db.sqlReturning
 	for _, a := range cfg.Agents {
 		h.agents[a.ID] = &Agent{ID: a.ID, Name: a.Name, StatusRecord: a.StatusRecord, delivered: map[string]int64{}}
 		h.agentOrder = append(h.agentOrder, a.ID)
@@ -616,7 +614,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	h.formsSweep(ctx)
 	h.slotSweep(ctx)
 	h.startPalette() // the command set may have changed while the hub was down
-	if f := fs.take("palette-start", "fail", ""); f != nil {
+	if f := fs.take("palette-start", "fail"); f != nil {
 		<-h.paletteTried
 		ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode})
 		h.paletteStop()
@@ -989,7 +987,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.viewEffectRetry(ctx, p, args)
 	case "hub.view.operation":
 		return h.viewOperation(ctx, p, args)
-	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.sql_return", "hub.admin.relaunch":
+	case "hub.admin.start", "hub.admin.stop", "hub.admin.replace", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown", "hub.admin.resume", "hub.admin.restart", "hub.admin.restart.form", "hub.admin.relaunch":
 		if in, err := h.callerInManagedPane(pid); err != nil {
 			return nil, unverifiedCaller(err)
 		} else if in {
@@ -1013,9 +1011,6 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		}
 		if p.Action == "hub.admin.restart.form" {
 			return h.adminRestartForm(ctx, p, args)
-		}
-		if p.Action == "hub.admin.sql_return" {
-			return h.adminSQLReturn(ctx, args)
 		}
 		if p.Action == "hub.admin.shutdown" {
 			// The stop itself starts in answer, after the reply.
@@ -1087,55 +1082,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 			}
 		}
 		return map[string]any{"found": false}, nil
-	case "hub.store.get":
-		out, err := h.db.storeGet(ctx, ns, args)
-		if err == nil && h.test != nil {
-			if err := h.testAfterGet(ctx, ns, args); err != nil {
-				return nil, err
-			}
-		}
-		return out, err
-	case "hub.store.scan":
-		return h.db.storeScan(ctx, ns, args)
-	case "hub.store.op":
-		return h.db.storeOp(ctx, ns, args)
-	case "hub.store.ops_scan":
-		return h.db.storeOpsScan(ctx, ns, args)
-	case "hub.store.batch":
-		out, err := h.fencedBatch(ctx, pl, p.Requester.ClientID, args)
-		if err != nil {
-			return nil, err
-		}
-		if out.committed {
-			h.afterCommit(ns, out)
-			if f := h.faults.take("store-commit", "", out.opKey); f != nil {
-				h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "op_key": out.opKey})
-				if f.mode == "exit" {
-					os.Exit(faultExitCode)
-				}
-				select {} // pause: never reply; the test stops the hub by pid
-			}
-		}
-		return out.result, nil
 	}
 	return nil, bad("unknown action %s", p.Action)
-}
-
-// afterCommit announces a committed batch: the event log, pending notices, and the plugin's views.
-func (h *Hub) afterCommit(ns string, out *batchOutcome) {
-	fields := map[string]any{"plugin": ns, "revs": out.revs}
-	if out.opKey != "" {
-		fields["op_key"] = out.opKey
-	}
-	h.ev.emit("store_committed", fields)
-	if len(out.intentRev) > 0 {
-		h.kickNotices()
-	}
-	keys := make([]string, 0, len(out.revs))
-	for k := range out.revs {
-		keys = append(keys, k)
-	}
-	h.markCommit(ns, keys) // the views whose declaration matches a committed key render again
 }
 
 // callerInManagedPane reports whether pid runs inside an agent or plugin pane. It walks the
@@ -1163,53 +1111,6 @@ func (h *Hub) callerInManagedPane(pid int) (bool, error) {
 	}
 	// No match in the pids read. With an incomplete walk the answer is unknown: the guard refuses.
 	return false, walkErr
-}
-
-// storeBatchHook is a test hook of fencedBatch. It runs at stage "check" (after the caller check in
-// dispatch, before the fence) and at stage "fenced" (under the fence, after the check again).
-var storeBatchHook func(stage string)
-
-// fencedBatch runs a hub.store.batch of the instance client under the store fence: it holds
-// pl.writes to read, and it checks again that client is the registered instance. A batch that
-// passed the caller check before a retirement is then refused (stale_instance), or the retirement
-// waits until it commits.
-func (h *Hub) fencedBatch(ctx context.Context, pl *Plugin, client string, args map[string]any) (*batchOutcome, error) {
-	if storeBatchHook != nil {
-		storeBatchHook("check")
-	}
-	pl.writes.RLock()
-	defer pl.writes.RUnlock()
-	h.mu.Lock()
-	current := client != "" && pl.ClientID == client
-	h.mu.Unlock()
-	if !current {
-		return nil, refuse("stale_instance", "plugin %s: the caller is no longer the registered instance; nothing was written", pl.Name)
-	}
-	if storeBatchHook != nil {
-		storeBatchHook("fenced")
-	}
-	// Under the fence: a move to hub.sql notices (admitSQLNotices) holds the fence exclusively, so a
-	// store notify commits before the move or sees it.
-	if hasNotify(args) {
-		if moved, err := h.db.noticesMoved(ctx, pl.Name); err != nil {
-			return nil, err
-		} else if moved {
-			return nil, refuse("notices_moved", "plugin %s sends its notices through hub.sql.commit now", pl.Name)
-		}
-	}
-	if h.test != nil {
-		if err := h.testBeforeBatch(ctx, pl.Name, args); err != nil {
-			return nil, err
-		}
-	}
-	return h.db.storeBatch(ctx, pl.Name, args, h.roster(), h.noticed(pl.Name))
-}
-
-// fenceStoreWrites waits for the store writes that hold pl.writes. Call it after the client ID is
-// cleared, without h.mu: after it returns, no write of the old instance commits.
-func (h *Hub) fenceStoreWrites(pl *Plugin) {
-	pl.writes.Lock()
-	pl.writes.Unlock()
 }
 
 // sdkLogLine is the hub's start line for the SDK that plugins with sdk use: "sdk: <dir>", or "sdk:
@@ -1297,10 +1198,8 @@ func (h *Hub) currentClient(plugin, client string) bool {
 	return pl != nil && client != "" && pl.ClientID == client
 }
 
-// admitSQLNotices checks the notices of a hub.sql commit with the rules of a notify op of
-// hub.store.batch, then records that the plugin's notices moved to hub.sql. The move holds the
-// store fence exclusively: a store notify in flight commits first, and a later one is refused
-// (notices_moved), so no store notice lands after the first SQL notice.
+// admitSQLNotices checks the notices of a hub.sql commit: the plugin has a notice in its manifest,
+// and each agent is in the roster.
 func (h *Hub) admitSQLNotices(plugin string, notes []noticeOp) error {
 	if !h.noticed(plugin) {
 		return refuse("no_notice", "plugin %s has no notice in its manifest", plugin)
@@ -1317,20 +1216,7 @@ func (h *Hub) admitSQLNotices(plugin string, notes []noticeOp) error {
 			return refuse("invalid_input", "notices: %q is not a known agent", n.agent)
 		}
 	}
-	pl.writes.Lock()
-	defer pl.writes.Unlock()
-	return h.db.moveNotices(context.Background(), plugin)
-}
-
-// hasNotify reports whether a hub.store.batch has a notify op.
-func hasNotify(args map[string]any) bool {
-	ops, _ := asList(args["ops"])
-	for _, o := range ops {
-		if m, ok := o.(map[string]any); ok && m["notify"] != nil {
-			return true
-		}
-	}
-	return false
+	return nil
 }
 
 // hubFlagSet holds the flags of a hub run. sdkN counts the -sdk flags (the last one wins).
@@ -1346,7 +1232,7 @@ type hubFlagSet struct {
 func hubFlags(set *flag.FlagSet) *hubFlagSet {
 	v := &hubFlagSet{faults: &faults{}, sdk: new(string)}
 	v.config = set.String("config", "", "hub configuration JSON (required)")
-	set.Var(v.faults, "lab-fault", "lab-only fault, for example point=store-commit,mode=exit (repeatable)")
+	set.Var(v.faults, "lab-fault", "lab-only fault, for example point=block-create,mode=exit-before (repeatable)")
 	v.real = set.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
 	v.test = set.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
 	v.restart = set.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")

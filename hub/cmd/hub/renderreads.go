@@ -11,8 +11,8 @@ package main
 //
 // A render is untracked when the hub cannot know all that it read: while it is open, a hub call
 // of the plugin that is not a hub.sql.query with an open render ID of that plugin instance (an
-// untokened query, a closed or unknown ID, hub.store.get, any other hub action), a query that
-// failed with an error other than conflict, or a read of a sqlite_ table other than the schema.
+// untokened query, a closed or unknown ID, any other hub action), a query that failed with an
+// error other than conflict, or a read of a sqlite_ table other than the schema.
 // A hub.reply.part of the instance does not untrack its renders: the parts of a reply come after
 // the handler returned and read nothing (replyparts.go).
 //

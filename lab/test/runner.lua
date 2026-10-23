@@ -18,8 +18,8 @@ end
 
 local tests = {}
 local env = setmetatable({}, {__index = _G})
-for _, name in ipairs({'expect', 'expect_error', 'assert_eq', 'assert_true', 'store', 'notice', 'batches', 'advance_rev',
-  'tabs', 'tab', 'views', 'operation', 'inject', 'injection', 'cancel_injection', 'with_injection', 'session', 'close_session', 'write', 'sql', 'sql_write', 'put_operation', 'write_profiles', 'invalidates', 'calls', 'renders', 'fault', 'fault_fired', 'fault_release', 'agent', 'user', 'node', 'wait', 'show', 'equal', 'is_error', 'app'}) do
+for _, name in ipairs({'expect', 'expect_error', 'assert_eq', 'assert_true', 'notice',
+  'tabs', 'tab', 'views', 'operation', 'inject', 'injection', 'cancel_injection', 'with_injection', 'session', 'close_session', 'sql', 'sql_write', 'write_profiles', 'invalidates', 'calls', 'renders', 'fault', 'fault_fired', 'fault_release', 'agent', 'user', 'node', 'wait', 'show', 'equal', 'is_error', 'app'}) do
   env[name] = H[name]
 end
 env.H = H

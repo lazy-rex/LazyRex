@@ -1,10 +1,11 @@
 package main
 
 // Declared render dependencies (docs/hub.md, "Render dependencies"). A view.render reply can add
-// "deps": {"prefixes": [...], "changes": [...]}. A commit of the plugin then renders the view
-// again only when a committed key starts with one of its prefixes, and a changed() renders it only
-// for the names in changes. A missing field keeps the broad behavior; an empty list turns that
-// trigger off. Other triggers mark one view or every view of the plugin, whatever the declaration.
+// "deps": {"changes": [...]}. A changed() then renders the view only for the names in changes. A
+// missing field keeps the broad behavior; an empty list turns that trigger off. Any other field,
+// such as the prefixes of the removed hub.store, is a malformed declaration
+// (view_deps_invalid). Other triggers mark one view or every view of the plugin, whatever the
+// declaration.
 //
 // The state of each view is under h.vs.mu. A render takes the view's causes and marks it in
 // flight. While it is in flight, every trigger marks the view, without the filter: the hub does
@@ -43,15 +44,9 @@ var causeNames = []string{"commit", "invalidate", "register", "attach", "snapsho
 // changeNames are the names that changed() uses, and that deps.changes can list.
 var changeNames = []string{"agents", "plugins", "workers", "profiles"}
 
-const (
-	depsMaxPrefixes  = 64
-	depsMaxPrefixLen = 512
-)
-
 // viewDeps is a declaration. A nil list keeps the broad trigger; an empty list turns it off.
 type viewDeps struct {
-	prefixes []string
-	changes  []string
+	changes []string
 }
 
 // viewState is the render state of one view.
@@ -88,24 +83,9 @@ func (h *Hub) markView(plugin, id string, cause renderCause) {
 	h.kickViews(plugin, 0)
 }
 
-// markCommit marks the views of the plugin that a commit of keys can change: a view in flight, a
-// view without prefixes, and a view with a matching prefix. A view that has no state yet gets it
-// through loose.
-func (h *Hub) markCommit(plugin string, keys []string) {
-	h.vs.mu.Lock()
-	for _, st := range h.vs.views[plugin] {
-		if st.inFlight || st.deps == nil || st.deps.prefixes == nil || matchesPrefix(keys, st.deps.prefixes) {
-			st.dirty |= causeCommit
-		}
-	}
-	h.vs.loose[plugin] |= causeCommit
-	h.vs.dirty[plugin] = true
-	h.vs.mu.Unlock()
-	h.kickViews(plugin, 0)
-}
-
-// markChanged marks the views of the plugin that changed(what) can change, as markCommit does.
-// A name that a declaration cannot list marks every view.
+// markChanged marks the views of the plugin that changed(what) can change: a view in flight, a
+// view without a changes declaration, and a view that declares or read what. A view that has no
+// state yet gets the cause through loose. A name that a declaration cannot list marks every view.
 func (h *Hub) markChanged(plugin, what string) {
 	if !slices.Contains(changeNames, what) {
 		h.kickViews(plugin, causeChanged)
@@ -145,17 +125,6 @@ func (h *Hub) forgetView(id string) {
 	h.vs.mu.Unlock()
 }
 
-func matchesPrefix(keys, prefixes []string) bool {
-	for _, k := range keys {
-		for _, p := range prefixes {
-			if strings.HasPrefix(k, p) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // parseDeps reads the deps field of a view.render reply. No field (or null) is no declaration.
 func parseDeps(raw json.RawMessage) (*viewDeps, error) {
 	if len(raw) == 0 || string(raw) == "null" {
@@ -172,16 +141,6 @@ func parseDeps(raw json.RawMessage) (*viewDeps, error) {
 			return nil, fmt.Errorf("deps.%s: %w", k, err)
 		}
 		switch k {
-		case "prefixes":
-			if len(l) > depsMaxPrefixes {
-				return nil, fmt.Errorf("deps.prefixes: more than %d prefixes", depsMaxPrefixes)
-			}
-			for _, p := range l {
-				if len(p) > depsMaxPrefixLen {
-					return nil, fmt.Errorf("deps.prefixes: a prefix is longer than %d bytes", depsMaxPrefixLen)
-				}
-			}
-			d.prefixes = l
 		case "changes":
 			for _, c := range l {
 				if !slices.Contains(changeNames, c) {
@@ -208,9 +167,12 @@ func depsList(raw json.RawMessage) ([]string, error) {
 	return l, nil
 }
 
-// uiInvalidate handles hub.ui.invalidate {routes?}: the plugin's data changed outside the store
-// (for example a scan finished). No routes: every open view of the plugin renders again. routes:
-// only the open views whose route equals one of the strings.
+// invalidateMaxRoutes bounds the routes of one hub.ui.invalidate.
+const invalidateMaxRoutes = 64
+
+// uiInvalidate handles hub.ui.invalidate {routes?}: the plugin's data changed outside hub.sql (for
+// example a scan finished). No routes: every open view of the plugin renders again. routes: only
+// the open views whose route equals one of the strings.
 func (h *Hub) uiInvalidate(ctx context.Context, plugin string, args map[string]any) (any, error) {
 	raw, ok := args["routes"]
 	if !ok {
@@ -218,8 +180,8 @@ func (h *Hub) uiInvalidate(ctx context.Context, plugin string, args map[string]a
 		return map[string]any{"status": "accepted"}, nil
 	}
 	list, _ := raw.([]any)
-	if len(list) < 1 || len(list) > depsMaxPrefixes {
-		return nil, bad("invalid: routes must be a list of 1 to %d routes", depsMaxPrefixes)
+	if len(list) < 1 || len(list) > invalidateMaxRoutes {
+		return nil, bad("invalid: routes must be a list of 1 to %d routes", invalidateMaxRoutes)
 	}
 	routes := make([]any, 0, len(list))
 	for _, r := range list {
@@ -302,7 +264,7 @@ type renderCount struct {
 	Failed    int            `json:"failed"`
 	Transient int            `json:"transient"`
 	Causes    map[string]int `json:"causes"`
-	// Declared is the declaration that the view has now, {prefixes, changes}; absent for none.
+	// Declared is the declaration that the view has now, {changes}; absent for none.
 	Declared any `json:"declared,omitempty"`
 	// SQLTracked: the view has a table set from a tracked render (renderreads.go). No
 	// table names: they are the plugin's storage.
@@ -374,7 +336,7 @@ func (h *Hub) testRenders(plugin string) any {
 	for id, st := range h.vs.views[plugin] {
 		tracked[id] = st.tables != nil
 		if st.deps != nil {
-			declared[id] = map[string]any{"prefixes": st.deps.prefixes, "changes": st.deps.changes}
+			declared[id] = map[string]any{"changes": st.deps.changes}
 		}
 	}
 	h.vs.mu.Unlock()

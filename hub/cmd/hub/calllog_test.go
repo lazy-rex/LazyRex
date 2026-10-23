@@ -15,7 +15,7 @@ func testCallLog() (*callLog, *[]string, *time.Time) {
 	return c, &lines, &now
 }
 
-// Only a fast, successful routine read (hub.store.get, hub.store.scan) gets no line. A refused or
+// Only a fast, successful routine read (hub.sql.query) gets no line. A refused or
 // failed call, a failed reply, a slow call, and every other action keep their line, with the
 // duration. 250 ms is the first duration that keeps the line.
 func TestCallLogKeepsEveryLineButFastRoutineReads(t *testing.T) {
@@ -27,14 +27,13 @@ func TestCallLogKeepsEveryLineButFastRoutineReads(t *testing.T) {
 		d        time.Duration
 		line     bool
 	}{
-		{"hub.store.get", nil, nil, 2 * time.Millisecond, false},
-		{"hub.store.scan", nil, nil, 2 * time.Millisecond, false},
-		{"hub.store.get", nil, nil, slowCall - time.Microsecond, false},
-		{"hub.store.get", nil, nil, slowCall, true},
-		{"hub.store.scan", nil, nil, time.Second, true},
-		{"hub.store.get", refused, nil, time.Millisecond, true},
-		{"hub.store.get", nil, errors.New("reply lost"), time.Millisecond, true},
-		{"hub.store.batch", nil, nil, time.Millisecond, true},
+		{"hub.sql.query", nil, nil, 2 * time.Millisecond, false},
+		{"hub.sql.query", nil, nil, slowCall - time.Microsecond, false},
+		{"hub.sql.query", nil, nil, slowCall, true},
+		{"hub.sql.query", nil, nil, time.Second, true},
+		{"hub.sql.query", refused, nil, time.Millisecond, true},
+		{"hub.sql.query", nil, errors.New("reply lost"), time.Millisecond, true},
+		{"hub.sql.exec", nil, nil, time.Millisecond, true},
 		{"hub.admin.start", nil, nil, time.Millisecond, true},
 		{"hub.admin.shutdown", nil, nil, time.Millisecond, true},
 		{"hub.register", nil, nil, time.Millisecond, true},
@@ -64,17 +63,17 @@ func TestCallLogKeepsEveryLineButFastRoutineReads(t *testing.T) {
 // without skipped calls writes no summary.
 func TestCallLogSummary(t *testing.T) {
 	c, lines, now := testCallLog()
-	c.record("hub.store.get", "c", 1, nil, nil, 3*time.Millisecond)
-	c.record("hub.store.get", "c", 1, nil, nil, 12*time.Millisecond)
-	c.record("hub.store.scan", "c", 1, nil, nil, 40*time.Millisecond)
+	c.record("hub.sql.query", "c", 1, nil, nil, 3*time.Millisecond)
+	c.record("hub.sql.query", "c", 1, nil, nil, 40*time.Millisecond)
+	c.record("hub.sql.query", "c", 1, nil, nil, 12*time.Millisecond)
 	*now = now.Add(summaryEvery - time.Millisecond)
-	c.record("hub.store.get", "c", 1, nil, nil, time.Millisecond)
+	c.record("hub.sql.query", "c", 1, nil, nil, time.Millisecond)
 	if len(*lines) != 0 {
 		t.Fatalf("lines before a minute: %q", *lines)
 	}
 	*now = now.Add(time.Millisecond) // exactly one minute after the first call
 	c.record("hub.admin.start", "c", 1, nil, nil, time.Millisecond)
-	want := "routine calls without a line since 15:00:00: hub.store.get 3 (max 12.0ms), hub.store.scan 1 (max 40.0ms)"
+	want := "routine calls without a line since 15:00:00: hub.sql.query 4 (max 40.0ms)"
 	if len(*lines) != 2 || (*lines)[0] != want || !strings.HasPrefix((*lines)[1], "hub.admin.start ") {
 		t.Fatalf("lines %q, want the summary %q and then the call line", *lines, want)
 	}
@@ -89,5 +88,5 @@ func TestCallLogSummary(t *testing.T) {
 // A Hub without a call log (a test hub) writes every line.
 func TestCallLogNilWritesEveryLine(t *testing.T) {
 	var c *callLog
-	c.record("hub.store.get", "c", 1, nil, nil, time.Millisecond) // must not panic
+	c.record("hub.sql.query", "c", 1, nil, nil, time.Millisecond) // must not panic
 }

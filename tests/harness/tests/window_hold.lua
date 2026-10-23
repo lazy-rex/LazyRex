@@ -107,7 +107,7 @@ test('a crash during a hold leaves the leaves pending with one candidate pane ea
 end)
 
 test('a window hold is checked when it is made', function()
-  expect_error(function() inject({match = {writes = 'x'}, hold = true}) end, 'hold needs match')
+  expect_error(function() inject({match = {sql_commit_writes = 'x'}, hold = true}) end, 'hold needs match')
   expect_error(function() inject({match = {window = 'k'}}) end, 'needs hold = true')
   expect_error(function() inject({match = {window = 'k'}, hold = true, fail = 'x'}) end, 'has no fail')
   expect_error(function() inject({match = {window = 'k'}, hold = true, fail_code = 'x'}) end, 'has no fail_code')

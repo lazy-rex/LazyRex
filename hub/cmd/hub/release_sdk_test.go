@@ -77,7 +77,7 @@ func TestSDKArgExact(t *testing.T) {
 		"config eats all": {[]string{"hub", "-config", "-sdk"}, "!no -sdk"},
 		"bool flag":       {[]string{"hub", "-real-server", "-test=false", "-sdk", "/s/lua"}, "/s/lua"},
 		"bool no value":   {[]string{"hub", "-restart", "/x", "-sdk", "/s/lua"}, "!arguments after"},
-		"lab fault":       {[]string{"hub", "-lab-fault", "point=store-commit,mode=exit", "-sdk", "/s/lua"}, "/s/lua"},
+		"lab fault":       {[]string{"hub", "-lab-fault", "point=block-create,mode=exit-before", "-sdk", "/s/lua"}, "/s/lua"},
 		"sdk eats":        {[]string{"hub", "-sdk", "-config", "/c"}, "!arguments after"},
 		"missing":         {[]string{"hub", "-config", "c"}, "!no -sdk"},
 		"repeated":        {[]string{"hub", "-sdk", "/a", "-sdk=/b"}, "!2 -sdk"},

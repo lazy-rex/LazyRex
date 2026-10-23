@@ -336,32 +336,20 @@ does not hide the result.
 
 | Call | Returns |
 | --- | --- |
-| `store(key, plugin?)` | `{value, rev}`; an absent record is `{rev = '0'}`. |
 | `notice(agent)` | `{found, pending, intent_rev}` |
-| `batches()` | The number of `hub.store.batch` calls of the plugin. |
 | `invalidates(plugin?)` | The number of `hub.ui.invalidate` calls of the plugin. A count that stays the same over an interval proves only that the plugin made no `hub.ui.invalidate` call in that interval. It does not prove that no other idle render loop runs. |
-| `calls(action, {after?, plugin?})` | The recorded hub service calls of the plugin (`hub.test.calls`): a list of `{seq, action, instance_id, args}`, oldest first, and the full reply `{calls, next, dropped}`. The hub records each call of the registered current instance, except `hub.test.*`, once, when it arrives: before the action faults run. A call that fails (also by a fault or a closed gate) is recorded too. `args` is the call's args object as the hub received it: for `hub.store.scan`, no `prefix` means a scan of all records. `after` returns only later calls. `next` is the highest `seq` that the hub gave, for any plugin: keep it as a baseline (`local _, base = calls('none')`, then `base.next`). A `seq` belongs to one hub process: a hub restart starts again from 1 with an empty record, so a cursor does not cross a restart. `after` must be a whole number from 0. An unknown plugin is refused. The hub keeps the last 1000 calls of each plugin. `dropped` is true when it dropped a call after `after`; a test that proves "never" checks that `dropped` is false. |
-| `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared, sql_tracked, last_call_ms}`, in `view_id` order. `last_call_ms` is the time of the last `view.render` call, with its reply parts. `declared` is the declaration that the view has now (`{prefixes, changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
+| `calls(action, {after?, plugin?})` | The recorded hub service calls of the plugin (`hub.test.calls`): a list of `{seq, action, instance_id, args}`, oldest first, and the full reply `{calls, next, dropped}`. The hub records each call of the registered current instance, except `hub.test.*`, once, when it arrives: before the action faults run. A call that fails (also by a fault or a closed gate) is recorded too. `args` is the call's args object as the hub received it. `after` returns only later calls. `next` is the highest `seq` that the hub gave, for any plugin: keep it as a baseline (`local _, base = calls('none')`, then `base.next`). A `seq` belongs to one hub process: a hub restart starts again from 1 with an empty record, so a cursor does not cross a restart. `after` must be a whole number from 0. An unknown plugin is refused. The hub keeps the last 1000 calls of each plugin. `dropped` is true when it dropped a call after `after`; a test that proves "never" checks that `dropped` is false. |
+| `renders(plugin?)` | The render counts of each view of the plugin (`hub.test.renders`): `{view_id, route, attempts, ok, failed, transient, causes, declared, sql_tracked, last_call_ms}`, in `view_id` order. `last_call_ms` is the time of the last `view.render` call, with its reply parts. `declared` is the declaration that the view has now (`{changes}`), nil for none. `attempts` counts each `view.render` call; `causes` counts each cause once for each attempt: `commit`, `invalidate`, `register`, `attach`, `snapshot`, `status`, `layout`, `changed`, `operation`, `test`. Causes that come during a render go to the next attempt. |
 | `write_profiles(profiles)` | Replaces `LAB/profiles.json`, the only target. A table is encoded as JSON; a string is written as it is (for example malformed JSON). An empty table encodes as `{}`, so pass the string `{"profiles":[]}` for no profiles. The hub reads the file again on each profile call. |
 | `H.args.lab` | The lab dir. |
 | `H.args.sdk` | The SDK directory that the hub gets (`<checkout>/sdk/lua`), for a sandbox test that loads the SDK itself. Its `testing.lua` has `register_reply(fields)`, a `hub.register` reply with test limits for such a sandbox. |
 | `tabs()`, `tab(key)`, `views()` | The declared tabs (key, title, route, status, session_id, revision) and the open views (with session, window and block). |
 | `operation(key)` | A view operation's durable state. |
-| `advance_rev(n)` | Moves the store revision counter forward (never back). |
 | `session(label)` | Creates a real lab session and returns its ID. |
 | `close_session(id)` | Destroys a lab session (`session.destroy`), for example a thread's home. |
 | `node(tree, id)` | A node of a tree, at any depth. |
 
 ### Writes from outside the plugin
-
-`write(ops)` commits store ops in the plugin's namespace now, as another writer would:
-`{key, value}` or `{key, delete = true}`. Use it to set up data that an older plugin version
-wrote. An op can add `if_rev` (a revision from `store(key)`; `'0'` means absent), as in
-`hub.store.batch`. If a record has another revision, the write fails with the code `conflict`
-(message `record <key> is at rev <rev>`) and commits no op of the batch. A test that reads a
-record, changes it and writes it back must use `if_rev`: without it, the write can overwrite a
-commit that the plugin made in between. `put_operation{key, fingerprint, result}` saves an operation record (what
-`hub.store.op` returns), for example the result of an older plugin version.
 
 `sql(sql, params?)` reads the plugin's SQL database (`hub.test.sql`, the committed state) and
 returns rows keyed by column name: NULL is `nil`, a large integer is its decimal string, a BLOB
@@ -374,22 +362,14 @@ plugin.
 
 ### Concurrent writes
 
-`inject{match, ops, replay, times}` commits `ops` (store batch ops, without `if_rev`) just before
-the plugin's next `hub.store.batch` that matches. `match` is `{op_key = ...}`, `{op_prefix = ...}`,
-`{writes = <record key>}` or `{updates = <record key>}`. `updates` matches a batch that writes the
-key with an `if_rev` other than `'0'`: a change of a record that the plugin read, not its creation.
-`replay = true` commits a copy of the matching batch first (another
-invocation saved the same operation). `times` is a count or `"always"`. `fail = '<message>'` then fails the
-matching batch with that message: it commits nothing, as a crash or a lost connection would.
-The error code is `injected_failure` (definite). `fail_code = '<code>'` sets another code, for
-example `unavailable` (transient). `fail_code` needs `fail` and must be nonempty.
+`inject{match = {sql_commit_writes = <table>}, fail, fail_code?, after?, skip?, times?}` fails the
+plugin's next `hub.sql` commit that changed that table: a handler commit, or an exec or batch
+without `tx`. The table name is not case sensitive. `fail = '<message>'` is required; `ops` and
+`replay` are refused. The error code is `injected_failure` (definite). `fail_code = '<code>'` sets
+another code, for example `unavailable` (transient); it must be nonempty. Without `after`, nothing
+is committed, as after a crash or a lost connection. With `after = true`, the commit happens, and
+the plugin gets the error anyway, as after a lost reply. `times` is a count or `"always"`.
 Injected commits never match an injection.
-
-`inject{match = {sql_commit_writes = <table>}, fail, fail_code?, after?}` fails the plugin's next
-`hub.sql` commit that changed that table: a handler commit, or an exec or batch without `tx`. The
-table name is not case sensitive. `fail` is required; `ops` and `replay` are refused. Without
-`after`, nothing is committed. With `after = true`, the commit happens, and the plugin gets the
-error anyway, as after a lost reply. `skip` and `times` work as for batches.
 With `sql_param = <value>` beside `sql_commit_writes` (a nonempty string or an integer), the
 injection matches only a commit whose transaction ran a statement with a parameter equal to the
 value (in `params`, an array or an object). For example, the commit that inserts the run of one
@@ -401,27 +381,18 @@ as another writer (no commit fault applies to it), and then begins the plugin tr
 other writer commits after the plugin's last read outside the transaction and before its write
 transaction. A failed statement fails the begin, and nothing of the injection commits.
 
-`skip = n` lets the first `n` matching batches pass unchanged; the injection acts from the next
-one. For example, `{match = {updates = key}, skip = 1}` acts on the second change of a record.
-
-A read hook, `inject{match = {reads = <record key>}, ops = {...}}`, acts after a read instead of
-before a batch. It matches a `hub.store.get` of the plugin whose `keys` include that key
-(`hub.store.scan` and batches do not match). The hub first builds the get's reply, then commits
-`ops` (without `if_rev`), then returns the reply that it built. So the reply has the old state,
-and the next request has the new state: Rex delivers one hub request at a time. A get counts once,
-however many of its keys match. `skip` and `times` work as for batches. `reads` must be alone in
-`match`, and `ops` is required; `replay`, `fail` and `hold` are refused. If the injected ops do not
-commit, that get fails with the code `injection_failed`, nothing is committed, and the injection
-is not counted. The hook proves what the hub sent, not that the plugin used the reply.
+`skip = n` lets the first `n` matching calls pass unchanged; the injection acts from the next
+one. For example, `{match = {sql_commit_writes = 'runs'}, skip = 1}` acts on the second commit
+that changes `runs`.
 
 `inject` returns the injection ID. `injection(id)` gives `{consumed, remaining}`.
 `cancel_injection(id)` ends an injection now (for example one with `times = "always"`): it matches
-no later batch, and the file check counts it as used up.
+no later call, and the file check counts it as used up.
 
-`with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` batches matched. An injection
+`with_injection(spec, n, fn)` runs `fn` and fails unless exactly `n` calls matched. An injection
 with a count that is not used up at the end of the file fails the file.
 
-A window hold, `inject{match = {window = key, caller = c}, hold = true}`, matches no batch. It holds
+A window hold, `inject{match = {window = key, caller = c}, hold = true}`, matches no commit. It holds
 one `hub.spawn_window` call of the plugin with that key (and that caller, if `caller` is set). The
 hub holds the call after Rex created the window, and before the hub records the window: the leaves
 stay `sending`, as after a crash at that point. A hold has no `ops`, `replay`, `fail`, `skip` or
@@ -545,9 +516,6 @@ file cannot arm these points with `fault(spec)`. The flag is repeatable, and eac
 It is for labs only: the hub refuses it with `-real-server`. The valid points are in `events.go`
 (`faults.Set`). A fired fault emits the event `fault` with its point and mode.
 
-- `point=store-commit,mode=exit|pause[,op=<key>]`: after the commit of a `hub.store.batch` that has
-  an op key (only that key, if `op` is given), before the reply. `exit` ends the hub with status 86;
-  `pause` never replies, and the test stops the hub by its pid. Test: none in this repository.
 - `point=block-create,mode=exit-before`: a plugin spawn records its spawn intent, then the hub exits
   with status 86 before it sends the block create request. Test: none in this repository.
 - `point=block-create,mode=exit-after`: the hub tries to send the block create request and does not
@@ -576,12 +544,12 @@ does not prevent it.
 ```lua
 -- Do not: the write to row can be lost after a caught error in fn.
 local row
-wait('the row', function() row = store('k').value; return row end)
+wait('the row', function() row = sql('SELECT * FROM runs WHERE id = 1')[1]; return row end)
 
 -- Do: read the return value.
-local row = wait('the row', function() return store('k').value end)
+local row = wait('the row', function() return sql('SELECT * FROM runs WHERE id = 1')[1] end)
 local got = wait('both', function()
-  local a, b = store('a').value, store('b').value
+  local a, b = tab('a'), tab('b')
   return a and b and {a = a, b = b}
 end)
 ```
@@ -626,7 +594,7 @@ and action). It does not change behavior.
 
 - **One control message is at most 64 KiB** for a `rex do` script (rex-protocol.md, "Rex Lua
   runtime"). The runner measures each request before it sends it and fails with
-  `request_too_large`. Hub test replies stay under 48 KiB. A larger record or tree arrives in
+  `request_too_large`. Hub test replies stay under 48 KiB. A larger tree arrives in
   chunks of one revision; a change during the read starts it again. Nothing is truncated.
 - **The hub has one request queue** (rex-protocol.md). No `hub.test.*` handler calls a plugin. The
   runner never answers a callback, so it polls instead: short sleeps, then a deadline.

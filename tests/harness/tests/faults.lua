@@ -46,7 +46,7 @@ test('arming refuses invalid faults and an unknown fault id', function()
     {{point = 'action', action = 'hub.spawn', when = 'before', mode = 'fail', op = 'x'}, 'does not apply'},
     {{point = 'action', action = 'hub.spawn', when = 'during', mode = 'fail'}, 'when must be'},
     {{point = 'action', action = 'hub.nope', when = 'before', mode = 'fail'}, 'not a hub action'},
-    {{point = 'action', action = 'hub.test.write', when = 'before', mode = 'fail'}, 'not a hub action'},
+    {{point = 'action', action = 'hub.test.sql', when = 'before', mode = 'fail'}, 'not a hub action'},
     {{point = 'action', action = 'hub.spawn', when = 'before', mode = 'fail', plugin = 'nope'}, 'unknown plugin'},
     {{point = 'spawn-create', mode = 'drop', op = 7}, 'must be a string'},
   }

@@ -57,10 +57,6 @@ type sqlService struct {
 	total        time.Duration
 	queue        time.Duration
 
-	// returning reports a plugin whose file hub.admin.sql_return is moving aside (a marker in
-	// hub.db): the hub does not open that file (sqlreturn.go).
-	returning func(plugin string) bool
-
 	mu  sync.Mutex
 	dbs map[string]*pluginSQL
 }
@@ -73,7 +69,7 @@ func newSQLService(state string, current func(plugin, client string) bool) *sqlS
 		beforeBegin:  func(string) []map[string]any { return nil },
 		admitNotices: func(string, []noticeOp) error { return refuse("no_notice", "the hub has no notice service") },
 		applyNotices: func(string, []outboxRow) error { return nil }, dropReceipts: func(string, int64) error { return nil },
-		notified: func() {}, returning: func(string) bool { return false }, idle: sqlTxIdle, total: sqlTxTotal,
+		notified: func() {}, idle: sqlTxIdle, total: sqlTxTotal,
 		queue: sqlQueueMax, dbs: map[string]*pluginSQL{}}
 }
 
@@ -85,8 +81,6 @@ type pluginSQL struct {
 	w    *sqlConn
 	r    *sqlConn
 	rmu  sync.Mutex // serializes the reader
-	// closed: hub.admin.sql_return closed the file (sqlreturn.go). It changes under lock and rmu.
-	closed bool
 	// params: the parameters of each statement of the open write transaction, for the commit fault
 	// point (testmode.go). It changes under lock.
 	params []any
@@ -113,14 +107,6 @@ type sqlTx struct {
 }
 
 func (s *sqlService) open(ctx context.Context, name string) (*pluginSQL, error) {
-	if s.returning(name) {
-		return nil, refuse("unavailable", "hub.admin.sql_return is moving the database of %s aside; call it again to complete it", name)
-	}
-	return s.load(ctx, name)
-}
-
-// load opens the plugin's file without the return check (hub.admin.sql_return uses it).
-func (s *sqlService) load(ctx context.Context, name string) (*pluginSQL, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p := s.dbs[name]; p != nil {
@@ -156,10 +142,6 @@ func (s *sqlService) acquire(p *pluginSQL) error {
 	defer t.Stop()
 	select {
 	case p.lock <- struct{}{}:
-		if p.closed {
-			p.release()
-			return refuse("unavailable", "the database of %s was closed (hub.admin.sql_return)", p.name)
-		}
 		return nil
 	case <-t.C:
 		return refuse("busy", "the plugin's database was busy for %s", s.queue)
@@ -167,16 +149,6 @@ func (s *sqlService) acquire(p *pluginSQL) error {
 }
 
 func (p *pluginSQL) release() { <-p.lock }
-
-// lockReader takes rmu; a closed file is unavailable.
-func (p *pluginSQL) lockReader() error {
-	p.rmu.Lock()
-	if p.closed {
-		p.rmu.Unlock()
-		return refuse("unavailable", "the database of %s was closed (hub.admin.sql_return)", p.name)
-	}
-	return nil
-}
 
 // end closes the open transaction with a rollback or after a commit. The caller holds the lock.
 // code is what later calls with the token get ("" after a commit: the token is unknown).
@@ -639,9 +611,7 @@ func (s *sqlService) query(ctx context.Context, p *pluginSQL, c sqlCall) (any, e
 	if !s.current(c.plugin, c.client) {
 		return nil, refuse("stale_instance", "the caller is not the plugin's registered instance")
 	}
-	if err := p.lockReader(); err != nil {
-		return nil, err
-	}
+	p.rmu.Lock()
 	defer p.rmu.Unlock()
 	r, err := p.r.run(ctx, q, params, true, sqlReplyBudget)
 	if err != nil {
@@ -881,9 +851,7 @@ func (s *sqlService) replay(ctx context.Context, p *pluginSQL, c sqlCall) (any, 
 	if !s.current(c.plugin, c.client) {
 		return nil, refuse("stale_instance", "the caller is not the plugin's registered instance")
 	}
-	if err := p.lockReader(); err != nil {
-		return nil, err
-	}
+	p.rmu.Lock()
 	defer p.rmu.Unlock()
 	saved, err := savedReply(ctx, p.r, key, fingerprint)
 	if err != nil {
@@ -909,9 +877,7 @@ func (s *sqlService) test(ctx context.Context, plugin string, args map[string]an
 		return nil, err
 	}
 	if write, _ := args["write"].(bool); !write {
-		if err := p.lockReader(); err != nil {
-			return nil, err
-		}
+		p.rmu.Lock()
 		defer p.rmu.Unlock()
 		r, err := p.r.run(ctx, q, params, true, sqlReplyBudget)
 		if err != nil {

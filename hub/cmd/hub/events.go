@@ -46,8 +46,8 @@ func (e *eventLog) emit(event string, fields map[string]any) {
 }
 
 type fault struct {
-	point, mode, op string
-	fired           bool
+	point, mode string
+	fired       bool
 }
 
 type faults struct {
@@ -69,33 +69,25 @@ func (fs *faults) Set(spec string) error {
 			f.point = v
 		case "mode":
 			f.mode = v
-		case "op":
-			f.op = v
 		default:
 			return fmt.Errorf("unknown fault key %q", k)
 		}
 	}
-	valid := map[string][]string{"store-commit": {"exit", "pause"}, "block-create": {"exit-before", "exit-after"}, "notice-written": {"gate"}, "palette-start": {"fail"}}
+	valid := map[string][]string{"block-create": {"exit-before", "exit-after"}, "notice-written": {"gate"}, "palette-start": {"fail"}}
 	modes, ok := valid[f.point]
 	if !ok || !contains(modes, f.mode) {
 		return fmt.Errorf("unsupported fault %q", spec)
-	}
-	if f.op != "" && f.point != "store-commit" {
-		return fmt.Errorf("op= applies only to store-commit")
 	}
 	fs.list = append(fs.list, f)
 	return nil
 }
 
-// take returns the first unfired fault at point (and mode, if not "") that matches opKey, and marks it fired.
-func (fs *faults) take(point, mode, opKey string) *fault {
+// take returns the first unfired fault at point (and mode, if not ""), and marks it fired.
+func (fs *faults) take(point, mode string) *fault {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	for _, f := range fs.list {
 		if f.fired || f.point != point || (mode != "" && f.mode != mode) {
-			continue
-		}
-		if point == "store-commit" && (opKey == "" || (f.op != "" && f.op != opKey)) {
 			continue
 		}
 		f.fired = true

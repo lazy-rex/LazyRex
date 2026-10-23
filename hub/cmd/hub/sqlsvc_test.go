@@ -480,7 +480,7 @@ func TestSQLNoticesRetryWakes(t *testing.T) {
 }
 
 // applySQLNotices skips a row with a receipt: a crash after the apply and before the outbox
-// delete applies nothing twice. A plugin whose notices moved cannot send store notices.
+// delete applies nothing twice.
 func TestSQLNoticesReceipts(t *testing.T) {
 	h, _ := workerTestHub(t)
 	ctx := context.Background()
@@ -508,15 +508,5 @@ func TestSQLNoticesReceipts(t *testing.T) {
 	h.db.QueryRow(`SELECT count(*) FROM notice_receipts WHERE plugin = 'p'`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("%d receipts left", n)
-	}
-	if moved, _ := h.db.noticesMoved(ctx, "p"); moved {
-		t.Fatal("moved before a move")
-	}
-	h.db.moveNotices(ctx, "p")
-	if moved, _ := h.db.noticesMoved(ctx, "p"); !moved {
-		t.Fatal("not moved")
-	}
-	if !hasNotify(map[string]any{"ops": []any{map[string]any{"key": "k"}, map[string]any{"notify": map[string]any{"agent": "a", "pending": true}}}}) {
-		t.Fatal("hasNotify")
 	}
 }
