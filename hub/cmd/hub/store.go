@@ -115,6 +115,9 @@ type retiredEntry struct {
 func retiredSchemaMain(w io.Writer) int {
 	out := retiredExport{Version: 1, Retired: []retiredEntry{}}
 	for _, s := range retiredSchema {
+		if s.table == "sql_returns" {
+			continue // MUTANT: a drop that the export does not declare
+		}
 		out.Retired = append(out.Retired, retiredEntry{s.table, s.column, s.conditional})
 	}
 	b, err := json.Marshal(out)
