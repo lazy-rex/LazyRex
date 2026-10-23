@@ -2495,7 +2495,9 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
     home plugin reads the offer again: another or a withdrawn offer is `conflict` and sends no op.
     Add sends the add of an offer (above), which the hub admits only for the complete current
     offer. An offer with no id, or an id that this hub's managed file uses, shows the reason and
-    no Add.
+    no Add. The two checks split the work: the UI binds the press to the offer that it showed (the
+    node ID), and the hub binds the admission to the current offer. So a second UI must also
+    check that the offer it sends is the offer that it showed.
   - An entry of the receiver that the document does not list is not changed.
 - **Ops.** The op key is `<sha256 of the pin>#<n>`; `n` counts the ops of that pin from that peer.
   While a peer op of the entry runs, the sync makes no op. After a peer op of the same pin ended
@@ -2504,7 +2506,9 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
 - **Status.** The `plugins_from` row of `hub.peer.status` has `plugin_sync`: null before the first
   sync, else `{last_ok, last_error, offered: [{peer, id, source, pin}], skipped: [{source, entry, why}],
   updating: [{entry, op_id, phase}]}`. `offered`, `skipped` and `updating` are from the last sync
-  with no error. Other rows have no `plugin_sync`.
+  that read the document, also when an entry of that sync failed (`last_error` names the entry);
+  `last_ok` is the last sync with no error. When the receiver cannot read the document (the peer
+  is down, or the reply does not decode), the lists stay. Other rows have no `plugin_sync`.
 - **Limit.** The release tag of a latest pin is the source hub's claim; the fetch checks only that
   the commit's tree gives the pin's digest.
 

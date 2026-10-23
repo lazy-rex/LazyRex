@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -172,5 +173,65 @@ func TestOfferAddFetch(t *testing.T) {
 	}
 	if le := readTestLock(t, h).Plugins["github:acme/notes@v1.1.0"]; le == nil || le.Commit != c2 || le.Digest != digest || le.RefKind != "tag" {
 		t.Fatalf("the lock entry %+v", le)
+	}
+}
+
+// A sync that read the peer's document applies its lists also when an op admission failed (a held
+// plugin manager refuses the peer update): the new offer shows, the withdrawn offer is no longer
+// admitted, and last_error is set (claude-48, c48-offer-rev). A sync that read no document keeps
+// the last lists.
+func TestPeerSyncPartialResult(t *testing.T) {
+	b, _, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	ctx := context.Background()
+	commit, digest := strings.Repeat("c", 40), "sha256:"+strings.Repeat("d", 64)
+	newp := testOffer("github:acme/newp@v1", "newp", "v1", commit, digest)
+	setOffers(b, testOffer("github:acme/gone@v1", "gone", "v1", commit, digest))
+	gone := b.peerOffered()[0]
+	upd := pinEntry{Source: "github:acme/notes@v1.1.0", lockPin: lockPin{Name: "notes", Owner: "acme", Repo: "notes", Ref: "v1.1.0", RefKind: "tag", Commit: commit, Digest: digest}}
+	entries := []pinEntry{upd, newp.Pin}
+	b.peers.call = func(ctx context.Context, _ PeerConfig, action string, args any) ([]byte, error) {
+		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: entries})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return json.Marshal(map[string]any{"pins": json.RawMessage(doc), "managed": []peerManaged{{ID: "newp", Source: newp.Source}}})
+	}
+	mustExec(t, b, `INSERT INTO plugin_hold (one, release_id, acquired_at) VALUES (1, 'r1', 't1')`)
+	l := b.peerLink("mac")
+	s, err := b.peerPluginsSync(ctx, l)
+	if err == nil || s == nil {
+		t.Fatalf("a held update: %+v %v", s, err)
+	}
+	b.peerSyncApply(l, s, err)
+	if got := b.peerOffered(); len(got) != 1 || got[0] != newp {
+		t.Fatalf("the offers after a partial sync: %+v", got)
+	}
+	l.mu.Lock()
+	lastErr, lastOK := l.sync.LastError, l.sync.LastOK
+	l.mu.Unlock()
+	if lastErr == "" || lastOK != nil {
+		t.Errorf("the status of a partial sync: last_error %q, last_ok %v", lastErr, lastOK)
+	}
+	if _, err := userAdmit(b, "gone", offerReq(gone)); !isRefusal(err, "candidate_changed") {
+		t.Errorf("the withdrawn offer: %v", err)
+	}
+	// The peer is down: no document, so the lists stay.
+	b.peerSyncApply(l, nil, errors.New("hub.peer.plugins on mac: down"))
+	if got := b.peerOffered(); len(got) != 1 || got[0] != newp {
+		t.Fatalf("the offers after a failed read: %+v", got)
+	}
+	// The in-sync check of an entry fails (the plugin record read: a canceled context), and the
+	// sync continues with the other entries (codex-27): the document's offers apply.
+	cur := readTestLock(t, b).Plugins["github:acme/notes@v1.0.0"]
+	entries = []pinEntry{{Source: "github:acme/notes@v1.0.0", lockPin: cur.lockPin}}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	s, err = b.peerPluginsSync(canceled, l)
+	if err == nil || !strings.Contains(err.Error(), "context canceled") || s == nil {
+		t.Fatalf("a failed in-sync check: %+v %v", s, err)
+	}
+	b.peerSyncApply(l, s, err)
+	if got := b.peerOffered(); len(got) != 0 {
+		t.Fatalf("the offers after a failed in-sync check: %+v", got)
 	}
 }

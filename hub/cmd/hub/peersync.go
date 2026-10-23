@@ -126,38 +126,48 @@ type peerSkip struct {
 func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 	for {
 		s, err := h.peerPluginsSync(ctx, l)
-		offerChanged := false
-		l.mu.Lock()
-		if l.sync == nil {
-			l.sync = &peerSync{logged: map[string]bool{}}
-		}
-		if err != nil {
-			if l.sync.LastError != err.Error() {
-				log.Printf("peer %s: plugin sync: %v", l.cfg.Name, err)
-			}
-			l.sync.LastError = err.Error()
-		} else {
-			now := time.Now().UTC().Format(time.RFC3339)
-			l.sync.LastOK, l.sync.LastError = &now, ""
-			offerChanged = !slices.Equal(l.sync.Offered, s.Offered)
-			l.sync.Offered, l.sync.Updating = s.Offered, s.Updating
-			l.sync.Skipped = s.Skipped
-			for _, k := range s.Skipped {
-				if !l.sync.logged[k.Source] {
-					log.Printf("peer %s: plugin sync skips %s: %s", l.cfg.Name, k.Source, k.Why)
-					l.sync.logged[k.Source] = true
-				}
-			}
-		}
-		l.mu.Unlock()
-		if offerChanged {
-			h.changed("plugins") // hub.plugins "offered": an open Plugins panel renders again
-		}
+		h.peerSyncApply(l, s, err)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(peerSyncEvery):
 		}
+	}
+}
+
+// peerSyncApply stores the result of one sync. s is nil only when the peer's document was not read
+// (the peer is down, or the reply does not decode): then the last lists stay. Otherwise the lists
+// are current, also when an entry failed (its in-sync check or its op admission: err with s): a
+// new offer shows, and a withdrawn one is no longer admitted (claude-48, c48-offer-rev; codex-27).
+// last_ok is set only for no error.
+func (h *Hub) peerSyncApply(l *peerLink, s *peerSync, err error) {
+	offerChanged := false
+	l.mu.Lock()
+	if l.sync == nil {
+		l.sync = &peerSync{logged: map[string]bool{}}
+	}
+	if s != nil {
+		offerChanged = !slices.Equal(l.sync.Offered, s.Offered)
+		l.sync.Offered, l.sync.Updating, l.sync.Skipped = s.Offered, s.Updating, s.Skipped
+		for _, k := range s.Skipped {
+			if !l.sync.logged[k.Source] {
+				log.Printf("peer %s: plugin sync skips %s: %s", l.cfg.Name, k.Source, k.Why)
+				l.sync.logged[k.Source] = true
+			}
+		}
+	}
+	if err != nil {
+		if l.sync.LastError != err.Error() {
+			log.Printf("peer %s: plugin sync: %v", l.cfg.Name, err)
+		}
+		l.sync.LastError = err.Error()
+	} else {
+		now := time.Now().UTC().Format(time.RFC3339)
+		l.sync.LastOK, l.sync.LastError = &now, ""
+	}
+	l.mu.Unlock()
+	if offerChanged {
+		h.changed("plugins") // hub.plugins "offered": an open Plugins panel renders again
 	}
 }
 
@@ -219,9 +229,11 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 		// In sync is the op's own decision (alreadyAt): the managed source, the lock entry (commit,
 		// ref kind, tag and digest) with a directory that verifies, and the plugin's record at the
 		// pin. An update that wrote the files but did not replace the run is not in sync.
+		// An error of one entry is recorded, and the sync continues: the lists are the document's.
 		at, err := h.peerAt(ctx, match, p)
 		if err != nil {
-			return nil, err
+			errs = append(errs, fmt.Sprintf("%s: %v", opEntryKey(match), err))
+			continue
 		}
 		if at {
 			continue
