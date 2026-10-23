@@ -467,6 +467,27 @@ local Agent = {}
 Agent.__index = Agent
 local agents = {}
 
+-- wait_disconnected returns when client.inspect shows that the client is gone: not_found (a closed
+-- client, rex-protocol.md) or a connection_state other than connected. An error or a malformed
+-- answer proves nothing, so it retries. It raises after timeout seconds (default 10).
+function H.wait_disconnected(client, what, timeout)
+  return wait(what .. ' to disconnect', function()
+    local got = {}
+    local ok, raised = pcall(function() got.ins, got.err = H.rex_call('client.inspect', {client_id = client}) end)
+    if not ok then got.err = raised end
+    if got.err ~= nil then
+      local e = err_of(got.err)
+      if e.code == 'not_found' then return true end
+      error(e, 0)
+    end
+    local cl = type(got.ins) == 'table' and got.ins.client or nil
+    if type(cl) ~= 'table' or cl.client_id ~= client or type(cl.connection_state) ~= 'string' then
+      error('client.inspect gave a malformed answer: ' .. rex.json.encode(got.ins), 0)
+    end
+    return cl.connection_state ~= 'connected'
+  end, timeout or 10)
+end
+
 -- agent(name, opts) opens a test agent pane once. The suite's mode decides how the agent gets an
 -- identity (docs/testing.md, "Agents"):
 -- - roster mode (the manifest has test.agents): the agent joins the roster agent opts.join
@@ -587,12 +608,8 @@ function Agent:input(reset) return perform(self.client, 'agent.input', {reset = 
 -- and its start would otherwise resolve this client.
 function Agent:exit()
   perform(self.client, 'agent.exit', {})
-  wait('agent ' .. self.name .. ' to disconnect', function()
-    local got = {}
-    local ok = pcall(function() got.ins, got.err = H.rex_call('client.inspect', {client_id = self.client}) end)
-    local cl = ok and not got.err and type(got.ins) == 'table' and got.ins.client or nil
-    return not (cl and cl.connection_state == 'connected')
-  end, 10)
+  -- A failed wait raises before the cache is cleared: the same name returns this agent again.
+  H.wait_disconnected(self.client, 'agent ' .. self.name)
   agents[self.name] = nil
 end
 -- call runs an exported plugin action through the agent face: the MCP path.
