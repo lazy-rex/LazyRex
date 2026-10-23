@@ -98,8 +98,8 @@ func TestFocusWindowLab(t *testing.T) {
 // TestShortPaneLab (v1.2 item 1f): a real 6-row pane in thread mode gets a tree with a history
 // node, 2 actions and a composer with a draft. The focused control is in the last 5 rows (the
 // frame ends in the status line). Tab and Shift+Tab reach every control, and the editor row and
-// Send are on screen together. A resize from 30 to 6 rows keeps the focus: Tab then Enter runs
-// Send. The unit tests count the frame rows: block capture also returns the scrollback, and a
+// Send are on screen together, at 80 and at 40 columns (where the footer has a second hint row). A
+// resize from 30 to 6 rows keeps the focus at both widths; at 40 columns, Tab then Enter runs Send. The unit tests count the frame rows: block capture also returns the scrollback, and a
 // shrink moves the top rows of the tall frame there (a 6-row pane captured 25 lines, Linux lab
 // 2026-10-23).
 func TestShortPaneLab(t *testing.T) {
@@ -145,19 +145,32 @@ func TestShortPaneLab(t *testing.T) {
 			return strings.Contains(last, want) && !strings.Contains(last, "DRAFT-TEXT")
 		})
 	}
-	for i, s := range steps {
-		if s.key != "" {
-			l.key(pane, s.key)
+	run := func(width int, steps []struct{ key, want string }) {
+		t.Helper()
+		for i, s := range steps {
+			if s.key != "" {
+				l.key(pane, s.key)
+			}
+			frame(fmt.Sprintf("%d columns: step %d %s", width, i, s.key), s.want)
 		}
-		frame(fmt.Sprintf("step %d %s", i, s.key), s.want)
 	}
-	l.resize(pane, 80, 30)
-	l.waitFor("the tall frame", 10*time.Second, func() bool {
-		last = bottom(29)
-		return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Action w1")
+	shrink := func(width int) {
+		t.Helper()
+		l.resize(pane, width, 30)
+		l.waitFor(fmt.Sprintf("%d columns: the tall frame", width), 10*time.Second, func() bool {
+			last = bottom(29)
+			return strings.Contains(last, "DRAFT-TEXT") && strings.Contains(last, "Action w1")
+		})
+		l.resize(pane, width, 6)
+		frame(fmt.Sprintf("%d columns: resize from 30 to 6 rows", width), "editor")
+	}
+	run(80, steps)
+	shrink(80)
+	l.resize(pane, 40, 6)
+	run(40, []struct{ key, want string }{
+		{"", "editor"}, {"tab", "send"}, {"tab", "Action w1"}, {"shift+tab", "send"}, {"shift+tab", "editor"},
 	})
-	l.resize(pane, 80, 6)
-	frame("resize from 30 to 6 rows", "editor")
+	shrink(40)
 	l.key(pane, "tab")
 	l.key(pane, "enter")
 	l.waitFor("Send runs", 20*time.Second, func() bool {
