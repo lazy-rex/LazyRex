@@ -397,7 +397,7 @@ func TestFetchComposerWorksWhileAPageIsHeld(t *testing.T) {
 		select {
 		case req := <-r.m.client.Requests:
 			switch req.Method {
-			case "hub.view.save":
+			case "hub.view.draft.save":
 				r.p.Send(completed{req, operationResult{Status: "succeeded", Result: map[string]any{"draft_revision": "2", "text": req.Args["text"]}}})
 			case "hub.view.send":
 				if req.Args["text"] != "hi" {
