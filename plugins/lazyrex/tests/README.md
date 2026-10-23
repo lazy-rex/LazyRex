@@ -54,3 +54,4 @@ Profiles come from `profiles.json`. The `task` profile writes its two args to
 
 Not reachable through the hub: a missing operation key, and an unknown route or user. The hub
 always sends a key, and it sends only declared routes. The checks stay in the plugin.
+`TestHomeRouteRefusedLab` (hub/cmd/hub) makes an unknown route by hand: a home form at `/`.
