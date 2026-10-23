@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -93,13 +94,15 @@ func buildHubAt(t *testing.T, commit string) string {
 
 // The mutant check of the release gate, without a rehearsal (release freeze refuses an H that is
 // not on origin/main, and a mutant never is). RELEASE_LAB_RETIRED_H and RELEASE_LAB_RETIRED_MUTANT
-// are two commits in this clone; the mutant's export is H's with exactly one entry left out. On a
+// are two commits in this clone; the mutant's export is H's without RELEASE_LAB_RETIRED_LEFT. On a
 // lab hub.db with OLD tables, the drops of H's real export are applied. With H's export the schema
-// check passes; with the mutant's real export it fails on the left-out table or column.
+// check passes; with the mutant's real export it fails on the left-out table or column. LIMIT: the
+// OLD tables are made by the test (retiredLab), not by the OLD hub, and the test applies the drops
+// from H's export, not H's own open. The rehearsal of the real candidate covers both.
 func TestReleaseRetiredMutantLab(t *testing.T) {
-	hc, mc := os.Getenv("RELEASE_LAB_RETIRED_H"), os.Getenv("RELEASE_LAB_RETIRED_MUTANT")
-	if os.Getenv("RELEASE_LAB") != "1" || hc == "" || mc == "" {
-		t.Skip("set RELEASE_LAB=1, RELEASE_LAB_RETIRED_H and RELEASE_LAB_RETIRED_MUTANT to run the mutant check")
+	hc, mc, leftName := os.Getenv("RELEASE_LAB_RETIRED_H"), os.Getenv("RELEASE_LAB_RETIRED_MUTANT"), os.Getenv("RELEASE_LAB_RETIRED_LEFT")
+	if os.Getenv("RELEASE_LAB") != "1" || hc == "" || mc == "" || leftName == "" {
+		t.Skip("set RELEASE_LAB=1, RELEASE_LAB_RETIRED_H, _MUTANT and _LEFT (the left-out entry, for example sql_returns) to run the mutant check")
 	}
 	export := func(commit string) []retiredEntry {
 		exp, _, absent, err := exportRetired(buildHubAt(t, commit), t.TempDir())
@@ -109,29 +112,22 @@ func TestReleaseRetiredMutantLab(t *testing.T) {
 		return exp.Retired
 	}
 	hEntries, mEntries := export(hc), export(mc)
-	inMutant := map[retiredEntry]bool{}
-	for _, e := range mEntries {
-		inMutant[e] = true
-	}
-	var left []retiredEntry
+	// The mutant's export must be H's, in order and in every field, with exactly the entry named
+	// RELEASE_LAB_RETIRED_LEFT left out, so that no other change can give the wanted failure
+	// (lead-c49mut, codex-26).
+	var left, rest []retiredEntry
 	for _, e := range hEntries {
-		if !inMutant[e] {
+		if e.name() == leftName {
 			left = append(left, e)
+		} else {
+			rest = append(rest, e)
 		}
 	}
-	// The mutant must differ from H only by one left-out entry, so that no other change can give the
-	// wanted failure (lead-c49mut).
-	inH := map[retiredEntry]bool{}
-	for _, e := range hEntries {
-		inH[e] = true
+	if len(left) != 1 {
+		t.Fatalf("H %s names %q %d times in %+v; want once", hc, leftName, len(left), hEntries)
 	}
-	for _, e := range mEntries {
-		if !inH[e] {
-			t.Fatalf("the mutant %s has the entry %+v, which %s does not have", mc, e, hc)
-		}
-	}
-	if len(left) != 1 || len(mEntries) != len(hEntries)-1 {
-		t.Fatalf("the mutant %s leaves out %+v of %s; want exactly one entry", mc, left, hc)
+	if !reflect.DeepEqual(rest, mEntries) {
+		t.Fatalf("the export of the mutant %s is %+v; want the export of H %s without %s: %+v", mc, mEntries, hc, leftName, rest)
 	}
 	check := func(entries []retiredEntry) error {
 		h := retiredLab(t, entries)
