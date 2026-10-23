@@ -1,9 +1,16 @@
 -- Agents are real lab panes: the plugin identifies them through the real hub.
+
+-- kv returns the decoded value of the fixture's kv row key (nil: no row).
+local function kv(key)
+  local row = sql('SELECT value FROM kv WHERE key = ?', {key})[1]
+  return row and rex.json.decode(row.value)
+end
+
 test('an agent call goes through the agent face and is attributed to its pane', function()
   local alice = agent('alice')
   expect(alice:call('fix.who', {}).agent).to_be(alice.id)
   expect(alice:call('fix.put', {key = 'k', value = {n = 1}}).by).to_be(alice.id)
-  expect(store('k').value).to_equal({n = 1})
+  expect(kv('k')).to_equal({n = 1})
 end)
 
 test('a direct plugin call from a pane is attributed too', function()

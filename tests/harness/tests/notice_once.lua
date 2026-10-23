@@ -16,9 +16,9 @@ local function activity(id)
   end
 end
 
-local function op(a, notify)
-  local r = a:call('fix.hub', {action = 'hub.store.batch', args = {ops = {{notify = notify}}}})
-  expect(r.error, 'the notify batch').to_be(nil)
+local function op(a, notice)
+  local r = a:call('fix.notify', {notices = {notice}})
+  expect(r.error, 'the notice commit').to_be(nil)
 end
 
 local function far(name, conv)

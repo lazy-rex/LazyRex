@@ -1,4 +1,11 @@
 -- The UI user drives real renderer panes (testview) through the hub's view path.
+
+-- kv returns the decoded value of the fixture's kv row key (nil: no row).
+local function kv(key)
+  local row = sql('SELECT value FROM kv WHERE key = ?', {key})[1]
+  return row and rex.json.decode(row.value)
+end
+
 test('a tab renders through the production render path', function()
   local v = user:open('home')
   local tree = v:render()
@@ -35,7 +42,7 @@ test('a form effect opens a form; its submit closes the form and the result stay
   form:render()
   local done = form:action('form', 'submit', {values = {value = 'hi'}})
   expect(done.status).to_be('succeeded')
-  expect(store('form').value).to_equal({value = 'hi'})
+  expect(kv('form')).to_equal({value = 'hi'})
   -- close_form closed the renderer: the durable record still answers.
   wait('the form view to close', function()
     for _, w in ipairs(views()) do if w.route == '/forms/fix' then return false end end
@@ -149,8 +156,7 @@ test('seen reaches the plugin as view.seen through the hub', function()
   v:render()
   v:seen()
   local r = wait('view.seen', function()
-    local x = store('seen')
-    if x.value then return x.value end
+    return kv('seen')
   end)
   expect(r).to_equal({route = '/home', reason = 'focus'})
 end)
@@ -163,10 +169,10 @@ test('a final operation answers its key again without calling the plugin', funct
   expect(first.result).to_equal({count = 1})
   -- The same key and arguments: the stored operation answers; the plugin is not called.
   expect(home:action('count', 'count', {n = 1}, 'count-once').result).to_equal({count = 1})
-  expect(store('count').value).to_be(1)
+  expect(kv('count')).to_be(1)
   -- The same key with other arguments is refused.
   expect_error(function() home:action('count', 'count', {n = 2}, 'count-once') end, 'operation_conflict')
-  expect(store('count').value).to_be(1)
+  expect(kv('count')).to_be(1)
 end)
 
 test('user:panel runs a command from a new pane and returns the view that it opens', function()

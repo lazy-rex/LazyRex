@@ -1,12 +1,18 @@
 -- hub:restart(): the hub stops (or crashes) and starts again on the same lab server and state.
 
+-- kv returns the decoded value of the fixture's kv row key (nil: no row).
+local function kv(key)
+  local row = sql('SELECT value FROM kv WHERE key = ?', {key})[1]
+  return row and rex.json.decode(row.value)
+end
+
 test('a stopped hub restarts with its state; agents keep working', function()
   local alice = agent('alice')
   alice:call('fix.put', {key = 'before', value = {n = 1}})
   local old = H.hub('hub.test.status', {}).pid
   local st = hub:restart()
   expect(st.pid).not_to_be(old)
-  expect(store('before').value).to_equal({n = 1})
+  expect(kv('before')).to_equal({n = 1})
   expect(alice:call('fix.who', {}).agent).to_be(alice.id)
 end)
 

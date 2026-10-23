@@ -1315,9 +1315,8 @@ that difference and the length of the request ID.
 What a Lua plugin sends is still limited to 64 KiB (its replies, view trees and writes). The guard
 does not change that limit.
 
-Tests: `hub/cmd/hub/replyguard_test.go` (unit), `replyguard_lab_test.go` (`REPLY_LAB_SOCKET`: the
-server's limits, both faces), and `tests/harness/tests/replyguard.lua` (the plugin face through
-the real hub; the hub client and process stay the same).
+Tests: `hub/cmd/hub/replyguard_test.go` (unit) and `replyguard_lab_test.go` (`REPLY_LAB_SOCKET`: the
+server's limits, both faces).
 
 ## Agent actions through Rex
 
