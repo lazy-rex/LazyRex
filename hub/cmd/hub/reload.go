@@ -212,6 +212,7 @@ func (h *Hub) reload(ctx context.Context, caller *Plugin, clientID string) (any,
 	for name, e := range errs {
 		h.recordLogf(errRecs[name], "reload: %s", e)
 	}
+	h.installScan(ctx, "reload") // a managed entry whose code is not in place (pluginopsinstall.go)
 	names := func(l []*Plugin) []string {
 		out := []string{}
 		for _, pl := range l {

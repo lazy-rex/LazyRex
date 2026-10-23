@@ -224,11 +224,14 @@ lazyrex-hub plugin sync`.
   path bytes. `x` is mode 100755. The command computes it from the archive, before it changes the
   permissions. At each plugin start the hub computes it again; there `x` is "any execute bit
   set".
-- Hub start never runs git and never uses the network. It reads the config, the lock and the cache.
+- A plugin start never runs git and never uses the network: it reads the config, the lock and the
+  cache. Git runs only in the plugin manager's ops (add, update and the hub's install, docs/hub.md
+  "Plugin operations"), in a fetch child, and in the `lazyrex-hub plugin` commands.
 
 ## 5. Refs and fetch
 
-The `lazyrex-hub plugin` commands use the git CLI. Hub start never runs git. Git runs with
+The plugin manager's ops and the `lazyrex-hub plugin` commands use the git CLI. A plugin start
+never runs git. Git runs with
 `GIT_TERMINAL_PROMPT=0`. It uses the user's credential helper and `url.insteadOf` (for SSH).
 
 **Ref forms**: `latest`, `<name>`, `refs/heads/<name>`, `refs/tags/<name>`, or 40 lowercase hex.

@@ -1,7 +1,8 @@
 package main
 
-// Refs and fetch (docs/plugin-sources.md, section 5). This file has all git use of the hub. Only
-// plugin sync and plugin update run it; hub start never runs git.
+// Refs and fetch (docs/plugin-sources.md, section 5). This file has all git use of the hub: the
+// plugin commands and the manager's ops (add, update, install) run it; a plugin start never runs
+// git.
 //
 // The fetched tree must be the commit's tree exactly: the archive has the same file paths as
 // ls-tree, and each file's content has the blob ID that ls-tree gives. So .gitattributes

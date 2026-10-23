@@ -1569,6 +1569,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			pl.respawnFields(item)
 		}
 		item["name"], item["state"] = name, state
+		if state == "refused" && e.installErr != "" {
+			errText = "install failed: " + e.installErr // the hub's install (pluginopsinstall.go)
+		}
 		if state == "refused" || state == "retained" {
 			item["error"] = errText
 		}

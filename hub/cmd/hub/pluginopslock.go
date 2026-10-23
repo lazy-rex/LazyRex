@@ -55,7 +55,7 @@ func (op *pluginOp) newManaged(t opResolved) (managedFileEntry, error) {
 			return managedFileEntry{}, fmt.Errorf("the stored input: %v", err)
 		}
 		return managedFileEntry{ID: in.ID, Source: t.Source, Args: in.Args, WatchRoots: in.WatchRoots}, nil
-	case "update":
+	case "update", "install": // an install keeps the source (t.Source is the base's)
 		var m managedFileEntry
 		if err := json.Unmarshal([]byte(op.Base), &m); err != nil {
 			return managedFileEntry{}, fmt.Errorf("the stored base: %v", err)
@@ -236,8 +236,10 @@ func (h *Hub) lockRefusal(op *pluginOp, t opResolved, lockFile string, lock, nex
 	}
 	before, refused := h.opGraph(lockFile, list, lock), h.opGraph(lockFile, after, next)
 	// The op's own entry must pass, also when the current file already has it (C4 plan r3 A):
-	// before and after then refuse it alike, so the new-refusal check alone misses it.
-	if own := "managed:" + m.ID; refused[own] != nil {
+	// before and after then refuse it alike, so the new-refusal check alone misses it. Not for an
+	// install (lead-c2i5): it never chooses a new pin, and its entry can depend on an entry that
+	// the same scan installs later; the normal start after the scan checks the whole graph.
+	if own := "managed:" + m.ID; refused[own] != nil && op.Kind != "install" {
 		return fmt.Sprintf("%s refuses %s: %v", what, own, refused[own]), nil
 	}
 	idents := make([]string, 0, len(refused))

@@ -455,6 +455,7 @@ func (h *Hub) recoverPlugins(ctx context.Context) {
 		}
 		pl.lifecycle.Unlock()
 	}
+	h.installScan(ctx, "start") // a managed entry whose code is not in place (pluginopsinstall.go)
 }
 
 // findInstanceBlock looks for a block in sess whose child runs the given plugin instance. An

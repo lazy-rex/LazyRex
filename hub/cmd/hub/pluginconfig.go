@@ -74,6 +74,9 @@ type configEntry struct {
 	seen string     // the manifest name of the last resolution that read one (reported; never a record key)
 	cand *pluginRun // the last resolution, when it passed
 	err  error      // the last resolution, when it refused the entry
+	// installErr is the error of the entry's last install op when it did not end done
+	// (pluginopsinstall.go); hub.plugins reports "install failed: <it>" while the entry is refused.
+	installErr string
 }
 
 var (
@@ -262,7 +265,8 @@ func addManaged(config, managed []*configEntry) []*configEntry {
 }
 
 // checkSource checks the source string and resolves a local directory. The ref of a GitHub source
-// gets its full check in plugin sync (git check-ref-format): hub start does not run git.
+// gets its full check where git runs (the resolve of an op, git check-ref-format): a plugin start
+// does not run git.
 func (e *configEntry) checkSource(cfgDir string) error {
 	s := e.Source
 	switch {

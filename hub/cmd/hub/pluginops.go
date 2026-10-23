@@ -83,6 +83,10 @@ var pluginOpPhases = map[string][]string{
 	"add":     {"resolving", "fetching", "locking", "writing", "reloading", "starting"},
 	"update":  {"resolving", "fetching", "locking", "writing", "reloading", "unpinning", "replacing"},
 	"restart": {"replacing"},
+	// install (C2, lead-c2i2..5): the hub puts the code of a managed entry into the lock and the
+	// cache, at start and at each reload (pluginopsinstall.go). It writes no managed entry and
+	// starts nothing: the hub's normal start runs after the installs of a scan.
+	"install": {"resolving", "fetching", "locking"},
 }
 
 // opFinal are the phases that end an op.
@@ -127,6 +131,8 @@ type pluginOpsSvc struct {
 	cmd pluginCmdOpts
 	// resolve is a test hook in place of opResolveTarget; nil in production.
 	resolve func(ctx context.Context, op *pluginOp) (opResolved, error)
+	// installs are the install ops of the scans that have not all ended (pluginopsinstall.go).
+	installs pluginInstalls
 }
 
 // errOpCrash ends a manager run at a test fault point.
@@ -462,9 +468,15 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	}
 	// A peer makes only updates with a target and no input (peersync.go). The only other target is
 	// the offer of a user's add: the complete offer that the panel showed (addAdmission).
+	// An install is the hub's own op, with no input: the target is the entry's lock entry, or none
+	// (then it resolves the entry's ref).
 	peerUpdate := origin.Kind == "peer" && req.Op == "update" && len(req.Input) == 0 && len(req.Target) > 0
 	offerAdd := origin.Kind == "user" && req.Op == "add" && len(req.Target) > 0
-	if (origin.Kind == "peer" && !peerUpdate) || (len(req.Target) > 0 && !peerUpdate && !offerAdd) {
+	install := origin.Kind == "hub" && req.Op == "install" && len(req.Input) == 0
+	if (origin.Kind == "hub") != (req.Op == "install") || (origin.Kind == "hub" && !install) {
+		return nil, bad("invalid: only the hub admits an install")
+	}
+	if (origin.Kind == "peer" && !peerUpdate) || (len(req.Target) > 0 && !peerUpdate && !offerAdd && !install) {
 		return nil, bad("invalid: only a peer sync gives target (an update with no input), and a user's add of an offer")
 	}
 	// An agent add is user_only: the user confirms a new source, and the text names what the agent
@@ -502,7 +514,7 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	}
 	op.Name = name
 	op.EntryIdentity = identity
-	if (req.Op == "settings" || req.Op == "remove" || req.Op == "update") && managed == "" {
+	if (req.Op == "settings" || req.Op == "remove" || req.Op == "update" || req.Op == "install") && managed == "" {
 		return nil, bad("%s changes only managed entries; %s is in the config file", req.Op, req.Entry)
 	}
 	if (req.Op == "stop" || req.Op == "remove") && name != "" && name == h.homePlugin() {
@@ -550,6 +562,17 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		}
 		b, _ := json.Marshal(in)
 		op.Input = string(b)
+	case "install":
+		if !github {
+			return nil, bad("invalid: install needs a GitHub source; %s is %s", req.Entry, source)
+		}
+		if len(req.Target) > 0 { // the lock entry: fetched by its commit ID, with its digest
+			t, err := peerTarget(req.Target, source)
+			if err != nil {
+				return nil, err
+			}
+			op.Target = t
+		}
 	case "restart":
 		x, err := h.restartTarget(name)
 		if err != nil {
@@ -561,7 +584,7 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		b, _ := json.Marshal(x)
 		op.Target = string(b)
 	}
-	if req.Op == "settings" || req.Op == "remove" || req.Op == "update" {
+	if req.Op == "settings" || req.Op == "remove" || req.Op == "update" || req.Op == "install" {
 		_, list, err := readManaged(h.cfg.managedPath)
 		if err != nil {
 			return nil, refuse("refused", "managed plugin file %s: %v", h.cfg.managedPath, err)
@@ -601,6 +624,16 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 			keys = append(keys, base.Source) // the old key: unpinning compares against it (C5f)
 		}
 		snap, err := h.lockSnapshot(keys)
+		if err != nil {
+			return nil, err
+		}
+		op.LockBase = snap
+	}
+	if req.Op == "install" {
+		// An install keeps the source: its one key is the entry's source.
+		var base managedFileEntry
+		json.Unmarshal([]byte(op.Base), &base)
+		snap, err := h.lockSnapshot([]string{base.Source})
 		if err != nil {
 			return nil, err
 		}
@@ -849,6 +882,7 @@ func (h *Hub) opsRun(ctx context.Context) time.Duration {
 			return opBusyRetry
 		}
 	}
+	h.installsEnded(ctx)
 	// An op of this pass can end with an unproved attempt: the observation then needs a next pass,
 	// also on an idle hub.
 	if left == 0 {
@@ -1540,7 +1574,7 @@ func opExpectEntry(op *pluginOp) (string, error) {
 func opRun(op *pluginOp) (map[string]any, error) {
 	var x map[string]any
 	switch op.Kind {
-	case "add", "update":
+	case "add", "update", "install":
 		var t opResolved
 		var pin lockEntry
 		if json.Unmarshal([]byte(op.Target), &t) != nil || json.Unmarshal([]byte(op.Pin), &pin) != nil {

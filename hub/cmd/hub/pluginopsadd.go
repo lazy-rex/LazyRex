@@ -235,6 +235,12 @@ func (h *Hub) opResolveTarget(ctx context.Context, op *pluginOp) (opResolved, er
 		case "@":
 			to = "" // the entry's own ref, as an add resolves it
 		}
+	case "install": // no lock entry: the entry's own ref (an install with one has a stored target)
+		var base managedFileEntry
+		if err := json.Unmarshal([]byte(op.Base), &base); err != nil {
+			return opResolved{}, err
+		}
+		source = base.Source
 	default:
 		return opResolved{}, fmt.Errorf("%s has no resolve", op.Kind)
 	}
