@@ -203,9 +203,11 @@ func TestPrintLab(t *testing.T) {
 	printed := func(step string, n int) {
 		t.Helper()
 		newest := fmt.Sprintf("PRINT-%d", n)
-		l.waitFor(step+": "+newest+" printed", 30*time.Second, func() bool {
+		// A print writes at once (Bubble Tea's insertAbove); the frame ticker draws the live region
+		// later. So the wait needs both before the whole-capture checks.
+		l.waitFor(step+": "+newest+" printed and the live region drawn", 30*time.Second, func() bool {
 			last = l.screen(pane)
-			return strings.Contains(last, newest)
+			return strings.Contains(last, newest) && strings.Contains(last, "LAB-NOTICE")
 		})
 		// A second copy or a late mark would come in the same print as the newest message or before it.
 		at := -1
