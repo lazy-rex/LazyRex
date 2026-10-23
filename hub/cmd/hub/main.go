@@ -222,8 +222,8 @@ type Hub struct {
 	// a plugin's lifecycle, then entriesMu, then mu. No code takes a lifecycle lock while it holds
 	// entriesMu or mu. pl.entry changes only under entriesMu and then mu.
 	reloadMu sync.Mutex // serializes hub.plugins.reload and hub start recovery
-	// procRead is the process information read of the caller guards (callerInManagedPane). nil:
-	// procRead. A test sets its own Hub's reader; no test changes a package variable.
+	// procRead is the process information read of the caller guards (callerInManagedPane) and of the
+	// identity recovery at start (identityRecover). nil: procRead. A test sets its own Hub's reader; no test changes a package variable.
 	procRead     func(pid int) (procRecord, error)
 	entriesMu    sync.Mutex
 	entries      []*configEntry

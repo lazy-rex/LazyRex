@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -159,6 +161,51 @@ func TestIdentityRecoverEndsGoneProcesses(t *testing.T) {
 	h.db.QueryRow(`SELECT COUNT(*) FROM identity_log WHERE identity = 'claude:gone' AND event = 'exited'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("exited events for claude:gone = %d, want 1", n)
+	}
+}
+
+// The recovery ends an identity only on a verified end of its process: no such pid, another start
+// time, or a zombie. A failed process read and a pane without a recorded start keep the identity
+// (lead-c43rec, codex-24).
+func TestIdentityRecoverReadOutcomes(t *testing.T) {
+	h, _ := workerTestHub(t)
+	ctx := context.Background()
+	if err := h.workersSchemaStart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const start = "1.000001"
+	reads := map[int]func() (procRecord, error){
+		101: func() (procRecord, error) { return procRecord{}, errors.New("permission denied") },
+		102: func() (procRecord, error) { return procRecord{}, errProcGone },
+		103: func() (procRecord, error) { return procRecord{start: start, zombie: true}, nil },
+		104: func() (procRecord, error) { return procRecord{start: "2.000002"}, nil },
+		105: func() (procRecord, error) { return procRecord{start: start}, nil },
+		106: func() (procRecord, error) { return procRecord{start: start}, nil },
+	}
+	keep := map[int]bool{101: true, 105: true, 106: true}
+	h.idents = map[string]*Agent{}
+	for pid := range reads {
+		id, block, st := fmt.Sprintf("claude:c%d", pid), fmt.Sprintf("block:%d", pid), start
+		if pid == 106 {
+			st = "" // no recorded start
+		}
+		h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES (?, 'session:1', ?, ?, 'claude', ?)`, block, pid, st, id)
+		h.db.Exec(`INSERT INTO identities VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, fmt.Sprint(pid), block)
+		// A kept identity is already in memory: the sync reads no program status.
+		h.idents[id] = &Agent{ID: id, BlockID: block, ChildPID: pid, delivered: map[string]int64{}}
+	}
+	h.procRead = func(pid int) (procRecord, error) { return reads[pid]() }
+	if err := h.identityRecover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for pid := range reads {
+		want := ""
+		if keep[pid] {
+			want = fmt.Sprintf("claude:c%d", pid)
+		}
+		if got, err := h.paneCurrent(ctx, fmt.Sprintf("block:%d", pid)); err != nil || got != want {
+			t.Errorf("pid %d: current %q (%v), want %q", pid, got, err, want)
+		}
 	}
 }
 

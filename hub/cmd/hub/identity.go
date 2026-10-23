@@ -449,6 +449,12 @@ func (h *Hub) identityChildExited(ctx context.Context, block string) {
 	if pid != 0 && alive(pid, start) {
 		return // the recorded process still runs: the event is for another one
 	}
+	h.identityEndLocked(ctx, block, cur)
+}
+
+// identityEndLocked ends the pane's process generation: it clears the pane's current identity and
+// detaches it (log event exited). The caller holds identMu and has decided that the process ended.
+func (h *Hub) identityEndLocked(ctx context.Context, block, cur string) {
 	h.db.ExecContext(ctx, `UPDATE identity_panes SET current = '', child_pid = 0, child_start = '', reporter_start = '', child_path = '', child_invoked = '' WHERE block_id = ?`, block)
 	if cur != "" {
 		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', updated = ? WHERE identity = ? AND block_id = ?`,
@@ -459,28 +465,60 @@ func (h *Hub) identityChildExited(ctx context.Context, block string) {
 }
 
 // identityRecover ends the current identity of each pane whose recorded process is gone. An exit
-// while the hub was down sent the hub no event. Called at hub start, after identitySync; a pane
-// whose recorded process still runs keeps its identity (identityChildExited checks it).
+// while the hub was down sent the hub no event. Called at hub start, after identitySync. Only a
+// verified end clears: the system has no such pid, the pid has another start time, or the process
+// has exited and is not reaped (a zombie). A failed process read, or a pane without a recorded
+// process, keeps the identity and logs the reason (lead-c43rec). The pids are local: a report comes
+// only from a pane on this host (paneOfHint, descendsFrom).
 func (h *Hub) identityRecover(ctx context.Context) error {
-	rows, err := h.db.QueryContext(ctx, `SELECT block_id FROM identity_panes WHERE current != ''`)
+	rows, err := h.db.QueryContext(ctx, `SELECT block_id, child_pid, child_start FROM identity_panes WHERE current != ''`)
 	if err != nil {
 		return err
 	}
-	var blocks []string
+	type pane struct {
+		block, start string
+		pid          int
+	}
+	var panes []pane
 	for rows.Next() {
-		var b string
-		if err := rows.Scan(&b); err != nil {
+		var p pane
+		if err := rows.Scan(&p.block, &p.pid, &p.start); err != nil {
 			rows.Close()
 			return err
 		}
-		blocks = append(blocks, b)
+		panes = append(panes, p)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, b := range blocks {
-		h.identityChildExited(ctx, b)
+	read := h.procRead
+	if read == nil {
+		read = procRead
+	}
+	for _, p := range panes {
+		if p.pid <= 0 || p.start == "" {
+			log.Printf("identity recover: pane %s: no recorded process", p.block)
+			continue
+		}
+		r, err := read(p.pid)
+		switch {
+		case errors.Is(err, errProcGone):
+		case err != nil:
+			log.Printf("identity recover: pane %s: %v", p.block, err)
+			continue
+		case r.start == p.start && !r.zombie:
+			continue // the recorded process still runs
+		}
+		h.identMu.Lock()
+		var cur, start string
+		var pid int
+		// The pane's row can change between the list and here (a report): end only the checked generation.
+		if h.db.QueryRowContext(ctx, `SELECT current, child_pid, child_start FROM identity_panes WHERE block_id = ?`, p.block).Scan(&cur, &pid, &start) == nil &&
+			cur != "" && pid == p.pid && start == p.start {
+			h.identityEndLocked(ctx, p.block, cur)
+		}
+		h.identMu.Unlock()
 	}
 	return nil
 }
