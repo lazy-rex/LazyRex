@@ -574,3 +574,28 @@ func TestCheckPeers(t *testing.T) {
 		}
 	}
 }
+
+// TestPeerStatusAgentFace: hub.peer.status is on the agent face (docs/hub.md, "Peer hubs"), and an
+// agent call reaches it through agentDispatch.
+func TestPeerStatusAgentFace(t *testing.T) {
+	n := 0
+	for _, a := range agentHubFace() {
+		if a["name"] == "hub.peer.status" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the agent face has %d hub.peer.status descriptors, want 1", n)
+	}
+	h := peerHub(t, "a", "b", nil)
+	p := perform{Action: "hub.peer.status"}
+	p.Requester.Principal.PID = 7
+	res, err := h.agentDispatch(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := res.(map[string]any)
+	if st["hub_name"] != "a" || len(st["peers"].([]any)) != 1 {
+		t.Fatalf("hub.peer.status through the agent face: %v", st)
+	}
+}

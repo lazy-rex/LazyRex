@@ -26,7 +26,7 @@ const agentLabel = "lazyrex"
 // hubToolActions, agentListActions and pluginOpActions (hub.plugins.op, so the parity check of a
 // plugin manager view action finds it; agentDispatch sends it to pluginOpAgent first).
 var agentHubActions = map[string]bool{"hub.profiles": true, "hub.spawn": true, "hub.workers": true, "hub.stop": true,
-	"hub.agents": true, "hub.agents.resolve": true, "hub.plugins.op": true}
+	"hub.agents": true, "hub.agents.resolve": true, "hub.plugins.op": true, "hub.peer.status": true}
 
 var agentListActions = []map[string]any{
 	{"name": "hub.agents", "kind": "client", "title": "List agents",

@@ -94,7 +94,7 @@ func (s *startLab) got() []any {
 // TestPeerHubsLab: two lab hubs, each the other's peer at its lab Rex server. A plugin on a sends
 // to b and b's plugin gets it with from_hub a; b's plugin replies and a gets it. A JSON-looking
 // body stays a string. A refused envelope does not stop the next one. Then both outboxes are
-// empty and both links are up.
+// empty and both links are up, and an agent on a reads hub.peer.status through the agent face.
 //
 // b's lab server also listens on HTTP at 127.0.0.1, and a reaches b at that address: a's pulls and
 // nudges arrive at b's hub over TCP, from a caller with no process ID, as from a remote hub.
@@ -155,5 +155,10 @@ func TestPeerHubsLab(t *testing.T) {
 	}
 	if g := b.got(); len(g) != 2 {
 		t.Fatalf("b got %d envelopes after the acks, want 2 (no redelivery): %v", len(g), g)
+	}
+	// An agent reads the peer state through the agent face (rex -C lazyrex).
+	st, err := a.agentDo(a.opsAgent("x"), "hub.peer.status", map[string]any{})
+	if err != nil || st["hub_name"] != "a" || len(st["peers"].([]any)) != 1 {
+		t.Fatalf("hub.peer.status through the agent face: %v, %v", st, err)
 	}
 }
