@@ -82,11 +82,12 @@ The file is one JSON object; data after the object is refused.
   - A parent directory can be a symlink (for example a release clone path).
     `EvalSymlinks(main)` must be inside `EvalSymlinks(source dir)`.
 - A plugin is its own directory: the manifest directory (its subdir for a GitHub source). A plugin
-  loads only files inside its own directory. A read outside it is not supported: a local source
-  runs from a snapshot of its directory only (section 4), so a path outside it (`../x.lua`, an
-  absolute path to another tree) is not in the snapshot, and its load fails. A plugin finds its
-  files from its own run path (debug info, or the SDK's plugin directory), never from its source
-  path.
+  loads only files inside its own directory. A read outside it (`../x.lua`, an absolute path to
+  another tree) is not supported. The hub does not refuse such a read; the contract does not cover
+  it. A local source runs from a snapshot that holds only its directory (section 4). A relative
+  path such as `../x.lua` resolves from the snapshot, so it does not find a sibling of the source
+  directory. A plugin finds its files from its own run path (debug info, or the SDK's plugin
+  directory), never from its source path.
 - `sdk`: `"0"` or absent. With `"0"`, the hub starts the plugin through the SDK launcher:
   `rex do <sdk dir>/boot.lua main=<absolute main> ...` (docs/plugin-sdk.md). The launcher puts the
   plugin directory and the SDK directory in `package.path`, so `require('lazyrex')` and a sibling
