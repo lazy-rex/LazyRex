@@ -167,7 +167,7 @@ func TestManagedPluginsList(t *testing.T) {
 	}
 	json.Unmarshal(b, &got)
 	e, _ := json.Marshal(got.Entries)
-	if string(e) != `[{"candidate":{"error":"permission denied"},"error":"permission denied","managed":"notes","name":"notes","pinned_commit":"","source":"/s/notes","state":"refused"}]` {
+	if string(e) != `[{"args":{},"candidate":{"error":"permission denied"},"error":"permission denied","managed":"notes","name":"notes","pinned_commit":"","source":"/s/notes","state":"refused","watch_roots":[]}]` {
 		t.Errorf("entries %s", e)
 	}
 	r, _ := json.Marshal(got.Refused)

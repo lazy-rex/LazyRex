@@ -357,6 +357,53 @@ func TestPluginOpSettingsExpect(t *testing.T) {
 	}
 }
 
+// hub.plugins reports the settings of a managed entry (lead-c8-p34, P3): args ({} when none) and
+// watch_roots ([] when none). A config entry has neither key. The read values, sent back as the
+// expect and the input of a settings op, end the op done with "no change".
+func TestPluginsListSettings(t *testing.T) {
+	h, c, dir := opsTestHub(t, "")
+	pd := t.TempDir()
+	plugDir(t, pd, "x", `{"name":"x","main":"m.lua"}`, "m.lua")
+	plugDir(t, pd, "y", `{"name":"y","main":"m.lua"}`, "m.lua")
+	plugDir(t, pd, "z", `{"name":"z","main":"m.lua"}`, "m.lua")
+	writeManaged(t, dir, `{"plugins":[{"id":"x","source":"`+filepath.Join(pd, "x")+`","args":{"a":"1","e":""},"watch_roots":["/w1","/w2"]}, {"id":"y","source":"`+filepath.Join(pd, "y")+`"}]}`)
+	h.entries = append(h.entries, &configEntry{index: 1, Source: filepath.Join(pd, "z"), name: "z", seen: "z"})
+	opsLoadEntries(t, h)
+	out, err := h.pluginsList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	var got struct{ Entries []map[string]any }
+	json.Unmarshal(b, &got)
+	byName := map[string]map[string]any{}
+	for _, e := range got.Entries {
+		k := e["managed"]
+		if k == nil {
+			k = e["name"]
+		}
+		byName[fmt.Sprint(k)] = e
+	}
+	for name, want := range map[string]string{"x": `{"a":"1","e":""} ["/w1","/w2"]`, "y": `{} []`} {
+		a, _ := json.Marshal(byName[name]["args"])
+		w, _ := json.Marshal(byName[name]["watch_roots"])
+		if got := string(a) + " " + string(w); got != want {
+			t.Errorf("%s: %s, want %s", name, got, want)
+		}
+	}
+	if _, ok := byName["z"]["args"]; ok || byName["z"] == nil {
+		t.Errorf("the config entry: %v", byName["z"])
+	} else if _, ok := byName["z"]["watch_roots"]; ok {
+		t.Errorf("the config entry has watch_roots: %v", byName["z"])
+	}
+	read, _ := json.Marshal(map[string]any{"args": byName["x"]["args"], "watch_roots": byName["x"]["watch_roots"]})
+	id := opsMust(t, h, "same", opRequest{Op: "settings", Entry: "managed:x", Expect: read, Input: read})
+	h.opsRun(context.Background())
+	if op := opsOf(t, h, id); op.Phase != "done" || op.Result != "no change" || len(c.list()) != 0 {
+		t.Errorf("the read values sent back: %+v, calls %v", op, c.list())
+	}
+}
+
 // hub.plugins.ops {origin_view} (C8): the newest 50 ops that the user's operations of that view
 // admitted, newest first. The view must be a view of the calling plugin, else not_found. The
 // agent face has no origin_view.

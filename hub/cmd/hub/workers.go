@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -1575,6 +1576,12 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 				x["commit"], x["digest"] = e.cand.Commit, e.cand.Digest
 			}
 			item["expect_run"] = x
+		}
+		// The settings of a managed entry (lead-c8-p34): plugin args are not secret.
+		if e.managed != "" {
+			args, roots := map[string]string{}, []string{}
+			maps.Copy(args, e.Args)
+			item["args"], item["watch_roots"] = args, append(roots, e.WatchRoots...)
 		}
 		if e.github && snap.err == nil { // a lock that does not read has no pins (snap.lock is nil)
 			if le := snap.lock.Plugins[e.Source]; le != nil {
