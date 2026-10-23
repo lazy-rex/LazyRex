@@ -157,6 +157,35 @@ func (l *chunkLab) waitFor(what string, within time.Duration, ok func() bool) {
 	}
 }
 
+// hubClient returns the client ID of the one connected lab hub, or "". Rex keeps a lost client
+// during reconnection (hub hook.go), so after a hub restart "-C lazyrex-hub" can be ambiguous.
+func (l *chunkLab) hubClient() string {
+	out, err := l.cli("client", "ls", "--json")
+	if err != nil {
+		return ""
+	}
+	var listing struct {
+		Clients []struct {
+			ClientID string `json:"client_id"`
+			Info     struct {
+				Label string `json:"label"`
+			} `json:"info"`
+			ConnectionState string `json:"connection_state"`
+		} `json:"clients"`
+	}
+	json.Unmarshal([]byte(out), &listing)
+	var hubs []string
+	for _, c := range listing.Clients {
+		if c.Info.Label == "lazyrex-hub" && c.ConnectionState == "connected" {
+			hubs = append(hubs, c.ClientID)
+		}
+	}
+	if len(hubs) != 1 {
+		return ""
+	}
+	return hubs[0]
+}
+
 // hubTest calls a hub.test action of the lab hub.
 func (l *chunkLab) hubTest(action string, args map[string]any, out any) {
 	l.t.Helper()
@@ -164,7 +193,11 @@ func (l *chunkLab) hubTest(action string, args map[string]any, out any) {
 	b, _ := json.Marshal(args)
 	f := filepath.Join(l.lab, "args.json")
 	os.WriteFile(f, b, 0o600)
-	if err := json.Unmarshal([]byte(l.must("-C", "lazyrex-hub", "do", action, "--args", "@"+f)), out); err != nil {
+	hub := l.hubClient()
+	if hub == "" {
+		l.t.Fatalf("%s: no single connected lab hub (lab kept: %s)", action, l.lab)
+	}
+	if err := json.Unmarshal([]byte(l.must("-C", hub, "do", action, "--args", "@"+f)), out); err != nil {
 		l.t.Fatalf("%s: %v", action, err)
 	}
 }

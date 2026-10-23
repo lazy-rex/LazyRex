@@ -231,15 +231,19 @@ func TestPrintLab(t *testing.T) {
 	insert(4)
 	printed("an SQL insert", 4)
 	t.Logf("before the hub restart:\n%s", last)
+	old := l.hubClient()
 	l.stopHub()
 	l.startHub()
-	// The server lists the stopped hub's client for a while, and "-C lazyrex-hub" is ambiguous
-	// until it goes.
+	// The new hub is a new client; its plugin registers after the hub connects.
 	b, _ := json.Marshal(map[string]any{"plugin": "modelab", "sql": "SELECT count(*) FROM msgs", "params": []any{}})
 	f := filepath.Join(l.lab, "restarted.json")
 	os.WriteFile(f, b, 0o600)
 	l.waitFor("the restarted hub", 30*time.Second, func() bool {
-		_, err := l.cli("-C", "lazyrex-hub", "do", "hub.test.sql", "--args", "@"+f)
+		hub := l.hubClient()
+		if hub == "" || hub == old {
+			return false
+		}
+		_, err := l.cli("-C", hub, "do", "hub.test.sql", "--args", "@"+f)
 		return err == nil
 	})
 	insert(5)
