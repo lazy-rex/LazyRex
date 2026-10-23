@@ -26,10 +26,13 @@ var setLabPlugins = []struct {
 	{"templates", "github:lazy-rex/Templates", "59b40b539ea863ea87def91055f036346341f724", "3d93b3980786bf486432c09d23431a718d96ecf3"},
 }
 
-// setLabTemplates are the seed and probe items of the 4.2 Templates kit entry (owner review
+// setLabTemplates are the seed, probe and changes items of the 4.2 Templates kit entry (owner review
 // pending): the seed saves a template of its own fresh pane and starts it to a blocked run; the
 // probes replay the keyed seed actions with the seed placeholders, and expect the seed session.
-const setLabTemplates = `{"seed":[{"action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","panes":{"<BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"kind":"action"},{"action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","key":"seed-start-1"},"kind":"action"},{"kind":"action","action":"templates.runs","args":{},"until":[{"pointer":"/runs/0/status","value":"blocked"}]},{"action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"kind":"action"}],"probe":[{"kind":"action","action":"templates.list","args":{},"expect":[{"pointer":"/templates/0/name","value":"lab-seed"},{"pointer":"/templates/0/tabs","value":1}]},{"kind":"action","action":"templates.get","args":{"template":"lab-seed"},"expect":[{"pointer":"/template/name","value":"lab-seed"},{"pointer":"/template/tabs/0/layout/launch/profile","value":"lab-inert-missing"}]},{"kind":"action","action":"templates.runs","args":{},"expect":[{"pointer":"/runs/0/id","value":"1"},{"pointer":"/runs/0/template","value":"lab-seed"},{"pointer":"/runs/0/status","value":"dismissed"},{"pointer":"/runs/0/tabs","value":1},{"pointer":"/runs/0/next_tab","value":1},{"pointer":"/runs/0/session_id","value":"<SEED_SESSION_ID>"}]},{"kind":"action","action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","panes":{"<SEED_BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"expect":[{"pointer":"/name","value":"lab-seed"}]},{"kind":"action","action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"expect":[{"pointer":"/run_id","value":"1"},{"pointer":"/status","value":"dismissed"}]},{"kind":"action","action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","key":"seed-start-1"},"expect":[{"pointer":"/run_id","value":"1"}]}]}`
+// After the dismiss, Templates revokes the run grant in the background and saves the run once
+// more; the changes allow exactly that save (ver + 1, grant_revoked true), before or after the
+// reference snapshot.
+const setLabTemplates = `{"seed":[{"action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","panes":{"<BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"kind":"action"},{"action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SESSION_ID>","key":"seed-start-1"},"kind":"action"},{"kind":"action","action":"templates.runs","args":{},"until":[{"pointer":"/runs/0/status","value":"blocked"}]},{"action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"kind":"action"}],"probe":[{"kind":"action","action":"templates.list","args":{},"expect":[{"pointer":"/templates/0/name","value":"lab-seed"},{"pointer":"/templates/0/tabs","value":1}]},{"kind":"action","action":"templates.get","args":{"template":"lab-seed"},"expect":[{"pointer":"/template/name","value":"lab-seed"},{"pointer":"/template/tabs/0/layout/launch/profile","value":"lab-inert-missing"}]},{"kind":"action","action":"templates.runs","args":{},"expect":[{"pointer":"/runs/0/id","value":"1"},{"pointer":"/runs/0/template","value":"lab-seed"},{"pointer":"/runs/0/status","value":"dismissed"},{"pointer":"/runs/0/tabs","value":1},{"pointer":"/runs/0/next_tab","value":1},{"pointer":"/runs/0/session_id","value":"<SEED_SESSION_ID>"}]},{"kind":"action","action":"templates.save","args":{"name":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","panes":{"<SEED_BLOCK_ID>":"profile:lab-inert-missing"},"key":"seed-save-1"},"expect":[{"pointer":"/name","value":"lab-seed"}]},{"kind":"action","action":"templates.dismiss","args":{"run_id":"1","key":"seed-dismiss-1"},"expect":[{"pointer":"/run_id","value":"1"},{"pointer":"/status","value":"dismissed"}]},{"kind":"action","action":"templates.start","args":{"template":"lab-seed","root":"<LAB>","session_id":"<SEED_SESSION_ID>","key":"seed-start-1"},"expect":[{"pointer":"/run_id","value":"1"}]}],"changes":[{"table":"runs","key":{"id":"1"},"column":"ver","expect":{"sql":":new = :old + 1 AND (SELECT value -> '$.grant_revoked' FROM runs WHERE id = '1') = 'true'"}},{"table":"runs","key":{"id":"1"},"column":"value","expect":{"sql":"json_valid(:old) AND json_valid(:new) AND (:old -> '$.grant_revoked') IS NULL AND (:new -> '$.grant_revoked') = 'true' AND json_remove(:new, '$.grant_revoked') = json_remove(:old, '$.grant_revoked')"}}]}`
 
 // setLabFile is the set file of the test: Tunnels with no seed and a list probe; Messaging with one
 // message to the seed agent itself, and action and sql probes, and an until item in the seed and the probes.
@@ -44,29 +47,29 @@ func setLabFile(t *testing.T) []byte {
 	}
 	val := func(p string, v any) map[string]any { return map[string]any{"pointer": p, "value": v} }
 	empty := func(p string) map[string]any { return map[string]any{"pointer": p, "empty": true} }
-	entry := func(i int, seed, probe []any, keys map[string]any) map[string]any {
+	entry := func(i int, seed, probe []any, keys map[string]any, changes []any) map[string]any {
 		p := setLabPlugins[i]
 		return seal(t, map[string]any{"plugin": p.name, "from": p.from, "to": p.to, "seed": seed, "probe": probe,
-			"keys": keys, "changes": []any{}, "inserts": []any{}})
+			"keys": keys, "changes": changes, "inserts": []any{}})
 	}
 	send := map[string]any{"to": "<SELF>", "body": "lab seed one", "key": "lab-seed-send-1"}
 	// An until item (coordinator ruling c49-kit-option-a): the history read repeats until it has
 	// the seed message, in the seed and in every probe run.
 	history := act("messaging.history", map[string]any{"thread": "<SELF>", "limit": 1}, val("/thread", "<SELF>"))
 	history["until"] = []any{val("/messages/0/body", "lab seed one")}
-	var tpl struct{ Seed, Probe []any }
+	var tpl struct{ Seed, Probe, Changes []any }
 	if err := json.Unmarshal([]byte(setLabTemplates), &tpl); err != nil {
 		t.Fatal(err)
 	}
 	return setBytes(
-		entry(0, []any{}, []any{act("tunnels.list", map[string]any{}, empty("/forwards"), empty("/pending"), empty("/cleanups"))}, map[string]any{}),
+		entry(0, []any{}, []any{act("tunnels.list", map[string]any{}, empty("/forwards"), empty("/pending"), empty("/cleanups"))}, map[string]any{}, []any{}),
 		entry(1, []any{act("messaging.send", send), history}, []any{
 			history,
 			act("messaging.history", map[string]any{"thread": "<SELF>", "limit": 1}, val("/messages/0/body", "lab seed one"), val("/thread", "<SELF>")),
 			act("messaging.send", send, val("/key", "lab-seed-send-1")),
 			map[string]any{"kind": "sql", "sql": "SELECT body, sender FROM messages ORDER BY seq", "rows": []any{[]any{"lab seed one", relSeedAgent}}},
-		}, map[string]any{"clock": []any{"one"}, "messages": []any{"id"}}),
-		entry(2, tpl.Seed, tpl.Probe, map[string]any{}),
+		}, map[string]any{"clock": []any{"one"}, "messages": []any{"id"}}, []any{}),
+		entry(2, tpl.Seed, tpl.Probe, map[string]any{}, tpl.Changes),
 	)
 }
 
@@ -197,5 +200,53 @@ func TestReleaseRehearseLabSet(t *testing.T) {
 		if s.Candidate.SDKDir == first.SetSteps[i].Candidate.SDKDir || s.Candidate.SDKDir == "" {
 			t.Errorf("lab B step %d: the SDK dirs %q and %q are not two lab paths", i+1, s.Candidate.SDKDir, first.SetSteps[i].Candidate.SDKDir)
 		}
+	}
+}
+
+// TestReleaseSetTemplatesRevoke: the changes of the Templates entry allow the background grant
+// revoke after the reference snapshot, and refuse any other change of the run (codex-26: a lab
+// pass at one timing does not prove the other timing).
+func TestReleaseSetTemplatesRevoke(t *testing.T) {
+	set, err := parseSet(setLabFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &set.Plugins[2]
+	const schema = `CREATE TABLE runs (id TEXT PRIMARY KEY, ver INTEGER NOT NULL, status TEXT NOT NULL, value TEXT NOT NULL);
+INSERT INTO runs VALUES ('1', 5, 'dismissed', '{"by":"relseed","grant_id":"g-1","id":"1","status":"dismissed"}');`
+	revoked := `{"by":"relseed","grant_id":"g-1","grant_revoked":true,"id":"1","status":"dismissed"}`
+	for name, tc := range map[string]struct{ change, want string }{
+		"no revoke yet":  {"", ""},
+		"revoke":         {"UPDATE runs SET ver = 6, value = '" + revoked + "'", ""},
+		"ver only":       {"UPDATE runs SET ver = 6", "predicate is false"},
+		"ver plus two":   {"UPDATE runs SET ver = 7, value = '" + revoked + "'", "predicate is false"},
+		"revoked false":  {"UPDATE runs SET ver = 6, value = replace('" + revoked + "', 'true', 'false')", "predicate is false"},
+		"another member": {"UPDATE runs SET ver = 6, value = replace('" + revoked + "', 'g-1', 'g-2')", "predicate is false"},
+		"status column":  {"UPDATE runs SET ver = 6, value = '" + revoked + "', status = 'blocked'", "no changes entry allows it"},
+		"another run":    {"INSERT INTO runs VALUES ('2', 1, 'queued', '{}')", "no inserts entry"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, h := snapDBs(t, schema, "")
+			ref, err := newSnap(p, h, "templates", e.Keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.change != "" {
+				if _, err := p.Exec(tc.change); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cur, err := newSnap(p, h, "templates", e.Keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = checkSnap(ref, cur, e, sqlPredicate(p))
+			if tc.want == "" && err != nil {
+				t.Fatalf("got %v; want a pass", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("got %v; want an error with %q", err, tc.want)
+			}
+		})
 	}
 }
