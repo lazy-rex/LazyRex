@@ -3,7 +3,7 @@
 -- SQL row stage(n): 0 is a read-only thread (a history node and a notice), 1 is an error tree with
 -- 12 widget actions, more than a 10-row pane holds, 2 is a thread with 2 widget actions and a
 -- composer with a saved draft (so Send is enabled), 3 is a thread whose history holds the rows of
--- msgs(id, author, text) in insert order, 4 is a thread whose history holds the newest 40 rows of
+-- msgs(id, author, text) in the order of msg_sort(id, sort), else in insert order, 4 is a thread whose history holds the newest 40 rows of
 -- msgs with has_more and total; view.history serves the older rows in pages of 40. An action
 -- records its name in clicked(name); a send records 'send', and its text in sent(text).
 -- A command opens only a /forms/ or /panels/ route (hub forms.go). The renderer decides its mode
@@ -52,7 +52,7 @@ local function render(args)
   end
   if row[1] == 3 then
     local messages = {}
-    for _, m in ipairs(hub('hub.sql.query', {sql = 'SELECT id, author, text FROM msgs ORDER BY rowid', params = {}, render = args.render}).rows) do
+    for _, m in ipairs(hub('hub.sql.query', {sql = 'SELECT m.id, m.author, m.text FROM msgs m LEFT JOIN msg_sort s ON s.id = m.id ORDER BY coalesce(s.sort, m.rowid), m.rowid', params = {}, render = args.render}).rows) do
       messages[#messages + 1] = {id = m[1], author = m[2], text = m[3]}
     end
     return {tree = {title = 'Mode lab', nodes = {
@@ -136,4 +136,7 @@ hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS stage (n INTEGER)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS clicked (name TEXT)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS sent (text TEXT)'})
 hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS msgs (id TEXT, author TEXT, text TEXT)'})
+-- An explicit thread order for stage 3 (the late lab): a row here sorts its message by sort; a
+-- message without one sorts by its insert order (rowid).
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS msg_sort (id TEXT, sort REAL)'})
 rex.call('client.set_label', {label = 'lazyrex-plugin:modelab'})

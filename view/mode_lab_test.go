@@ -442,3 +442,143 @@ func TestNewlineKeysLab(t *testing.T) {
 		t.Fatalf("the plugin received %q, want one send of %q", rows, "DRAFT-TEXT\na\nb\nc")
 	}
 }
+
+// unwrapped is the whole capture with soft-wrapped rows joined (rex block capture --unwrap). A hard
+// newline stays a line break: TestResizeLab checks that on a message with one.
+func (l *chunkLab) unwrapped(pane string) string {
+	out, _ := l.cli("block", "capture", "-s", l.session, "-b", pane, "--unwrap")
+	return out
+}
+
+// TestResizeLab (thread view plan item 7): a real pane in thread mode prints messages longer than
+// 110 cells and one message with a hard newline. The pane resizes 80 -> 50 -> 110 -> 80, and a new
+// long message prints after each resize. After every print, the unwrapped capture holds each long
+// message's whole text as one contiguous string on one line: the renderer never breaks a line, and
+// the terminal's soft wrap joins back. The hard newline stays (HARD-A and HARD-B on two lines), the
+// start markers are each on the pane once, in order, and the live region is on the pane once.
+func TestResizeLab(t *testing.T) {
+	l := newModeLab(t)
+	long := func(i int) string {
+		return fmt.Sprintf("RZ%02d-START %s RZ%02d-END", i, strings.Repeat("word ", 24), i)
+	}
+	ids := []string{"k7", "c2", "x9", "b4", "q1"} // opaque: the thread order is the insert order
+	insert := func(i int) {
+		t.Helper()
+		l.sql(fmt.Sprintf("INSERT INTO msgs VALUES ('%s', 'codex', '%s')", ids[i-1], long(i)), true)
+	}
+	l.sql("INSERT INTO msgs VALUES ('h3', 'codex', 'HARD-A' || char(10) || char(10) || 'HARD-B')", true)
+	insert(1)
+	insert(2)
+	l.sql("UPDATE stage SET n = 3", true)
+	pane := l.open("lazyrex_modelab_mode")
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last unwrapped capture:\n%s", last)
+		}
+	})
+	check := func(step string, n int) {
+		t.Helper()
+		l.waitFor(step+": RZ"+fmt.Sprintf("%02d", n)+" printed and the live region drawn", 30*time.Second, func() bool {
+			last = l.unwrapped(pane)
+			return strings.Contains(last, fmt.Sprintf("RZ%02d-END", n)) && strings.Contains(last, "LAB-NOTICE")
+		})
+		lines := strings.Split(last, "\n")
+		at := -1
+		for i := 1; i <= n; i++ {
+			text := long(i)
+			whole := 0
+			for _, line := range lines {
+				whole += strings.Count(line, text)
+			}
+			if whole != 1 {
+				t.Fatalf("%s: the whole text of RZ%02d is on one line %d times, want once:\n%s", step, i, whole, last)
+			}
+			start := fmt.Sprintf("RZ%02d-START", i)
+			if c := strings.Count(last, start); c != 1 {
+				t.Fatalf("%s: %s is on the pane %d times:\n%s", step, start, c, last)
+			}
+			j := strings.Index(last, start)
+			if j < at {
+				t.Fatalf("%s: %s is above the message before it:\n%s", step, start, last)
+			}
+			at = j
+		}
+		for _, line := range lines {
+			if strings.Contains(line, "HARD-A") && strings.Contains(line, "HARD-B") {
+				t.Fatalf("%s: the hard newline between HARD-A and HARD-B is gone (unwrap joined it):\n%s", step, last)
+			}
+		}
+		if strings.Count(last, "HARD-A") != 1 || strings.Count(last, "HARD-B") != 1 {
+			t.Fatalf("%s: HARD-A or HARD-B is not on the pane once:\n%s", step, last)
+		}
+		if c := strings.Count(last, "LAB-NOTICE"); c != 1 {
+			t.Fatalf("%s: the live region is on the pane %d times:\n%s", step, c, last)
+		}
+	}
+	check("the first tree at 80 columns", 2)
+	for k, width := range []int{50, 110, 80} {
+		l.resize(pane, width, 24)
+		insert(3 + k)
+		check(fmt.Sprintf("a new message after the resize to %d columns", width), 3+k)
+	}
+	t.Logf("the final unwrapped capture:\n%s", last)
+}
+
+// TestLateMessageLab (thread view plan item 7): the thread order is explicit (msg_sort), and the IDs
+// are opaque. Three messages print; then a new message that the thread places between the first
+// two arrives. It prints once, after the printed messages, with "(late)" after the author. A later
+// message prints once, not late, and nothing prints a second time.
+func TestLateMessageLab(t *testing.T) {
+	l := newModeLab(t)
+	add := func(id, text string, sort float64) {
+		t.Helper()
+		l.sql(fmt.Sprintf("INSERT INTO msgs VALUES ('%s', 'codex', '%s')", id, text), true)
+		l.sql(fmt.Sprintf("INSERT INTO msg_sort VALUES ('%s', %g)", id, sort), true)
+	}
+	add("t5", "LATE-ONE", 10)
+	add("a8", "LATE-TWO", 20)
+	add("m2", "LATE-THREE", 30)
+	l.sql("UPDATE stage SET n = 3", true)
+	pane := l.open("lazyrex_modelab_mode")
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the last capture:\n%s", last)
+		}
+	})
+	wait := func(step, text string) {
+		t.Helper()
+		l.waitFor(step, 30*time.Second, func() bool {
+			last = l.unwrapped(pane)
+			return strings.Contains(last, text) && strings.Contains(last, "LAB-NOTICE")
+		})
+	}
+	wait("the first three", "LATE-THREE")
+	add("z1", "LATE-INSIDE", 15)
+	wait("the late message", "LATE-INSIDE")
+	add("e6", "LATE-AFTER", 40)
+	wait("the next message", "LATE-AFTER")
+	for _, text := range []string{"LATE-ONE", "LATE-TWO", "LATE-THREE", "LATE-INSIDE", "LATE-AFTER"} {
+		if c := strings.Count(last, text); c != 1 {
+			t.Fatalf("%s is on the pane %d times:\n%s", text, c, last)
+		}
+	}
+	order := []string{"LATE-ONE", "LATE-TWO", "LATE-THREE", "LATE-INSIDE", "LATE-AFTER"}
+	for i := 1; i < len(order); i++ {
+		if strings.Index(last, order[i]) < strings.Index(last, order[i-1]) {
+			t.Fatalf("%s is above %s:\n%s", order[i], order[i-1], last)
+		}
+	}
+	if c := strings.Count(last, "(late)"); c != 1 {
+		t.Fatalf("the pane has %d late marks, want 1:\n%s", c, last)
+	}
+	lines := strings.Split(last, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "LATE-INSIDE") {
+			if i == 0 || !strings.Contains(lines[i-1], "codex (late)") {
+				t.Fatalf("the line above LATE-INSIDE is not its header with the late mark after the author:\n%s", last)
+			}
+		}
+	}
+}
