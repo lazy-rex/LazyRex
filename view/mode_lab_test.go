@@ -233,9 +233,14 @@ func TestPrintLab(t *testing.T) {
 	t.Logf("before the hub restart:\n%s", last)
 	l.stopHub()
 	l.startHub()
-	l.waitFor("the restarted hub's palette entry", 30*time.Second, func() bool {
-		out, _ := l.cli("actions")
-		return strings.Contains(out, "lazyrex_modelab_mode")
+	// The server lists the stopped hub's client for a while, and "-C lazyrex-hub" is ambiguous
+	// until it goes.
+	b, _ := json.Marshal(map[string]any{"plugin": "modelab", "sql": "SELECT count(*) FROM msgs", "params": []any{}})
+	f := filepath.Join(l.lab, "restarted.json")
+	os.WriteFile(f, b, 0o600)
+	l.waitFor("the restarted hub", 30*time.Second, func() bool {
+		_, err := l.cli("-C", "lazyrex-hub", "do", "hub.test.sql", "--args", "@"+f)
+		return err == nil
 	})
 	insert(5)
 	printed("an insert after the reattach", 5)

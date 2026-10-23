@@ -109,7 +109,9 @@ func TestSeenNotSentAfterOutputFault(t *testing.T) {
 func seenAfterFault(t *testing.T, hook bool) {
 	m, f, _ := focusedFixtureModel(t)
 	out, tt := newTestOut(nil)
+	m.client.mu.Lock() // client.run reads it
 	m.client.outFailed = out.Failed
+	m.client.mu.Unlock()
 	if hook {
 		out.onFault = m.client.closeSeen
 	}

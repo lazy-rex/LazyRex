@@ -588,7 +588,9 @@ func TestFinalFlushFailure(t *testing.T) {
 	waitAttached(t, f)
 	tt := &testTerm{}
 	out := newPaneOut(tt)
+	client.mu.Lock() // client.run reads it
 	client.outFailed = out.Failed
+	client.mu.Unlock()
 	out.onFault = client.closeSeen
 	m := newModel(client)
 	m.ready = true
