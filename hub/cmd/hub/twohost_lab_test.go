@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,18 +140,65 @@ func TestTwoHostLab(t *testing.T) {
 	time.Sleep(hold)
 }
 
-// syncProfiles is the plugin of the sync check: a has the newer tag, b the older one. Both tags
-// use SDK "0" and no hub aliases, and v0.3.0 opens a v0.2.0 database.
-const syncProfiles = "github:lazy-rex/Profiles@"
+// The plugin of the sync check: a has the newer commit of Profiles main, b the commit before it.
+// Both run on the current hub and have the same schema (base step 2).
+const (
+	syncProfiles = "github:lazy-rex/Profiles@"
+	syncA        = "d484e72a1e44255961e9408ca8e02f2b0e7ee10c"
+	syncB        = "de5c0ada9ce50fac40f32611e18e9e5f8a6e06ae"
+)
+
+// syncMirror makes the lab's git mirror of lazy-rex/Profiles (coordinator decision
+// coord-rel-cred-mirrors: no GitHub credential in a lab process). The test process clones with
+// its own environment; a lab gitconfig then maps the GitHub URLs of lazy-rex to the mirror, and
+// every other URL to a mirror that does not exist. The hub and this process's plugin sync use
+// that gitconfig, so the hub's own fetch runs, with no network.
+func (s *startLab) syncMirror() {
+	s.t.Helper()
+	m := filepath.Join(s.l.dir, "mirrors", "lazy-rex")
+	if err := os.MkdirAll(m, 0o700); err != nil {
+		s.t.Fatal(err)
+	}
+	git := func(args ...string) {
+		s.t.Helper()
+		c := exec.Command("git", args...)
+		c.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		if out, err := c.CombinedOutput(); err != nil {
+			s.t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("clone", "-q", "--mirror", "https://github.com/lazy-rex/Profiles", filepath.Join(m, "Profiles.git"))
+	if err := os.Symlink("Profiles.git", filepath.Join(m, "Profiles")); err != nil {
+		s.t.Fatal(err)
+	}
+	for _, c := range []string{syncA, syncB} {
+		git("-C", filepath.Join(m, "Profiles.git"), "cat-file", "-e", c+"^{commit}")
+	}
+	cfg := filepath.Join(s.l.dir, "gitconfig")
+	none := "file://" + filepath.Join(s.l.dir, "mirrors", "none") + "/"
+	body := fmt.Sprintf("[url %q]\n\tinsteadOf = https://github.com/lazy-rex/\n\tinsteadOf = git@github.com:lazy-rex/\n[url %q]\n\tinsteadOf = https://\n\tinsteadOf = git@\n\tinsteadOf = ssh://\n",
+		"file://"+m+"/", none)
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		s.t.Fatal(err)
+	}
+	env := []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=file"}
+	s.l.env = append(s.l.env, env...)
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		s.t.Setenv(k, v)
+	}
+}
 
 // syncSetup prepares the plugin sync part of TestTwoHostLab (TWOHOST_SYNC=1): a managed entry
-// "prof" of Profiles (a: v0.3.0, b: v0.2.0), installed from GitHub with plugin sync before the
-// hub starts. b also gets plugins_from on its peer a. This needs network access to github.com.
+// "prof" of Profiles (a: syncA, b: syncB), installed from the lab mirror with plugin sync before
+// the hub starts. b also gets plugins_from on its peer a. The mirror clone needs access to
+// github.com with the test process's own git credentials.
 func (s *startLab) syncSetup(role string) {
 	s.t.Helper()
-	ref := "v0.3.0"
+	s.syncMirror()
+	ref := syncA
 	if role == "b" {
-		ref = "v0.2.0"
+		ref = syncB
 		var c map[string]any
 		b, _ := os.ReadFile(s.cfg)
 		json.Unmarshal(b, &c)
