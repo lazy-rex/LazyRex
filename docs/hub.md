@@ -915,6 +915,23 @@ The hub writes one line for each answered call (`Hub.answer`, `hub/cmd/hub/calll
 
 Tests: `TestCallLogKeepsEveryLineButFastRoutineReads` (the 250 ms boundary included), `TestCallLogSummary`.
 
+## Plugin lifecycle events
+
+`events.jsonl` has these plugin events: `plugin_spawned`, `plugin_registered` and `plugin_exited`
+(each with an `instance_id`), and `plugin_stopped` (no `instance_id`).
+
+- For one instance_id, plugin_spawned, plugin_registered and plugin_exited are not ordered against
+  each other. The hub writes `plugin_spawned` after the block exists and the child is recorded; the
+  new process can register before that, and a fast crash can exit before that.
+- plugin_spawned of another instance_id is a replacement: the earlier instance's registration no
+  longer counts.
+- plugin_stopped has no instance_id and ends every instance of the plugin.
+
+The release tool applies this rule (`registeredNow`): an instance counts as registered by the
+current hub when a `plugin_registered` event names it after the last `hub_started`, with no later
+`plugin_stopped` and no later `plugin_spawned` of another instance, and no `plugin_exited` of that
+instance (an exit is final for the instance).
+
 ## Spawn directories and path locks
 
 Status: lab (Claude, Rex 1203, 2026-10-16). Contract agreed with Codex for the worktrees plugin.

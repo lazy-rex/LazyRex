@@ -400,12 +400,15 @@ type relVerifyEntry struct {
 
 // registeredNow reports whether the entry runs and is registered by its current instance, after
 // the last hub_started (the rule of the release kits' verify.sh): a plugin_registered event names
-// the instance, and no plugin_stopped or plugin_spawned event of the plugin comes after it.
+// the instance, and no plugin_stopped event, plugin_spawned event of another instance, or
+// plugin_exited event of the instance comes after it. For one instance, the hub writes
+// plugin_spawned, plugin_registered and plugin_exited in any order (docs/hub.md), so a spawn event
+// of the same instance changes nothing, and its exit is final.
 func registeredNow(e relEntryState, after []map[string]any) bool {
 	if e.State != "running" || e.InstanceID == "" || e.InstancePending || e.Registered == nil || !*e.Registered {
 		return false
 	}
-	seen := false
+	seen, exited := false, false
 	for _, ev := range after {
 		if ev["plugin"] != e.Name {
 			continue
@@ -415,11 +418,19 @@ func registeredNow(e relEntryState, after []map[string]any) bool {
 			if ev["instance_id"] == e.InstanceID {
 				seen = true
 			}
-		case "plugin_stopped", "plugin_spawned":
+		case "plugin_spawned":
+			if ev["instance_id"] != e.InstanceID {
+				seen = false
+			}
+		case "plugin_exited":
+			if ev["instance_id"] == e.InstanceID {
+				exited = true
+			}
+		case "plugin_stopped":
 			seen = false
 		}
 	}
-	return seen
+	return seen && !exited
 }
 
 // verifyList checks, until a 120 s deadline, that hub.plugins of the current hub has exactly the
