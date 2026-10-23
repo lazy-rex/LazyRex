@@ -3,7 +3,7 @@ package main
 // The replacing phase of update and restart, and the fallback phase of update (C5 plan r1 item 5,
 // with r2 A, B and C). A restart replaces the instance that it stored at admission. An update reads
 // the record once and picks one call for its state, or no call:
-//   - a live instance at the pin: no call;
+//   - a live instance at the pin, and the selected run of the intended entry at the pin: no call;
 //   - a live instance at another run: hub.admin.replace;
 //   - desired running and no live instance (waiting, crashing, refused, retained, pending):
 //     hub.admin.start, an explicit start, which selects the pin;
@@ -27,6 +27,7 @@ type opRecord struct {
 	desired string
 	live    bool // an owned instance that is not pending, and its child runs
 	run     pluginRun
+	sel     *selectedRun // the run of the next automatic start (a copy)
 }
 
 func (h *Hub) readOpRecord(op *pluginOp) opRecord {
@@ -42,6 +43,10 @@ func (h *Hub) readOpRecord(op *pluginOp) opRecord {
 	}
 	owned, pending := h.ownedInstance(pl)
 	r.desired, r.run = pl.Desired, pl.run
+	if pl.selected != nil {
+		s := *pl.selected
+		r.sel = &s
+	}
 	r.live = owned != "" && !pending && alive(pl.ChildPID, pl.ChildStart)
 	return r
 }
@@ -104,8 +109,11 @@ func (h *Hub) opPick(ctx context.Context, op *pluginOp, replace bool) error {
 	if r.entry != expect {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("%s is bound to %s now; the update wrote %s; nothing was called", op.Name, r.entry, expect))
 	}
+	// At the pin: the instance runs the pin, and the next automatic start runs it too (the selected
+	// run of the intended entry, as "already at" requires). Else a replace selects it.
+	atPin := r.live && want.matches(&r.run) && r.sel != nil && r.sel.Entry == expect && want.matches(&r.sel.Run)
 	switch {
-	case r.live && want.matches(&r.run):
+	case atPin:
 		return h.setOpPhase(ctx, op, "done", fmt.Sprintf("%s runs %s", op.Name, runText(&r.run)), "")
 	case r.live && replace:
 		return h.opCall(ctx, op, "replace")
