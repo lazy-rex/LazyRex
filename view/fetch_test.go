@@ -24,6 +24,8 @@ type fakePages struct {
 	calls     int
 	cancelled int
 	hold      chan struct{} // the next call waits until it is closed (or its fetch stops)
+	deaf      bool          // a held call ignores its fetch's stop: it returns its page late
+	returned  int
 	answer    func(before string, call int) (historyPage, bool)
 }
 
@@ -32,8 +34,16 @@ func (f *fakePages) get(ctx context.Context, before string) (historyPage, error)
 	f.calls++
 	call, hold, answer := f.calls, f.hold, f.answer
 	f.hold = nil
+	deaf := f.deaf
 	f.mu.Unlock()
-	if hold != nil {
+	defer func() {
+		f.mu.Lock()
+		f.returned++
+		f.mu.Unlock()
+	}()
+	if hold != nil && deaf {
+		<-hold
+	} else if hold != nil {
 		select {
 		case <-hold:
 		case <-ctx.Done():
@@ -64,6 +74,12 @@ func (f *fakePages) holdNext() chan struct{} {
 	f.hold = gate
 	f.mu.Unlock()
 	return gate
+}
+
+func (f *fakePages) returns() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.returned
 }
 
 func (f *fakePages) counts() (calls, cancelled int) {
@@ -418,4 +434,35 @@ func TestFetchComposerWorksWhileAPageIsHeld(t *testing.T) {
 	r.wait("printed", func(s probeState) bool { return idle(s) && s.printed["m600"] })
 	r.stop()
 	wantSequence(t, r.term.String(), span(101, 600))
+}
+
+// TestFetchDropsAStalePage: the open's call for the page before 601 ignores the stop and returns
+// 301..600 after the fetch restarted from 1501..1800, while the new fetch's call waits. The stale
+// page does not join the new run: the print is exactly 1301..1800.
+func TestFetchDropsAStalePage(t *testing.T) {
+	f := &fakePages{thread: msgs(span(1, 1800)...), size: 300, deaf: true}
+	old := f.holdNext()
+	r := startFetchRun(t, f)
+	r.p.Send(page(msgs(span(601, 900)...), true, 1800))
+	r.wait("the open fetch waits", func(s probeState) bool { return s.fetching })
+	current := f.holdNext()
+	r.p.Send(page(msgs(span(1501, 1800)...), true, 1800))
+	r.wait("the restarted fetch waits", func(s probeState) bool {
+		calls, _ := f.counts()
+		return s.fetching && calls == 2
+	})
+	close(old)
+	for deadline := time.Now().Add(5 * time.Second); f.returns() < 1; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the old call did not return")
+		}
+	}
+	// The Cmd sends the stale page to the program after the call returns; a probe after a short
+	// wait comes after it in the program's queue.
+	time.Sleep(100 * time.Millisecond)
+	r.wait("the stale page is taken", func(s probeState) bool { return s.fetching })
+	close(current)
+	r.wait("printed", func(s probeState) bool { return idle(s) && s.printed["m1800"] })
+	r.stop()
+	wantSequence(t, r.term.String(), span(1301, 1800))
 }
