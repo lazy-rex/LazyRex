@@ -3,30 +3,39 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"sync"
 	"testing"
 	"time"
 )
 
-// procRex answers the hub's Rex calls: session.list_blocks with one block b1, and each
-// com.superlogical.terminal.process read with the next answer (the last one repeats). An answer
-// with a "code" is that Rex error.
+// procRex answers the hub's Rex calls: session.list_blocks with one block b1, session.new_block
+// with b1, and each com.superlogical.terminal.process read with the next answer (the last one
+// repeats). An answer with a "code" is that Rex error; one with "hang" is never answered.
 func procRex(t *testing.T, h *Hub, answers ...map[string]any) {
 	t.Helper()
 	fr := newPerformRex(t, func(performCall) (any, string) { return map[string]any{}, "" })
 	var mu sync.Mutex
 	n := 0
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
 	fr.mu.Lock()
 	fr.other = func(method string, _ json.RawMessage) (any, string) {
 		switch method {
 		case "session.list_blocks":
 			return map[string]any{"blocks": []any{map[string]any{"block_id": "b1"}}}, ""
+		case "session.new_block":
+			return map[string]any{"block_id": "b1"}, ""
 		case "com.superlogical.terminal.process":
 			mu.Lock()
-			defer mu.Unlock()
 			a := answers[min(n, len(answers)-1)]
 			n++
+			mu.Unlock()
+			if a["hang"] == true {
+				<-hang // no answer until the test ends
+				return nil, "disconnected"
+			}
 			if code, ok := a["code"].(string); ok {
 				return nil, code
 			}
@@ -136,5 +145,66 @@ func TestAdoptionTakesAnExitBeforeTheRecord(t *testing.T) {
 	}
 	if state, _ := stateOf(h, pl); state != "crashing" {
 		t.Fatalf("after the adoption: state %s", state)
+	}
+}
+
+// shortChildRead sets a short pluginChildRead for one test.
+func shortChildRead(t *testing.T) {
+	was := pluginChildRead
+	pluginChildRead = 200 * time.Millisecond
+	t.Cleanup(func() { pluginChildRead = was })
+}
+
+// returnsWithin runs f and fails unless it returns within d.
+func returnsWithin(t *testing.T, what string, d time.Duration, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { defer close(done); f() }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("%s did not return within %v of an unanswered child read", what, d)
+	}
+}
+
+// An unanswered child read after the create is bounded: the start returns a child-stage error
+// with an unknown outcome, the intent stays sending (not abandoned), and no exit is counted.
+func TestSpawnChildReadIsBounded(t *testing.T) {
+	shortChildRead(t)
+	h, _, events, pl := oneHub(t)
+	procRex(t, h, map[string]any{"hang": true})
+	h.ui.sess["s"] = uiSessionKey
+	h.mu.Lock()
+	pl.Desired = "running"
+	h.mu.Unlock()
+	var err error
+	returnsWithin(t, "the start", 3*time.Second, func() {
+		pl.lifecycle.Lock()
+		defer pl.lifecycle.Unlock()
+		err = h.startPlugin(context.Background(), pl)
+	})
+	var se *spawnError
+	if !errors.As(err, &se) || se.stage != "child" || se.known {
+		t.Fatalf("the start: %v, want an unknown child-stage error", err)
+	}
+	var status string
+	h.db.QueryRow(`SELECT status FROM spawn_intents WHERE plugin = 'p'`).Scan(&status)
+	if status != "sending" {
+		t.Fatalf("the intent is %q, want sending", status)
+	}
+	if n := exitsOf(t, events, 1); n != 0 {
+		t.Fatalf("%d plugin_exited events", n)
+	}
+}
+
+// The read after the record is bounded too, and its timeout is no exit.
+func TestCheckMappedReadIsBounded(t *testing.T) {
+	shortChildRead(t)
+	h, _, events, pl := oneHub(t)
+	procRex(t, h, map[string]any{"hang": true})
+	running(h, pl, "p-1")
+	returnsWithin(t, "checkMapped", 3*time.Second, func() { h.checkMapped(context.Background(), pl, "s", "block:p-1") })
+	if n := exitsOf(t, events, 1); n != 0 {
+		t.Fatalf("%d plugin_exited events", n)
 	}
 }

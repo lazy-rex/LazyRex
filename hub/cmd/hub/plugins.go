@@ -905,6 +905,10 @@ func (h *Hub) abandonIntent(ctx context.Context, instance string) error {
 	return nil
 }
 
+// pluginChildRead bounds each read of a new plugin block's child (spawn, checkMapped): an
+// unanswered Rex read must not hold the start, and pl.lifecycle, for the life of the hub.
+var pluginChildRead = 10 * time.Second
+
 // spawn starts a new instance from the candidate cand, which becomes its run. A failure is a
 // *spawnError. It releases lease when the run is saved in hub.db: from then on, prune sees the run.
 // The caller releases it on the other paths.
@@ -992,9 +996,13 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 	if out.BlockID == "" {
 		return &spawnError{stage: "create", err: fmt.Errorf("spawn %s: no block id", pl.Name)}
 	}
-	pid, err := h.childPIDIn(ctx, sess, out.BlockID)
+	rctx, rcancel := context.WithTimeout(ctx, pluginChildRead)
+	pid, err := h.childPIDIn(rctx, sess, out.BlockID)
+	rcancel()
 	if err != nil {
-		return &spawnError{stage: "child", err: err} // the block exists; its child is not verified
+		// The block exists; its child is not verified. The outcome is unknown, not a failed create:
+		// the intent stays sending, and resolveIntents adopts a live child by its instance argv.
+		return &spawnError{stage: "child", err: err}
 	}
 	h.mapFault(pl.Name, out.BlockID)
 	h.mu.Lock()
@@ -1015,7 +1023,9 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun, lease *sta
 // failed read, or no child without a last_exit, never counts as an exit (deferred: roadmap.md,
 // "Cleanup and test debt"). The caller holds pl.lifecycle, so pluginExited runs on its own.
 func (h *Hub) checkMapped(ctx context.Context, pl *Plugin, sess, block string) {
-	c, err := h.childProcIn(ctx, sess, block)
+	rctx, cancel := context.WithTimeout(ctx, pluginChildRead)
+	c, err := h.childProcIn(rctx, sess, block)
+	cancel()
 	if err != nil {
 		log.Printf("plugin %s: cannot read the child of block %s after recording it: %v", pl.Name, block, err)
 		return
