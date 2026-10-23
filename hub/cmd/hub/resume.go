@@ -621,6 +621,7 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 	t.phase, t.spawn = "launching", s.ID
 	h.ev.emit("agent_op_phase", map[string]any{"op_id": t.op, "agent": t.identity, "phase": "launching", "spawn_id": s.ID})
 	h.kickRestartForms()
+	h.changed("workers") // hub.workers lists the starting worker; a resume spawn has no agent_id
 	if err := h.sendSpawn(ctx, s, workerPlacement{}, resumeArgv(s, prof, eff, conv)); err != nil {
 		return err
 	}
