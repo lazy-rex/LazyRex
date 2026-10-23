@@ -655,3 +655,37 @@ INSERT INTO meta (k, v) VALUES ('relprobe-file-k2', 2);`
 		}
 	}
 }
+
+// The lab agent check works on a hub.db with bindings and on one without (the join removal (d)
+// drops bindings). An identity with a current pane refuses: a lab hub has no current conversation
+// before the first phase.
+func TestReleaseLabAgents(t *testing.T) {
+	exec := func(h *rehearsal, q string) {
+		db, err := h.hubDB(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := labHubDB(t)
+	exec(h, `DROP TABLE bindings`)
+	if err := h.checkLabBindings(); err != nil {
+		t.Errorf("a lab hub.db without bindings: %v", err)
+	}
+	// The hub makes the identity tables at start (workers.go), not in openDB.
+	h = labHubDB(t)
+	exec(h, identitySchema)
+	exec(h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, current) VALUES ('block:1', 's', 1, 't', 'claude:x')`)
+	if err := h.checkLabBindings(); err == nil || !strings.Contains(err.Error(), "identity_panes") {
+		t.Errorf("a lab hub.db with a current identity: %v", err)
+	}
+	h = labHubDB(t)
+	exec(h, identitySchema)
+	exec(h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start) VALUES ('block:1', 's', 1, 't')`)
+	if err := h.checkLabBindings(); err != nil {
+		t.Errorf("a lab hub.db with a pane row and no current identity: %v", err)
+	}
+}
