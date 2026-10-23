@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// cutoverHub is fenceTestHub with a notice in the manifest and a roster agent.
+// cutoverHub is fenceTestHub with a notice in the manifest and an identity.
 func cutoverHub(t *testing.T) (*Hub, *Plugin) {
 	h, pl := fenceTestHub(t)
 	pl.run = pluginRun{Notice: "n"}
-	h.agents["claude:a"] = &Agent{ID: "claude:a", delivered: map[string]int64{}}
+	h.idents = map[string]*Agent{"claude:a": {ID: "claude:a", delivered: map[string]int64{}}}
 	return h, pl
 }
 

@@ -438,8 +438,7 @@ func TestLabKeeperMainRunsNoHub(t *testing.T) {
 	dir := t.TempDir()
 	state := filepath.Join(dir, "state")
 	cfg := filepath.Join(dir, "hub.json")
-	b, _ := json.Marshal(map[string]any{"server": "unix://" + filepath.Join(dir, "none.sock"), "state": state,
-		"agents": []any{map[string]any{"id": "user", "name": "User"}}, "plugins": []any{}}) // a hub run would make state
+	b, _ := json.Marshal(map[string]any{"server": "unix://" + filepath.Join(dir, "none.sock"), "state": state, "plugins": []any{}}) // a hub run would make state
 	if err := os.WriteFile(cfg, b, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -19,11 +19,11 @@ func TestAdminGuardsRefuseUnknownAncestry(t *testing.T) {
 	dir := t.TempDir()
 	h.cfg.managedPath = filepath.Join(dir, "plugins.json")
 	writeManaged(t, dir, `{"plugins":[`) // malformed: a reload that runs reports it
-	h.agents, h.plugins = map[string]*Agent{}, map[string]*Plugin{"p": {Name: "p", Desired: "running"}}
+	h.plugins = map[string]*Plugin{"p": {Name: "p", Desired: "running"}}
 	h.procRead = func(pid int) (procRecord, error) { return procRecord{}, errors.New("injected read failure") }
 	pid := os.Getpid()
 	want := "cannot check the caller's process ancestry: process " + fmt.Sprint(pid) + ": injected read failure; admin actions need a verified caller"
-	for _, action := range []string{"hub.admin.start", "hub.admin.stop", "hub.admin.rebind", "hub.admin.unlock", "hub.admin.shutdown", "hub.plugins.reload"} {
+	for _, action := range []string{"hub.admin.start", "hub.admin.stop", "hub.admin.unlock", "hub.admin.shutdown", "hub.plugins.reload"} {
 		var p perform
 		json.Unmarshal([]byte(fmt.Sprintf(`{"action":%q,"args":{"plugin":"p"},"requester":{"client_id":"c9","principal":{"pid":%d}}}`, action, pid)), &p)
 		_, err := h.dispatch(context.Background(), p)
@@ -55,7 +55,6 @@ func TestCallerInManagedPaneOutcomes(t *testing.T) {
 		}
 		return procRecord{ppid: pp}, nil
 	}
-	h.agents = map[string]*Agent{}
 	h.plugins = map[string]*Plugin{"p": {Name: "p", ChildPID: 30}}
 	for _, c := range []struct {
 		pid     int
@@ -103,7 +102,7 @@ func TestAncestryRequiresPIDOne(t *testing.T) {
 	dir := t.TempDir()
 	h.cfg.managedPath = filepath.Join(dir, "plugins.json")
 	writeManaged(t, dir, `{"plugins":[`)
-	h.agents, h.plugins = map[string]*Agent{}, map[string]*Plugin{"p": {Name: "p", Desired: "running"}}
+	h.plugins = map[string]*Plugin{"p": {Name: "p", Desired: "running"}}
 	h.procRead = read
 	for _, principal := range []string{`{}`, `{"pid":0}`, `{"pid":40}`} {
 		for _, action := range []string{"hub.admin.stop", "hub.plugins.reload"} {

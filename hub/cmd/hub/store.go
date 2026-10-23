@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS notice_deliveries (ns TEXT NOT NULL, agent TEXT NOT N
 CREATE TABLE IF NOT EXISTS notice_receipts (plugin TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (plugin, seq));
 CREATE TABLE IF NOT EXISTS sql_returns (plugin TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sql_notice_plugins (plugin TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS plugins (name TEXT PRIMARY KEY, desired TEXT NOT NULL, instance_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '');
 -- status: prepared (request not sent), sending (outcome unknown until resolved), created, abandoned
 CREATE TABLE IF NOT EXISTS spawn_intents (instance_id TEXT PRIMARY KEY, plugin TEXT NOT NULL, status TEXT NOT NULL, block_id TEXT NOT NULL DEFAULT '');
@@ -52,10 +51,9 @@ func openDB(path string) (*DB, error) {
 	for _, m := range []string{
 		`ALTER TABLE plugins ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE spawn_intents ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE bindings ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`,    // Plugin.run as JSON; '' = no run
-		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`, // the exact source of the entry that bound the name
-		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`, // the agent read since the last revision
+		`ALTER TABLE plugins ADD COLUMN run TEXT NOT NULL DEFAULT ''`,            // Plugin.run as JSON; '' = no run
+		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`,         // the exact source of the entry that bound the name
+		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`,         // the agent read since the last revision
 		`ALTER TABLE plugins ADD COLUMN entry_identity TEXT NOT NULL DEFAULT ''`, // entryIdentity of the entry that the record was last saved with; '' = unknown
 		`ALTER TABLE plugins ADD COLUMN selected_run TEXT NOT NULL DEFAULT ''`,   // Plugin.selected as JSON; '' = none (selectedrun.go)
 	} {
@@ -78,6 +76,10 @@ var retiredSchema = []struct{ check, statement string }{
 	// rehearsal sees no dropped column. Its DROP comes back with 2d (lead-hubq2).
 	// plugins.entry_stamp: the guard against a rollback hub's writes (coord-reset-0 ended rollback).
 	{`SELECT COUNT(*) FROM pragma_table_info('plugins') WHERE name = 'entry_stamp'`, `ALTER TABLE plugins DROP COLUMN entry_stamp`},
+	// The legacy agents (the identity removal, coord-reset-0): no data is kept.
+	{`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'bindings'`, `DROP TABLE bindings`},
+	{`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dyn_agents'`, `DROP TABLE dyn_agents`},
+	{`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'identity_aliases'`, `DROP TABLE identity_aliases`},
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.
@@ -465,7 +467,7 @@ func (db *DB) storeBatch(ctx context.Context, ns string, args map[string]any, ro
 			}
 			agent, _ := nm["agent"].(string)
 			if !roster[agent] {
-				return nil, bad("notify needs a roster agent")
+				return nil, bad("notify needs a known agent ID (hub.agents)")
 			}
 			op, err := parseNotice(agent, nm)
 			if err != nil {
@@ -732,6 +734,7 @@ func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge 
 	}
 	return true, true, time.Time{}
 }
+
 // applySQLNotices applies hub.sql outbox rows of plugin (sqlnotice.go) in seq order, in one
 // transaction with a receipt for each row. A row with a receipt was applied before (a crash after
 // the apply and before the outbox delete): it is skipped. The rules are those of a notify op of

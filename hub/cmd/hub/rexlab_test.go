@@ -41,7 +41,7 @@ func rexLab(t *testing.T) *lab {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.Test.Agents, m.Test.Args, m.Test.WatchRoots, m.Test.Env = nil, nil, nil, nil
+	m.Test.Args, m.Test.WatchRoots, m.Test.Env = nil, nil, nil
 	o := &testOpts{dir: dir, lazyrex: root, self: self, rexBin: rexBin, m: m}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

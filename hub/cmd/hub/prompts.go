@@ -61,26 +61,17 @@ func (h *Hub) syncPrompts() {
 	if h.prompts.open == nil {
 		h.prompts = promptBook{open: map[string]*prompt{}, gen: map[string]int64{}, last: map[string]closedPrompt{}, agentRev: map[string]int64{}}
 	}
-	// A pane has at most one open prompt: the prompt of its current owner (docs/hub.md). The owner
-	// is the pane's current identity, or its legacy agent when no identity took it over. A legacy
-	// agent with an alias (permanent) never has a prompt again: its open prompt closes with
-	// "alias". A superseded or detached identity has none: its prompt closes with "gone". Every
-	// close runs before any open, in this one pass.
-	agents, aliased := map[string]*Agent{}, map[string]bool{}
-	for _, a := range h.everyAgent() {
-		if _, ok := h.aliases[a.ID]; ok && a.IdState == "" {
-			aliased[a.ID] = true
-			continue
+	// A pane has at most one open prompt: the prompt of its current identity (docs/hub.md). A
+	// superseded or detached identity has none: its prompt closes with "gone". Every close runs
+	// before any open, in this one pass.
+	agents := map[string]*Agent{}
+	for _, a := range h.idents {
+		if a.IdState == "current" {
+			agents[a.ID] = a
 		}
-		if a.IdState != "" && a.IdState != "current" {
-			continue
-		}
-		agents[a.ID] = a
 	}
 	for id, p := range h.prompts.open {
-		if aliased[id] {
-			h.closePrompt(p, "alias")
-		} else if agents[id] == nil {
+		if agents[id] == nil {
 			h.closePrompt(p, "gone")
 		}
 	}
@@ -97,7 +88,7 @@ func (h *Hub) syncPrompt(a *Agent) {
 	if p := b.open[a.ID]; p != nil {
 		reason := ""
 		switch {
-		case !live || p.Block != a.BlockID || p.PID != a.ChildPID || p.Start != a.ChildStart || p.Session != h.bindingSession(a):
+		case !live || p.Block != a.BlockID || p.PID != a.ChildPID || p.Start != a.ChildStart || p.Session != a.Session:
 			reason = "gone"
 		case a.State == "":
 			reason = "removed" // the record is absent, or its state is unknown
@@ -115,7 +106,7 @@ func (h *Hub) syncPrompt(a *Agent) {
 	}
 	b.gen[a.ID]++
 	msg, cut := cutUTF8(r.Msg, promptMsgMax)
-	p := &prompt{ID: newPromptID(), Gen: b.gen[a.ID], Agent: a.ID, Session: h.bindingSession(a), Block: a.BlockID,
+	p := &prompt{ID: newPromptID(), Gen: b.gen[a.ID], Agent: a.ID, Session: a.Session, Block: a.BlockID,
 		PID: a.ChildPID, Start: a.ChildStart, Kind: r.Kind, Msg: msg, Truncated: cut, App: r.App,
 		EffectiveApp: r.EffectiveApp, OpenedAt: time.Now().UTC(), sum: sum}
 	b.open[a.ID] = p
