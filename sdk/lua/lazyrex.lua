@@ -266,7 +266,7 @@ M.rex_error = rex_error
 
 -- COVERED_READS: the hub calls whose reads the hub tracks for a render (G1 part B, hub lead,
 -- lead-g1b-plan). The hub keeps the same list (coveredReads); TestCoveredReadsMatchSDK reads this line.
-local COVERED_READS = {['hub.agents'] = true, ['hub.agents.resolve'] = true, ['hub.workers'] = true, ['hub.profiles'] = true}
+local COVERED_READS = {['hub.agents'] = true, ['hub.agents.resolve'] = true, ['hub.workers'] = true, ['hub.profiles'] = true, ['hub.plugins'] = true, ['hub.plugins.ops'] = true, ['hub.plugins.tags'] = true, ['hub.plugins.log'] = true, ['hub.digest'] = true}
 
 local function hub(action, args)
   local app = S.app

@@ -75,7 +75,7 @@ func TestCoveredReadRules(t *testing.T) {
 		"unknown ID":          func(string) { hubCall(h, "c1", "hub.agents", "r-unknown") },
 		"an older instance":   func(string) { hubCall(h, "c1", "hub.agents", h.openRenderID("p", "c0", "v2", 0)) },
 		"a closed ID":         func(string) { hubCall(h, "c1", "hub.agents", closed) },
-		"a non-covered read":  func(id string) { hubCall(h, "c1", "hub.plugins", id) },
+		"a non-covered read":  func(id string) { hubCall(h, "c1", "hub.info", id) },
 		"a non-string render": func(string) { h.renderCall("p", "c1", "hub.agents", map[string]any{"render": 1}) },
 	} {
 		id := h.openRenderID("p", "c1", "v1", 0)
@@ -296,6 +296,64 @@ func TestCoveredReadEachAction(t *testing.T) {
 				t.Errorf("%s: changed(%s) marked %v, want %v", c.action, n, got, want)
 			}
 		}
+	}
+}
+
+// Each covered read, dispatched from the registered home instance with an open render ID and its
+// minimal valid arguments, succeeds: its handler never sees render (lead-c8-r8). The render stays
+// tracked with the change names of the action. An uncovered action still receives render, and a
+// strict one refuses it.
+func TestCoveredReadsDispatchRender(t *testing.T) {
+	h := logTestHub(t, blockTextCall)
+	if _, err := h.db.Exec(uiSchema); err != nil { // hub.plugins reads ui_tabs
+		t.Fatal(err)
+	}
+	pid := os.Getpid()
+	h.cfg.Home = "x"
+	h.mu.Lock()
+	pl := h.plugins["x"]
+	pl.ClientID, pl.ChildPID, pl.ChildStart = "client:x", pid, startTime(pid)
+	h.agents = map[string]*Agent{"a1": {ID: "a1"}}
+	h.mu.Unlock()
+	h.loads.mu.Lock()
+	h.loads.tags.run = func(context.Context, string, any) (any, bool, error) { return tagsList{}, true, nil } // no network
+	h.loads.mu.Unlock()
+	args := map[string]map[string]any{
+		"hub.agents":         {},
+		"hub.agents.resolve": {"to": "a1"},
+		"hub.workers":        {},
+		"hub.profiles":       {},
+		"hub.plugins":        {},
+		"hub.plugins.ops":    {},
+		"hub.plugins.tags":   {"source": "github:acme/x@v1.0.0"},
+		"hub.plugins.log":    {"entry": "managed:x"},
+		"hub.digest":         {"texts": []any{"a"}},
+	}
+	for action, names := range coveredReads {
+		a, ok := args[action]
+		if !ok {
+			t.Errorf("%s: no arguments in this test", action)
+			continue
+		}
+		id := h.openRenderID("x", "client:x", "v1", 0)
+		r := h.vs.renders[id]
+		if err := hubCall(h, "client:x", action, id, a); err != nil {
+			t.Errorf("%s with a render ID: %v", action, err)
+		}
+		var got []string
+		for n := range r.changes {
+			got = append(got, n)
+		}
+		slices.Sort(got)
+		if want := slices.Sorted(slices.Values(names)); r.untracked || !slices.Equal(got, want) {
+			t.Errorf("%s: untracked %v, changes %v, want %v", action, r.untracked, got, want)
+		}
+		h.closeRenderID(id)
+	}
+	id := h.openRenderID("x", "client:x", "v1", 0)
+	err := hubCall(h, "client:x", "hub.app.select_session", id, map[string]any{"view_id": "v1"})
+	if err == nil || !strings.Contains(err.Error(), `unknown field "render"`) || !h.vs.renders[id].untracked {
+		t.Errorf("an uncovered action with a render ID: %v, untracked %v", err, h.vs.renders[id].untracked)
 	}
 }
 

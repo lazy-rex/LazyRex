@@ -208,7 +208,11 @@ tracked read of its tables. Built: `coveredReads` and `renderHubRead` in renderr
 
 - The covered actions and their change names: `hub.agents` and `hub.agents.resolve` give
   `agents`; `hub.workers` gives `workers`; `hub.profiles` gives `profiles` and `workers` (its
-  `running` counts come from the spawns). `hub.plugins` is not covered: it untracks, as today.
+  `running` counts come from the spawns); `hub.plugins`, `hub.plugins.ops`, `hub.plugins.tags` and
+  `hub.plugins.log` give `plugins` (every entry, op phase and load change sends it). A render must
+  not read `hub.plugins.tags` or `hub.plugins.log` with `refresh = true`: the load's end sends
+  `plugins` and renders the view again, so each render would start the next load. Only a view
+  action passes `refresh = true`.
 - The plugin sends the open render ID as `render` with a covered call (the SDK does it). The call
   then does not untrack the render. When the call returns without error, the hub adds its change
   names to the render's read set. An error, a closed or unknown ID, or an ID of another plugin or

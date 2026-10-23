@@ -129,6 +129,10 @@ type logResult struct {
 // runLogLoad is the load of one entry key for the record stamp (the request's logSnap). A result
 // is kept only when the load read that record at its start and at its end, so a kept value is
 // always of its stamp, and the cache's stamp check is the only check that the reply needs.
+// A stale result (accept false) cannot repeat for one stamp: the next request stamps the current
+// record, which is not the old stamp (the record changed), and a key with no entry never loads
+// (pluginLog answers not_found first). So the loads of a covered render are bounded by the record
+// changes (TestPluginLogStaleLoadsOncePerChange).
 func (h *Hub) runLogLoad(ctx context.Context, key string, stamp any) (any, bool, error) {
 	before, ok := h.logSnapshot(key)
 	if !ok || before != stamp {

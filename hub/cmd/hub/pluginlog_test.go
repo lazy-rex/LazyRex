@@ -636,3 +636,40 @@ func TestPluginLogLoadStartsAfterChange(t *testing.T) {
 		t.Fatalf("a load for the earlier record: %v", r)
 	}
 }
+
+// A stale result (the record changed during the load) clears the entry once: the next request
+// loads once for the new record, and later requests in the fresh time load nothing more. A key
+// with no entry never loads. So covered renders of hub.plugins.log end (lead-c8-r1 R1).
+func TestPluginLogStaleLoadsOncePerChange(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	h := logTestHub(t, func(ctx context.Context, method string, payload any, out any) error {
+		if calls.Add(1) == 1 {
+			<-release
+		}
+		return blockTextCall(ctx, method, payload, out)
+	})
+	askLog(t, h, map[string]any{"entry": "managed:x"})
+	for calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	changeLogRecord(h, "restart")
+	close(release)
+	waitLogLoad(t, h, "managed:x")
+	for i := 0; i < 3; i++ {
+		askLog(t, h, map[string]any{"entry": "managed:x"})
+		waitLogLoad(t, h, "managed:x")
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("%d block reads, want 2: the stale load and one load for the new record", n)
+	}
+	if _, err := h.pluginLog(rawJSON(map[string]any{"entry": "managed:none"})); err == nil || !strings.Contains(err.Error(), "not_found") {
+		t.Fatalf("an unknown key: %v", err)
+	}
+	h.loads.mu.Lock()
+	_, loaded := h.loads.logs.entries["managed:none"]
+	h.loads.mu.Unlock()
+	if loaded || calls.Load() != 2 {
+		t.Fatalf("an unknown key started a load (entry %v, %d block reads)", loaded, calls.Load())
+	}
+}

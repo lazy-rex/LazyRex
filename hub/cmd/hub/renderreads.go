@@ -53,6 +53,13 @@ var coveredReads = map[string][]string{
 	"hub.agents.resolve": {"agents"},
 	"hub.workers":        {"workers"},
 	"hub.profiles":       {"profiles", "workers"}, // its running counts come from the spawns
+	// The plugin manager reads (C8): every entry, op phase and load change sends "plugins".
+	"hub.plugins":      {"plugins"},
+	"hub.plugins.ops":  {"plugins"},
+	"hub.plugins.tags": {"plugins"},
+	"hub.plugins.log":  {"plugins"},
+	// A pure read: it adds no change name. The slice is empty, not nil: a nil entry is not covered.
+	"hub.digest": {},
 }
 
 // withRenderArg returns a copy of a declared action whose args schema also has the property

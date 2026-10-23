@@ -42,3 +42,18 @@ app.panel('Hub Reads', function()
   app.hub('hub.profiles')
   return {app.ui.text('reads', 'ok')}
 end, {landing = false})
+
+-- hub.plugins is a covered read with the change name "plugins" (C8). A reload sends that change.
+app.action('rr.reload', {}, function(ctx, args)
+  app.hub('hub.plugins.reload')
+  return {}
+end, {description = 'Read the managed plugin file again.'})
+app.panel('Plugin Reads', function()
+  app.hub('hub.plugins')
+  return {app.ui.text('plugins', 'ok')}
+end, {landing = false})
+-- hub.digest is a covered pure read: it keeps the render tracked and adds no change name.
+app.panel('Digest Reads', function()
+  local r = app.hub('hub.digest', {texts = {'a'}})
+  return {app.ui.text('digest', r.digests[1])}
+end, {landing = false})
