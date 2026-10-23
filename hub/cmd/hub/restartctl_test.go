@@ -103,3 +103,41 @@ func TestStopWaitsForTheLockHolder(t *testing.T) {
 		t.Errorf("a holder that exits: exit %d\n%s", code, buf.String())
 	}
 }
+
+// One look has one deadline for the listing and every hub.info: three hubs whose hub.info never
+// answers end the look within the bound (not three bounds), and each of them is unknown, so the
+// look is "unknown", never "not running".
+func TestLookHasOneBound(t *testing.T) {
+	defer func(d time.Duration) { ctlLookWait = d }(ctlLookWait)
+	ctlLookWait = time.Second
+	dir := t.TempDir()
+	rexPath := filepath.Join(dir, "rex")
+	hub := func(id string) string {
+		return `{"client_id":"` + id + `","info":{"label":"lazyrex-hub"},"connection_state":"connected"}`
+	}
+	list := `{"clients":[` + hub("h1") + `,` + hub("h2") + `,` + hub("h3") + `]}`
+	script := "#!/bin/sh\ncase \"$*\" in\n*hub.info*) exec sleep 30;;\n*) echo '" + list + "';;\nesac\n"
+	if err := os.WriteFile(rexPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "state")
+	os.Mkdir(state, 0o700)
+	start := time.Now()
+	v := ctlLook(Config{Server: "unix:///nonexistent/rex.sock", State: state, Rex: rexPath})
+	d := time.Since(start)
+	// The bound, plus the 500 ms that a killed rex has for its pipes (rexCmdCtx), plus scheduling.
+	if d > ctlLookWait+time.Second {
+		t.Errorf("the look took %s, want at most about %s", d, ctlLookWait)
+	}
+	if v.own != nil || len(v.others) != 3 {
+		t.Fatalf("own %v, others %v", v.own, v.others)
+	}
+	for _, h := range v.others {
+		if h.State != "" {
+			t.Errorf("hub %s has state %q after a cut hub.info, want unknown", h.ID, h.State)
+		}
+	}
+	if code, text := v.statusText(); code != ctlUnknown || !strings.Contains(text, "did not answer hub.info") {
+		t.Errorf("status %d\n%s", code, text)
+	}
+}

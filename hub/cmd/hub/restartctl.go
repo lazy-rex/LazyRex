@@ -44,6 +44,8 @@ var ctlStopWait = 10 * time.Second // a test shortens it
 
 var ctlRestartWait = 60 * time.Second // a test shortens it
 
+var ctlLookWait = 5 * time.Second // one look: the listing and every hub.info; a test shortens it
+
 type ctlView struct {
 	cfg      Config
 	rex      string
@@ -251,17 +253,20 @@ func (v *ctlView) hubIDsCtx(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). A hub whose
-// hub.info fails or does not answer in 5 s is listed with an empty state.
+// hubs lists the connected lazyrex-hub clients and asks each for its state (hub.info). The listing
+// and every hub.info share one deadline (ctlLookWait), so a look has a fixed bound, whatever the
+// number of hubs. A hub whose hub.info fails, or that the deadline cuts, is listed with an empty
+// state: unknown, never this state and never another.
 func (v *ctlView) hubs() ([]hubClient, error) {
-	ids, err := v.hubIDs(time.Now().Add(5 * time.Second))
+	deadline := time.Now().Add(ctlLookWait)
+	ids, err := v.hubIDs(deadline)
 	if err != nil {
 		return nil, err
 	}
 	var hubs []hubClient
 	for _, id := range ids {
 		h := hubClient{ID: id}
-		if out, err := v.rexCmd(time.Now().Add(5*time.Second), "-C", id, "do", "hub.info"); err == nil {
+		if out, err := v.rexCmd(deadline, "-C", id, "do", "hub.info"); err == nil {
 			var info struct {
 				State  string `json:"state"`
 				PID    int    `json:"pid"`
