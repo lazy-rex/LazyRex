@@ -279,6 +279,8 @@ type oldStep struct {
 
 // oldSteps: main a1d13d7c ("ui_tabs.rev_known goes through retireSchema") drops ui_tabs.rev_known
 // at each open, and OLD's ui.go migration adds it again.
+// Observed: SQLite stores ADD COLUMN after the last column definition; Rex-independent (Linux,
+// modernc.org/sqlite v1.61.0 with SQLite 3.54.1, CGO_ENABLED=0; bdc7a84a b8-tip.log).
 var oldSteps = []oldStep{
 	{table: "ui_tabs", column: "rev_known", def: "INTEGER NOT NULL DEFAULT 0", typ: "INTEGER", notnull: "1", dflt: "0"},
 }
