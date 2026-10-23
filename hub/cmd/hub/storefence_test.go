@@ -13,7 +13,7 @@ func fenceTestHub(t *testing.T) (*Hub, *Plugin) {
 	h, _ := workerTestHub(t)
 	pl := &Plugin{Name: "p", ClientID: "c1", InstanceID: "i1"}
 	h.plugins = map[string]*Plugin{"p": pl}
-	h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{}}
+	h.vs = newViewSvc()
 	h.faults = &faults{}
 	return h, pl
 }

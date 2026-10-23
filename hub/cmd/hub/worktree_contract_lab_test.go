@@ -126,7 +126,7 @@ func TestWorktreeRunningViewActionLab(t *testing.T) {
 		t.Fatalf("unknown outcome: %s %v", state, err)
 	}
 	// A fresh hub object reads the same durable operation after an interrupted attempt.
-	h2 := &Hub{db: h.db, ev: h.ev, rex: r, plugins: h.plugins, vs: &viewSvc{notify: map[string]bool{}, dirty: map[string]bool{}}}
+	h2 := &Hub{db: h.db, ev: h.ev, rex: r, plugins: h.plugins, vs: newViewSvc()}
 	replies <- map[string]any{"result": map[string]any{"path": "/tmp/tree", "created": true}}
 	replies <- map[string]any{"error": map[string]any{"code": "refused", "message": "lab refusal"}}
 	if h2.runOps(ctx, "worktrees") {

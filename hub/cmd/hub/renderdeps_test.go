@@ -10,7 +10,9 @@ import (
 
 // depsHub has worker channels but no workers: a mark wakes nothing.
 func depsHub() *Hub {
-	return &Hub{vs: &viewSvc{workers: map[string]chan struct{}{"p": make(chan struct{}, 1), "q": make(chan struct{}, 1)}}}
+	vs := newViewSvc()
+	vs.workers["p"], vs.workers["q"] = make(chan struct{}, 1), make(chan struct{}, 1)
+	return &Hub{vs: vs}
 }
 
 // The marks of commits and changes: a matching prefix, no prefixes, an explicit empty list, a view

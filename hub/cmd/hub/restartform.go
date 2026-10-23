@@ -427,11 +427,8 @@ func (h *Hub) restartFormRender(ctx context.Context, f *restartForm) (any, error
 }
 
 // kickRestartForms renders the open restart forms again, so a form shows its operation's progress.
-// Without the view service (some unit tests) there is no form.
 func (h *Hub) kickRestartForms() {
-	if h.vs != nil {
-		h.kickViews(restartFormOwner, causeChanged) // every form of the owner: no form declares dependencies
-	}
+	h.kickViews(restartFormOwner, causeChanged) // every form of the owner: no form declares dependencies
 }
 
 // restartUserOnly is the agent-parity reason of the form's actions (docs/testing.md, "Agent
