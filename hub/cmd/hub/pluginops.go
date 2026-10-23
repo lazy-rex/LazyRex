@@ -32,6 +32,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -45,12 +46,13 @@ const pluginOpsSchema = `
 -- lock_base: add and update: the lock entry of each key that the target can use, at admission
 -- (JSON: key -> lockBase); the lock write compares against it.
 -- row_prior: add: the record of its plugins row write (JSON opRowPrior, pluginopsrow.go), '' before it.
+-- lock_old: update, remove: the record of unpinning (JSON opLockOld, pluginopsunpin.go), '' before it.
 CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NULL, key TEXT NOT NULL,
   fingerprint TEXT NOT NULL, origin TEXT NOT NULL, kind TEXT NOT NULL, entry TEXT NOT NULL, name TEXT NOT NULL,
   expect TEXT NOT NULL, input TEXT NOT NULL, target TEXT NOT NULL, phase TEXT NOT NULL, rev INTEGER NOT NULL DEFAULT 1,
   confirmed TEXT NOT NULL DEFAULT '', base TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '', entry_identity TEXT NOT NULL DEFAULT '',
   result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL,
-  pin TEXT NOT NULL DEFAULT '', lock_base TEXT NOT NULL DEFAULT '', row_prior TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
+  pin TEXT NOT NULL DEFAULT '', lock_base TEXT NOT NULL DEFAULT '', row_prior TEXT NOT NULL DEFAULT '', lock_old TEXT NOT NULL DEFAULT '', UNIQUE (scope, key));
 -- One row for each lifecycle call of an op, stored before the call. outcome '': the call may have
 -- run; the manager observes its result and never calls again.
 -- bound_at: the handler bound the attempt (with target_instance, target_block, target_session) before its first
@@ -75,11 +77,12 @@ var pluginOpPhases = map[string][]string{
 	"stop":     {"stopping"},
 	"settings": {"writing", "reloading"},
 	// checking: the graph check before the stop, so a refused remove stops nothing.
-	"remove": {"checking", "stopping", "writing", "reloading"},
+	// unpinning: the op removes the lock entry of the source that it stopped naming (C5f).
+	"remove": {"checking", "stopping", "writing", "reloading", "unpinning"},
 	// add and update (B5): each phase is stored before its effect, and a replay uses only stored
 	// values. An add owns the first start of its plugin (starting); an update and a restart replace.
 	"add":     {"resolving", "fetching", "locking", "writing", "reloading", "starting"},
-	"update":  {"resolving", "fetching", "locking", "writing", "reloading", "replacing"},
+	"update":  {"resolving", "fetching", "locking", "writing", "reloading", "unpinning", "replacing"},
 	"restart": {"replacing"},
 }
 
@@ -159,6 +162,7 @@ type pluginOp struct {
 	Pin                          string // add, update: the fetched lock entry (JSON)
 	LockBase                     string // add, update: the admission snapshot of the lock (lock_base)
 	RowPrior                     string // add: the record of its plugins row write (row_prior), '' before it
+	LockOld                      string // update, remove: the record of unpinning (lock_old), '' before it
 	Base, Output                 string
 	EntryIdentity                string // entryIdentity of the entry at admission ("" in no admitted op)
 	Result, Error                string
@@ -550,11 +554,24 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		if in.To != "latest" {
 			keys = append(keys, opNewSource(base.Source, in.To, true))
 		}
+		if !slices.Contains(keys, base.Source) {
+			keys = append(keys, base.Source) // the old key: unpinning compares against it (C5f)
+		}
 		snap, err := h.lockSnapshot(keys)
 		if err != nil {
 			return nil, err
 		}
 		op.LockBase = snap
+	}
+	if req.Op == "remove" {
+		// The old key of a GitHub entry: unpinning compares against it (C5f).
+		if old := op.oldKey(); old != "" {
+			snap, err := h.lockSnapshot([]string{old})
+			if err != nil {
+				return nil, err
+			}
+			op.LockBase = snap
+		}
 	}
 	return op, nil
 }
@@ -603,8 +620,8 @@ func (h *Hub) startTarget(origin opOrigin, req opRequest, name, source string, g
 func (h *Hub) loadOp(ctx context.Context, id string) (*pluginOp, error) {
 	op := &pluginOp{ID: id}
 	var origin string
-	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin, lock_base, row_prior FROM plugin_ops WHERE op_id = ?`, id).
-		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin, &op.LockBase, &op.RowPrior)
+	err := h.db.QueryRowContext(ctx, `SELECT kind, entry, name, origin, input, target, phase, base, output, entry_identity, result, error, created, updated, pin, lock_base, row_prior, lock_old FROM plugin_ops WHERE op_id = ?`, id).
+		Scan(&op.Kind, &op.Entry, &op.Name, &origin, &op.Input, &op.Target, &op.Phase, &op.Base, &op.Output, &op.EntryIdentity, &op.Result, &op.Error, &op.Created, &op.Updated, &op.Pin, &op.LockBase, &op.RowPrior, &op.LockOld)
 	if err != nil {
 		return nil, err
 	}
@@ -613,8 +630,13 @@ func (h *Hub) loadOp(ctx context.Context, id string) (*pluginOp, error) {
 }
 
 func (op *pluginOp) view() map[string]any {
-	return map[string]any{"op_id": op.ID, "op": op.Kind, "entry": op.Entry, "origin": op.Origin, "phase": op.Phase,
+	v := map[string]any{"op_id": op.ID, "op": op.Kind, "entry": op.Entry, "origin": op.Origin, "phase": op.Phase,
 		"result": op.Result, "error": op.Error, "created": op.Created, "updated": op.Updated}
+	var r opLockOld
+	if op.LockOld != "" && json.Unmarshal([]byte(op.LockOld), &r) == nil {
+		v["lock_old"] = r // the record of unpinning (C5f), when there is one
+	}
+	return v
 }
 
 func (h *Hub) opView(ctx context.Context, id string) (any, error) {
@@ -768,10 +790,13 @@ func (h *Hub) setOpPhase(ctx context.Context, op *pluginOp, phase, result, errTe
 	if opFinal[phase] && phase != "done" && op.Kind == "add" && op.RowPrior != "" {
 		return h.endAddRow(ctx, op, phase, result, errText)
 	}
-	if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET phase = ?, result = ?, error = ?, updated = ? WHERE op_id = ?`,
-		phase, result, errText, time.Now().UnixMilli(), op.ID); err != nil {
+	lockOld, note := op.endRecord(phase)
+	result, errText = withEndNote(phase, result, errText, note)
+	if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET phase = ?, result = ?, error = ?, lock_old = ?, updated = ? WHERE op_id = ?`,
+		phase, result, errText, lockOld, time.Now().UnixMilli(), op.ID); err != nil {
 		return err
 	}
+	op.LockOld = lockOld
 	h.opPhaseStored(op, phase, result, errText)
 	return nil
 }
@@ -823,6 +848,8 @@ func (h *Hub) runOp(ctx context.Context, op *pluginOp) error {
 			err = h.opWrite(ctx, op)
 		case "reloading":
 			err = h.opCall(ctx, op, "reload")
+		case "unpinning":
+			err = h.opUnpin(ctx, op)
 		case "replacing":
 			err = h.opReplacing(ctx, op)
 		case "fallback":
@@ -1322,8 +1349,10 @@ func (h *Hub) finishCall(ctx context.Context, op *pluginOp, attempt, phase, resu
 	if _, err := tx.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ?, proof = ? WHERE attempt = ?`, stored, proof, attempt); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET phase = ?, result = ?, error = ?, updated = ? WHERE op_id = ?`,
-		phase, result, errText, time.Now().UnixMilli(), op.ID); err != nil {
+	lockOld, note := op.endRecord(phase)
+	result, errText = withEndNote(phase, result, errText, note)
+	if _, err := tx.ExecContext(ctx, `UPDATE plugin_ops SET phase = ?, result = ?, error = ?, lock_old = ?, updated = ? WHERE op_id = ?`,
+		phase, result, errText, lockOld, time.Now().UnixMilli(), op.ID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -1332,7 +1361,7 @@ func (h *Hub) finishCall(ctx context.Context, op *pluginOp, attempt, phase, resu
 	if h.opFault("plugin-op-after-finish") {
 		return errOpCrash // a test: the hub stops right after the outcome and the phase are stored
 	}
-	op.Phase, op.Result, op.Error = phase, result, errText
+	op.Phase, op.Result, op.Error, op.LockOld = phase, result, errText, lockOld
 	h.ev.emit("plugin_op", map[string]any{"op_id": op.ID, "kind": op.Kind, "entry": op.Entry, "phase": phase, "result": result, "error": errText})
 	h.changed("plugins")
 	return nil
