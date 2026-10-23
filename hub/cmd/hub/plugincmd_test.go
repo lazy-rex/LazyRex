@@ -71,8 +71,7 @@ func (env *cmdEnv) config(sources ...string) string {
 	if env.cfgState != "" {
 		st = env.cfgState
 	}
-	b, _ := json.Marshal(map[string]any{"server": "unix:///tmp/lrt-x/rex.sock", "state": st,
-		"agents": []map[string]string{{"id": "user", "name": "User"}}, "plugins": plugins})
+	b, _ := json.Marshal(map[string]any{"server": "unix:///tmp/lrt-x/rex.sock", "state": st, "plugins": plugins})
 	p := filepath.Join(env.dir, "hub.json")
 	if err := os.WriteFile(p, b, 0o600); err != nil {
 		env.t.Fatal(err)

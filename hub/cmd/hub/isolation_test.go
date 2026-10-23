@@ -9,7 +9,7 @@ import (
 )
 
 func TestReservedEnvKey(t *testing.T) {
-	for _, k := range []string{"PATH", "HOME", "TMPDIR", "LAZYREX_AGENT", "GOCACHE", "GOMODCACHE", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "REX_SERVER", "REX_SESSION"} {
+	for _, k := range []string{"PATH", "HOME", "TMPDIR", "GOCACHE", "GOMODCACHE", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "REX_SERVER", "REX_SESSION"} {
 		if !reservedEnvKey(k) {
 			t.Errorf("%s is not reserved", k)
 		}

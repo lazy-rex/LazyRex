@@ -23,8 +23,8 @@ package main
 // hub.spawn_window {grant_id, key, session?, title?, layout}: see grantCaller.
 //
 // The plugin is identified by its registered name, so a grant survives a plugin or hub restart
-// (a new client ID). The grant keeps the agent ID that made it; a later ID of the same agent
-// (identity.go, aliasSet) replays the create, and the spawns it admits follow the same rule.
+// (a new client ID). The grant keeps the agent ID that made it; another ID of the same agent
+// (identity.go, agentIDs) replays the create, and the spawns it admits follow the same rule.
 
 import (
 	"context"

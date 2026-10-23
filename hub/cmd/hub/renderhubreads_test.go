@@ -272,7 +272,7 @@ func TestCoveredReadEachAction(t *testing.T) {
 		if _, err := h.db.Exec(workersSchema); err != nil {
 			t.Fatal(err)
 		}
-		h.agents = map[string]*Agent{"a1": {ID: "a1"}}
+		h.idents = map[string]*Agent{"a1": {ID: "a1"}}
 		markAll(h)
 		renderWith(t, h, map[string]renderStep{"v1": {hub: []string{c.action}, hubArgs: c.args, deps: map[string]any{"changes": []any{}}}})
 		tables, changes := viewSets(h, "v1")

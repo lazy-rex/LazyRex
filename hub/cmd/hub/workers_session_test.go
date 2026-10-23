@@ -39,7 +39,7 @@ func TestWorkerSessionLab(t *testing.T) {
 	}
 	setup := func(t *testing.T) (*Hub, perform, map[string]any, *spawnRow) {
 		h, _ := workerTestHub(t)
-		if _, err := h.db.Exec(`DELETE FROM spawns; DELETE FROM bindings`); err != nil {
+		if _, err := h.db.Exec(`DELETE FROM spawns`); err != nil {
 			t.Fatal(err)
 		}
 		h.rex, h.cfg.Server = r, l.server
@@ -162,9 +162,9 @@ func TestWorkerSessionLab(t *testing.T) {
 		if err != nil || pending.Status != "sending" || pending.Session != "" || pending.Error != "" {
 			t.Fatalf("resolveOnce changed a row without a session: %+v %v", pending, err)
 		}
-		state, err := h.adoptSpawn(ctx, pending, s.Block, "join")
+		state, err := h.adoptSpawn(ctx, pending, s.Block, "identity")
 		if err != nil || state != "sending" {
-			t.Fatalf("a join adopted a row without a session: %s %v", state, err)
+			t.Fatalf("an adoption opened a row without a session: %s %v", state, err)
 		}
 		got, err := h.spawnByID(ctx, s.ID)
 		if err != nil || got.Status != "sending" || got.Session != "" || got.Block != "" {
@@ -184,7 +184,7 @@ func TestWorkerSessionSchemaMigration(t *testing.T) {
 		}
 	}
 	s, err := h.spawnByID(context.Background(), "spawn-test")
-	if err != nil || s.Session != "" || s.Status != "sending" || s.Agent != "agent-1" {
+	if err != nil || s.Session != "" || s.Status != "sending" || s.Agent != "spawn:spawn-test" {
 		t.Fatalf("migration changed identity: %+v %v", s, err)
 	}
 }

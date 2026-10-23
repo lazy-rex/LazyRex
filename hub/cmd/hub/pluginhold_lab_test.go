@@ -35,12 +35,6 @@ type b8Life struct {
 func newB8Life(t *testing.T, name string) *b8Life {
 	s := newStartLab(t)
 	b := &b8Life{startLab: s, hBin: s.bin}
-	var c map[string]any
-	raw, _ := os.ReadFile(s.cfg)
-	json.Unmarshal(raw, &c)
-	c["agents"] = []any{map[string]any{"id": "alice", "name": "alice"}}
-	raw, _ = json.MarshalIndent(c, "", " ")
-	os.WriteFile(s.cfg, raw, 0o600)
 	s.writeSource("probe", `{"name":"probe","main":"main.lua"}`, "probe")
 	s.writeManagedIDs("probe=probe")
 

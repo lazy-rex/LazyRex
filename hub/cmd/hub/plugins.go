@@ -1505,45 +1505,6 @@ func (h *Hub) adminAction(ctx context.Context, action string, args map[string]an
 			return map[string]any{"desired": "running", "state": "waiting", "waiting": pl.waiting}, nil
 		}
 		return map[string]any{"desired": "running"}, nil
-	case "hub.admin.rebind":
-		id, _ := args["agent"].(string)
-		block, _ := args["block_id"].(string)
-		h.mu.Lock()
-		a := h.agents[id] // a join or a spawn writes the map under h.mu
-		h.mu.Unlock()
-		if a == nil || block == "" {
-			return nil, bad("rebind needs a roster agent and a block_id")
-		}
-		sess, err := h.findBlockSession(ctx, block)
-		if err != nil {
-			return nil, err
-		}
-		if sess == "" {
-			return nil, bad("block %s is not in any session", block)
-		}
-		child, err := h.childPIDIn(ctx, sess, block)
-		if err != nil || child == 0 {
-			return nil, bad("block %s has no live child", block)
-		}
-		// Read the pane's current status as join does: a status reported before the rebind sends
-		// no new event, and without it the agent never counts as ready for a notice.
-		rec := h.recordState(ctx, sess, block, a.StatusRecord)
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		for _, other := range h.agents {
-			if other != a && other.BlockID == block {
-				return nil, bad("block %s is bound to agent %s", block, other.ID)
-			}
-		}
-		a.Session, a.BlockID, a.ChildPID, a.ChildStart, a.ClientID = sess, block, child, startTime(child), ""
-		a.setRecord(rec)
-		h.syncPrompts()
-		a.delivered = map[string]int64{}
-		if err := h.saveBinding(ctx, id, sess, block, child, a.ChildStart); err != nil {
-			return nil, err
-		}
-		h.kickNotices()
-		return map[string]any{"agent": id, "block_id": block}, nil
 	}
 	return nil, bad("unknown admin action")
 }

@@ -64,7 +64,7 @@ func TestSpawnWindowLab(t *testing.T) {
 	const pluginClient = "client:00000000-0000-0000-0000-000000000001"
 	setup := func(t *testing.T) (*Hub, perform) {
 		h, _ := workerTestHub(t)
-		if _, err := h.db.Exec(spawnWindowSchema + `DELETE FROM spawns; DELETE FROM bindings; DELETE FROM spawn_windows`); err != nil {
+		if _, err := h.db.Exec(spawnWindowSchema + `DELETE FROM spawns; DELETE FROM spawn_windows`); err != nil {
 			t.Fatal(err)
 		}
 		h.rex, h.cfg.Server = r, l.server

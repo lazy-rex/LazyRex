@@ -57,7 +57,7 @@ func TestWorkerPlacementLab(t *testing.T) {
 	}
 	setup := func(t *testing.T) (*Hub, perform) {
 		h, _ := workerTestHub(t)
-		if _, err := h.db.Exec(`DELETE FROM spawns; DELETE FROM bindings`); err != nil {
+		if _, err := h.db.Exec(`DELETE FROM spawns`); err != nil {
 			t.Fatal(err)
 		}
 		h.rex, h.cfg.Server = r, l.server

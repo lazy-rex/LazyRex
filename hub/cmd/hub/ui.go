@@ -195,7 +195,7 @@ func (h *Hub) uiStart(ctx context.Context) error {
 			log.Printf("ui: session %s (%s): %v", sess, plugin, err)
 		}
 	}
-	// The LazyRex session is also the work session: it must exist before bindings, plugins and
+	// The LazyRex session is also the work session: it must exist before identities, plugins and
 	// workers are read. A session the user closed is created again here.
 	_, err = h.appSession(ctx, uiSessionKey, uiSessionLabel)
 	return err
