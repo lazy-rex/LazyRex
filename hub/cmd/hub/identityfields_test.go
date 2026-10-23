@@ -144,10 +144,11 @@ func TestWorkerIdentityFieldsResumeNewSpawn(t *testing.T) {
 	mustExec(t, h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start)
 		VALUES ('b', 's', 1, '1.0', 'claude', 'claude:c1', '')`)
 	mustExec(t, h, `INSERT INTO identity_log (at, identity, block_id, event, detail) VALUES ('x', 'claude:c1', 'b', 'started', '{}')`)
-	// The resume: the conversation leaves the old pane (current ""), and a new spawn opens in pane b3.
+	// The resume: the conversation leaves the old pane (current ""), and a new spawn opens in pane b3
+	// (resume.go also sets resume_of, which the test schema does not have; the fields do not read it).
 	mustExec(t, h, `UPDATE identity_panes SET current = '' WHERE block_id = 'b'`)
-	mustExec(t, h, `INSERT INTO spawns (spawn_id, caller, key, request, profile, title, agent_id, parent, status, created, session_id, window_id, block_id, resume_of)
-		VALUES ('spawn-new', 'user', 'key3', '{}', 'agent', 'Agent 1', 'agent-1', 'user', 'open', '2026-10-16T23:00:02Z', 's', 'w', 'b3', 'spawn-test')`)
+	mustExec(t, h, `INSERT INTO spawns (spawn_id, caller, key, request, profile, title, agent_id, parent, status, created, session_id, window_id, block_id)
+		VALUES ('spawn-new', 'user', 'key3', '{}', 'agent', 'Agent 1', 'agent-1', 'user', 'open', '2026-10-16T23:00:02Z', 's', 'w', 'b3')`)
 	wantFields(t, "the new spawn before its pane reports", readWorker(t, h, "spawn-new"), "none", nil, false)
 	wantFields(t, "the old spawn after the resume", readWorker(t, h, "spawn-test"), "none", nil, true)
 
