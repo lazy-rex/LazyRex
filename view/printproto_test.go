@@ -159,8 +159,14 @@ type (
 	}
 	protoReattach struct{ attach string }
 	protoNewest   struct{ id string } // a frame whose newest ID is id
-	outputFailed  struct{}
-	draftSaved    struct{ err error }
+	// protoProbe asks Update for a copy of its state; the driver never reads the model itself.
+	protoProbe    struct{ reply chan protoSnapshot }
+	protoSnapshot struct {
+		seen    []string
+		printed map[string]bool
+	}
+	outputFailed struct{}
+	draftSaved   struct{ err error }
 )
 
 type protoModel struct {
@@ -247,6 +253,12 @@ func (m *protoModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitAfterPrint {
 			return m, tea.Quit
 		}
+	case protoProbe:
+		printed := map[string]bool{}
+		for id := range m.ledger {
+			printed[id] = true
+		}
+		msg.reply <- protoSnapshot{seen: append([]string(nil), m.seen...), printed: printed}
 	case protoReattach:
 		m.attach = msg.attach
 	case protoNewest:
@@ -292,6 +304,7 @@ func (m *protoModel) tree(t protoTree) tea.Cmd {
 		}
 	}
 	if !t.hasHistory() {
+		m.newest = "" // a tree without history has no newest ID: no seen while it is current
 		return nil
 	}
 	if m.mode == modeAlt {
@@ -520,10 +533,12 @@ func TestProtoErrorTreeInThreadMode(t *testing.T) {
 
 // TestProtoQueuedPrintThenErrorTree: an error tree arrives while a print is still pending. The
 // mode stays thread, so the text is written once on the primary screen. (In v1.1 this needed an
-// inline hold before the alt switch; in v1.2 no switch exists.)
+// inline hold before the alt switch; in v1.2 no switch exists.) The error tree is current at the
+// receipt, so no seen is sent then (lead-tv-seencur); the next thread tree sends it.
 func TestProtoQueuedPrintThenErrorTree(t *testing.T) {
 	m := newProtoModel(newProtoOut(nil))
 	gate := make(chan struct{})
+	var atReceipt protoSnapshot
 	m = runProto(t, m, func(p *tea.Program) {
 		tree := thread(protoMsg{"m1", "QUEUED-TEXT"})
 		tree.gate = gate
@@ -531,12 +546,17 @@ func TestProtoQueuedPrintThenErrorTree(t *testing.T) {
 		p.Send(protoTree{nodes: []string{"error"}, frame: "ERROR-FRAME"})
 		time.Sleep(100 * time.Millisecond) // frames render while the print waits
 		close(gate)
-		time.Sleep(100 * time.Millisecond)
+		atReceipt = probeUntil(p, func(s protoSnapshot) bool { return s.printed["m1"] })
+		p.Send(thread(protoMsg{"m1", "QUEUED-TEXT"})) // m1 is printed: this tree sends seen
+		time.Sleep(50 * time.Millisecond)
 		p.Quit()
 	})
 	out := m.out.String()
 	t.Logf("raw output %q", out)
 	noAlt(t, out)
+	if !atReceipt.printed["m1"] || len(atReceipt.seen) != 0 {
+		t.Fatalf("after m1's receipt, with the error tree current: printed=%v seen=%v; want no seen", atReceipt.printed, atReceipt.seen)
+	}
 	if !m.ledger["m1"] || strings.Count(out, "QUEUED-TEXT") != 1 || strings.Join(m.seen, ",") != "A:m1" {
 		t.Fatalf("ledger=%v count=%d seen=%v", m.ledger, strings.Count(out, "QUEUED-TEXT"), m.seen)
 	}
@@ -863,5 +883,19 @@ func TestReviewPendingPrintOrder(t *testing.T) {
 	older, newer := strings.Index(out, "OLDER-PRINT"), strings.Index(out, "NEWER-PRINT")
 	if older < 0 || newer < older {
 		t.Fatalf("prints out of order: older=%d newer=%d output=%q", older, newer, out)
+	}
+}
+
+// probeUntil asks Update for snapshots until ok holds or 2 s pass, and returns the last one.
+func probeUntil(p *tea.Program, ok func(protoSnapshot) bool) protoSnapshot {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		reply := make(chan protoSnapshot, 1)
+		p.Send(protoProbe{reply: reply})
+		s := <-reply
+		if ok(s) || time.Now().After(deadline) {
+			return s
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
