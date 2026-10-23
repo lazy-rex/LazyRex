@@ -53,9 +53,6 @@ Code:
   names (A-Z, a-z, 0-9, ., _, -)`.
 - `<ref>` is required. See section 5 for its forms. The ref `latest` is reserved: it selects the
   highest release tag (section 5, "@latest").
-- The fields `name`, `path`, `events` and `notice` are refused in an entry. There is no
-  compatibility path. Example text: `plugin entry 2: "path" is removed: use "source" (a directory
-  with lazyrex.json, or github:owner/repo@ref)`.
 - Config field `lock`: the lock file, relative to the config directory. Default: the config file
   name with a final `.json` replaced by `.lock.json` (`hub.json` gives `hub.lock.json`). A name
   without `.json` gets `.lock.json` appended. The file must exist only when the config has a

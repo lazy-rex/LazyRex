@@ -25,10 +25,6 @@ func writeConfig(t *testing.T, dir, plugins string) (Config, error) {
 func TestPluginEntriesMalformed(t *testing.T) {
 	dir := t.TempDir()
 	bad := map[string]string{
-		`[{"source":"a","name":"a"}]`:                    `plugin entry 1: "name" is removed: use "source" (a directory with lazyrex.json, or github:owner/repo@ref)`,
-		`[{"source":"a"},{"path":"a.lua"}]`:              `plugin entry 2: "path" is removed`,
-		`[{"source":"a","events":"all"}]`:                `plugin entry 1: "events" is removed`,
-		`[{"source":"a","notice":"x"}]`:                  `plugin entry 1: "notice" is removed`,
 		`[{"source":"a","color":"red"}]`:                 `plugin entry 1: json: unknown field "color"`,
 		`[{"args":{}}]`:                                  `plugin entry 1: source is required`,
 		`[{"source":"~/Messaging"}]`:                     `plugin entry 1: source ~/Messaging: ~ is not expanded`,
