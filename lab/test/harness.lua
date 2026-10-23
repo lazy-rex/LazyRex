@@ -466,6 +466,9 @@ end
 local Agent = {}
 Agent.__index = Agent
 local agents = {}
+-- retired[name] is the client of a failed agent whose disconnect was not seen. A new agent with
+-- that name has the same label, so its start never takes that client.
+local retired = {}
 
 -- wait_disconnected returns when client.inspect shows that the client is gone: not_found (a closed
 -- client, rex-protocol.md) or a connection_state other than connected. An error or a malformed
@@ -552,9 +555,13 @@ function H.agent(name, opts)
     agents[name] = a
     return a
   end
-  -- Identity mode. A failure closes the pane first, so a later call can open a new one.
+  -- Identity mode. A failure closes the pane and waits for its client to disconnect, so a later
+  -- call opens a new one.
   local ok, e = pcall(function()
-    a.client = wait('agent ' .. name .. ' to start', function() return resolve(a.label) end, 15)
+    a.client = wait('agent ' .. name .. ' to start', function()
+      local c = resolve(a.label)
+      if c and c ~= retired[name] then return c end
+    end, 15)
     a.pid = perform(a.client, 'agent.status', {}).pid
     if not report then return end
     a:report({kind = kind, conversation_id = name, source = 'startup'})
@@ -573,7 +580,25 @@ function H.agent(name, opts)
     a.id = id
   end)
   if not ok then
-    if a.block then rex.call('block.close', {session_id = sess, block_id = a.block}) end
+    -- The original error is raised again with the closed pane (e.agent_block) and its client
+    -- (e.agent_client), and a cleanup failure is added to its message.
+    local cleanup = {}
+    if a.block then
+      local _, cerr = rex.call('block.close', {session_id = sess, block_id = a.block})
+      if cerr ~= nil and err_of(cerr).code ~= 'not_found' then cleanup[#cleanup + 1] = 'block.close: ' .. tostring(err_of(cerr)) end
+    end
+    if a.client then
+      local gone, gerr = pcall(H.wait_disconnected, a.client, 'agent ' .. name)
+      if not gone then
+        retired[name] = a.client
+        cleanup[#cleanup + 1] = tostring(gerr)
+      end
+    end
+    if type(e) ~= 'table' then e = err_of(e) end
+    e.agent_block, e.agent_client = a.block, a.client
+    if #cleanup > 0 then
+      e.message = tostring(e.message) .. ' (cleanup failed: ' .. table.concat(cleanup, '; ') .. ')'
+    end
     error(e, 0)
   end
   agents[name] = a
@@ -632,7 +657,8 @@ function Agent:hub(action, args) return perform(self.client, 'agent.hub', {actio
 local function report_args(r)
   return {kind = r.kind, conversation_id = r.conversation_id, source = r.source or 'startup', block = r.block}
 end
--- In identity mode, a report that succeeds sets self.id to the reported identity.
+-- In identity mode, a report that succeeds sets self.id to the reported identity. self.id is the
+-- identity this agent reported last: another pane can report it later and make it current there.
 function Agent:report(r)
   local res = perform(self.client, 'agent.report', {args = report_args(r)}, 20000)
   if A.agent_mode == 'identity' and r.kind and r.conversation_id then self.id = r.kind .. ':' .. r.conversation_id end

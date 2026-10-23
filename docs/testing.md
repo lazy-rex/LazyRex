@@ -262,7 +262,8 @@ Options:
   Identity mode refuses `join`.
 - `kind` (identity mode only): `claude` (default) or `codex`. Roster mode refuses `kind`.
 - `report` (identity mode only): `false` sends no report, and `a.id` is nil until a test reports
-  (`a:report` sets `a.id` to the reported identity). Roster mode refuses `report`.
+  (`a:report` sets `a.id` to the reported identity). Roster mode refuses `report`. `a.id` is the
+  identity the agent reported last; another pane can report it later and make it current there.
 - `title`: the tab label (default `name`). The hub uses it as the identity name.
 - `unnamed`: `true` gives the tab no label, so Rex shows its generated label. The hub then names an identity after the terminal title (`a:title`).
 - `keep_open`: `true` keeps the pane after the agent process exits (by default Rex closes the pane). Use it with `a:exit()`.

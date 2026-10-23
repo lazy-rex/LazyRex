@@ -66,11 +66,49 @@ test('exit, then the same name opens a new pane', function()
   expect(ident('claude:again').block_id).to_be(b.block)
 end)
 
-test('a failed report fails the call and caches nothing', function()
+-- gone checks the cleanup of a failed agent: its pane is closed and its client has disconnected.
+local function gone(e)
+  expect(e.agent_block, 'the error names the pane').not_to_be(nil)
+  local _, cerr = rex.call('block.close', {session_id = H.args.tests_session, block_id = e.agent_block})
+  expect(cerr ~= nil, 'the pane is closed').to_be(true)
+  local ins, ierr = rex.call('client.inspect', {client_id = e.agent_client})
+  expect(ierr ~= nil or ins.client.connection_state ~= 'connected', 'the client is gone').to_be(true)
+end
+
+test('a failed report closes the pane, waits for the client, and caches nothing', function()
   -- '!' is not allowed in a conversation_id (hub/cmd/hub/identity.go).
-  expect_error(function() agent('bad!') end, 'conversation_id must be')
+  local e = expect_error(function() agent('bad!') end, 'conversation_id must be')
+  gone(e)
+  expect(H.resolve('lazyrex-testagent:bad!'), 'no client has the label').to_be(nil)
   expect(ident('claude:bad!')).to_be(nil)
-  expect_error(function() agent('bad!') end, 'conversation_id must be')
+  e = expect_error(function() agent('bad!') end, 'conversation_id must be')
+  gone(e)
+end)
+
+test('a cleanup that sees no disconnect is reported, and the old client is never taken', function()
+  -- client.inspect answers connected for every client, so the cleanup wait cannot end.
+  local real = H.rex_call
+  H.rex_call = function(method, payload)
+    if method == 'client.inspect' then return {client = {client_id = payload.client_id, connection_state = 'connected'}} end
+    return real(method, payload)
+  end
+  local ok, e = pcall(function() agent('stuck!') end)
+  H.rex_call = real
+  expect(ok).to_be(false)
+  expect(tostring(e.message)).to_match('conversation_id must be')
+  expect(tostring(e.message)).to_match('cleanup failed')
+  expect(e.agent_client).not_to_be(nil)
+  -- The fake label answer gives only the old client: the start wait must not take it.
+  local old = e.agent_client
+  H.rex_call = function(method, payload)
+    if method == 'target.resolve' then return {results = {{status = 'resolved', target = {client_id = old}}}} end
+    if method == 'client.inspect' then return {client = {client_id = payload.client_id, connection_state = 'connected'}} end
+    return real(method, payload)
+  end
+  ok, e = pcall(function() agent('stuck!') end)
+  H.rex_call = real
+  expect(ok).to_be(false)
+  expect(tostring(e.message or e)).to_match('to start')
 end)
 
 test('an identity current in another pane moves to the new pane', function()
