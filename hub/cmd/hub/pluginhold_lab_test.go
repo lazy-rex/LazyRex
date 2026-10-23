@@ -269,20 +269,77 @@ func (b *b8Life) op(key string, args map[string]any) string {
 	return op["op_id"].(string)
 }
 
-// sameB8 asserts the B8 tables and the whole schema byte-equal in two snapshots: OLD does not
-// know the B8 tables.
+// oldStep is one schema step of OLD's own migrations on a table that OLD creates. OLD is frozen,
+// so its steps are fixed. A new retireSchema step (store.go) on a table that OLD migrates adds one
+// entry to oldSteps, in the same commit (the hub lead's lead-c3v3).
+type oldStep struct {
+	table, column, def string // ALTER TABLE table ADD COLUMN column def
+	typ, notnull, dflt string // the column as pragma_table_info shows it
+}
+
+// oldSteps: main a1d13d7c ("ui_tabs.rev_known goes through retireSchema") drops ui_tabs.rev_known
+// at each open, and OLD's ui.go migration adds it again.
+var oldSteps = []oldStep{
+	{table: "ui_tabs", column: "rev_known", def: "INTEGER NOT NULL DEFAULT 0", typ: "INTEGER", notnull: "1", dflt: "0"},
+}
+
+// afterOld is the schema s with oldSteps applied as SQLite stores an ADD COLUMN: the definition
+// goes before the last ")" of the CREATE text, and the column comes last in its table.
+func afterOld(s []map[string]string) []map[string]string {
+	out := append([]map[string]string{}, s...)
+	for _, st := range oldSteps {
+		last := -1
+		for i, e := range out {
+			if e["type"] == "table" && e["name"] == st.table {
+				sql := e["sql"]
+				if k := strings.LastIndex(sql, ")"); k >= 0 {
+					sql = sql[:k] + ", " + st.column + " " + st.def + sql[k:]
+				}
+				c := map[string]string{}
+				for k, v := range e {
+					c[k] = v
+				}
+				c["sql"] = sql
+				out[i] = c
+			}
+			if e["tbl"] == st.table {
+				last = i
+			}
+		}
+		col := map[string]string{"tbl": st.table, "name": st.column, "type": st.typ, "notnull": st.notnull, "dflt": st.dflt, "pk": "0"}
+		out = append(out[:last+1], append([]map[string]string{col}, out[last+1:]...)...)
+	}
+	return out
+}
+
+// sameB8 asserts what OLD may change (the hub lead's lead-c3v3): the B8 rows and the B8 tables'
+// schema stay byte-equal, because OLD does not know them; every other schema change is exactly
+// oldSteps, no change missing and none more.
 func (b *b8Life) sameB8(s1, s2 b8Snapshot) {
 	b.t.Helper()
 	j := func(v any) string { raw, _ := json.Marshal(v); return string(raw) }
 	if j(s1.B8) != j(s2.B8) {
 		b.t.Errorf("OLD changed a B8 row:\nS1 %s\nS2 %s", j(s1.B8), j(s2.B8))
 	}
-	if j(s1.Schema) != j(s2.Schema) {
-		b.t.Errorf("the schema changed through OLD:\nS1 %s\nS2 %s", j(s1.Schema), j(s2.Schema))
+	want := afterOld(s1.Schema)
+	if j(want) != j(s2.Schema) {
+		b.t.Errorf("the schema through OLD is not S1 with exactly OLD's own steps %v:\nwant %s\nS2   %s", oldSteps, j(want), j(s2.Schema))
 	}
-	b.note("S1 and S2: the B8 rows and the schema are byte-equal: %v", j(s1.B8) == j(s2.B8) && j(s1.Schema) == j(s2.Schema))
+	b.note("S1 and S2: the B8 rows are byte-equal: %v; the schema is S1 with exactly OLD's own steps: %v", j(s1.B8) == j(s2.B8), j(want) == j(s2.Schema))
 	b.note("OLD effects, plugins: S1 %s; S2 %s", j(s1.Plugins), j(s2.Plugins))
 	b.note("OLD effects, spawn_intents: S1 %s; S2 %s", j(s1.Intents), j(s2.Intents))
+}
+
+// h2Schema asserts that H2's open restores the whole schema of S1 byte for byte: retireSchema
+// (store.go) runs each step whose check still finds its column, at every open (lead-c3v3).
+func (b *b8Life) h2Schema(s1 b8Snapshot) {
+	b.t.Helper()
+	j := func(v any) string { raw, _ := json.Marshal(v); return string(raw) }
+	s3 := b.snapshot("S3")
+	if j(s1.Schema) != j(s3.Schema) {
+		b.t.Errorf("H2's open does not restore the schema of S1:\nS1 %s\nS3 %s", j(s1.Schema), j(s3.Schema))
+	}
+	b.note("S1 and S3 (after H2's open): the schema is byte-equal: %v", j(s1.Schema) == j(s3.Schema))
 }
 
 func (b *b8Life) state() string {
@@ -370,6 +427,7 @@ func TestB8LifecycleStartLab(t *testing.T) {
 
 	// H2.
 	b.start()
+	b.h2Schema(s1)
 	first := b.hold("status", "")
 	if first["release_id"] != "c3-start" || first["acquired_at"] != s1.B8["plugin_hold"][0]["acquired_at"] || (first["state"] != "draining" && first["state"] != "unresolved") {
 		t.Fatalf("H2 first status: %v", first)
@@ -476,6 +534,7 @@ func TestB8LifecycleStopLab(t *testing.T) {
 
 	// H2.
 	b.start()
+	b.h2Schema(s1)
 	first := b.hold("status", "")
 	if first["release_id"] != "c3-stop" || (first["state"] != "draining" && first["state"] != "unresolved") {
 		t.Fatalf("H2 first status: %v", first)
