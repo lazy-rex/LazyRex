@@ -61,6 +61,7 @@ type viewState struct {
 	deps     *viewDeps       // nil: no declaration
 	depsErr  string          // the last malformed declaration (view_deps_invalid is emitted when it changes)
 	tables   map[string]bool // the tables that the last good, tracked render read; nil: every SQL commit marks the view (renderreads.go)
+	changes  map[string]bool // the change names that the last good, tracked render read (renderreads.go)
 }
 
 // stateLocked returns the state of the view, and makes it. h.vs.mu must be held.
@@ -112,7 +113,7 @@ func (h *Hub) markChanged(plugin, what string) {
 	}
 	h.vs.mu.Lock()
 	for _, st := range h.vs.views[plugin] {
-		if st.inFlight || st.deps == nil || st.deps.changes == nil || slices.Contains(st.deps.changes, what) {
+		if st.inFlight || st.deps == nil || st.deps.changes == nil || slices.Contains(st.deps.changes, what) || st.changes[what] {
 			st.dirty |= causeChanged
 		}
 	}
@@ -128,7 +129,7 @@ func (h *Hub) clearDeclarations(plugin string) {
 	h.vs.mu.Lock()
 	h.vs.epoch[plugin]++
 	for _, st := range h.vs.views[plugin] {
-		st.deps, st.depsErr, st.tables = nil, "", nil
+		st.deps, st.depsErr, st.tables, st.changes = nil, "", nil, nil
 	}
 	h.vs.mu.Unlock()
 }
@@ -264,7 +265,7 @@ func (h *Hub) markViews(ctx context.Context, plugin string, cause renderCause, w
 // closed (its state is gone or new) or a plugin that registered again (a newer epoch) gets
 // nothing from this result: its state stays as the newer event left it. Causes that came during
 // the render stay in st.dirty, and give one more pass.
-func (h *Hub) renderFinished(plugin, id, route string, st *viewState, epoch int64, deps *viewDeps, ok bool, errText string, tables map[string]bool) {
+func (h *Hub) renderFinished(plugin, id, route string, st *viewState, epoch int64, deps *viewDeps, ok bool, errText string, tables, changes map[string]bool) {
 	emit := false
 	h.vs.mu.Lock()
 	st.inFlight = false
@@ -274,7 +275,7 @@ func (h *Hub) renderFinished(plugin, id, route string, st *viewState, epoch int6
 		} else {
 			st.deps = nil
 		}
-		st.tables = tables
+		st.tables, st.changes = tables, changes
 		emit = errText != "" && errText != st.depsErr
 		st.depsErr = errText
 	}

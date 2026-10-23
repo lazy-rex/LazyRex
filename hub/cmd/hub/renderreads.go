@@ -16,6 +16,9 @@ package main
 // A hub.reply.part of the instance does not untrack its renders: the parts of a reply come after
 // the handler returned and read nothing (replyparts.go).
 //
+// A covered hub read (coveredReads) with an open render ID of the same instance does not untrack
+// the render either: it adds its change names to the render's read set (renderHubRead).
+//
 // Selective refresh is the default. A render is tracked unless its
 // view.render reply has a refresh field: "all" is the opt-out (also the SDK's answer for a render
 // with a failed hub call), and any other value is a declaration error. The view gets the render's tables
@@ -37,7 +40,18 @@ type openRender struct {
 	viewID    string
 	epoch     int64           // the plugin's registration epoch at the call
 	tables    map[string]bool // the tables that its queries read (lower case)
+	changes   map[string]bool // the change names of its covered hub reads (coveredReads)
 	untracked bool
+}
+
+// coveredReads are the hub reads that a render can track (docs/hub.md, "Hub reads in a render"):
+// each action and the change names whose changed() can change its result. Keep the action names
+// equal to COVERED_READS in sdk/lua/lazyrex.lua (TestCoveredReadsMatchSDK).
+var coveredReads = map[string][]string{
+	"hub.agents":         {"agents"},
+	"hub.agents.resolve": {"agents"},
+	"hub.workers":        {"workers"},
+	"hub.profiles":       {"profiles", "workers"}, // its running counts come from the spawns
 }
 
 // newRenderID returns a render ID: 128 random bits, so a closed ID is never made again.
@@ -51,7 +65,7 @@ func newRenderID() string {
 func (h *Hub) openRenderID(plugin, client, viewID string, epoch int64) string {
 	id := newRenderID()
 	h.vs.mu.Lock()
-	h.vs.renders[id] = &openRender{plugin: plugin, client: client, viewID: viewID, epoch: epoch, tables: map[string]bool{}}
+	h.vs.renders[id] = &openRender{plugin: plugin, client: client, viewID: viewID, epoch: epoch, tables: map[string]bool{}, changes: map[string]bool{}}
 	h.vs.mu.Unlock()
 	return id
 }
@@ -76,12 +90,13 @@ func (vs *viewSvc) untrackLocked(plugin string) {
 }
 
 // renderCall applies the untracked rule to one hub call of a plugin instance, before the call
-// runs. A hub.sql.query with an open render ID of the same instance records its reads later
-// (renderRead); every other call makes the plugin's open renders untracked.
+// runs. A hub.sql.query or a covered read with an open render ID of the same instance records its
+// reads later (renderRead, renderHubRead); every other call makes the plugin's open renders
+// untracked.
 func (h *Hub) renderCall(plugin, client, action string, args map[string]any) {
 	h.vs.mu.Lock()
 	defer h.vs.mu.Unlock()
-	if action == "hub.sql.query" {
+	if action == "hub.sql.query" || coveredReads[action] != nil {
 		id, _ := args["render"].(string)
 		if r := h.vs.renders[id]; r != nil && r.plugin == plugin && r.client == client {
 			return
@@ -125,14 +140,36 @@ func (h *Hub) renderRead(plugin, client, id string, reads map[string]bool, ok bo
 	}
 }
 
-// renderTables returns the table set that a good render installs into its view: the render's
-// tables when its reply is tracked (parseRefresh), the render stayed tracked, and it read a table.
-// Else nil: every SQL commit of the plugin marks the view.
-func renderTables(r *openRender, tracked bool) map[string]bool {
-	if r == nil || !tracked || r.untracked || len(r.tables) == 0 {
-		return nil
+// renderHubRead records the change names of a covered hub read with a render ID, after the call.
+// ok false: the call failed, or its result may be incomplete (workersRead), and the hub cannot
+// know its reads. An ID that is not open for this plugin instance makes the plugin's open renders
+// untracked.
+func (h *Hub) renderHubRead(plugin, client, id string, names []string, ok bool) {
+	h.vs.mu.Lock()
+	defer h.vs.mu.Unlock()
+	r := h.vs.renders[id]
+	if r == nil || r.plugin != plugin || r.client != client {
+		h.vs.untrackLocked(plugin)
+		return
 	}
-	return r.tables
+	if !ok {
+		r.untracked = true
+		return
+	}
+	for _, n := range names {
+		r.changes[n] = true
+	}
+}
+
+// renderTables returns the table set and the change names that a good render installs into its
+// view: the render's sets when its reply is tracked (parseRefresh), the render stayed tracked, and
+// it read a table or a change name. A render that read only change names gets an empty table set.
+// Else nil, nil: every SQL commit of the plugin marks the view.
+func renderTables(r *openRender, tracked bool) (tables, changes map[string]bool) {
+	if r == nil || !tracked || r.untracked || len(r.tables)+len(r.changes) == 0 {
+		return nil, nil
+	}
+	return r.tables, r.changes
 }
 
 // parseRefresh reads the refresh field of a view.render reply. No field (or null): tracked. "all":
