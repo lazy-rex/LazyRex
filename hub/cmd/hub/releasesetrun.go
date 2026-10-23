@@ -608,6 +608,16 @@ func (h *rehearsal) viewOperation(ctx context.Context, c *helperConn, tv string,
 	}
 }
 
+// drainEvents reads and drops the events of the tool's lab connection. The tool attaches each
+// batch and source session (event_scope session) and reads no event. The read loop of the Rex
+// client blocks when its event buffer (256) is full, and then no reply arrives (LAB16).
+func drainEvents(r *rex.Rex) {
+	go func() {
+		for range r.Events {
+		}
+	}()
+}
+
 // inspectClient gives the connection state of a client (client.inspect).
 func inspectClient(c *helperConn, client string) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {

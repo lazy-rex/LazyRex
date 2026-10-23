@@ -384,6 +384,7 @@ func (h *rehearsal) setup() error {
 	if err := h.l.startServer(ctx, self, rexBin); err != nil {
 		return err
 	}
+	drainEvents(h.l.r)
 	h.say("the lab server runs (pid %d)", h.l.srv.pid)
 
 	// The lab cache: OLD syncs the lab copy. The lab lock equals the live lock
