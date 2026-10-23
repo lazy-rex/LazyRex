@@ -55,6 +55,13 @@ return function()
       t.rows[#t.rows + 1] = row
       return {changes = 1, id = t.seq}
     end
+    -- sqlite_master: one row (name) for each table. A test adds a hub table (lazyrex_ops) to tables.
+    if sql:match('^SELECT name FROM sqlite_master ') then
+      local rows = {}
+      for tn in pairs(db.tables) do rows[#rows + 1] = {tn} end
+      table.sort(rows, function(a, b) return a[1] < b[1] end)
+      return {columns = {'name'}, rows = rows, complete = true}
+    end
     local sel, from = sql:match('^SELECT (.-) FROM (%w+)')
     if sel then
       local t = db.tables[from]

@@ -690,6 +690,7 @@ function M.plugin(name)
   app.dir = args.main and args.main:match('^(.*)/[^/]*$')
   S.app = app
   local actions, order, panels, views, commands, starts, migrations = {}, {}, {}, {}, {}, {}, {}
+  local migrate_base = 1 -- the schema version of migrations[1]
   local listeners = {}
 
   -- app.hub(action, args) calls the hub. A hub error raises {code, message}: a refusal stays final.
@@ -737,7 +738,16 @@ function M.plugin(name)
 
   -- app.db.migrate {sql, ...}: each entry is one schema version (a SQL text or a function). The
   -- SDK runs the new ones in order, in one transaction, and sets PRAGMA user_version.
+  -- {base = N, sql, ...}: entry 1 makes schema version N in one step, and entry i is version
+  -- N + i - 1. Only a new database runs the base (docs/plugin-sdk.md, "Migrations").
   function db.migrate(list)
+    if list.base ~= nil then
+      if type(list.base) ~= 'number' or list.base < 1 or list.base ~= math.floor(list.base) then
+        error('app.db.migrate: base must be an integer of 1 or more', 2)
+      end
+      if #migrations > 0 then error('app.db.migrate: give base in the first call', 2) end
+      migrate_base = list.base
+    end
     for _, step in ipairs(list) do migrations[#migrations + 1] = step end
   end
 
@@ -1159,19 +1169,34 @@ function M.plugin(name)
   end)
 
   -- register runs after the main file.
+  -- user_objects answers whether the database has a schema object that is not SQLite's or the hub's
+  -- (the names that start with lazyrex_, any case: docs/sql.md).
+  local function user_objects()
+    for _, row in ipairs(db.query("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite!_%' ESCAPE '!'")) do
+      if tostring(row.name):lower():sub(1, 8) ~= 'lazyrex_' then return true end
+    end
+    return false
+  end
   local function migrate()
     if #migrations == 0 then return end
+    local last = migrate_base + #migrations - 1
     run({tx = true}, function()
       local have = tonumber((db.first('PRAGMA user_version') or {}).user_version) or 0
       -- Expand/contract (docs/sql.md section 1): a newer schema is a rollback to this release. Run on.
-      if have > #migrations then
-        print('lazyrex: the database has schema ' .. have .. '; this plugin knows ' .. #migrations .. '; running on (expand-only rule, docs/sql.md)')
+      if have > last then
+        print('lazyrex: the database has schema ' .. have .. '; this plugin knows ' .. last .. '; running on (expand-only rule, docs/sql.md)')
       end
-      for i = have + 1, #migrations do
-        local step = migrations[i]
+      -- The base runs only on a new database: version 0 and no schema object of the plugin. It
+      -- never runs over a part of the old steps or over data (hub lead, 2026-10-22).
+      if migrate_base > 1 and have < migrate_base and (have > 0 or user_objects()) then
+        M.fail('internal', 'The database has schema ' .. have .. (have == 0 and ' with tables' or '') .. '; this plugin starts at base '
+          .. migrate_base .. '. Start the release that has steps ' .. (have + 1) .. ' to ' .. migrate_base .. ' first (docs/plugin-sdk.md, "Migrations")')
+      end
+      for v = math.max(have, migrate_base - 1) + 1, last do
+        local step = migrations[v - migrate_base + 1]
         if type(step) == 'function' then step(db) else db.exec(step) end
       end
-      if have < #migrations then db.exec('PRAGMA user_version = ' .. #migrations) end
+      if have < last then db.exec('PRAGMA user_version = ' .. last) end
     end)
   end
   -- The hub refuses hub.sql from an instance that is not registered (hub/sql 07049a7, observed by

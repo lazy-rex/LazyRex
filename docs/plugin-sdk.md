@@ -76,6 +76,31 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
   }
   ```
 
+- **A base step.** `base = N` replaces the entries 1 to N with one entry that makes schema version N.
+  Entry i is then version N + i - 1:
+
+  ```lua
+  app.db.migrate {base = 2,
+    'CREATE TABLE todos (id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, note TEXT)',
+    'CREATE INDEX todos_done ON todos(done)', -- version 3
+  }
+  ```
+
+  - A new database (`user_version` 0 and no table of the plugin) runs the base and the later
+    entries, in one transaction.
+  - A database at version N or above runs only the entries above its version.
+  - A database at a version from 1 to N - 1, or at version 0 with tables, refuses to start, and
+    nothing changes. The base never runs over a part of the old steps or over data.
+  - Without `base`, nothing changes (`base = 1`). Give `base` in the first `app.db.migrate` call.
+
+  **The order rule.** Set `base = N` only when every live database is already at version N or above.
+  So a base collapses only the steps that a release before it shipped: N is at most the last version
+  of the previous release. New steps of the same release stay entries above the base; a later
+  release can collapse them. The release rehearsal on a copy of the live data checks that each
+  plugin starts with no refusal. The commit that collapses the steps has a test that compares the
+  schema from the base with the schema from the old steps 1 to N (`sqlite_master`: type, name and
+  the normalized SQL). The reviewer sees it pass with the old steps, before they go.
+
 - **Agent parity.** Each thing that the user can do, an agent can do too. An item with `on_select`
   names the agent action that does the same in `tool` (here `todo.toggle`); both call one function.
   An item that only navigates gives `user_only = 'navigation'` instead.

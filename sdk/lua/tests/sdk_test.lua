@@ -62,6 +62,71 @@ test('a database with a newer schema: the start runs on, keeps user_version and 
   expect(s:agent('todo.add', {text = 'buy milk'}).result).to_equal({id = 1})
 end)
 
+-- based loads a plugin with migrations {base = 5, a, b} (versions 5 and 6) over a database that has
+-- the hub's own table, lets prepare change that database, and starts it.
+local BASED = [[app.db.migrate {base = 5, 'CREATE TABLE a (id INTEGER PRIMARY KEY)', 'CREATE TABLE b (id INTEGER PRIMARY KEY)'}]]
+local function based(prepare)
+  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. BASED})
+  if not s.loaded then error('the plugin loads: ' .. tostring(s.load_error), 2) end
+  s.sql.state.tables.lazyrex_ops = {columns = {'key'}, rows = {}, seq = 0}
+  if prepare then prepare(s.sql.state) end
+  s:start()
+  return s
+end
+local function tbl() return {columns = {'id'}, rows = {}, seq = 0} end
+
+test('base: a new database runs the base and the later steps, and sets the last version, in one transaction', function()
+  local s = based()
+  expect(s.exited, 'the plugin runs').to_be(nil)
+  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.exec hub.sql.exec hub.sql.exec hub.sql.commit')
+  expect(s.sql.state.user_version).to_be(6)
+  expect(s.sql.state.tables.a ~= nil and s.sql.state.tables.b ~= nil, 'both tables').to_be(true)
+end)
+
+test('base: a database at the base or above runs only the steps above it', function()
+  local s = based(function(db) db.user_version = 5; db.tables.a = tbl() end)
+  expect(action_names(s), 'no sqlite_master read; step 6 only').to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.exec hub.sql.commit')
+  expect(s.sql.state.user_version).to_be(6)
+  expect(s.sql.state.tables.b ~= nil, 'step 6').to_be(true)
+  s = based(function(db) db.user_version = 6; db.tables.a = tbl(); db.tables.b = tbl() end)
+  expect(action_names(s), 'nothing runs').to_be('hub.sql.begin hub.sql.query hub.sql.commit')
+  expect(#s.printed).to_be(0)
+end)
+
+test('base: a database below the base, or at version 0 with tables, refuses to start and changes nothing', function()
+  for name, case in pairs({
+    old = {prepare = function(db) db.user_version = 3; db.tables.a = tbl() end, text = 'The database has schema 3; this plugin starts at base 5. Start the release that has steps 4 to 5 first'},
+    data = {prepare = function(db) db.tables.notes = tbl() end, text = 'The database has schema 0 with tables; this plugin starts at base 5. Start the release that has steps 1 to 5 first'},
+  }) do
+    local s = based(case.prepare)
+    expect(s.exited, name .. ': the start fails').to_be(1)
+    expect(s.printed[#s.printed], name).to_match(case.text:gsub('%p', '%%%0'))
+    expect(s.registered ~= nil, name .. ': it registered first').to_be(true)
+    expect(s.sql.state.tables.b, name .. ': no step ran').to_be(nil)
+    expect(s.sql.state.user_version, name .. ': the version stays').to_be(name == 'old' and 3 or 0)
+  end
+end)
+
+test('base: a rollback above the last version runs on with one line', function()
+  local s = based(function(db) db.user_version = 7; db.tables.a = tbl(); db.tables.b = tbl() end)
+  expect(s.exited).to_be(nil)
+  expect(s.sql.state.user_version).to_be(7)
+  expect(s.printed[1]).to_be('lazyrex: the database has schema 7; this plugin knows 6; running on (expand-only rule, docs/sql.md)')
+end)
+
+test('base must be an integer of 1 or more, in the first call: the plugin fails at load', function()
+  for name, src in pairs({
+    zero = "app.db.migrate {base = 0, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
+    fraction = "app.db.migrate {base = 1.5, 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
+    text = "app.db.migrate {base = '5', 'CREATE TABLE a (id INTEGER PRIMARY KEY)'}",
+    second = "app.db.migrate {'CREATE TABLE a (id INTEGER PRIMARY KEY)'}\napp.db.migrate {base = 5, 'CREATE TABLE b (id INTEGER PRIMARY KEY)'}",
+  }) do
+    local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. src})
+    expect(s.loaded, name).to_be(false)
+    expect(tostring(s.load_error), name).to_match(name == 'second' and 'give base in the first call' or 'base must be an integer of 1 or more')
+  end
+end)
+
 -- Agent actions ----------------------------------------------------------------------------------
 
 test('an agent action runs in one transaction and saves its reply with the key', function()
