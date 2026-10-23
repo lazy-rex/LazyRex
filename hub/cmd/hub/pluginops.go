@@ -823,6 +823,10 @@ func (h *Hub) runOp(ctx context.Context, op *pluginOp) error {
 			err = h.opWrite(ctx, op)
 		case "reloading":
 			err = h.opCall(ctx, op, "reload")
+		case "replacing":
+			err = h.opReplacing(ctx, op)
+		case "fallback":
+			err = h.opFallback(ctx, op)
 		default:
 			err = h.setOpPhase(ctx, op, "failed", "", "unknown phase "+op.Phase)
 		}
@@ -1164,11 +1168,16 @@ var (
 // row comes before the call; its outcome and the next phase are stored in one transaction. An
 // attempt without an outcome (a crash or a stop during the call) is observed, never called again.
 func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
-	var attempt, outcome string
-	err := h.db.QueryRowContext(ctx, `SELECT attempt, outcome FROM plugin_op_attempts WHERE op_id = ? AND call = ?`, op.ID, call).Scan(&attempt, &outcome)
+	var attempt, outcome, stored string
+	err := h.db.QueryRowContext(ctx, `SELECT attempt, outcome, proof FROM plugin_op_attempts WHERE op_id = ? AND call = ?`, op.ID, call).Scan(&attempt, &outcome, &stored)
 	switch {
 	case err == nil && outcome == "":
 		return h.opObserve(ctx, op, attempt, call)
+	case err == nil && call == "replace" && !strings.HasPrefix(stored, "applied"):
+		// finishCall stores a call's outcome and the op's phase in one transaction, so this is a
+		// lost phase write. Only an applied replace goes on: any other stored outcome is unknown,
+		// never a fallback or a second replace (C5 plan r2 B).
+		return h.setOpPhase(ctx, op, "unknown", "", "the replace's outcome is stored without its phase: "+outcome)
 	case err == nil:
 		return h.setOpPhase(ctx, op, op.nextPhase(op.Phase), outcome, "") // the outcome is stored; the phase follows it
 	case !errors.Is(err, sql.ErrNoRows):
@@ -1226,11 +1235,16 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 	}
 	if callErr != nil {
 		phase, result, errText = "failed", "", callErr.Error()
-		if isRefusal(callErr, "candidate_changed") || isRefusal(callErr, "entry_changed") {
+		if isRefusal(callErr, "candidate_changed") || isRefusal(callErr, "entry_changed") || isRefusal(callErr, "instance_changed") {
 			phase = "conflict"
 		}
 		if proof == "" {
 			phase = "unknown" // the call can have had its effect
+		}
+		// An update's replace that refused no_instance before its own effect: the op picks once
+		// more, a start or no call (C5 plan r2 B). The phase is stored with the outcome.
+		if call == "replace" && op.Kind == "update" && isRefusal(callErr, "no_instance") && strings.HasPrefix(proof, "not_applied") {
+			phase = "fallback"
 		}
 	}
 	if call == "reload" && callErr == nil {
@@ -1314,6 +1328,9 @@ func (h *Hub) finishCall(ctx context.Context, op *pluginOp, attempt, phase, resu
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	if h.opFault("plugin-op-after-finish") {
+		return errOpCrash // a test: the hub stops right after the outcome and the phase are stored
 	}
 	op.Phase, op.Result, op.Error = phase, result, errText
 	h.ev.emit("plugin_op", map[string]any{"op_id": op.ID, "kind": op.Kind, "entry": op.Entry, "phase": phase, "result": result, "error": errText})
