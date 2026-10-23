@@ -15,7 +15,7 @@ test('a caller outside any agent pane is refused by the real check', function()
   expect(e.message).to_match('does not recognize')
 end)
 
-test('a conversation identity reported from a pane takes over its legacy agent', function()
+test('a new conversation reported from a pane becomes its identity', function()
   local a = agent('alice')
   local r = a:report({kind = 'claude', conversation_id = 'conv-a'})
   expect(r.identity).to_be('claude:conv-a')

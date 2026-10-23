@@ -511,14 +511,10 @@ function H.wait_disconnected(client, what, timeout)
   end, timeout or 10)
 end
 
--- agent(name, opts) opens a test agent pane once. The suite's mode decides how the agent gets an
--- identity (docs/testing.md, "Agents"):
--- - roster mode (the manifest has test.agents): the agent joins the roster agent opts.join
---   (default name; false: no join). a.id is the name.
--- - identity mode (no test.agents): the agent reports the conversation identity
---   "<kind>:<name>" from its pane, and the helper waits until hub.identity.list shows it current
---   in this pane. opts.kind: claude (default) or codex. opts.report = false: no report, and a.id
---   is nil until a test reports.
+-- agent(name, opts) opens a test agent pane once (docs/testing.md, "Agents"). The agent reports the
+-- conversation identity "<kind>:<name>" from its pane, and the helper waits until
+-- hub.identity.list shows it current in this pane. opts.kind: claude (default) or codex.
+-- opts.report = false: no report, and a.id is nil until a test reports.
 -- A second pane that reports the same kind and conversation_id makes the identity current in the
 -- new pane, and the old pane loses its current identity. That is not "superseded" (another
 -- conversation replacing it) and not a rejoin.
@@ -526,13 +522,8 @@ end
 -- tests session).
 function H.agent(name, opts)
   opts = opts or {}
-  local identity_mode = A.agent_mode == 'identity'
-  if identity_mode then
-    if opts.join ~= nil then fail('agent ' .. name .. ': join is the roster mode; this suite has no test.agents') end
-    if name == 'user' then fail('agent user: "user" is the UI user, not a test agent') end
-  elseif opts.report ~= nil or opts.kind ~= nil then
-    fail('agent ' .. name .. ': report and kind are the identity mode; this suite has test.agents (use join)')
-  end
+  if opts.join ~= nil then fail('agent ' .. name .. ': join is removed; the agent reports an identity') end
+  if name == 'user' then fail('agent user: "user" is the UI user, not a test agent') end
   local kind = opts.kind or 'claude'
   if kind ~= 'claude' and kind ~= 'codex' then fail('agent ' .. name .. ': kind is claude or codex, not ' .. tostring(kind)) end
   local report = opts.report ~= false
@@ -544,11 +535,6 @@ function H.agent(name, opts)
     return cached
   end
   local cmd = {A.hub_bin, 'testagent', '-id', name}
-  if not identity_mode then
-    local join = opts.join
-    if join == nil then join = name end
-    if join then cmd[#cmd + 1] = '-join'; cmd[#cmd + 1] = join end
-  end
   local sess = opts.session or A.tests_session
   -- opts.unnamed: the tab gets no label, so Rex shows its generated label.
   local label = opts.title or name
@@ -562,20 +548,7 @@ function H.agent(name, opts)
   if err then error(err_of(err), 0) end
   local a = setmetatable({name = name, kind = kind, reported = report, label = 'lazyrex-testagent:' .. name,
     session = sess, window = win.window_id, block = win.block_ids and win.block_ids[1]}, Agent)
-  if not identity_mode then
-    a.id = name
-    a.client = wait('agent ' .. name .. ' to start', function() return resolve(a.label) end, 15)
-    local st = wait('agent ' .. name .. ' to join', function()
-      local s = perform(a.client, 'agent.status', {})
-      if s.joined or (s.join_error and s.join_error ~= '') then return s end
-      return nil
-    end, 15)
-    if not st.joined then fail('agent ' .. name .. ' could not join: ' .. st.join_error, 2) end
-    a.pid = st.pid
-    agents[name] = a
-    return a
-  end
-  -- Identity mode. A failure closes the pane and waits for its client to disconnect, so a later
+  -- A failure closes the pane and waits for its client to disconnect, so a later
   -- call opens a new one.
   local ok, e = pcall(function()
     a.client = wait('agent ' .. name .. ' to start', function() return resolve(a.label, retired[name]) end, 15)
@@ -675,11 +648,11 @@ function Agent:hub(action, args) return perform(self.client, 'agent.hub', {actio
 local function report_args(r)
   return {kind = r.kind, conversation_id = r.conversation_id, source = r.source or 'startup', block = r.block}
 end
--- In identity mode, a report that succeeds sets self.id to the reported identity. self.id is the
--- identity this agent reported last: another pane can report it later and make it current there.
+-- A report sets self.id to the reported identity. self.id is the identity this agent reported
+-- last: another pane can report it later and make it current there.
 function Agent:report(r)
   local res = perform(self.client, 'agent.report', {args = report_args(r)}, 20000)
-  if A.agent_mode == 'identity' and r.kind and r.conversation_id then self.id = r.kind .. ':' .. r.conversation_id end
+  if r.kind and r.conversation_id then self.id = r.kind .. ':' .. r.conversation_id end
   return res
 end
 -- report_async starts a report process that waits delay_ms before it reports, and returns at once.
