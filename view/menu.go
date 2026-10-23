@@ -53,7 +53,7 @@ func (m *model) cancelForm() tea.Cmd {
 		m.status = "Wait for the submitted operation before closing this form."
 		return nil
 	}
-	return tea.Quit
+	return m.quit()
 }
 
 // Retry only the unfinished UI step. The plugin mutation keeps its original operation key.

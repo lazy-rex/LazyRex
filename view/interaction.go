@@ -65,6 +65,9 @@ func (m *model) refreshHover() {
 }
 
 func (m *model) editorHeight(e *editor) int {
+	if m.inline() {
+		return min(e.Area.Height(), max(1, m.liveEditor))
+	}
 	return min(e.Area.Height(), max(1, min(10, (m.height-8)/2)))
 }
 func (m *model) editorOffset(e *editor) int {

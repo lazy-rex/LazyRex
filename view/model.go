@@ -93,6 +93,12 @@ type model struct {
 	pointerKnown                           bool
 	scrollDragging                         bool
 	scrollGrab                             int
+	mode                                   viewMode // decided once per process (mode.go)
+	altPending                             bool     // alt is decided; one empty inline frame comes first
+	defectNoted                            bool     // a defect note was shown (once per process)
+	quitting                               bool     // the last frame is empty
+	liveEditor                             int      // the composer's editor rows in an inline frame
+	liveOffset                             int      // the first row of the focus window
 }
 
 func newModel(client *viewClient) *model {
@@ -271,6 +277,7 @@ func (m *model) apply(s Snapshot) {
 		follow, anchor = true, ""
 	}
 	m.snapshot = s
+	m.decide()
 	m.reconcileSelect()
 	if anchor != "" {
 		for i, r := range m.bodyRows() {
@@ -680,7 +687,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.closeReady = true
-		return m, tea.Quit
+		return m, m.quit()
 	case tea.FocusMsg:
 		m.client.focus(true, "focus")
 		return m, tea.RequestBackgroundColor
@@ -714,7 +721,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.themeReady = true
 		return m, nil
 	case Snapshot:
-		before := m.lastMessageIDs()
+		before, wasPending := m.lastMessageIDs(), m.altPending
 		m.apply(msg)
 		m.client.mu.Lock()
 		focused := m.client.focused
@@ -722,11 +729,15 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if focused && !reflect.DeepEqual(before, m.lastMessageIDs()) {
 			m.client.focus(true, "content")
 		}
+		decided := m.clearBeforeAlt(wasPending)
 		// The first snapshot always reports, so a record left by an earlier renderer is replaced.
 		if seq := statusSequence(m.snapshot.Status); seq != m.programStatus {
 			m.programStatus = seq
-			return m, tea.Raw(seq)
+			return m, tea.Batch(tea.Raw(seq), decided)
 		}
+		return m, decided
+	case altClear:
+		m.altPending = false
 		return m, nil
 	case connectionMsg:
 		m.ready = msg.Ready
@@ -845,9 +856,15 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			return m, m.moveFocus(-1)
 		case "pgup":
+			if m.inline() {
+				return m, nil // the terminal owns the scrollback
+			}
 			m.scroll = max(0, m.scroll-m.bodyHeight())
 			return m, nil
 		case "pgdown":
+			if m.inline() {
+				return m, nil
+			}
 			m.scroll = min(max(0, len(m.bodyRows())-m.bodyHeight()), m.scroll+m.bodyHeight())
 			return m, nil
 		case "esc":

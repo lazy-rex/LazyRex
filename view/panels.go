@@ -363,6 +363,10 @@ func (m *model) replacementView() tea.View {
 		}
 	}
 	v := tea.NewView(strings.Join(lines, "\n"))
-	v.AltScreen, v.ReportFocus, v.MouseMode = true, true, tea.MouseModeAllMotion
+	// A thread pane stays on the primary screen (the mode is decided once).
+	v.ReportFocus = true
+	if !m.inline() {
+		v.AltScreen, v.MouseMode = true, tea.MouseModeAllMotion
+	}
 	return v
 }

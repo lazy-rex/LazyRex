@@ -49,6 +49,43 @@ A draft conflict preserves local text and offers Keep my text and Use saved text
 Removed dirty controls keep their text in a recovery section.
 Native close can lose text that storage has not acknowledged.
 
+## Modes
+
+The renderer decides its mode once per process (thread view v1.2, item 1; view/mode.go).
+
+- Neutral: before the first tree with content. Loading and error nodes do not decide.
+  The renderer draws inline and prints nothing. The first frame is "Connecting to the hub…".
+- Thread: the first tree with a history node, no list or form node, and a layout other than `transcript`.
+  The renderer stays on the primary screen for the life of the process, without mouse reporting.
+  The terminal owns the scrollback, so Page Up, Page Down, the wheel and Ctrl+T do nothing.
+- Alt: the first tree with any other content, a history node beside a list or form, or a paired composer
+  (layout `transcript`). The renderer uses the alt screen as before.
+
+No route decides the mode. A form route is neutral until its first tree.
+
+Two defect cases show a fixed status note once per process:
+"view defect: history beside a list or form" and "view defect: history in alt mode".
+
+The live region is the composer and the other nodes, then one status line.
+Beside a history node they get at most 8 rows.
+Without one they get the pane height minus 2 rows.
+When the rows do not fit, the renderer cuts text rows only, and ends each cut with "… <n> more lines".
+When the controls alone do not fit, the live region is a window that always holds the focused control,
+with "… <n> more above" and "… <n> more below" rows.
+Tab and Shift+Tab reach every control, and the window follows the focus.
+
+### Known limit: the clear before the alt screen
+
+Before alt-on, the renderer draws an empty inline frame and waits `altClearDelay` (50 ms).
+This is best effort: Bubble Tea v2.1.0 enters the alt screen without erasing the inline rows,
+and it has no frame-written signal.
+On a slow flush the neutral rows ("Connecting…", or an error drawn while neutral) can stay
+on the primary screen after the alt screen ends.
+Those rows are cosmetic and never hold a printed message.
+Do not use this timing pattern for anything that holds a message.
+
+At exit and before a reload, the last frame is empty, so no live row stays on the primary screen.
+
 ## Verification
 
 ```sh

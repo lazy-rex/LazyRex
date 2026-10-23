@@ -14,8 +14,10 @@ func TestFormWaitsForInitialTheme(t *testing.T) {
 		tea.BackgroundColorMsg{Color: color.Black}, tea.BackgroundColorMsg{Color: color.White},
 	} {
 		m := newModel(&viewClient{Route: "/forms/new-thread"})
-		if got := m.View(); got.Content != "" || !got.AltScreen {
-			t.Fatal("form drew before the first theme reply")
+		// No route decides the mode (thread view v1.2): before its first tree a form is neutral, so the
+		// empty frame is inline.
+		if got := m.View(); got.Content != "" || got.AltScreen {
+			t.Fatal("form drew before the first theme reply, or turned the alt screen on before its tree")
 		}
 		m.Update(reply)
 		if !m.themeReady || m.View().Content == "" {

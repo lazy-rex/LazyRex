@@ -32,8 +32,10 @@ func TestLayoutFitsAndPinsComposer(t *testing.T) {
 				m := testModel()
 				m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
 				m.dark = dark
-				m.status = "Connected"
 				m.apply(conversationSnapshot(8))
+				// testModel decided alt (a composer without history), so this history shows its defect note
+				// once. A later status replaces the note; the layout claim is the same.
+				m.status = "Connected"
 				m.editors["composer"].setText("A draft ready to send")
 				view := m.View()
 				lines := strings.Split(view.Content, "\n")

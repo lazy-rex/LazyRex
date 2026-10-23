@@ -1,0 +1,59 @@
+-- A plugin for the thread view mode labs (mode_lab_test.go). Its route /thread/lab renders by the
+-- SQL row stage(n): 0 is a read-only thread (a history node and a notice), 1 is an error tree with
+-- 12 widget actions, more than a 10-row pane holds. An action records its name in clicked(name).
+local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
+local instance_id = assert(rex.args.instance_id, 'instance_id is required')
+
+local function hub(action, args)
+  local res, err = rex.call('client.perform', {client_id = hub_id, action = action, args = args or {}, timeout_ms = 10000})
+  if err or not res then
+    error({code = 'hub_failed', message = type(err) == 'table' and (err.message or '') or tostring(err)})
+  end
+  return res.result
+end
+
+local function render(args)
+  local row = hub('hub.sql.query', {sql = 'SELECT n FROM stage', params = {}, render = args.render}).rows[1]
+  if not row or row[1] == 0 then
+    return {tree = {title = 'Mode lab', nodes = {
+      {id = 'notice', type = 'widget', text = 'LAB-NOTICE'},
+      {id = 'history', type = 'history', page_size = 10, messages = {{id = 'm1', author = 'codex', text = 'LAB-MSG'}}},
+    }}}
+  end
+  local nodes = {{id = 'e', type = 'error', text = 'LAB-ERROR the hub lost the thread.'}}
+  for k = 1, 12 do
+    local id = string.format('w%02d', k)
+    nodes[#nodes + 1] = {id = id, type = 'widget', action = {name = 'do-' .. id, label = 'Action ' .. id, enabled = true}}
+  end
+  return {tree = {title = 'Mode lab', nodes = nodes}}
+end
+
+local obj = {type = 'object'}
+rex.call('client.keymap', {actions = {
+  {name = 'view.render', kind = 'client', title = 'Render', args = obj},
+  {name = 'view.action', kind = 'client', title = 'Action', args = obj},
+}})
+rex.on('client_perform_requested', function(ctx, ev)
+  local ok, result = pcall(function()
+    if ev.requester.client_id ~= hub_id then error({code = 'refused', message = 'Only the hub may call ' .. ev.action}) end
+    if ev.action == 'view.render' then return render(ev.args) end
+    if ev.action == 'view.action' then
+      hub('hub.sql.exec', {sql = 'INSERT INTO clicked (name) VALUES (?)', params = {ev.args.action}})
+      return {}
+    end
+    if ev.action:sub(1, 5) == 'view.' then return {} end
+    error({code = 'unknown_action', message = ev.action})
+  end)
+  if ok then
+    rex.call('client.reply', {call_id = ev.call_id, result = result})
+  else
+    local e = type(result) == 'table' and result or {code = 'internal', message = tostring(result)}
+    rex.call('client.reply', {call_id = ev.call_id, error = e})
+  end
+end)
+
+hub('hub.register', {plugin = 'modelab', instance_id = instance_id,
+  commands = {{id = 'mode', title = 'Mode lab', route = '/thread/lab', user_only = 'a lab view'}}})
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS stage (n INTEGER)'})
+hub('hub.sql.exec', {sql = 'CREATE TABLE IF NOT EXISTS clicked (name TEXT)'})
+rex.call('client.set_label', {label = 'lazyrex-plugin:modelab'})

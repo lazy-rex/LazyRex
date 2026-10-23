@@ -177,6 +177,9 @@ func (m *model) bodyRows() []row {
 		if skip[ni] {
 			continue
 		}
+		if n.Type == "history" && m.mode != viewAlt {
+			continue // a thread pane prints its history above the live region
+		}
 		if n.Type == "composer" {
 			if m.dockedComposer() != n.ID {
 				rows = append(rows, m.composerRowsFor([]Node{n})...)
@@ -378,7 +381,7 @@ func (m *model) bodyRows() []row {
 // A single composer stays at the bottom when the pane has sufficient height.
 // Multiple composers remain in the scrolling body, so every control stays reachable.
 func (m *model) dockedComposer() string {
-	if m.height < 18 {
+	if m.height < 18 && !m.inline() {
 		return ""
 	}
 	id := ""
@@ -565,11 +568,21 @@ func (m *model) View() tea.View {
 		return m.lastView
 	}
 	if m.isForm() && !m.themeReady {
+		// A form draws nothing before the theme reply. Before the mode is decided the empty frame is inline.
 		v := tea.NewView("")
-		v.AltScreen, v.ReportFocus = true, true
+		v.AltScreen, v.ReportFocus = !m.inline(), true
 		m.visibleRows = nil
 		m.visibleSelect = nil
 		m.lastView, m.haveView = v, true
+		return v
+	}
+	if m.inline() {
+		m.visibleSelect = nil
+		return m.inlineView()
+	}
+	if m.quitting {
+		v := tea.NewView("")
+		v.AltScreen = true
 		return v
 	}
 	var lines []string

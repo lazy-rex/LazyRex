@@ -155,5 +155,5 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reloadReady = true
 		m.status = "Reloading renderer…"
 	}
-	return m, tea.Quit
+	return m, m.quit()
 }
