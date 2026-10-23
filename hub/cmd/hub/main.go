@@ -861,7 +861,7 @@ func (h *Hub) everyAgent() []*Agent {
 	return out
 }
 
-func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
+func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 	var args map[string]any
 	if len(p.Args) > 0 && string(p.Args) != "null" {
 		if err := json.Unmarshal(p.Args, &args); err != nil {
@@ -873,8 +873,14 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	}
 	// A hub call of a plugin while one of its renders is open can make the render untracked
 	// (renderreads.go).
+	degraded := false // a covered read whose result may be incomplete (workersRead)
 	if pl := h.pluginByClient(p.Requester.ClientID); pl != nil {
 		h.renderCall(pl.Name, p.Requester.ClientID, p.Action, args)
+		if id, _ := args["render"].(string); id != "" && coveredReads[p.Action] != nil {
+			defer func() {
+				h.renderHubRead(pl.Name, p.Requester.ClientID, id, coveredReads[p.Action], err == nil && !degraded)
+			}()
+		}
 	}
 	pid := p.Requester.Principal.PID
 	if strings.HasPrefix(p.Action, "hub.test.") {
@@ -909,7 +915,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (any, error) {
 	case "hub.spawn.spec":
 		return h.spawnSpec(ctx, p, args)
 	case "hub.workers":
-		return h.workersList(ctx)
+		result, degraded, err = h.workersRead(ctx)
+		return result, err
 	case "hub.stop":
 		return h.stop(ctx, p, args)
 	case "hub.navigate.worker":

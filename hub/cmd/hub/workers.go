@@ -1189,16 +1189,11 @@ func (h *Hub) windowOf(ctx context.Context, sess, block string) string {
 	return ""
 }
 
-// workersList reports every spawn that is not closed, with its state: starting, running, exited
-// or failed. A failed spawn stays in the list, with its error, until hub.stop dismisses it.
-func (h *Hub) workersList(ctx context.Context) (any, error) {
-	list, _, err := h.workersRead(ctx)
-	return list, err
-}
-
-// workersRead is hub.workers. degraded: a Rex read of a pane's process or program status failed,
-// so a state or a status in the list may be wrong ("exited", no status). A render that reads such a
-// list stays untracked (docs/hub.md, "Hub reads in a render").
+// workersRead is hub.workers: every spawn that is not closed, with its state: starting, running,
+// exited or failed. A failed spawn stays in the list, with its error, until hub.stop dismisses it.
+// degraded: a Rex read of a pane's process or program status failed, so a state or a status in the
+// list may be wrong ("exited", no status). A render that reads such a list stays untracked
+// (docs/hub.md, "Hub reads in a render").
 func (h *Hub) workersRead(ctx context.Context) (result any, degraded bool, err error) {
 	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('prepared', 'sending', 'open', 'failed') ORDER BY created`)
 	if err != nil {

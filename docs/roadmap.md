@@ -118,10 +118,10 @@ One line per item: what, its owner, and why it waits.
 
 - `viewnotify.go`: remove the nil `ctx` fallback to `context.Background()`, and give each test hub a
   `ctx` (`newViewSvc()` then `h.vs.ctx`). Owner: Hub Features. Waits: it was outside the
-  constructor change's scope (lead-c37-item6g1); it is a test-only guard with no production effect.
+  constructor change's scope; it is a test-only guard with no production effect.
 - Narrow `changed(name)` for a view with no `deps.changes` and a tracked read set to the names it
   read (today every changed name marks such a view). Owner: Hub Features. Waits: an inventory of
-  plugin views that read hub data outside covered calls (lead-g1b-plan).
+  plugin views that read hub data outside covered calls.
 - A plugin spawn whose outcome stays unknown reports `running` and has no timer owner. Two cases:
   the child read after `createBlock` fails or times out (the intent stays `sending`), and the block
   read after the block ID is recorded fails while the child had already exited (`checkMapped`

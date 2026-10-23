@@ -699,7 +699,7 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 			// The plugin is not there yet or did not answer. Keep the current tree; plugin
 			// registration renders again.
 			log.Printf("views %s: render %s: %v (transient)", plugin, t.route, err)
-			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil)
+			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil, nil)
 			h.testRenderOutcome(t.id, "transient")
 			h.testRenderDone(t.id, gen, false, "transient: "+err.Error()+" (the hub kept the previous tree)", 0, nil)
 			continue
@@ -746,10 +746,11 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 					errs = append(errs, err.Error())
 				}
 			}
-			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, strings.Join(errs, "; "), renderTables(rec, tracked))
+			tables, changes := renderTables(rec, tracked)
+			h.renderFinished(plugin, t.id, t.route, st, epoch, deps, derr == nil, strings.Join(errs, "; "), tables, changes)
 			h.testRenderOutcome(t.id, "ok")
 		} else {
-			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil)
+			h.renderFinished(plugin, t.id, t.route, st, epoch, nil, false, "", nil, nil)
 			h.testRenderOutcome(t.id, "failed")
 		}
 		tree, _ := json.Marshal(out.Tree)

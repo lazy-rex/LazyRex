@@ -29,7 +29,7 @@ func TestRenderIDLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.vs = depsHub().vs
-	h.plugins = map[string]*Plugin{"p": {ClientID: "c1"}}
+	h.plugins = map[string]*Plugin{"p": {Name: "p", ClientID: "c1"}}
 
 	seen := map[string]string{} // render ID -> view
 	viewRenderHook = func(h *Hub, ctx context.Context, plugin string, args map[string]any, out any) error {
@@ -228,7 +228,7 @@ func renderHub(t *testing.T) *Hub {
 	for _, v := range []string{"v1", "v2"} {
 		h.vs.snaps[v] = &snapshot{tree: []byte(`{"back":null,"nodes":[],"title":"T"}`)}
 	}
-	h.plugins = map[string]*Plugin{"p": {ClientID: "c1"}}
+	h.plugins = map[string]*Plugin{"p": {Name: "p", ClientID: "c1"}}
 	return h
 }
 
@@ -236,8 +236,10 @@ func renderHub(t *testing.T) *Hub {
 // tables; nil: an untokened read), the refresh value of the reply, and an error.
 type renderStep struct {
 	reads    []map[string]bool
-	failRead bool // after the reads, a tokened query that fails before it runs
-	refresh  any  // nil: no field
+	failRead bool     // after the reads, a tokened query that fails before it runs
+	hub      []string // after the reads, covered hub reads with the render ID, through dispatch
+	deps     any      // the deps field of the reply; nil: no field
+	refresh  any      // nil: no field
 	err      error
 	during   func() // runs after the reads, before the reply
 }
@@ -260,6 +262,9 @@ func renderWith(t *testing.T, h *Hub, steps map[string]renderStep) {
 			h.renderCall(plugin, "c1", "hub.sql.query", map[string]any{"render": id})
 			h.renderRead(plugin, "c1", id, nil, false)
 		}
+		for _, action := range s.hub {
+			hubCall(h, "c1", action, id)
+		}
 		if s.during != nil {
 			s.during()
 		}
@@ -269,6 +274,9 @@ func renderWith(t *testing.T, h *Hub, steps map[string]renderStep) {
 		reply := map[string]any{"tree": map[string]any{"title": "T", "back": nil, "nodes": []any{}}}
 		if s.refresh != nil {
 			reply["refresh"] = s.refresh
+		}
+		if s.deps != nil {
+			reply["deps"] = s.deps
 		}
 		b, _ := json.Marshal(reply)
 		return json.Unmarshal(b, out)
