@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -927,7 +928,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 	case "hub.spawn.spec":
 		return h.spawnSpec(ctx, p, args)
 	case "hub.workers":
-		result, degraded, err = h.workersRead(ctx)
+		spawnID, _ := args["spawn_id"].(string)
+		result, degraded, err = h.workersRead(ctx, spawnID)
 		return result, err
 	case "hub.stop":
 		return h.stop(ctx, p, args)
@@ -1073,20 +1075,7 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.sessionEnsure(ctx, ns, args)
 	case "hub.identify":
 		target, _ := args["pid"].(float64)
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		// A pane's current conversation identity comes first; else the legacy joined agent.
-		for _, a := range h.idents {
-			if a.IdState == "current" && a.live() && descendsFrom(int(target), a.ChildPID) {
-				return map[string]any{"found": true, "agent": a.ID, "identity": a.ID, "legacy": h.aliasesOf(a.ID), "block_id": a.BlockID, "session_id": h.bindingSession(a)}, nil
-			}
-		}
-		for _, a := range h.agents {
-			if a.live() && descendsFrom(int(target), a.ChildPID) {
-				return map[string]any{"found": true, "agent": a.ID, "block_id": a.BlockID, "session_id": h.bindingSession(a)}, nil
-			}
-		}
-		return map[string]any{"found": false}, nil
+		return h.identify(ctx, int(target))
 	case "hub.store.get":
 		out, err := h.db.storeGet(ctx, ns, args)
 		if err == nil && h.test != nil {
@@ -1119,6 +1108,41 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return out.result, nil
 	}
 	return nil, bad("unknown action %s", p.Action)
+}
+
+// identify handles hub.identify {pid}. spawn_id is the agent spawn whose open block is the found
+// pane. It is read after h.mu is free: it is a fact at read time, like every other field.
+func (h *Hub) identify(ctx context.Context, target int) (map[string]any, error) {
+	out := h.identifyPID(target)
+	if block, _ := out["block_id"].(string); block != "" {
+		var spawn string
+		err := h.db.QueryRowContext(ctx, `SELECT spawn_id FROM spawns WHERE block_id = ? AND status = 'open' AND agent_id <> ''`, block).Scan(&spawn)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if spawn != "" {
+			out["spawn_id"] = spawn
+		}
+	}
+	return out, nil
+}
+
+// identifyPID finds the agent of a process for hub.identify: a pane's current conversation
+// identity comes first; else the legacy joined agent.
+func (h *Hub) identifyPID(target int) map[string]any {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, a := range h.idents {
+		if a.IdState == "current" && a.live() && descendsFrom(target, a.ChildPID) {
+			return map[string]any{"found": true, "agent": a.ID, "identity": a.ID, "legacy": h.aliasesOf(a.ID), "block_id": a.BlockID, "session_id": h.bindingSession(a)}
+		}
+	}
+	for _, a := range h.agents {
+		if a.live() && descendsFrom(target, a.ChildPID) {
+			return map[string]any{"found": true, "agent": a.ID, "block_id": a.BlockID, "session_id": h.bindingSession(a)}
+		}
+	}
+	return map[string]any{"found": false}
 }
 
 // afterCommit announces a committed batch: the event log, pending notices, and the plugin's views.

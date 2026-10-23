@@ -1194,8 +1194,23 @@ func (h *Hub) windowOf(ctx context.Context, sess, block string) string {
 // degraded: a Rex read of a pane's process or program status failed, so a state or a status in the
 // list may be wrong ("exited", no status). A render that reads such a list stays untracked
 // (docs/hub.md, "Hub reads in a render").
-func (h *Hub) workersRead(ctx context.Context) (result any, degraded bool, err error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('prepared', 'sending', 'open', 'failed') ORDER BY created`)
+func (h *Hub) workersRead(ctx context.Context, spawnID string) (result any, degraded bool, err error) {
+	// The spawn_id filter selects in the query, before any recovery or Rex read: the broken pane of
+	// another worker does not fail the read of this one.
+	if spawnID != "" {
+		var status string
+		err := h.db.QueryRowContext(ctx, `SELECT status FROM spawns WHERE spawn_id = ?`, spawnID).Scan(&status)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return nil, false, refuse("not_found", "no spawn %s", spawnID)
+		case err != nil:
+			return nil, false, err
+		case status == "closed":
+			return nil, false, refuse("not_found", "spawn %s is closed", spawnID)
+		}
+	}
+	rows, err := h.db.QueryContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE status IN ('prepared', 'sending', 'open', 'failed')
+		AND (? = '' OR spawn_id = ?) ORDER BY created`, spawnID, spawnID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1237,10 +1252,25 @@ func (h *Hub) workersRead(ctx context.Context) (result any, degraded bool, err e
 			w["agent_id"] = s.Agent
 		}
 		// Read after this worker's recovery (workerBlocks): two workers are not one snapshot.
-		if id, err := h.workerIdentity(ctx, s); err != nil {
-			return nil, false, err
-		} else if id != "" {
-			w["identity"] = id
+		if s.Agent != "" {
+			state, id, err := h.workerPane(ctx, s)
+			if err != nil {
+				return nil, false, err
+			}
+			if state != "" {
+				w["identity"] = state
+			}
+			// identity_seen: true with a current identity, else from the pane's history. A spawn with
+			// no pane yet has no history.
+			seen := id != ""
+			if id != "" {
+				w["identity_id"] = id
+			} else if s.Block != "" {
+				if seen, err = h.paneSeen(ctx, s.Block); err != nil {
+					return nil, false, err
+				}
+			}
+			w["identity_seen"] = seen
 		}
 		if s.Block != "" {
 			w["block_id"], w["window_id"] = s.Block, s.Window
@@ -1249,6 +1279,10 @@ func (h *Hub) workersRead(ctx context.Context) (result any, degraded bool, err e
 			w["error"] = s.Error
 		}
 		out = append(out, w)
+	}
+	if spawnID != "" && len(out) == 0 {
+		// It closed after the first read, or its recovery closed it.
+		return nil, false, refuse("not_found", "spawn %s is closed", spawnID)
 	}
 	return map[string]any{"workers": out}, degraded, nil
 }
@@ -1646,8 +1680,9 @@ var hubToolActions = []map[string]any{
 			"for": map[string]any{"type": "string"}, "on_behalf": map[string]any{"type": "integer"}},
 			"required": []string{"profile", "key"}, "additionalProperties": false}},
 	{"name": "hub.workers", "kind": "client", "title": "List workers",
-		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status. An open agent worker also has identity: current (its pane has a current conversation identity) or none.",
-		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
+		"description": "List started profiles that are not closed: spawn_id, session_id, cwd, profile, title, parent, agent_id, state (starting, running, exited, failed), error and program status. An agent worker also has identity_seen (true once its pane has had a current conversation identity), and, when open, identity: current or none, with identity_id (the current identity's ID) when current. With spawn_id: only that worker; not_found when it is closed or unknown.",
+		"args": map[string]any{"type": "object", "properties": map[string]any{
+			"spawn_id": map[string]any{"type": "string", "minLength": 1}}, "additionalProperties": false}},
 	{"name": "hub.stop", "kind": "client", "title": "Stop a worker",
 		"description": "Close a worker's tab, or dismiss a failed start. A pending start with an unknown outcome cannot be stopped. Any agent can stop any worker, also one that another agent or the user started. Safe to retry: stop is idempotent by spawn_id, and key is optional.",
 		"args": map[string]any{"type": "object", "properties": map[string]any{
@@ -1965,25 +2000,54 @@ func (h *Hub) cwdUnlock(ctx context.Context, owner string, admin bool, args map[
 // row, not the current profile, which can change or go), its pane's identity; "" (no field) for
 // every other worker.
 func (h *Hub) workerIdentity(ctx context.Context, s *spawnRow) (string, error) {
-	if s.Status != "open" || s.Agent == "" {
-		return "", nil
-	}
-	return h.paneIdentity(ctx, s.Block)
+	state, _, err := h.workerPane(ctx, s)
+	return state, err
 }
 
-// paneIdentity is "current" when the pane has a current conversation identity (identity.go: an
-// accepted hook report; cleared on exit and when the conversation resumes in another pane), else
-// "none". Only no row or an empty current is "none": a failed read is an error, never "none".
-func (h *Hub) paneIdentity(ctx context.Context, block string) (string, error) {
+// workerPane reads the pane's current identity once and gives both fields from that one read:
+// state is the identity field, and id is identity_id, the current identity's ID ("" = no field).
+// A pane with no current identity has state "none" and no ID.
+func (h *Hub) workerPane(ctx context.Context, s *spawnRow) (state, id string, err error) {
+	if s.Status != "open" || s.Agent == "" {
+		return "", "", nil
+	}
+	id, err = h.paneCurrent(ctx, s.Block)
+	if err != nil {
+		return "", "", err
+	}
+	if id == "" {
+		return "none", "", nil
+	}
+	return "current", id, nil
+}
+
+// paneCurrent is the ID of the pane's current conversation identity (identity.go: an accepted hook
+// report; cleared on exit and when the conversation resumes in another pane), or "" when it has
+// none. Only no row or an empty current is "": a failed read is an error, never "".
+func (h *Hub) paneCurrent(ctx context.Context, block string) (string, error) {
 	var current string
 	err := h.db.QueryRowContext(ctx, `SELECT current FROM identity_panes WHERE block_id = ?`, block).Scan(&current)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return "none", nil
+		return "", nil
 	case err != nil:
 		return "", fmt.Errorf("the identity of pane %s: %w", block, err)
-	case current == "":
-		return "none", nil
 	}
-	return "current", nil
+	return current, nil
+}
+
+// paneSeen reports whether the pane has had a current identity: identity_log has a row for the
+// block with an event that makes an identity current. identityReport logs every such transition as
+// started, cleared, forked or resumed; a new event that makes an identity current must join this
+// list. One block has one spawn: openSpawn is the only writer of spawns.block_id, and a resume or a
+// restart opens a new pane. So the rows of a spawn's block are all from that spawn's life. The log
+// is durable, so the answer survives a hub restart. A failed read is an error, never false.
+func (h *Hub) paneSeen(ctx context.Context, block string) (bool, error) {
+	var seen bool
+	err := h.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM identity_log WHERE block_id = ?
+		AND event IN ('started', 'cleared', 'forked', 'resumed'))`, block).Scan(&seen)
+	if err != nil {
+		return false, fmt.Errorf("the identity history of pane %s: %w", block, err)
+	}
+	return seen, nil
 }

@@ -50,7 +50,7 @@ func TestWorkersReadDegraded(t *testing.T) {
 				}
 				return map[string]any{}, ""
 			})
-			got, degraded, err := h.workersRead(context.Background())
+			got, degraded, err := h.workersRead(context.Background(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
