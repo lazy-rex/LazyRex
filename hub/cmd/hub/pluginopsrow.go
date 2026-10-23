@@ -26,6 +26,7 @@ type opRowPrior struct {
 	Prior    *opRowPrev `json:"prior,omitempty"`
 }
 
+// opRowStamp is what the add wrote: the entry identity, and the stamp of the row values (entryStamp).
 type opRowStamp struct {
 	EntryIdentity string `json:"entry_identity"`
 	EntryStamp    string `json:"entry_stamp"`
@@ -34,7 +35,6 @@ type opRowStamp struct {
 type opRowPrev struct {
 	Desired       string `json:"desired"`
 	EntryIdentity string `json:"entry_identity"`
-	EntryStamp    string `json:"entry_stamp"`
 }
 
 // pluginRowCols are the plugins row columns that the row write and its owner check read.
@@ -42,7 +42,7 @@ type pluginRowCols struct {
 	desired, instance, session, block string
 	pid                               int
 	start, run, selected              string
-	identity, stamp                   string
+	identity                          string
 }
 
 type rowQueryer interface {
@@ -52,8 +52,8 @@ type rowQueryer interface {
 // readRowCols reads the plugins row of name: nil when there is none.
 func readRowCols(ctx context.Context, q rowQueryer, name string) (*pluginRowCols, error) {
 	var c pluginRowCols
-	err := q.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run, selected_run, entry_identity, entry_stamp FROM plugins WHERE name = ?`, name).
-		Scan(&c.desired, &c.instance, &c.session, &c.block, &c.pid, &c.start, &c.run, &c.selected, &c.identity, &c.stamp)
+	err := q.QueryRowContext(ctx, `SELECT desired, instance_id, session_id, block_id, child_pid, child_start, run, selected_run, entry_identity FROM plugins WHERE name = ?`, name).
+		Scan(&c.desired, &c.instance, &c.session, &c.block, &c.pid, &c.start, &c.run, &c.selected, &c.identity)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -63,13 +63,12 @@ func readRowCols(ctx context.Context, q rowQueryer, name string) (*pluginRowCols
 	return &c, nil
 }
 
-// owned reports whether the row still has the values that the add wrote: its entry_identity and
-// its stored entry_stamp are the written ones, the stamp computed from the current columns is the
-// written stamp, and selected_run is empty. The computed stamp covers desired, instance_id and the
-// live fields: a hub that does not know entry_identity (OLD) can change them and keep the stored
-// stamp, so the stored stamp alone is not enough.
+// owned reports whether the row still has the values that the add wrote: its entry_identity is the
+// written one, the stamp of its current values (entryStamp: desired, instance_id and the live
+// fields) is the written stamp, and selected_run is empty. A later save (a start or a stop)
+// changes the values, so the add no longer owns the row.
 func (c *pluginRowCols) owned(w opRowStamp) bool {
-	return c != nil && c.identity == w.EntryIdentity && c.stamp == w.EntryStamp && c.selected == "" &&
+	return c != nil && c.identity == w.EntryIdentity && c.selected == "" &&
 		entryStamp(c.desired, c.instance, c.session, c.block, c.pid, c.start, c.run) == w.EntryStamp
 }
 
@@ -88,8 +87,8 @@ func (c *pluginRowCols) free() bool {
 // attempts do not count. The graph check of the writing phase covers "no entry gives name". A
 // failed guard is conflict, and nothing more is written. The same transaction stores the name in
 // the op (op.Name), so the guard of a later add sees this add's attempts.
-//   - Insert: desired stopped, the entry identity and a fresh entry_stamp.
-//   - Reuse: desired stopped, the entry identity and a fresh entry_stamp; instance_id stays (the
+//   - Insert: desired stopped and the entry identity.
+//   - Reuse: desired stopped and the entry identity; instance_id stays (the
 //     retired instance: an earlier op's stop observation of it needs the earlier identity, which
 //     no longer matches, so the reuse cannot make a false proof).
 //
@@ -132,13 +131,13 @@ func (h *Hub) addRow(ctx context.Context, op *pluginOp, name, identity string) (
 	instance := ""
 	if c != nil {
 		instance = c.instance
-		p.Prior = &opRowPrev{Desired: c.desired, EntryIdentity: c.identity, EntryStamp: c.stamp}
+		p.Prior = &opRowPrev{Desired: c.desired, EntryIdentity: c.identity}
 	}
 	p.Wrote = opRowStamp{EntryIdentity: identity, EntryStamp: entryStamp("stopped", instance, "", "", 0, "", "")}
 	if c == nil {
-		_, err = tx.ExecContext(ctx, `INSERT INTO plugins (name, desired, entry_identity, entry_stamp) VALUES (?, 'stopped', ?, ?)`, name, p.Wrote.EntryIdentity, p.Wrote.EntryStamp)
+		_, err = tx.ExecContext(ctx, `INSERT INTO plugins (name, desired, entry_identity) VALUES (?, 'stopped', ?)`, name, p.Wrote.EntryIdentity)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE plugins SET desired = 'stopped', entry_identity = ?, entry_stamp = ? WHERE name = ?`, p.Wrote.EntryIdentity, p.Wrote.EntryStamp, name)
+		_, err = tx.ExecContext(ctx, `UPDATE plugins SET desired = 'stopped', entry_identity = ? WHERE name = ?`, p.Wrote.EntryIdentity, name)
 	}
 	if err != nil {
 		return true, err
@@ -201,7 +200,7 @@ func (h *Hub) endAddRow(ctx context.Context, op *pluginOp, phase, result, errTex
 		case p.Inserted:
 			_, err = tx.ExecContext(ctx, `DELETE FROM plugins WHERE name = ?`, p.Name)
 		default:
-			_, err = tx.ExecContext(ctx, `UPDATE plugins SET desired = ?, entry_identity = ?, entry_stamp = ? WHERE name = ?`, p.Prior.Desired, p.Prior.EntryIdentity, p.Prior.EntryStamp, p.Name)
+			_, err = tx.ExecContext(ctx, `UPDATE plugins SET desired = ?, entry_identity = ? WHERE name = ?`, p.Prior.Desired, p.Prior.EntryIdentity, p.Name)
 		}
 		if err != nil {
 			return err

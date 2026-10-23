@@ -57,7 +57,6 @@ func openDB(path string) (*DB, error) {
 		`ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT ''`, // the exact source of the entry that bound the name
 		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`, // the agent read since the last revision
 		`ALTER TABLE plugins ADD COLUMN entry_identity TEXT NOT NULL DEFAULT ''`, // entryIdentity of the entry that the record was last saved with; '' = unknown
-		`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`,    // entryStamp of the row when entry_identity was written; '' = the identity is not valid
 		`ALTER TABLE plugins ADD COLUMN selected_run TEXT NOT NULL DEFAULT ''`,   // Plugin.selected as JSON; '' = none (selectedrun.go)
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
@@ -74,9 +73,11 @@ func openDB(path string) (*DB, error) {
 // more than 0, so it runs at most once on a database, and a new database skips it. A step goes
 // when no live hub.db needs it any more.
 var retiredSchema = []struct{ check, statement string }{
-	// Empty in 4.3. ui_tabs.rev_known (the 4.2 hub's column, no longer read or written; its DEFAULT 0
+	// ui_tabs.rev_known (the 4.2 hub's column, no longer read or written; its DEFAULT 0
 	// serves every INSERT) stays until the release after 4.3, so a 4.2 rollback finds it and the 4.3
 	// rehearsal sees no dropped column. Its DROP comes back with 2d (lead-hubq2).
+	// plugins.entry_stamp: the guard against a rollback hub's writes (coord-reset-0 ended rollback).
+	{`SELECT COUNT(*) FROM pragma_table_info('plugins') WHERE name = 'entry_stamp'`, `ALTER TABLE plugins DROP COLUMN entry_stamp`},
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.

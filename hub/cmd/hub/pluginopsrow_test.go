@@ -57,14 +57,13 @@ func TestPluginOpAddRowNamedByManifest(t *testing.T) {
 	if err := h.opWrite(ctx, op); err != nil || op.Phase != "reloading" {
 		t.Fatalf("the write: %+v %v", op, err)
 	}
-	stamp := entryStamp("stopped", "", "", "", 0, "", "")
-	if c := rowCols(t, h, "notes"); c == nil || c.desired != "stopped" || c.identity != toolsIdentity || c.stamp != stamp || c.instance != "" {
+	if c := rowCols(t, h, "notes"); c == nil || c.desired != "stopped" || c.identity != toolsIdentity || c.instance != "" {
 		t.Fatalf("the row notes: %+v", c)
 	}
 	if c := rowCols(t, h, "tools"); c != nil {
 		t.Fatalf("a row tools: %+v", c)
 	}
-	want, _ := json.Marshal(opRowPrior{Name: "notes", Inserted: true, Wrote: opRowStamp{toolsIdentity, stamp}})
+	want, _ := json.Marshal(opRowPrior{Name: "notes", Inserted: true, Wrote: opRowStamp{toolsIdentity, entryStamp("stopped", "", "", "", 0, "", "")}})
 	if stored := opsOf(t, h, op.ID).RowPrior; stored != string(want) {
 		t.Fatalf("row_prior %s, want %s", stored, want)
 	}
@@ -157,7 +156,7 @@ func TestPluginOpAddRowGuard(t *testing.T) {
 // instance_id stays, and row_prior holds the changed values as they were.
 func TestPluginOpAddRowReuse(t *testing.T) {
 	h := rowHub(t)
-	if _, err := h.db.Exec(`INSERT INTO plugins (name, desired, instance_id, entry_identity, entry_stamp) VALUES ('notes', 'stopped', 'notes-1-x', '["managed:a","github:acme/a@v1"]', 'old')`); err != nil {
+	if _, err := h.db.Exec(`INSERT INTO plugins (name, desired, instance_id, entry_identity) VALUES ('notes', 'stopped', 'notes-1-x', '["managed:a","github:acme/a@v1"]')`); err != nil {
 		t.Fatal(err)
 	}
 	op := writingAdd(t, h, "reuse", toolsSource, "tools")
@@ -165,11 +164,11 @@ func TestPluginOpAddRowReuse(t *testing.T) {
 		t.Fatalf("%+v %v", op, err)
 	}
 	stamp := entryStamp("stopped", "notes-1-x", "", "", 0, "", "")
-	if c := rowCols(t, h, "notes"); c.instance != "notes-1-x" || c.identity != toolsIdentity || c.stamp != stamp || c.desired != "stopped" {
+	if c := rowCols(t, h, "notes"); c.instance != "notes-1-x" || c.identity != toolsIdentity || c.desired != "stopped" {
 		t.Fatalf("the reused row: %+v", c)
 	}
 	want, _ := json.Marshal(opRowPrior{Name: "notes", Wrote: opRowStamp{toolsIdentity, stamp},
-		Prior: &opRowPrev{Desired: "stopped", EntryIdentity: `["managed:a","github:acme/a@v1"]`, EntryStamp: "old"}})
+		Prior: &opRowPrev{Desired: "stopped", EntryIdentity: `["managed:a","github:acme/a@v1"]`}})
 	if stored := opsOf(t, h, op.ID).RowPrior; stored != string(want) {
 		t.Fatalf("row_prior %s, want %s", stored, want)
 	}
@@ -280,7 +279,7 @@ func TestPluginOpAddRowCleanup(t *testing.T) {
 	})
 	t.Run("a reused row gets its prior values", func(t *testing.T) {
 		h := rowHub(t)
-		if _, err := h.db.Exec(`INSERT INTO plugins (name, desired, instance_id, entry_identity, entry_stamp) VALUES ('notes', 'stopped', 'notes-1-x', '["managed:a","github:acme/a@v1"]', 'old')`); err != nil {
+		if _, err := h.db.Exec(`INSERT INTO plugins (name, desired, instance_id, entry_identity) VALUES ('notes', 'stopped', 'notes-1-x', '["managed:a","github:acme/a@v1"]')`); err != nil {
 			t.Fatal(err)
 		}
 		before := *rowCols(t, h, "notes")
@@ -293,15 +292,13 @@ func TestPluginOpAddRowCleanup(t *testing.T) {
 			t.Fatalf("the restored row %+v, want %+v", after, before)
 		}
 	})
-	// Another writer changes the row after the add's write: an OLD-style SQL write (a new instance
-	// and desired stopped, with entry_identity, entry_stamp and selected_run as they are), or a save
-	// of this hub under the same entry identity (a new instance, then a stop, with a fresh stamp).
-	// The add does not own the row any more: the cleanup leaves it as it is, and the end says so.
+	// A save of this hub under the same entry identity changes the row after the add's write (a new
+	// instance, then a stop). The add does not own the row any more: the cleanup leaves it as it is,
+	// and the end says so.
 	for _, w := range []struct {
 		name, sql string
 	}{
-		{"an OLD-style write", `UPDATE plugins SET instance_id = 'notes-2-y', desired = 'stopped' WHERE name = 'notes'`},
-		{"a save under the same identity", `UPDATE plugins SET instance_id = 'notes-3-z', entry_stamp = '` + entryStamp("stopped", "notes-3-z", "", "", 0, "", "") + `' WHERE name = 'notes'`},
+		{"a save under the same identity", `UPDATE plugins SET instance_id = 'notes-3-z' WHERE name = 'notes'`},
 	} {
 		t.Run(w.name+", then the pin changes", func(t *testing.T) {
 			h := rowHub(t)

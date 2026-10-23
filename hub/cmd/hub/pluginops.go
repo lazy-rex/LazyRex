@@ -1629,12 +1629,9 @@ func (h *Hub) opStop(ctx context.Context, op *pluginOp, attempt string) (any, er
 //   - stop: the stored record is stopped with no instance, its saved entry identity is the op's,
 //     and its instance_id is the target_instance that the handler bound -> applied (the same
 //     effect from any caller); else unresolved. A row without an identity (from before it was
-//     recorded), with another entry's, or with a later instance (a start, also by a rollback hub
-//     that does not write entry_identity) is never a match. The identity counts only while
-//     entry_stamp is the stamp of the row's values (entryStamp): a rollback hub's write, or a save
-//     of a kept record, makes it invalid.
+//     recorded), with another entry's, or with a later instance (a start) is never a match.
 //   - start: the spawn intent intent_id is created (its block has the instance marker), the record
-//     has that instance with the op's valid entry identity, and the instance registered ->
+//     has that instance with the op's entry identity, and the instance registered ->
 //     applied; else unresolved. An absent block never proves not_applied: Rex can complete a
 //     create after its client is gone.
 //   - reload: the hub's entries have the op's intended entry -> done (the hub start or the call read
@@ -1707,18 +1704,14 @@ func (h *Hub) opObserve(ctx context.Context, op *pluginOp, attempt, call string)
 // waiting: a start whose intent can still register (not abandoned); the observation can wait.
 func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t attemptTarget) (proof, detail string, waiting bool, err error) {
 	target, intent := t.instance, t.intent
-	var desired, block, identity, instance, session, start, run, stamp string
-	var pid int
-	err = h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id, session_id, child_pid, child_start, run, entry_stamp FROM plugins WHERE name = ?`, op.Name).
-		Scan(&desired, &block, &identity, &instance, &session, &pid, &start, &run, &stamp)
+	var desired, block, identity, instance string
+	err = h.db.QueryRowContext(ctx, `SELECT desired, block_id, entry_identity, instance_id FROM plugins WHERE name = ?`, op.Name).
+		Scan(&desired, &block, &identity, &instance)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "the plugin has no record", false, nil
 	}
 	if err != nil {
 		return "", "", false, err
-	}
-	if stamp != entryStamp(desired, instance, session, block, pid, start, run) {
-		identity = "" // a write that does not know entry_identity changed the row (a rollback hub), or a kept record saved it
 	}
 	// The entry that the call expected (opExpectEntry): an update's call names the entry after its
 	// write, not the entry at admission.

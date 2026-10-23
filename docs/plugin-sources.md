@@ -639,8 +639,7 @@ reads no pin, so a lock change or a local edit takes effect at the next explicit
   it. A spawn sets it in the save of the run; an explicit start that waits sets it before its
   lease ends.
 - A crash, a failed spawn, a retirement and a session loss keep it. A stop (also a user block
-  close), the entry's removal and hub start clear it. Hub start clears every row before recovery,
-  so a value that a rollback hub kept never reaches an automatic start.
+  close), the entry's removal and hub start clear it. Hub start clears every row before recovery.
 - The admission: the selected run must come from the record's current entry, else `plugin <name>:
   no run is recorded; start it again`.
 - The run check: the published entry exists and has the run's digest (the whole entry), the

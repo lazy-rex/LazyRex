@@ -267,10 +267,8 @@ func entryIdentity(e *configEntry) string {
 	return string(b)
 }
 
-// entryStamp is the hash of the plugins row values that every hub writes (also a rollback hub,
-// whose savePlugin names these columns and not entry_identity). entry_identity counts only while
-// entry_stamp is the stamp of the row: a write by a hub that does not know entry_identity changes
-// the values and so makes it invalid.
+// entryStamp is the hash of the plugins row values that a save changes: an add records it for the
+// row that it wrote (pluginRowCols.owned).
 func entryStamp(desired, instance, session, block string, pid int, start, run string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{desired, instance, session, block, strconv.Itoa(pid), start, run}, "\x00")))
 	return hex.EncodeToString(sum[:])
@@ -278,9 +276,8 @@ func entryStamp(desired, instance, session, block string, pid int, start, run st
 
 func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 	run := ""
-	// entry_identity is the entry that this save happens under, with a fresh entry_stamp. A kept
-	// record (no entry) keeps the identity of its last entry but clears the stamp: a rollback hub can
-	// have bound that entry's name to another entry, and this save cannot see it.
+	// entry_identity is the entry that this save happens under. A kept record (no entry) keeps the
+	// identity of its last entry.
 	identity := ""
 	if pl.entry != nil {
 		identity = entryIdentity(pl.entry)
@@ -298,17 +295,13 @@ func (h *Hub) savePlugin(ctx context.Context, pl *Plugin) error {
 		b, _ := json.Marshal(pl.selected)
 		selected = string(b)
 	}
-	stamp := ""
-	if identity != "" {
-		stamp = entryStamp(pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run)
-	}
 	// source changes only with a run: a spawn from a candidate that passed its checks. A later hub
 	// start keeps a record of that source and name while the row has an instance or an intent
 	// (loadKept).
 	_, err := h.db.ExecContext(ctx, `UPDATE plugins SET desired = ?, instance_id = ?, session_id = ?, block_id = ?, child_pid = ?, child_start = ?, run = ?,
 		source = CASE WHEN ? != '' THEN ? ELSE source END,
-		entry_identity = CASE WHEN ? != '' THEN ? ELSE entry_identity END, entry_stamp = ?, selected_run = ? WHERE name = ?`,
-		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, identity, identity, stamp, selected, pl.Name)
+		entry_identity = CASE WHEN ? != '' THEN ? ELSE entry_identity END, selected_run = ? WHERE name = ?`,
+		pl.Desired, pl.InstanceID, pl.SessionID, pl.BlockID, pl.ChildPID, pl.ChildStart, run, pl.run.Source, pl.run.Source, identity, identity, selected, pl.Name)
 	return err
 }
 

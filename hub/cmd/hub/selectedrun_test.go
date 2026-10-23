@@ -402,7 +402,7 @@ func TestSelectedRunSubdir(t *testing.T) {
 	}
 }
 
-// U9: hub start clears every selected run before recovery. H selected A; OLD kept the column;
+// U9: hub start clears every selected run before recovery. The hub selected A and stopped;
 // H starts, and recovery refuses the current pin B: a later automatic start refuses, and A never
 // runs.
 func TestSelectedRunStartupClear(t *testing.T) {

@@ -70,3 +70,27 @@ func TestRetireSchemaOnANewDatabase(t *testing.T) {
 		t.Fatal("the UI schema creates ui_tabs.rev_known")
 	}
 }
+
+// A hub.db with plugins.entry_stamp (the rollback guard) loses the column at open; a new hub.db
+// never has it.
+func TestRetireSchemaDropsEntryStamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.db")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if columnExists(t, db.DB, "plugins", "entry_stamp") {
+		t.Fatal("a new hub.db has plugins.entry_stamp")
+	}
+	if _, err := db.Exec(`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if db, err = openDB(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if columnExists(t, db.DB, "plugins", "entry_stamp") {
+		t.Fatal("plugins.entry_stamp stays after the open")
+	}
+}
