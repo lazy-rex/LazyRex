@@ -520,13 +520,14 @@ func (h *Hub) identityList(ctx context.Context, args map[string]any) (any, error
 }
 
 // identityChanged mirrors the store into memory, then wakes the notices (a new identity can have a
-// pending notice) and the views that list agents. Call it after a commit, never inside a transaction.
+// pending notice) and the views that list agents or workers (a worker shows its pane's identity).
+// Call it after a commit, never inside a transaction.
 func (h *Hub) identityChanged(ctx context.Context) {
 	if err := h.identitySync(ctx); err != nil {
 		log.Printf("identity sync: %v", err)
 	}
 	h.kickNotices()
-	h.changed("agents")
+	h.changed("agents", "workers")
 }
 
 // identitySync rebuilds h.idents and h.aliases from the store. A current identity is bound to its
