@@ -534,6 +534,18 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 		// A reopen (reopen.go) owns its tab while its row is active: this pass opens no view for it and
 		// closes neither of its views. The row closes the old view; its end kicks a normal pass.
 		reserved := h.reservedTabs(ctx, plugin)
+		// A view in a session that is not its tab's target closes (closeMoved) before any group
+		// opens a view: its tab opens again in its target session once its pane is closed. The
+		// target can be another group, so a failed close blocks the tab in every group.
+		movedTab := map[string]bool{} // tabs whose moved view's pane is not closed yet: no new view
+		for _, g := range groups {
+			for _, v := range g.views {
+				if v.Session != "" && v.Session != g.sess && !h.closeMoved(ctx, v) {
+					movedTab[v.Tab] = true
+					h.retryLater() // a failed close needs no other event to go on
+				}
+			}
+		}
 		for _, g := range groups {
 			sess, tabs, views, inApp := g.sess, g.tabs, g.views, g.sess == appSess
 			blocks, err := h.blocksIn(ctx, sess)
@@ -546,18 +558,11 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 				}
 			}
 
-			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone. A view in a
-			// session that is not its tab's target closes (closeMoved): its tab opens again here once
-			// its pane is closed.
+			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone.
 			byTab := map[string]*view{}
-			movedTab := map[string]bool{} // tabs whose moved view's pane is not closed yet: no new view
 			for _, v := range views {
 				if v.Session != "" && v.Session != sess {
-					if !h.closeMoved(ctx, v) {
-						movedTab[v.Tab] = true
-						h.retryLater() // a failed close needs no other event to go on
-					}
-					continue
+					continue // a moved view: closed above
 				}
 				if r := reserved[v.Tab]; r != nil {
 					if v.ID == r.New {

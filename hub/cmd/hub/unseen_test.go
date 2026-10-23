@@ -199,3 +199,38 @@ func TestMovedViewClosesItsPaneFirst(t *testing.T) {
 		t.Fatalf("after the close: the row is %s by %s, events %v, closed panes %v", s, by, e, x.closed)
 	}
 }
+
+// A failed close of a moved view's pane blocks its tab in every group of the pass: the tab's
+// target session is another group than the old view's (codex-25's probe).
+func TestMovedViewBlocksItsTargetGroup(t *testing.T) {
+	h, x, fr := reopenTestHub(t)
+	h.ui.labeled = map[string]string{}
+	mustExec(t, h, homeSchema)
+	mustExec(t, h, `INSERT INTO ui_sessions (plugin, session_id) VALUES (?, 's')`, uiSessionKey)
+	mustExec(t, h, `UPDATE views SET session_id = 'former-home', status = 'exited', attachment = '', client_id = '' WHERE view_id = 'old'`)
+	mustExec(t, h, `UPDATE ui_tabs SET session_id = 'session:01a15601-5fca-744d-9590-fe16fd20a936' WHERE plugin = 'p' AND tab = 'main'`)
+	fr.mu.Lock()
+	fr.other = func(m string, p json.RawMessage) (any, string) {
+		switch m {
+		case "block.close":
+			return nil, "internal"
+		case "session.new_window":
+			return map[string]any{"window_id": "w-new", "block_ids": []string{"b-new"}}, ""
+		}
+		return x.answer(m, p)
+	}
+	fr.mu.Unlock()
+	if _, err := h.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := h.db.QueryRow(`SELECT count(*) FROM views WHERE plugin = 'p' AND tab = 'main' AND view_id != 'old' AND status != 'closed'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("a failed close of the old pane opened %d new views in the target group", n)
+	}
+	if s, _, _ := viewStatus(h, "old"); s == "closed" {
+		t.Fatal("a failed pane close closed the old row")
+	}
+}
