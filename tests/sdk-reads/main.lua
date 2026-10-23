@@ -34,3 +34,11 @@ local function caught(raw)
 end
 app.panel('Caught DB', function() return caught(false) end, {landing = false})
 app.panel('Caught Raw', function() return caught(true) end, {landing = false})
+
+-- Covered hub reads in a render: the SDK sends the render ID through the hub's declared argument
+-- schemas, and a render that read only covered reads stays tracked.
+app.panel('Hub Reads', function()
+  app.hub('hub.workers')
+  app.hub('hub.profiles')
+  return {app.ui.text('reads', 'ok')}
+end, {landing = false})

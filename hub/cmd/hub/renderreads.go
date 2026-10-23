@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -52,6 +53,26 @@ var coveredReads = map[string][]string{
 	"hub.agents.resolve": {"agents"},
 	"hub.workers":        {"workers"},
 	"hub.profiles":       {"profiles", "workers"}, // its running counts come from the spawns
+}
+
+// withRenderArg returns a copy of a declared action whose args schema also has the property
+// "render" (a string): the SDK sends the render ID with a covered read, and Rex refuses an
+// argument that a strict schema does not declare. The shared declaration does not change.
+func withRenderArg(a map[string]any) map[string]any {
+	args, ok := a["args"].(map[string]any)
+	if !ok {
+		return a
+	}
+	props, _ := args["properties"].(map[string]any)
+	out, outArgs := maps.Clone(a), maps.Clone(args)
+	outProps := maps.Clone(props)
+	if outProps == nil {
+		outProps = map[string]any{}
+	}
+	outProps["render"] = map[string]any{"type": "string", "description": "The render ID of view.render. The SDK sends it in a render."}
+	outArgs["properties"] = outProps
+	out["args"] = outArgs
+	return out
 }
 
 // newRenderID returns a render ID: 128 random bits, so a closed ID is never made again.

@@ -298,3 +298,60 @@ func TestCoveredReadEachAction(t *testing.T) {
 		}
 	}
 }
+
+// renderArgAccepted reports whether a declared action accepts {"render": "r-..."} as Rex checks
+// it: an action without an args schema takes any argument; a strict schema (additionalProperties
+// false) takes only a declared property, and a declared render must be a string.
+func renderArgAccepted(a map[string]any) bool {
+	args, ok := a["args"].(map[string]any)
+	if !ok {
+		return true
+	}
+	props, _ := args["properties"].(map[string]any)
+	if p, ok := props["render"].(map[string]any); ok {
+		return p["type"] == "string"
+	}
+	return args["additionalProperties"] != false
+}
+
+// The plugin face of each covered read and of hub.sql.query accepts the render ID that the SDK
+// sends in a render (the Worktrees suite found hub.workers and hub.profiles refused by Rex). The
+// agent face does not offer render, and the shared declarations stay without it.
+func TestCoveredReadsAcceptRender(t *testing.T) {
+	declared := map[string]map[string]any{}
+	for _, a := range hubClientActions(false) {
+		declared[a["name"].(string)] = a
+	}
+	names := []string{"hub.sql.query"}
+	for a := range coveredReads {
+		names = append(names, a)
+	}
+	for _, name := range names {
+		a, ok := declared[name]
+		if !ok {
+			t.Errorf("%s: the plugin face does not declare it", name)
+			continue
+		}
+		if !renderArgAccepted(a) {
+			t.Errorf("%s: the plugin face refuses render: %v", name, a["args"])
+		}
+	}
+	for _, a := range hubToolActions {
+		props, _ := a["args"].(map[string]any)["properties"].(map[string]any)
+		if _, ok := props["render"]; ok {
+			t.Errorf("%s: the shared declaration has render", a["name"])
+		}
+		if !agentHubActions[a["name"].(string)] {
+			continue
+		}
+		props, _ = agentFaceAction(a)["args"].(map[string]any)["properties"].(map[string]any)
+		if _, ok := props["render"]; ok {
+			t.Errorf("%s: the agent face offers render", a["name"])
+		}
+	}
+	for _, a := range agentListActions {
+		if renderArgAccepted(a) {
+			t.Errorf("%s: the agent face accepts render", a["name"])
+		}
+	}
+}

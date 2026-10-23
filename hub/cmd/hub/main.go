@@ -305,6 +305,28 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.prompts", "hub.prompt.answer",
 	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part"}
 
+// hubClientActions are the actions that the hub declares on its own client (the plugin face): its
+// own actions, hubToolActions and, in test mode, the test actions. A covered read takes the render
+// ID as well (withRenderArg); the agent face declares hubToolActions without it (agentKeymap).
+func hubClientActions(test bool) []map[string]any {
+	var actions []map[string]any
+	for _, name := range hubActionNames {
+		actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
+	}
+	for _, a := range hubToolActions {
+		if coveredReads[a["name"].(string)] != nil {
+			a = withRenderArg(a)
+		}
+		actions = append(actions, a)
+	}
+	if test {
+		for _, name := range testActions {
+			actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
+		}
+	}
+	return actions
+}
+
 // installedRex is the CLI inside the Rex app bundle (build 1203 layout). A Rex app update moved it
 // from Helpers/Rex Server.app, so panes started before the update can have a stale PATH entry.
 const installedRex = "/Applications/Rex Beta.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex"
@@ -558,17 +580,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		h.sql.beforeBegin = h.testBeforeSQLBegin
 	}
 
-	var actions []map[string]any
-	for _, name := range hubActionNames {
-		actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
-	}
-	actions = append(actions, hubToolActions...)
-	if h.test != nil {
-		for _, name := range testActions {
-			actions = append(actions, map[string]any{"name": name, "kind": "client", "title": name})
-		}
-	}
-	if err := r.Call(ctx, "client.keymap", map[string]any{"actions": actions}, nil); err != nil {
+	if err := r.Call(ctx, "client.keymap", map[string]any{"actions": hubClientActions(h.test != nil)}, nil); err != nil {
 		return nil, err
 	}
 	// Set the label after the actions exist: clients find the hub by this label and call at once.

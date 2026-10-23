@@ -81,3 +81,17 @@ test('caught errors before hub dispatch give broad refresh in both SDK query pat
     expect(count(v).sql_tracked, 'a later complete render is tracked again').to_be(true)
   end
 end)
+
+test('hub.workers and hub.profiles in a render pass the declared schemas and keep the render tracked', function()
+  local p = pane('rr-hub-reads')
+  user:command('hub_reads', p)
+  local v = user:view('/panels/hub_reads', 'rr', p.session)
+  v:render()
+  settle()
+  wait('the panel shows its reads', function() local t = (v:get() or {}).tree; return t and node(t, 'reads') and node(t, 'reads').text == 'ok' end, 10)
+  expect(count(v).sql_tracked, 'a render with covered reads only is tracked').to_be(true)
+  local before = count(v).attempts
+  alice:call('rr.add', {t = 'a'})
+  settle()
+  expect(count(v).attempts, 'a table commit does not mark it').to_be(before)
+end)

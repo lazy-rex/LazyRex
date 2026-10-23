@@ -217,6 +217,9 @@ tracked read of its tables. Built: `coveredReads` and `renderHubRead` in renderr
   instance untracks, as for a query. A `hub.workers` read in which a Rex read failed (a pane's
   process or its program status) also untracks the render: the hub knows that the list is
   incomplete.
+- The plugin face of a covered read accepts `render` (a string) in addition to its agent-face
+  arguments. The agent face does not accept `render`. Built: `hubClientActions` and
+  `withRenderArg`; `TestCoveredReadsAcceptRender` checks each covered read and `hub.sql.query`.
 - A good, tracked render installs its change names beside its tables. Then `changed(name)` marks
   the view when its names hold that name, whatever `deps.changes` says. A render that read change
   names and no table gets an empty table set: after the render finishes, a commit to a table does
