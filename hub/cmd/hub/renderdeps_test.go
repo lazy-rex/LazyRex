@@ -164,7 +164,7 @@ func fmtList(name string, l []string) string {
 // the next pass skipped the first render of the attachment.
 func TestRenderPruneKeepsALateAttach(t *testing.T) {
 	h := testUIHub(t)
-	for _, m := range []string{pairSchema, `ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`} {
+	for _, m := range []string{`ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`} {
 		if _, err := h.db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			t.Fatal(err)
 		}

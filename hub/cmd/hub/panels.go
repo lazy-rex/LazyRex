@@ -529,8 +529,6 @@ func (h *Hub) spawnSlot(ctx context.Context, r *slotRow) error {
 	}
 	if oldBlock != "" {
 		args["anchor_block_id"] = oldBlock // the new pane takes the old pane's area
-	} else if tb := h.pairAnchor(ctx, r.Window); tb != "" {
-		args["anchor_block_id"] = tb // beside the history; wrapPair then puts the composer under it (pair.go)
 	} else {
 		args["window_id"] = r.Window
 	}

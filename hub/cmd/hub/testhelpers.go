@@ -231,7 +231,6 @@ func testViewMain(argv []string) int {
 	// The hub passes its endpoint as the renderer does (viewCommand); the lab pane's REX_SERVER must
 	// be the same server.
 	server := fs.String("server", "", "the hub's Rex server; it must equal REX_SERVER")
-	fs.Bool("transcript", false, "transcript role (pair.go); the test renderer takes the composer role only")
 	real := fs.Bool("real-server", false, "refused")
 	hold := fs.String("hold", "", "a file; while it names this route, the renderer waits before each subscribe (lab tests)")
 	if err := fs.Parse(argv); err != nil {
@@ -248,7 +247,7 @@ func testViewMain(argv []string) int {
 	log.SetPrefix("testview " + *viewID + " ")
 	ctx := context.Background()
 	actions := []map[string]any{}
-	for _, n := range []string{"view.changed", "view.reload", "view.retire", "view.close_request", "view.release", "view.resume"} {
+	for _, n := range []string{"view.changed", "view.reload", "view.retire", "view.release", "view.resume"} {
 		actions = append(actions, clientAction(n, n, nil))
 	}
 	for _, n := range []string{"testview.status", "testview.get", "testview.action", "testview.draft", "testview.send", "testview.operation",
@@ -368,7 +367,7 @@ func testViewMain(argv []string) int {
 				c.reply(p.CallID, map[string]any{}, nil)
 				self, _ := os.Executable()
 				syscall.Exec(self, os.Args, os.Environ()) // like the renderer: the same process, a new attachment
-			case "view.retire", "view.close_request":
+			case "view.retire":
 				c.reply(p.CallID, map[string]any{"status": "accepted"}, nil)
 				if p.Action == "view.retire" && readHold(*hold, fs.Arg(1)) == "retire-wait" {
 					// Unsaved text, as the real renderer has: it leaves once the hold file stops

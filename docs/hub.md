@@ -67,7 +67,6 @@ Transport failures remain uncertain and use reconnect backoff.
 `hub.view.subscribe` and `hub.view.get` return `{schema_version: 1, view_id, route, revision, tree}`.
 A view that a reopen made also has `open`: the args of the reopen ("Reopen", below).
 `open` may be absent or `null`. When it is an object, its only allowed key is the optional boolean `full`; an absent `full` is `false`, and another key or a value that is not a boolean is invalid (view/schema.go). Without `open`, or with `full` false, the renderer opens a thread with the newest 500 messages.
-A snapshot can also have `layout`, the hub's effective layout for the view: `"transcript"` when a transcript pane above the view prints the history (a pair). Otherwise `layout` is absent or empty.
 `revision` is a decimal string. It increases within the current `hub_generation`.
 The renderer compares revisions numerically, without converting them to floating-point values.
 A hub restart requires a new attachment, subscription, and snapshot.
@@ -125,8 +124,7 @@ The other triggers do not use the declaration:
   change.
 - The open views of one tab: a navigation to that tab.
 - Only that view: `hub.ui.invalidate {routes}` (views whose route equals one of 1 to 64 non-empty
-  strings), a new attachment, a view without a snapshot, a pair layout change, a transcript change,
-  the end of one of its operations (which also sends `view.changed` when the tree is unchanged),
+  strings), a new attachment, a view without a snapshot, the end of one of its operations (which also sends `view.changed` when the tree is unchanged),
   and `hub.test.view.render`. Before render dependencies, each trigger in this list except the
   first, and a navigation, rendered every view of the plugin.
 
@@ -330,8 +328,8 @@ The root may also have `menu: true`: the tree is a form that a menu opened, so C
 The renderer decides its mode once per process, from the first tree with content (view/mode.go):
 
 - Neutral: before that tree. Loading and error nodes do not decide. The renderer draws inline and prints nothing.
-- Thread: the first tree has a history node, no list or form node, and a `layout` other than `"transcript"`. The pane stays on the primary screen for the life of the process, and the renderer reports no mouse. Messages print once into the scrollback; the live region below them holds the other nodes and the composer.
-- Alt: the first tree has any other content, a history node beside a list or form (a view defect, shown once as a status note), or `layout` `"transcript"` (the paired composer). The alt screen, as before thread mode.
+- Thread: the first tree has a history node and no list or form node. The pane stays on the primary screen for the life of the process, and the renderer reports no mouse. Messages print once into the scrollback; the live region below them holds the other nodes and the composer.
+- Alt: the first tree has any other content, or a history node beside a list or form (a view defect, shown once as a status note). The alt screen, as before thread mode.
 
 A later tree does not change the mode. A new renderer process (a reload) decides again and clears its pane once at the start.
 
@@ -663,7 +661,7 @@ Each plugin row records the session of its instance (`plugins.session_id`, and `
   - `tag` is what `latest` resolved to, only for `ref_kind` `latest`.
   - `commit` is the exact pin, for every kind.
   - A UI that shows "the version" shows `tag` when present, else `ref` for kind `tag`, else the short commit.
-- The admin guard (`hub.admin.*`, and `hub.plugins.reload` from a caller that is not a registered instance) refuses a caller in an agent or plugin pane. It walks the caller's process ancestry from the Rex-attested pid. Three outcomes: a match (refused), a complete walk to pid 1 without a match (allowed: an operator), and an incomplete walk (refused): the caller has no pid (a missing pid, or a TCP caller: TCP has no pid), a process information read failed, a process in the chain ended, a parent is 0 before pid 1, or the walk passed 64 processes. Only a walk that reaches pid 1 is complete. Text: `cannot check the caller's process ancestry: <error>; admin actions need a verified caller`. A match found before the walk fails still counts. The guard checks the call, not the keys in a view: an action that a view offers runs from its renderer pane (residual risk: "Restart form"). Checks that allow only on a match (registration, pair and view ownership, `hub.identify`) treat an incomplete walk as no match, so they refuse too.
+- The admin guard (`hub.admin.*`, and `hub.plugins.reload` from a caller that is not a registered instance) refuses a caller in an agent or plugin pane. It walks the caller's process ancestry from the Rex-attested pid. Three outcomes: a match (refused), a complete walk to pid 1 without a match (allowed: an operator), and an incomplete walk (refused): the caller has no pid (a missing pid, or a TCP caller: TCP has no pid), a process information read failed, a process in the chain ended, a parent is 0 before pid 1, or the walk passed 64 processes. Only a walk that reaches pid 1 is complete. Text: `cannot check the caller's process ancestry: <error>; admin actions need a verified caller`. A match found before the walk fails still counts. The guard checks the call, not the keys in a view: an action that a view offers runs from its renderer pane (residual risk: "Restart form"). Checks that allow only on a match (registration, view ownership, `hub.identify`) treat an incomplete walk as no match, so they refuse too.
 - `hub.admin.sql_return {plugin}` takes a stopped plugin back from hub.sql to its store version: it moves the plugin's SQL file aside and gives the notice path back to `hub.store.batch` (sql.md, section 11). The admin guard applies.
 - `hub.admin.shutdown` stops the hub, as SIGTERM does (see "Stop and exit status"). It takes no arguments: any field is refused (`hub.admin.shutdown takes no arguments`). The admin guard applies. The hub replies `{"stopping": true}` first, then starts the stop. A reply that cannot be delivered stops nothing: the caller sees an error or a timeout, and the hub still runs, so a retry is correct. Plugins stay in their blocks.
 - `hub.admin.relaunch {expect_exec}` stops the hub as `hub.admin.shutdown` does, and the hub then exits 4, so its restart wrapper execs itself (see "Relaunch" in "Restart wrapper"). The admin guard applies. The checks, in order:
@@ -714,8 +712,7 @@ The new `hub.json` names:
 - the renderer beside the binary;
 - the agent `user`;
 - the profiles file;
-- `lazyrex_palette.lua` beside the Rex config file (`REX_CONFIG`, else `$XDG_CONFIG_HOME/rex/init.lua`, else `~/.config/rex/init.lua`);
-- `transcript: true`.
+- `lazyrex_palette.lua` beside the Rex config file (`REX_CONFIG`, else `$XDG_CONFIG_HOME/rex/init.lua`, else `~/.config/rex/init.lua`).
 
 Its plugins are the home plugin (`github:lazy-rex/LazyRex/plugins/lazyrex`) and Messaging, Profiles, Templates, Tunnels and Worktrees. Each one uses its repository's highest `vX.Y.Z` tag, which setup reads with `git ls-remote` (the coordinator, 2026-10-22). A repository without such a tag is left out and reported. Setup never falls back to `main`. When the hub supports `@latest`, setup writes `@latest`. If setup cannot read the tags, `hub.json` is blocked.
 
@@ -1293,11 +1290,10 @@ The 4.3 goal (timeout audit, 2026-10-22): every `client.perform` that the hub se
 | `hub.prompt` (`promptpush.go`) | 5 s (`timeout_ms` 3000) | The agent stays dirty, and a later pass sends its state current then. That can be the same state again. The plugin's apply rule ignores a copy whose rev is not above the applied rev ("Prompt pushes"). | bounded |
 | `view.release` (`panels.go`, `askRelease`) | 6 s | The replacement slot ends (cancelled), and the hub sends `view.resume`. The renderer answers a late release of an ended replacement with `cancelled`. | bounded |
 | `view.resume` (`panels.go`, `resumeOldSync`) | 6 s | Only the event (`slot_resume` with the error). No other resume: a renderer that reattaches learns the state from `hub.view.attach`. | bounded |
-| `view.changed` (`viewnotify.go`) | no hub deadline, by design | `timeout_ms` is the only bound. At most one request is outstanding for each view, role and attachment, and a close or a new attachment cancels it. | by design |
+| `view.changed` (`viewnotify.go`) | no hub deadline, by design | `timeout_ms` is the only bound. At most one request is outstanding for each view and attachment, and a close or a new attachment cancels it. | by design |
 | The view worker's calls to a plugin (`viewsvc.go`, `callPlugin`) | no hub deadline, by design | The worker is serial for each plugin, and `runOps` retries an unknown outcome. With a deadline, each retry would add one more queued call to a plugin that does not take its queue. Without one, one call waits, and the plugin is the cause. | by design |
 | `view.reload` (`ui.go`, `uiReload`) | `timeout_ms + performMargin`, 7 s | Only the event (`view_reload` with the error). No retry, as before. | bounded |
 | `view.retire` (`ui.go`, `retireLegacy`) | `timeout_ms + performMargin`, 7 s | This hub process sends no other `view.retire` to that attachment. A new attachment gets one, and so can a new hub process (the mark is in memory). A failure that Rex reports is retried after 10 s, as before. | bounded |
-| `view.close_request` (`pair.go`, `requestClose`) | `timeout_ms + performMargin`, 7 s, for each try | No other try: the event (`view_close_requested`) has the error. A failure that Rex reports is tried again while the close is pending and the attachment is current (three tries), as before. While the same close is still pending, a repeated request is harmless: the renderer only marks its close pending. After a navigation cancelled the close, a late request can still close the composer: a known defect (docs/roadmap.md, row 15). | bounded |
 | App calls: `pane.insert_path`, `session.select` (`appaction.go`, `appPerform`; `ui.go`, `selectOnApps`) | `timeout_ms + performMargin`, 7 s | The caller gets `outcome_unknown`: "the app did not answer within 7 s; the request may still apply". The hub sends it once, and a late delivery can still run it (open the browser, switch the session). No Remote Control state is recorded. | bounded |
 | `hub.forward` (`agentface.go`, `agentDispatch`) | `timeout_ms + performMargin`, 12 s | The agent gets `outcome_unknown`: "the plugin did not answer within 12 s; the request may still apply". The hub sends it once. That forward no longer counts toward the on_behalf rule, but a late delivery can act while another forward of the same agent to the same plugin client is in flight ("on_behalf"). | bounded |
 
@@ -1395,7 +1391,7 @@ is `"split"` (the default: a right split of the window, ratio 0.55) or `"layer"`
 floating layer in the same window, bounds `[0.15, 0.15, 0.7, 0.6]`, with focus). Any other value
 stops the config load. Both modes use the same block, label, rows and recovery; only the Rex call
 differs (`slotPane`). A replacement in layer mode opens a new layer, then closes the old pane, and
-its layer goes with it. A transcript pair inside a layer is checked in that layer (`wrapPair`).
+its layer goes with it.
 The key goes away when the user decides. Tests: `TestUISlotConfig`, `TestSlotPaneLayer`,
 `TestSlotLayerLab` (`HARNESS_LAB=1`).
 

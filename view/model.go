@@ -55,7 +55,6 @@ func (r row) rowControls() []control {
 }
 
 type model struct {
-	composerOnly                           bool // a pair's composer (Snapshot.Layout): the transcript pane shows the messages
 	selectList                             *selectList
 	browse                                 *nativeBrowse
 	browseSequence                         uint64
@@ -272,11 +271,6 @@ func (m *model) apply(s Snapshot) {
 				delete(m.editors, id)
 			}
 		}
-	}
-	if only := s.Layout == "transcript"; only != m.composerOnly {
-		// The hub paired or unpaired the view in place: the history rows come or go.
-		m.composerOnly = only
-		follow, anchor = true, ""
 	}
 	m.snapshot = s
 	m.decide()
@@ -707,11 +701,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case retireRequested:
 		m.retirePending = true
-		return m, nil
-	case closeRequested:
-		if !m.isPanel() && !m.isForm() {
-			m.closePending = true
-		}
 		return m, nil
 	case reloadRequested:
 		m.reloadPending = true
