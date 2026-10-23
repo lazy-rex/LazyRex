@@ -231,7 +231,6 @@ func (m *manifest) checkPluginGraph(home *testDep) error {
 type testOpts struct {
 	fileArgs                              map[string]map[string]string // test.files args of the file that runs now
 	filePrompts                           filePrompts                  // test.files prompts of the file that runs now (promptGrant)
-	fileHome                              string                       // the hub config home of the lab (a Go lab test sets it)
 	dir, lazyrex, self, rexBin, run, file string
 	home                                  *testDep // the home plugin; nil when it is the plugin under test
 	keep, verbose                         bool
@@ -559,9 +558,6 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	if o.m.Test.UISlot != "" {
 		cfg["ui_slot"] = o.m.Test.UISlot
 	}
-	if o.fileHome != "" {
-		cfg["home"] = o.fileHome
-	}
 	b, _ := json.MarshalIndent(cfg, "", " ")
 	path := filepath.Join(l.dir, "hub.json")
 	return path, os.WriteFile(path, b, 0o600)
@@ -654,7 +650,7 @@ func (o *testOpts) startHub(ctx context.Context, l *lab) error {
 // runFile runs one test file in its own lab and hub.
 func (o *testOpts) runFile(ctx context.Context, file string, parity bool) *fileResult {
 	res := &fileResult{name: strings.TrimPrefix(file, o.dir+"/"), parity: parity}
-	o.fileArgs, o.filePrompts, o.fileHome = nil, filePrompts{}, ""
+	o.fileArgs, o.filePrompts = nil, filePrompts{}
 	if !parity {
 		f := o.m.Test.Files[filepath.Base(file)]
 		o.fileArgs = f.Args

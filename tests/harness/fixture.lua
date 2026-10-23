@@ -269,9 +269,6 @@ end
 -- rex-protocol.md, "The hub has one request queue". /lazy/slow waits 2 s first; /nope/* declares
 -- nothing. view.open counts its calls in the record opens.
 local tabs = {{key = 'home', title = 'Fixture home', route = '/home'}}
--- The plugin arg tabs = none declares no tabs (a home plugin with only panels and forms;
--- TestHomeLegacyViewRetiresLab).
-if rex.args.tabs == 'none' then tabs = {} end
 
 local function view_open(args)
   local opens = get('opens') or 0

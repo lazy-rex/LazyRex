@@ -502,8 +502,7 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	home := h.homePlugin()
-	// The LazyRex session exists before any plugin declares a tab: it is where Home opens.
+	// The LazyRex session exists before any plugin declares a tab.
 	appSess, err := h.appSession(ctx, uiSessionKey, uiSessionLabel)
 	if err != nil {
 		return false, err
@@ -599,9 +598,7 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 
 			// 2. Close views whose tab is no longer wanted, or whose route changed.
 			want := map[string]tab{}
-			declared := map[string]bool{}
 			for _, t := range tabs {
-				declared[t.Key] = true
 				if !t.Suppressed {
 					want[t.Key] = t
 				}
@@ -609,16 +606,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// A layout change converts the view in place: the composer stays, and only the
 			// transcript pane comes or goes (an unsaved draft survives a config change).
 			for key, v := range byTab {
-				if plugin == home && !declared[key] {
-					// The home plugin dropped the tab (the home tab became a panel): the view retires
-					// through the legacy gate, so an unsaved draft is never discarded. The missing
-					// declaration is durable, so each pass asks again, also after a restart.
-					if h.retireLegacy(ctx, v) {
-						h.retryLater()
-					}
-					delete(byTab, key)
-					continue
-				}
 				t, ok := want[key]
 				if !ok || t.Route != v.Route {
 					h.closeView(ctx, v, "undeclared")
