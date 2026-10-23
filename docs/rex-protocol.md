@@ -221,6 +221,24 @@ From `rex server run --help` and `rex login-server --help` (this build):
 - `rex login-server` runs as root. It maps callers (Unix credentials or tailnet identity) to OS accounts and proxies them to per-account Rex servers. It does not add another authenticated network transport: on plain TCP it also admits only anonymous callers.
 - So without a tailnet, a remote browser needs a LazyRex component that authenticates it.
 
+## A lab server reached from another host (two-host federation check)
+
+Observed 2026-10-23: a Mac lab server on Rex 0.0.1792158932-g88fd41 and a Linux lab server on Rex
+0.0.1792593189-g3f4a0a. Each host runs OS-level Tailscale.
+
+- Each lab server had an extra listener on its own host's tailnet address:
+  `--extra-listen http://<tailnet IP>:<port> --allow-anonymous`. The other host reached it with
+  `rex -S http://<tailnet IP>:<port>`, admitted as anonymous. No real Rex server was in the path.
+- `rex -S <that address> whoami --json` gave the lab server's own `pid` and `instance_id`, not those
+  of the host's real server. Check this before a lab hub uses the address as a peer `server`.
+- A lab hub on each host, each with the other lab server as its peer, exchanged Messaging messages
+  both ways (`claude:x@a` to `claude:y@b` and the reply with `reply_to`). `hub.peer.status` on both
+  hubs: `state` up, `outbox` 0, no `last_error`. So two different Rex builds federate.
+- Anonymous TCP gives every caller full access, so bind the tailnet address only (never `0.0.0.0`),
+  and stop the lab server after the check. Its listener goes with the server.
+- A hub that starts before its peer's hub logs one failed pull ("client target `lazyrex-hub` not
+  found") and then pulls normally.
+
 ## Client RPC: `client.perform`
 
 From the API reference, plus a lab test on Rex 0.0.1792088193-g7a93ec.
