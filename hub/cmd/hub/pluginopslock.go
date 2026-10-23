@@ -190,7 +190,7 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	next.Plugins[t.Source] = &pin
 	// The graph check runs also when the pin is written: the managed entries can have changed, and
 	// another writer's pin had no check of this op's entry.
-	if msg, err := h.lockRefusal(op, t, lockFile, lock, next); err != nil || msg != "" {
+	if msg, err := h.lockRefusal(op, t, lockFile, lock, next, "the new lock"); err != nil || msg != "" {
 		if err != nil {
 			msg = err.Error()
 		}
@@ -216,9 +216,9 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 }
 
 // lockRefusal runs the graph check twice: with the current lock and managed entries, and with the
-// new lock and the managed entries after the op. A refusal that only the second check has is the
-// op's: its text is the result.
-func (h *Hub) lockRefusal(op *pluginOp, t opResolved, lockFile string, lock, next *pluginLock) (string, error) {
+// lock next and the managed entries after the op. A refusal that only the second check has is the
+// op's: its text, which names what (the new lock, or the op), is the result.
+func (h *Hub) lockRefusal(op *pluginOp, t opResolved, lockFile string, lock, next *pluginLock, what string) (string, error) {
 	_, list, err := readManaged(h.cfg.managedPath)
 	if err != nil {
 		return "", fmt.Errorf("managed plugin file %s: %v", h.cfg.managedPath, err)
@@ -239,7 +239,7 @@ func (h *Hub) lockRefusal(op *pluginOp, t opResolved, lockFile string, lock, nex
 	sort.Strings(idents)
 	for _, ident := range idents {
 		if before[ident] == nil {
-			return fmt.Sprintf("the new lock refuses %s: %v", ident, refused[ident]), nil
+			return fmt.Sprintf("%s refuses %s: %v", what, ident, refused[ident]), nil
 		}
 	}
 	return "", nil
