@@ -570,8 +570,10 @@ func (h *Hub) requestClose(plugin, viewID, client, attachment string) {
 			"args": map[string]any{"view_id": viewID, "attachment": attachment}, "timeout_ms": 5000}, nil)
 		cancel()
 		// After the hub's own cut the outcome is unknown, and Rex can still deliver the request: no
-		// other try. A failure that Rex reports is tried again. A repeated request is harmless: the
-		// renderer only marks its close pending (closeRequested).
+		// other try. A failure that Rex reports is tried again. While the same close is still
+		// pending, a repeated request is harmless: the renderer only marks its close pending
+		// (closeRequested). After a navigation cancelled the close, a late request is the known
+		// defect in docs/roadmap.md (row 15).
 		if err == nil || errors.Is(err, context.DeadlineExceeded) || h.composerAttachment(ctx, viewID) != attachment {
 			break
 		}
