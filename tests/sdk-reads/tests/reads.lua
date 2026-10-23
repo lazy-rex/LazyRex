@@ -94,4 +94,15 @@ test('hub.workers and hub.profiles in a render pass the declared schemas and kee
   alice:call('rr.add', {t = 'a'})
   settle()
   expect(count(v).attempts, 'a table commit does not mark it').to_be(before)
+  -- A spawn changes workers (and the running counts of hub.profiles): the view renders again.
+  local sh = alice:hub('hub.spawn', {profile = 'shell', key = 'rr-hub-reads-shell'})
+  wait('the shell runs', function()
+    for _, w in ipairs(alice:hub('hub.workers').workers or {}) do
+      if w.spawn_id == sh.spawn_id and w.state == 'running' then return true end
+    end
+  end, 20)
+  settle()
+  expect(count(v).attempts > before, 'a workers change renders it again').to_be(true)
+  expect(count(v).sql_tracked, 'still tracked after the workers change').to_be(true)
+  alice:hub('hub.stop', {spawn_id = sh.spawn_id})
 end)
