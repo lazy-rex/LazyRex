@@ -21,7 +21,8 @@ w end "$d"; exit 0
 
 local function flag(name) rex.exec{'sh', '-c', 'mkdir -p "$0" && touch "$0/$1"', flags, name} end
 
-local function worker(a, id) return a:hub('hub.workers', {spawn_id = id}).workers[1] end
+-- worker reads one worker through the agent face (a:call: the `lazyrex` client that agents use).
+local function worker(a, id) return a:call('hub.workers', {spawn_id = id}).workers[1] end
 
 local function count(v)
   for _, c in ipairs(renders()) do
@@ -56,8 +57,8 @@ test('identity_id and identity_seen follow real reports, a /clear, a hub restart
   expect(w.identity_seen, 'before any report').to_be(false)
 
   -- The agent face: render is not an argument there; not_found for an unknown spawn.
-  expect_error(function() alice:hub('hub.workers', {spawn_id = s.spawn_id, render = 'x'}) end, 'render')
-  expect_error(function() alice:hub('hub.workers', {spawn_id = 'spawn-none-' .. marker}) end, 'not_found')
+  expect_error(function() alice:call('hub.workers', {spawn_id = s.spawn_id, render = 'x'}) end, 'render')
+  expect_error(function() alice:call('hub.workers', {spawn_id = 'spawn-none-' .. marker}) end, 'not_found')
 
   -- The plugin face: a render reads the worker with its render ID.
   local v = user:open('lazy/workers-' .. s.spawn_id)
