@@ -674,6 +674,18 @@ local function check_command(spec)
 end
 local function part(s) s = tostring(s); return #s .. ':' .. s end
 
+-- json_decode is app.json.decode(text): the value of JSON text, nil for JSON null. rex.json.decode
+-- does not raise: invalid JSON gives nil and an error text, and JSON null gives nil alone (hub lead
+-- lab, Rex 0.0.1792158932-g88fd41). So it checks the error text, not the value, and fails with
+-- internal: the plugin wrote the text. The message quotes at most 80 bytes, cut at a UTF-8 character
+-- boundary, so the error reply stays valid UTF-8.
+local function json_decode(text)
+  if type(text) ~= 'string' then fail('internal', 'invalid JSON: app.json.decode takes text, not a ' .. type(text)) end
+  local value, err = rex.json.decode(text)
+  if err ~= nil then fail('internal', 'invalid JSON: ' .. tostring(err) .. '; text starts with ' .. text:sub(1, boundary(text, math.min(#text, 80)))) end
+  return value
+end
+
 -- M.plugin(name) answers the app. Call it once, in the main file. The SDK registers the plugin
 -- after the main file has run (rex.after 0): first the migrations, then the start functions, then
 -- client.keymap and hub.register.
@@ -683,7 +695,8 @@ function M.plugin(name)
   local args = rex.args or {}
   local app = {name = name, hub_id = assert(args.hub_client_id, 'hub_client_id is required (the hub starts the plugin)'),
     instance_id = assert(args.instance_id, 'instance_id is required'), session_id = args.plugin_session or rex.session_id,
-    args = {}, db = db, ui = {}, fail = fail, int = M.int, blob = M.blob, route = M.route}
+    args = {}, db = db, ui = {}, fail = fail, int = M.int, blob = M.blob, route = M.route,
+    json = {decode = json_decode}}
   for k, v in pairs(args) do
     if k ~= 'hub_client_id' and k ~= 'instance_id' and k ~= 'plugin_session' and k ~= 'lazyrex_sdk' and k ~= 'main' then app.args[k] = v end
   end

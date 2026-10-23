@@ -342,6 +342,7 @@ errors and the transaction rules above.
 | `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |
 | `app.refresh()` | Render the open views again, after a change of a value that a render did not read itself. |
 | `app.int(decimal)`, `app.blob(bytes)` | An exact 64-bit integer or a BLOB parameter. |
+| `app.json.decode(text)` | The value of JSON text that the plugin wrote (for example a JSON column), or nil for JSON `null`. Text that is not valid JSON, or a value that is not text, fails with `internal`; the message quotes up to 80 bytes of the text. Use it in place of `rex.json.decode`, which gives nil and an error text and does not raise. |
 | `app.args`, `app.dir` | The plugin arguments; the plugin directory. |
 | `app.registration` | The `hub.register` reply (for example `generation`). It is set before the start functions run. |
 

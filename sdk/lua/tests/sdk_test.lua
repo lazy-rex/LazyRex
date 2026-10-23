@@ -311,6 +311,53 @@ test('base64 round trip of every byte value', function()
   expect(sdk.base64('fo')).to_be('Zm8=')
 end)
 
+-- rex.json.decode does not raise: invalid JSON gives nil and an error text, JSON null gives nil
+-- alone (hub lead lab, Rex 0.0.1792158932-g88fd41). app.json.decode checks the error text.
+local DECODE = [[
+app.action('p.decode', {text = 'string'}, function(ctx, args)
+  local v = app.json.decode(args.text)
+  return {is_nil = v == nil, value = v}
+end)]]
+
+test('app.json.decode answers the value of valid JSON, and nil for JSON null', function()
+  local s = plugin(DECODE)
+  expect(s:agent('p.decode', {text = '{"a":[1,2],"b":"x"}'}).result.value).to_equal({a = {1, 2}, b = 'x'})
+  expect(s:agent('p.decode', {text = '"x"'}).result.value).to_be('x')
+  for _, text in ipairs({'null', ' null ', '\nnull\n'}) do
+    local r = s:agent('p.decode', {text = text})
+    expect(r.error, show(r)).to_be(nil)
+    expect(r.result.is_nil, text).to_be(true)
+  end
+end)
+
+test('app.json.decode fails with internal on text that is not valid JSON, and quotes its start', function()
+  local s = plugin(DECODE)
+  for _, text in ipairs({'{"a":', '', 'not json', 'nul', '[1,]'}) do
+    local r = s:agent('p.decode', {text = text})
+    expect(r.error and r.error.code, text).to_be('internal')
+    expect(r.error.message, text).to_be('invalid JSON: rex.json.decode: text is not valid JSON; text starts with ' .. text)
+  end
+end)
+
+test('app.json.decode quotes at most 80 bytes, cut at a UTF-8 character boundary', function()
+  local s = plugin(DECODE)
+  local long = '{"a":"' .. string.rep('x', 200)
+  local r = s:agent('p.decode', {text = long})
+  expect(r.error.message).to_be('invalid JSON: rex.json.decode: text is not valid JSON; text starts with ' .. long:sub(1, 80))
+  -- 'é' is 2 bytes, at bytes 80 and 81: the quote stops before it.
+  local split = string.rep('x', 79) .. 'é' .. '{'
+  r = s:agent('p.decode', {text = split})
+  expect(r.error.message).to_be('invalid JSON: rex.json.decode: text is not valid JSON; text starts with ' .. string.rep('x', 79))
+end)
+
+test('app.json.decode fails with internal on a value that is not text', function()
+  local s = plugin([[
+app.action('p.decode', {}, function() return {v = app.json.decode(42)} end)]])
+  local r = s:agent('p.decode', {})
+  expect(r.error and r.error.code).to_be('internal')
+  expect(r.error.message).to_be('invalid JSON: app.json.decode takes text, not a number')
+end)
+
 -- Panels ------------------------------------------------------------------------------------------
 
 test('a panel render reads outside a transaction, passes the render ID, and drops functions', function()
