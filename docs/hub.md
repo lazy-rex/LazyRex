@@ -303,7 +303,7 @@ An unknown node type produces an error at that node and disables its actions.
 | Node type | Additional fields | Behavior |
 |---|---|---|
 | `list` | `items: [{id, label, detail, action, icon, status}]` | Select one stable item ID. `icon` (optional) is one cell before the label; `status` (optional) is short text at the right edge. |
-| `history` | `messages: [{id, author, text, at}]`, `before`, `has_more`, `page_size`, `total`, `load_action` | Messages are oldest first. `before` is an opaque cursor or `null`. `total` is optional (below). |
+| `history` | `messages: [{id, author, text, at, own, fyi}]`, `before`, `has_more`, `page_size`, `total`, `load_action` | Messages are oldest first. `own` (optional boolean) marks a message from the viewer: the renderer shows "You" as its author. `fyi` (optional boolean) marks a message whose sender expects no reply: its header shows "no reply needed". `before` is an opaque cursor or `null`. `total` is optional (below). |
 | `composer` | `text`, `draft_revision`, `save_action`, `send_action` | The first snapshot supplies the saved draft. Later snapshots do not overwrite dirty local text. |
 | `form` | `fields: [{id, label, kind, value, required, options}]`, `submit_action` | Version 1 kinds are `text`, `multiline`, `boolean`, and `select`. Options have `value` and `label`. |
 | `widget` | `text`, `action` | Show a value and an optional action. |

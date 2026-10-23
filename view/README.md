@@ -81,7 +81,7 @@ The last frame before the exit is empty, on the screen that is active, also duri
 ### The clear at process start
 
 Every renderer process clears its pane once (cursor home, ESC[2J, ESC[3J), before Bubble Tea writes anything.
-This applies to thread mode and alt mode, because the mode is not decided at start (lead-tv-clear2).
+This applies to thread mode and alt mode, because the mode is not decided at start (thread view v1.2).
 A renderer restarted in the same pane (a reload, or a respawn after an output failure) would otherwise print the thread history a second time below the old copy.
 In a new pane, the clear removes nothing.
 If the clear's write fails, the process exits with status 1 before it starts Bubble Tea or connects to the hub.
@@ -111,7 +111,7 @@ The open runs once for each process:
 - A count line comes first: "N earlier messages. Thread Settings… > Show full history", where N is `total` minus the printed count. Without `total`, the line is "Earlier messages exist. …". A thread of 500 or fewer messages has no count line.
 - During the open, the notice row shows "Loading history…".
 
-The excluded set (lead-tv-excl):
+The excluded set (thread view v1.2):
 
 - The excluded set holds every message ID that the open saw but did not print. Full mode has no excluded IDs.
 - The set belongs to the process. A reattach does not clear it, and it is separate from the printed ledger.
@@ -123,7 +123,7 @@ The gap fill:
 - A gap is a page with `has_more` that holds no printed, queued or excluded ID (for example, after a reattach that missed many messages).
 - The renderer fetches older pages until a page holds a printed ID. It then prints the messages after the last printed ID in page order (the anchor), oldest first, not late. The fill never prints a fetched message before the anchor.
 - Excluded IDs are never an anchor.
-- When no page holds a printed ID, the fill has fetched the whole thread. It prints every fetched message that is not printed or excluded, oldest first, not late (lead-tv-noanchor).
+- When no page holds a printed ID, the fill has fetched the whole thread. It prints every fetched message that is not printed or excluded, oldest first, not late (thread view v1.2).
 
 Page rules:
 
