@@ -144,10 +144,6 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 	if err != nil {
 		return nil, fmt.Errorf("hub.peer.plugins on %s: the pin document: %v", l.cfg.Name, err)
 	}
-	lock, err := readLock(lockPath(h.cfg.path, h.cfg.Lock))
-	if err != nil {
-		return nil, err
-	}
 	// Copies, read under entriesMu: a reload changes an entry in place (updateManaged).
 	h.entriesMu.Lock()
 	var mine []configEntry
@@ -185,9 +181,15 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 			s.Skipped = append(s.Skipped, peerSkip{Source: p.Source, Entry: opEntryKey(match), Why: "a config entry of this hub"})
 			continue
 		}
-		// The whole pin counts: the same commit of a latest source can have another release tag.
-		if cur, ok := lock.Plugins[p.Source]; ok && match.Source == p.Source && cur.lockPin == p.lockPin {
-			continue // in sync
+		// In sync is the op's own decision (alreadyAt): the managed source, the lock entry (commit,
+		// ref kind, tag and digest) with a directory that verifies, and the plugin's record at the
+		// pin. An update that wrote the files but did not replace the run is not in sync.
+		at, err := h.peerAt(ctx, match, p)
+		if err != nil {
+			return nil, err
+		}
+		if at {
+			continue
 		}
 		op, err := h.peerUpdate(ctx, l.cfg.Name, opEntryKey(match), p)
 		if err != nil {
@@ -236,4 +238,27 @@ func (h *Hub) peerUpdate(ctx context.Context, peer, entry string, p pinEntry) (m
 	}
 	m, _ := v.(map[string]any)
 	return map[string]any{"entry": entry, "op_id": m["op_id"], "phase": m["phase"]}, nil
+}
+
+// peerAt reports whether the managed entry m is at the peer's pin p: the decision of an update's
+// fetching phase (alreadyAt) for the target that a peer op of p would store.
+func (h *Hub) peerAt(ctx context.Context, m *configEntry, p pinEntry) (bool, error) {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return false, err
+	}
+	stored, err := peerTarget(raw, m.Source)
+	if err != nil {
+		return false, err
+	}
+	var t opResolved
+	if err := json.Unmarshal([]byte(stored), &t); err != nil {
+		return false, err
+	}
+	e := &configEntry{Source: t.Source}
+	if err := e.checkSource(""); err != nil {
+		return false, err
+	}
+	at, err := h.alreadyAt(ctx, &pluginOp{Kind: "update", Entry: opEntryKey(m)}, t, e)
+	return at != "", err
 }

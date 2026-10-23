@@ -415,3 +415,37 @@ func TestPeerPluginsSyncLatestTag(t *testing.T) {
 		}
 	}
 }
+
+// A pin that the lock and the managed entry have is in sync only while the plugin's record is at
+// it: a running plugin whose selected run is another commit gets a peer update (alreadyAt).
+func TestPeerPluginsSyncRunBehind(t *testing.T) {
+	b, _, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	cur := readTestLock(t, b).Plugins["github:acme/notes@v1.0.0"]
+	b.entriesMu.Lock()
+	id := entryIdentity(b.entries[len(b.entries)-1])
+	b.entriesMu.Unlock()
+	b.cfg.HubName, b.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	b.peers = newPeerSet(b.cfg)
+	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
+		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: []pinEntry{{Source: "github:acme/notes@v1.0.0", lockPin: cur.lockPin}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return json.Marshal(map[string]any{"pins": json.RawMessage(doc), "managed": []peerManaged{}})
+	}
+	for _, c := range []struct {
+		commit string
+		ops    int
+	}{{cur.Commit, 0}, {strings.Repeat("0", 40), 1}} {
+		sel, _ := json.Marshal(selectedRun{Entry: id, Run: pluginRun{Name: "notes", Source: "github:acme/notes@v1.0.0", Commit: c.commit, Digest: cur.Digest}})
+		mustExec(t, b, `INSERT INTO plugins (name, desired, selected_run) VALUES ('notes', 'running', ?) ON CONFLICT (name) DO UPDATE SET desired = 'running', selected_run = excluded.selected_run`, string(sel))
+		if _, err := b.peerPluginsSync(context.Background(), b.peerLink("mac")); err != nil {
+			t.Fatal(err)
+		}
+		var n int
+		b.db.QueryRow(`SELECT count(*) FROM plugin_ops WHERE scope = 'peer:mac'`).Scan(&n)
+		if n != c.ops {
+			t.Fatalf("a selected run at %s: %d ops, want %d", c.commit, n, c.ops)
+		}
+	}
+}

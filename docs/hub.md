@@ -2472,7 +2472,7 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
 - **Match.** For each pin, the receiver looks for its own GitHub entry of the same repository and
   subdir (the lock key; the ref does not count). Only GitHub sources sync: the document has no
   local source.
-  - A managed entry whose source and lock pin (commit and digest) are the pin's: in sync, no op.
+  - A managed entry that an update to the pin would leave as it is: in sync, no op. This is the update's own "already at" decision (`alreadyAt`): the managed source, the lock entry (commit, ref kind, tag and digest) with a cache directory that verifies, and the plugin's record at the pin. So an update that wrote the files but did not replace the run gets a new op.
   - Another managed entry: a peer update op (origin `{kind: "peer", id: <peer>}`, scope
     `peer:<peer>`, the pin as `target`; "A peer update" above). The source hub wins.
   - A config entry: skipped, with one log line for each source.
