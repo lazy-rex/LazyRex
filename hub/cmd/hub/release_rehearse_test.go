@@ -602,7 +602,7 @@ func labHubDB(t *testing.T) *rehearsal {
 // a new hub.db has no records or ops table). A lab hub.db with an agent binding refuses.
 func TestReleaseLabHubDB(t *testing.T) {
 	h := labHubDB(t)
-	if err := h.checkLabBindings(); err != nil {
+	if err := h.checkLabAgents(); err != nil {
 		t.Fatalf("the setup step on a new lab hub.db: %v", err)
 	}
 	if err := h.schema("before"); err != nil {
@@ -617,7 +617,7 @@ func TestReleaseLabHubDB(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO bindings (agent, block_id, child_pid, child_start) VALUES ('a', 'block:1', 1, 's')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.checkLabBindings(); err == nil || !strings.Contains(err.Error(), "agent bindings") {
+	if err := h.checkLabAgents(); err == nil || !strings.Contains(err.Error(), "agent bindings") {
 		t.Errorf("a lab hub.db with an agent binding: %v", err)
 	}
 }
@@ -672,20 +672,20 @@ func TestReleaseLabAgents(t *testing.T) {
 	}
 	h := labHubDB(t)
 	exec(h, `DROP TABLE bindings`)
-	if err := h.checkLabBindings(); err != nil {
+	if err := h.checkLabAgents(); err != nil {
 		t.Errorf("a lab hub.db without bindings: %v", err)
 	}
 	// The hub makes the identity tables at start (workers.go), not in openDB.
 	h = labHubDB(t)
 	exec(h, identitySchema)
 	exec(h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, current) VALUES ('block:1', 's', 1, 't', 'claude:x')`)
-	if err := h.checkLabBindings(); err == nil || !strings.Contains(err.Error(), "identity_panes") {
+	if err := h.checkLabAgents(); err == nil || !strings.Contains(err.Error(), "identity_panes") {
 		t.Errorf("a lab hub.db with a current identity: %v", err)
 	}
 	h = labHubDB(t)
 	exec(h, identitySchema)
 	exec(h, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start) VALUES ('block:1', 's', 1, 't')`)
-	if err := h.checkLabBindings(); err != nil {
+	if err := h.checkLabAgents(); err != nil {
 		t.Errorf("a lab hub.db with a pane row and no current identity: %v", err)
 	}
 }

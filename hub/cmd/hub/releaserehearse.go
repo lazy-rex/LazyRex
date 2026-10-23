@@ -285,7 +285,7 @@ func labEnvironment(lab, server string) ([]string, error) {
 }
 
 // setup makes the lab: the clone and the OLD binary, the lab files, the lab server, the lab cache,
-// the lab run (freeze), and OLD in a dev pane on a lab hub.db without agent bindings.
+// the lab run (freeze), and OLD in a dev pane on a lab hub.db without a live agent.
 func (h *rehearsal) setup() error {
 	L := h.lab
 	server := "unix://" + filepath.Join(L, "rex.sock")
@@ -429,7 +429,7 @@ func (h *rehearsal) setup() error {
 		return err
 	}
 
-	// OLD in a dev pane in a lab session; then the binding check, while OLD is stopped.
+	// OLD in a dev pane in a lab session; then the lab agent check, while OLD is stopped.
 	var created struct {
 		SessionID string `json:"session_id"`
 	}
@@ -450,7 +450,7 @@ func (h *rehearsal) setup() error {
 	}); err != nil {
 		return err
 	}
-	if err := h.checkLabBindings(); err != nil {
+	if err := h.checkLabAgents(); err != nil {
 		return err
 	}
 	if err := h.withLab(func(lr *releaser) error {
@@ -630,23 +630,40 @@ func (h *rehearsal) hubDB(readOnly bool) (*sql.DB, error) {
 	return sql.Open("sqlite", "file:"+p+q)
 }
 
-// checkLabBindings refuses an agent binding in the lab hub.db: a lab hub never gets live bindings.
+// checkLabAgents refuses a live agent in the lab hub.db: a lab hub has no agent before the first
+// phase. It checks each table that this hub.db has, so it works before and after the join removal
+// (d), which drops bindings:
+//   - bindings: no row.
+//   - identity_panes: no row with a current conversation.
+//
 // The rehearsal writes no row in the hub.db. A hub after the hub.store removal (2d) has no records
 // or ops table, and a probe row in a plugin's sql/<ns>.db would change the data that the set lab
 // compares. LIMIT: the default tier checks the schema of the hub.db but no retained hub row; only
 // the full tier with a probe file checks rows (writeFileProbes).
-func (h *rehearsal) checkLabBindings() error {
+func (h *rehearsal) checkLabAgents() error {
 	db, err := h.hubDB(true)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	var n int
-	if err := db.QueryRow("SELECT count(*) FROM bindings").Scan(&n); err != nil {
-		return relFail("the lab hub.db: %v", err)
-	}
-	if n != 0 {
-		return relFail("the lab hub.db has %d agent bindings", n)
+	for _, c := range []struct{ table, where, what string }{
+		{"bindings", "", "agent bindings"},
+		{"identity_panes", " WHERE current != ''", "panes with a current identity (identity_panes)"},
+	} {
+		var has int
+		if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", c.table).Scan(&has); err != nil {
+			return relFail("the lab hub.db: %v", err)
+		}
+		if has == 0 {
+			continue
+		}
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM " + c.table + c.where).Scan(&n); err != nil {
+			return relFail("the lab hub.db: %v", err)
+		}
+		if n != 0 {
+			return relFail("the lab hub.db has %d %s", n, c.what)
+		}
 	}
 	return nil
 }
