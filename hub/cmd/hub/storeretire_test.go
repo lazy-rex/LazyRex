@@ -169,6 +169,9 @@ func TestOpenRemovesOnlyDeclared(t *testing.T) {
 		`CREATE TABLE view_transcripts (view_id TEXT PRIMARY KEY, status TEXT NOT NULL)`,
 		`INSERT INTO view_transcripts VALUES ('v1', 'open')`,
 		`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE bindings (agent TEXT PRIMARY KEY, block_id TEXT NOT NULL, child_pid INTEGER NOT NULL, child_start TEXT NOT NULL)`,
+		`CREATE TABLE dyn_agents (agent TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL, spawn_id TEXT NOT NULL, created TEXT NOT NULL)`,
+		`CREATE TABLE identity_aliases (legacy TEXT PRIMARY KEY, identity TEXT NOT NULL, created TEXT NOT NULL)`,
 		`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`, `INSERT INTO ops VALUES ('beta', 'op', 'fp', '{}')`)
 	before := hubSchema(t, path)
 	reopen(t, path)
