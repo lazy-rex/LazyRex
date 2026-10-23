@@ -129,3 +129,44 @@ func TestRetireStoreTablesEmpty(t *testing.T) {
 		t.Errorf("empty tables stay: %v", have)
 	}
 }
+
+// A failed drop changes nothing: records, ops and their rows stay, and retireStore returns the
+// error (so the open fails); once the cause is gone, the next call drops both. Here a foreign key from another table
+// blocks the drop of ops, the second statement of the transaction.
+func TestRetireStoreFailedDropKeepsBoth(t *testing.T) {
+	state := t.TempDir()
+	path := filepath.Join(state, "hub.db")
+	oldStoreDB(t, path,
+		`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`,
+		`INSERT INTO ops VALUES ('alpha', 'op', 'fp', '{}')`,
+		`CREATE TABLE blocker (ns TEXT, key TEXT, FOREIGN KEY (ns, key) REFERENCES ops (ns, key))`,
+		`INSERT INTO blocker VALUES ('alpha', 'op')`)
+	if err := os.MkdirAll(filepath.Join(state, "sql"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "sql", "alpha.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := retireStore(db, filepath.Join(state, "sql"), t.Logf); err == nil || !strings.Contains(err.Error(), "DROP TABLE ops") {
+		t.Fatalf("the blocked drop: %v, want the error of DROP TABLE ops", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM records) + (SELECT COUNT(*) FROM ops)`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("after the failed drop: %d rows, %v; want records and ops with their 2 rows", n, err)
+	}
+	if _, err := db.Exec(`DROP TABLE blocker`); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireStore(db, filepath.Join(state, "sql"), t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN ('records', 'ops')`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("without the blocker: %d of the tables stay, %v", n, err)
+	}
+}
