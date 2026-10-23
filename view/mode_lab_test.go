@@ -531,10 +531,13 @@ func TestResizeLab(t *testing.T) {
 // message prints once, not late, and nothing prints a second time.
 func TestLateMessageLab(t *testing.T) {
 	l := newModeLab(t)
+	// The sort row goes first: a render between the two writes then does not show the message yet.
+	// The other order showed it once at its insert position, before every sort value, and so late
+	// (lab run c6-f8f826e).
 	add := func(id, text string, sort float64) {
 		t.Helper()
-		l.sql(fmt.Sprintf("INSERT INTO msgs VALUES ('%s', 'codex', '%s')", id, text), true)
 		l.sql(fmt.Sprintf("INSERT INTO msg_sort VALUES ('%s', %g)", id, sort), true)
+		l.sql(fmt.Sprintf("INSERT INTO msgs VALUES ('%s', 'codex', '%s')", id, text), true)
 	}
 	add("t5", "LATE-ONE", 10)
 	add("a8", "LATE-TWO", 20)
