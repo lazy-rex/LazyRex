@@ -100,6 +100,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, snapshot := msg.(Snapshot)
 	follow := !snapshot && m.scroll >= max(0, len(m.bodyRows())-beforeHeight)
 	_, cmd := m.update(msg)
+	// A close, reload or retirement that waits or runs stops the history fetch, whichever path asked
+	// for it (Ctrl+Q, the hub, a reload or a migration). startFetch starts none until it ends.
+	if m.ending() {
+		m.cancelFetch()
+	}
 	// A source action can finish while its replacement waits for safe input.
 	// Submitted values become saved; values typed after submission remain dirty.
 	if m.replacement != nil && m.replacement.State == "confirming" && !m.replacementUnsafe() {

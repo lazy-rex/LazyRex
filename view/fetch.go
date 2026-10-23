@@ -67,9 +67,20 @@ func (m *model) historyNode() *Node {
 
 func (m *model) full() bool { return m.snapshot.Open != nil && m.snapshot.Open.Full }
 
-// startFetch starts a fetch of kind back from the current page.
+// ending reports a close, reload or retirement that waits or runs. A failed close ends it: the
+// view stays, and its next tree can fetch again.
+func (m *model) ending() bool {
+	return m.closePending || m.closeRunning || m.closeReady || m.reloadPending || m.reloadReady || m.retirePending || m.retireReady
+}
+
+// startFetch starts a fetch of kind back from the current page. An ending view starts none
+// (codex-29): it prints nothing from this tree, and seen stays closed.
 func (m *model) startFetch(kind string, page []Message) tea.Cmd {
 	p := &m.print
+	if m.ending() {
+		m.updateSeen("")
+		return nil
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.seq++
 	f := &fetch{kind: kind, seq: p.seq, gen: m.snapshot.gen, ctx: ctx, cancel: cancel, cursor: page[0].ID, held: map[string]bool{}}

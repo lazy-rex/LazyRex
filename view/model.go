@@ -687,7 +687,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.replacement != nil {
 				m.replacement.Error = m.status
 			}
-			return m, nil
+			// The view stays: the current tree prints, and fetches again, now that the close ended.
+			return m, m.printTree()
 		}
 		m.closeReady = true
 		return m, m.quit()
@@ -706,17 +707,14 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.client.focus(false, "")
 		return m, nil
 	case retireRequested:
-		m.cancelFetch()
 		m.retirePending = true
 		return m, nil
 	case closeRequested:
 		if !m.isPanel() && !m.isForm() {
-			m.cancelFetch()
 			m.closePending = true
 		}
 		return m, nil
 	case reloadRequested:
-		m.cancelFetch()
 		m.reloadPending = true
 		return m, nil
 	case tea.BackgroundColorMsg:

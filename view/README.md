@@ -132,6 +132,7 @@ Page rules:
 - The opening exclusions stay across a restart. A result of an old fetch or an old attachment is dropped.
 - A failed page, or a page with `has_more` and no new message, is asked again after 2 s.
 - A reattach, a reload, a close, an output failure or a lost connection stops the fetch and its page call.
+- A close (Ctrl+Q or the hub), a reload or a retirement stops the fetch when it is requested, also while it waits for drafts or operation results. Until it ends, no tree starts a fetch. A failed close ends it: the view reads its current tree again and fetches again.
 - Seen stays closed while a fetch runs.
 
 ### The seen gate
