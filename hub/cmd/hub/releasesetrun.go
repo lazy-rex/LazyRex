@@ -465,17 +465,24 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 		}
 		return relFail("the source pane: %v", err)
 	}
-	// A failed cleanup fails the item, unless the item already failed.
+	// A failed cleanup fails the item, unless the item already failed. The palette view (a form or
+	// a panel) is in the side slot of the source window: the session close ends it, as a user's
+	// close of its pane does. The hub refuses hub.view.close for a form. The renderer of the view
+	// must then disconnect.
+	c := &helperConn{r: h.l.r}
+	tv := ""
 	defer func() {
 		cerr := h.closePane(session, block, "")
 		if cerr == nil {
 			cerr = h.l.r.Call(context.Background(), "session.destroy", map[string]any{"session_id": session}, nil)
 		}
+		if cerr == nil && tv != "" {
+			cerr = waitClientGone(c, tv, 10*time.Second)
+		}
 		if cerr != nil && err == nil {
 			err = relFail("closing the source pane: %v", cerr)
 		}
 	}()
-	c := &helperConn{r: h.l.r}
 	self, err := h.runnerClient(ctx, c)
 	if err != nil {
 		return err
@@ -492,7 +499,7 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if json.Unmarshal(raw, &opened) != nil || opened.ViewID == "" {
 		return relFail("hub.palette.run %s gave no view: %s", it.Command, raw)
 	}
-	tv, rerr := "", error(nil)
+	var rerr error
 	for i := 0; i < 100 && tv == ""; i++ {
 		tv, rerr = c.resolveClient(ctx, "lazyrex-testview:"+opened.ViewID)
 		if tv == "" {
@@ -502,11 +509,6 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if tv == "" {
 		return relFail("no lab renderer attached the view %s: %v", opened.ViewID, rerr)
 	}
-	defer func() {
-		if _, cerr := c.perform(ctx, tv, "testview.close", map[string]any{}); cerr != nil && err == nil {
-			err = relFail("closing the view %s: %v", opened.ViewID, cerr)
-		}
-	}()
 	snap, err := waitViewAction(ctx, func(ctx context.Context) (json.RawMessage, error) {
 		return c.perform(ctx, tv, "testview.get", map[string]any{"route": it.Route})
 	}, it.Route, it.NodeID, it.Action)
@@ -600,6 +602,30 @@ func (h *rehearsal) viewOperation(ctx context.Context, c *helperConn, tv string,
 			return op.Result, nil
 		default:
 			return nil, relFail("the operation %s is %s: %s", key, op.Status, raw)
+		}
+	}
+}
+
+// waitClientGone waits until the client is not connected (client.inspect).
+func waitClientGone(c *helperConn, client string, wait time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	state := ""
+	for {
+		var ins struct {
+			Client struct {
+				ConnectionState string `json:"connection_state"`
+			} `json:"client"`
+		}
+		if err := c.r.Call(ctx, "client.inspect", map[string]any{"client_id": client}, &ins); err != nil {
+			state = err.Error()
+		} else if state = ins.Client.ConnectionState; state != "connected" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the renderer %s is still connected after %s (%s)", client, wait, state)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }

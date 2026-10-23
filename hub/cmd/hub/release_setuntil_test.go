@@ -455,7 +455,9 @@ func TestReleaseSetViewWaitsForAction(t *testing.T) {
 		t.Fatalf("loading then ready: calls %d, %+v, %v", calls, got, err)
 	}
 
-	never := func(context.Context) (json.RawMessage, error) { return snap("/forms/start-accessory", 0, loadingTree()), nil }
+	never := func(context.Context) (json.RawMessage, error) {
+		return snap("/forms/start-accessory", 0, loadingTree()), nil
+	}
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel2()
 	if _, err := waitViewAction(ctx2, never, "/forms/start-accessory", "dir_choices", "default"); err == nil ||
