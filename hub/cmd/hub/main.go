@@ -213,9 +213,10 @@ type Hub struct {
 	aliases      map[string]string      // legacy agent ID -> the identity that took it over
 	plugins      map[string]*Plugin     // by name: one record for each bound entry name
 	// entries are the config entries (pluginconfig.go), in config order, then the managed entries.
-	// entriesMu guards the fields that a resolution or a reload changes. Lock order: reloadMu, then
-	// a plugin's lifecycle, then entriesMu, then mu. No code takes a lifecycle lock while it holds
-	// entriesMu or mu. pl.entry changes only under entriesMu and then mu.
+	// entriesMu guards the fields that a resolution or a reload changes. Lock order: the plugin
+	// command flocks (lockCommands), then reloadMu, then a plugin's lifecycle, then entriesMu, then
+	// mu. No code takes the flocks while it holds reloadMu. No code takes a lifecycle lock while it
+	// holds entriesMu or mu. pl.entry changes only under entriesMu and then mu.
 	reloadMu sync.Mutex // serializes hub.plugins.reload and hub start recovery
 	// procRead is the process information read of the caller guards (callerInManagedPane). nil:
 	// procRead. A test sets its own Hub's reader; no test changes a package variable.
