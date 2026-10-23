@@ -61,7 +61,7 @@ func TestReleaseLabFiles(t *testing.T) {
 	lab, _ = filepath.EvalSymlinks(lab)
 	liveDir := t.TempDir()
 	cfg := map[string]any{"server": "unix:///live/rex.sock", "state": liveDir + "/state", "view": liveDir + "/view",
-		"profiles": liveDir + "/profiles.json", "palette_lua": liveDir + "/palette.lua", "transcript": true,
+		"profiles": liveDir + "/profiles.json", "palette_lua": liveDir + "/palette.lua",
 		"agents": []any{map[string]string{"id": "user", "name": "User"}}, "plugins": []any{map[string]string{"source": "github:o/r@main"}}}
 	managed := map[string]any{"plugins": []any{map[string]any{"id": "auto", "source": "github:o/auto@main",
 		"watch_roots": []any{liveDir + "/Automations"}, "args": map[string]any{"gallery": "true"}}}}
