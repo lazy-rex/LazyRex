@@ -109,11 +109,20 @@ func endGoLab(t labEnder, dir string, unproved []string) {
 // newStartLab starts a lab and writes a hub config whose plugins are the given source dirs, in
 // order, relative to the config. It does not start the hub.
 func newStartLab(t *testing.T, sources ...string) *startLab {
-	return newServerLab(t, nil, sources...)
+	return startLabWith(t, nil, false, sources...)
 }
 
 // newServerLab is newStartLab with more lab server options (serverArgs).
 func newServerLab(t *testing.T, serverArgs []string, sources ...string) *startLab {
+	return startLabWith(t, serverArgs, false, sources...)
+}
+
+// newStartLabHome is newStartLab that also loads the real home plugin (plugins/lazyrex).
+func newStartLabHome(t *testing.T, sources ...string) *startLab {
+	return startLabWith(t, nil, true, sources...)
+}
+
+func startLabWith(t *testing.T, serverArgs []string, withHome bool, sources ...string) *startLab {
 	bin, root := harnessBinary(t)
 	rexBin, err := exec.LookPath("rex")
 	if err != nil {
@@ -126,6 +135,11 @@ func newServerLab(t *testing.T, serverArgs []string, sources ...string) *startLa
 	}
 	m.Test.Agents, m.Test.Args, m.Test.WatchRoots, m.Test.Env = nil, nil, nil, nil
 	o := &testOpts{dir: dir, lazyrex: root, self: bin, rexBin: rexBin, m: m, serverArgs: serverArgs}
+	if withHome {
+		if o.home, err = homePlugin(root); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	l, err := o.startLab(ctx)
