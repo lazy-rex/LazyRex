@@ -187,7 +187,7 @@ func TestPluginOpsSchema(t *testing.T) {
 		if err := h.pluginOpsSchemaUp(ctx); err != nil {
 			t.Fatalf("schema run %d: %v", i+1, err)
 		}
-		want := "op_id scope key fingerprint origin kind entry name expect input target phase rev confirmed base output entry_identity result error created updated pin lock_base"
+		want := "op_id scope key fingerprint origin kind entry name expect input target phase rev confirmed base output entry_identity result error created updated pin lock_base row_prior"
 		if got := columns(); got != want {
 			t.Fatalf("schema run %d: plugin_ops columns %q, want %q", i+1, got, want)
 		}
