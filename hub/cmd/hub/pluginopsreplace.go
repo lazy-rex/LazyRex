@@ -118,7 +118,7 @@ func (h *Hub) opPick(ctx context.Context, op *pluginOp, replace bool) error {
 	case r.live && replace:
 		return h.opCall(ctx, op, "replace")
 	case r.live:
-		return h.setOpPhase(ctx, op, "done", fmt.Sprintf("%s runs %s; the update did not replace it (its replace found no instance); the next start runs %s", op.Name, runText(&r.run), want), "")
+		return h.setOpPhase(ctx, op, "done", fmt.Sprintf("%s runs %s; the update did not replace it (its replace found no instance); the next explicit start runs %s", op.Name, runText(&r.run), want), "")
 	case r.desired == "running":
 		return h.opCall(ctx, op, "start")
 	}
