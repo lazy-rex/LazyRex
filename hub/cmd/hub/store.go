@@ -45,7 +45,7 @@ func openDB(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer; transactions are short and never span an RPC
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + peerSchema); err != nil {
 		return nil, err
 	}
 	// Columns added after the first release. "duplicate column" means the store has them already.
@@ -731,6 +731,7 @@ func noticeDue(n pendingNotice, c noticeConv, mem int64, now time.Time, renudge 
 	}
 	return true, true, time.Time{}
 }
+
 // applySQLNotices applies hub.sql outbox rows of plugin (sqlnotice.go) in seq order, in one
 // transaction with a receipt for each row. A row with a receipt was applied before (a crash after
 // the apply and before the outbox delete): it is skipped. The rules are those of a notify op of

@@ -2350,3 +2350,92 @@ write-if-state.
 **The request queue.** Rex delivers requests to the hub one at a time. The writes are Rex server
 calls (each with a 5 s limit), so an answer holds the hub's request queue for at most the time of
 its writes, as `hub.spawn`'s create does. No answer waits for a plugin.
+
+## Peer hubs (federation v1, 2026-10-23)
+
+Two or more hubs, each on its own Rex server, exchange envelopes. A plugin on hub A sends an
+envelope to hub B. The same plugin on B receives it. The code is in `hub/cmd/hub/peers.go`.
+
+### Config
+
+```json
+{"hub_name": "mac", "peers": [{"name": "linux", "server": "linux-box", "plugins_from": false}]}
+```
+
+- `hub_name` matches `[a-z0-9][a-z0-9-]{0,62}`. Peers need a `hub_name`.
+- Each peer has a unique `name` (same pattern, not this hub's name) and a `server`: a `rex -S`
+  value for the peer's Rex server.
+- At most one peer has `plugins_from` (plugin sync, see below).
+
+### Addresses
+
+`resolveAgent` reads a `to` with `@` as `<id>@<hub>`:
+
+- `<id>@<this hub>` resolves `<id>` with the local rules.
+- `<id>@<peer>` gives `{"id", "via": "remote", "hub"}`. The hub does not check the remote agent.
+- Any other hub is `unknown_hub`.
+
+### Transport
+
+Each hub pulls from its peers. A hub never pushes data.
+
+- The hub calls a peer with the rex CLI:
+  `rex -S <server> --autostart=false --timeout 10s -C lazyrex-hub do hub.peer.<x>`.
+  The Go Rex client dials only a unix socket. The CLI also reaches a remote Rex server.
+- One loop for each peer pulls every 2 s while the peer is up. While the peer is down, the
+  interval doubles up to 30 s. A `more` reply pulls again at once.
+- After a send, the hub sends `hub.peer.nudge` to the peer. The peer pulls at once. A nudge
+  carries no data, so a lost nudge only adds delay.
+
+### Actions
+
+| Action | Caller | Args | Result |
+|---|---|---|---|
+| `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB) | `{seq, queued}` |
+| `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after` | `{envelopes: [{seq, plugin, key, body, created}], more}` |
+| `hub.peer.nudge` | a peer hub | `hub` | `{}` |
+| `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
+
+- **Send.** The body is opaque to the hub. The same `(peer, plugin, key)` with the same body returns
+  the first `seq`. Another body is `key_conflict`. Both rules stay after the peer acked the envelope:
+  the ack keeps the row and clears only the body. Other errors: `unknown_hub`, `too_large`,
+  `not_plugin`.
+- **Seq.** `seq` is an AUTOINCREMENT key, so the hub never reuses a `seq`, also after a delete.
+- **Pull.** `after = N` acks every envelope up to `N`. The reply has the next envelopes: at most 100,
+  or 1 MiB of bodies (always at least one envelope).
+- **Status.** Each peer row has `name`, `server`, `state` (`unknown`, `up`, `down`), `last_ok`,
+  `last_error`, `outbox` (envelopes not acked), `oldest_age_s`, `after` (this hub's cursor for that
+  peer) and `more`.
+
+### Delivery
+
+The receiver gives each envelope, in `seq` order, to its local plugin with the same name. It uses
+`client.perform` of the action `peer.receive` with `{from_hub, key, body}`.
+
+- The plugin accepts with any result.
+- The plugin refuses with the result `{"refused": "<code>", "message": "..."}`. The hub logs the
+  refusal and moves on. A refusal is a result, not an error.
+- Any error stops the pull: a failed peer call, a plugin that does not run here, a failed or lost
+  `peer.receive`. The envelope comes again on the next pull. A plugin must accept a repeat of a key.
+- The cursor moves past an envelope only after the plugin answered. The cursor never moves back.
+
+The Messaging plugin uses its message ID as the key. B stores the sender as `<from>@A`. A message to
+an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
+
+### Trust limit
+
+v1 has no puller authentication. Any client that reaches the Rex server of hub A can call
+`hub.peer.pull` with any peer name. That client can read the envelopes for that peer, and can ack
+them, which removes their bodies. The network (the tailnet) is the boundary. Connect only Rex
+servers on a network that you trust.
+
+### Plugin sync
+
+A hub with `plugins_from` on a peer pulls that peer's GitHub plugin sources (`hub.peer.plugins`).
+The source hub wins. A new plugin waits for the user's confirmation; an update does not. A config
+source on the receiver is skipped with a log line. This part is in progress.
+
+### Not in v1
+
+Puller authentication, bounces, read state across hubs, remote agents in `hub.agents`, peer
+rename, more than one plugin source, resource addresses and route forwarding.

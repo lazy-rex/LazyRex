@@ -67,6 +67,10 @@ type Config struct {
 	// Lock is the lock file of the GitHub sources (docs/plugin-sources.md, section 3), relative
 	// to the config directory. Empty: the default of lockPath. A missing lock file is not an error.
 	Lock string `json:"lock"`
+	// HubName and Peers are the peer hubs (peers.go): this hub's name, and the hubs that it pulls
+	// from and that can pull from it.
+	HubName string       `json:"hub_name"`
+	Peers   []PeerConfig `json:"peers"`
 	// ManagedPlugins is the managed file of the plugin manager (docs/plugin-sources.md, section 13),
 	// relative to the config directory. Default: <state>/plugins.json.
 	ManagedPlugins string         `json:"managed_plugins"`
@@ -205,7 +209,7 @@ type Hub struct {
 	exec        int
 	wrapped     atomic.Bool
 	relaunching atomic.Bool
-	calls    *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
+	calls       *callLog // the per-call lines of answer (calllog.go); nil: a line for every call
 	// The crash backoff clock (respawn.go). nil: time.Now and time.AfterFunc; a test sets fakes.
 	now       func() time.Time
 	afterFunc func(time.Duration, func()) stopper
@@ -248,6 +252,7 @@ type Hub struct {
 	loads pluginLoads
 
 	changedQ changedQueue // hub.changed deliveries in flight (changed.go)
+	peers    *peerSet     // the peer hubs of the config (peers.go); nil in tests that build a Hub by hand
 }
 
 func loadConfig(path string) (Config, error) {
@@ -271,6 +276,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if c.UISlot != "" && c.UISlot != "split" && c.UISlot != "layer" {
 		return c, fmt.Errorf("%s: ui_slot is \"split\" or \"layer\", not %q", path, c.UISlot)
+	}
+	if err := checkPeers(c); err != nil {
+		return c, fmt.Errorf("%s: %w", path, err)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -314,7 +322,8 @@ var hubActionNames = []string{"hub.register", "hub.identify", "hub.agents", "hub
 	"hub.plugins", "hub.plugins.reload", "hub.plugins.ops", "hub.plugins.tags", "hub.plugins.log", "hub.digest", "hub.navigate.worker", "hub.navigate.agent", "hub.cwd.check", "hub.cwd.lock", "hub.cwd.unlock", "hub.admin.unlock", "hub.ui.invalidate", "hub.identity.report", "hub.identity.list", "hub.palette.run", "hub.view.release_confirm", "hub.view.replacement", "hub.view.app_action", "hub.app.select_session", "hub.app.remote_control", "hub.spawn_window", "hub.spawn.spec", "hub.grant.create", "hub.grant.get", "hub.grant.revoke",
 	"hub.watch.ensure", "hub.watch.read", "hub.watch.ack", "hub.watch.remove", "hub.watch.list",
 	"hub.prompts", "hub.prompt.answer",
-	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part"}
+	"hub.sql.begin", "hub.sql.exec", "hub.sql.query", "hub.sql.batch", "hub.sql.commit", "hub.sql.rollback", "hub.sql.replay", "hub.reply.part",
+	"hub.peer.send", "hub.peer.pull", "hub.peer.nudge"}
 
 // hubClientActions are the actions that the hub declares on its own client (the plugin face): its
 // own actions, hubToolActions and, in test mode, the test actions. A covered read takes the render
@@ -555,6 +564,7 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 	}
 	h := &Hub{noticeKick: make(chan struct{}, 1), paletteKick: make(chan struct{}, 1), spawnKick: make(chan struct{}, 1), resumeKick: make(chan struct{}, 1), waitKick: make(chan struct{}, 1), cfg: cfg, db: db, rex: r, ev: ev, faults: fs, generation: gen, clientID: welcome.Client.ID, rexBinary: rexBinary, lock: lock, calls: newCallLog(),
 		agents: map[string]*Agent{}, idents: map[string]*Agent{}, aliases: map[string]string{}, plugins: map[string]*Plugin{}, selfClosed: map[string]bool{}}
+	h.peers = newPeerSet(cfg)
 	h.sql = newSQLService(cfg.State, h.currentClient)
 	h.sql.committed = h.markSQL // the views that read a changed table, and every view without a table set
 	h.sql.rendered = h.renderRead
@@ -654,6 +664,7 @@ func (h *Hub) run(ctx context.Context) {
 	go h.waitLoop(ctx)
 	go h.noticeLoop(ctx)
 	go h.resumeLoop(ctx)
+	h.peersRun(ctx)
 	h.kickNotices() // notices pending from before the start
 	go func() {
 		h.sql.drainAll(ctx) // hub.sql outboxes that a crash or a failed apply left
@@ -741,7 +752,7 @@ func (h *Hub) handleEvent(ctx context.Context, raw json.RawMessage) {
 			h.kickSpawns()
 		case "block_created":
 			h.tabReplCreated(se.SessionID, se.Event.Payload.BlockID) // before a close or exit event of the block
-			h.kickSpawns() // a pending spawn's pane may have appeared
+			h.kickSpawns()                                           // a pending spawn's pane may have appeared
 		case "session_view_changed":
 			h.uiSessionChanged(se.SessionID)
 		case "window_closed":
@@ -927,6 +938,14 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return h.agentsList(args), nil
 	case "hub.agents.resolve":
 		return h.resolveAgent(args)
+	case "hub.peer.send":
+		return h.peerSend(ctx, p, args)
+	case "hub.peer.pull":
+		return h.peerPullServe(ctx, args)
+	case "hub.peer.nudge":
+		return h.peerNudge(args)
+	case "hub.peer.status":
+		return h.peerStatus(ctx)
 	case "hub.identity.report":
 		return h.identityReport(ctx, p, args)
 	case "hub.digest":

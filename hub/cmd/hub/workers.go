@@ -1632,7 +1632,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			kept = append(kept, k)
 		}
 	}
-	sort.Slice(kept, func(i, j int) bool { return kept[i].(map[string]any)["name"].(string) < kept[j].(map[string]any)["name"].(string) })
+	sort.Slice(kept, func(i, j int) bool {
+		return kept[i].(map[string]any)["name"].(string) < kept[j].(map[string]any)["name"].(string)
+	})
 	h.mu.Unlock()
 	h.entriesMu.Unlock()
 	out := []any{}
@@ -1722,6 +1724,9 @@ func (h *Hub) checkProfiles() {
 
 // hubToolActions are hub actions that agents may call through the agent face (agentface.go).
 var hubToolActions = []map[string]any{
+	{"name": "hub.peer.status", "kind": "client", "title": "Peer hubs",
+		"description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes waiting for it (outbox, oldest_age_s), the cursor of what this hub took from it (after) and whether it holds more. A remote agent's address is \"<agent>@<hub>\".",
+		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
 	{"name": "hub.profiles", "kind": "client", "title": "List profiles",
 		"description": "List the named commands (profiles) that can start in a new tab, with their kind (agent or accessory), their default cwd (empty: the home directory) and how many run now. args lists the named values that hub.spawn accepts for the profile (name, label, default, required).",
 		"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}},
