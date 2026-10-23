@@ -2,7 +2,6 @@
  "name": "promptfix",
  "main": "fixture.lua",
  "test": {
-  "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}],
   "prompts": ["promptfix"]
  }
 }

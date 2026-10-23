@@ -32,7 +32,7 @@ test('a blocked report opens a prompt; pushes and hub.prompts give it; a state c
   local alice = agent('alice')
   alice:program_status('working', {app = 'claude-code'})
   alice:program_status('blocked', {kind = 'permission', app = 'claude-code', msg = 'Allow Bash: ls?'})
-  local p = prompt_of('alice', 'Allow Bash: ls?')
+  local p = prompt_of(alice.id, 'Allow Bash: ls?')
   expect(p.kind).to_be('permission')
   expect(p.app).to_be('claude-code')
   expect(p.block_id).to_match('^block:')
@@ -42,35 +42,35 @@ test('a blocked report opens a prompt; pushes and hub.prompts give it; a state c
   expect(snap.prompts[1].prompt_id).to_be(p.prompt_id)
   local listed
   for _, a in ipairs(H.hub('hub.agents', {}).agents) do
-    if a.id == 'alice' then listed = a end
+    if a.id == alice.id then listed = a end
   end
   expect(listed.block_id).to_be(p.block_id)
   -- The same report keeps the prompt; another msg replaces it.
   alice:program_status('blocked', {kind = 'permission', app = 'claude-code', msg = 'Allow Bash: ls?'})
   alice:program_status('blocked', {kind = 'permission', app = 'claude-code', msg = 'Allow Edit?'})
-  local q = prompt_of('alice', 'Allow Edit?')
+  local q = prompt_of(alice.id, 'Allow Edit?')
   expect(q.prompt_id).not_to_be(p.prompt_id)
   expect(q.generation).to_be(p.generation + 1)
   alice:program_status('working', {app = 'claude-code'})
-  no_prompt('alice')
+  no_prompt(alice.id)
   expect(#call('hub.prompts', {}).prompts).to_be(0)
 end)
 
 test('a blocked report without kind and msg (Codex) opens a prompt', function()
-  local bob = agent('bob')
+  local bob = agent('bob', {kind = 'codex'})
   bob:program_status('blocked', {app = 'codex'})
-  local p = wait('the Codex prompt', function() return pf('pf.state', {}).prompts.bob end)
+  local p = wait('the Codex prompt', function() return pf('pf.state', {}).prompts[bob.id] end)
   expect(p.kind).to_be('')
   expect(p.msg).to_be('')
   bob:program_status('idle', {app = 'codex'})
-  no_prompt('bob')
+  no_prompt(bob.id)
 end)
 
 test('answers write to the pane: keys with no Enter, text as a paste and Enter', function()
   local alice = agent('alice')
   alice:input(true) -- start the capture
   alice:program_status('blocked', {kind = 'question', msg = 'Pick one'})
-  local p = prompt_of('alice', 'Pick one')
+  local p = prompt_of(alice.id, 'Pick one')
   local r = answer(p.prompt_id, 'k-keys', {keys = '2'})
   expect(r.phase).to_be('done')
   wait('the key', function() return alice:input() == '2' end)
@@ -85,7 +85,7 @@ test('answers write to the pane: keys with no Enter, text as a paste and Enter',
   expect(e.error.code).to_be('operation_conflict')
   -- A closed prompt: refused, zero bytes.
   alice:program_status('working', {})
-  no_prompt('alice')
+  no_prompt(alice.id)
   r = answer(p.prompt_id, 'k-late', {keys = '1'})
   expect(r.phase).to_be('refused')
   expect(r.result.reason).to_be('prompt_closed')
@@ -97,14 +97,14 @@ test('a close at a binding check (fault): zero bytes before the write, no Enter 
   local alice = agent('alice')
   alice:input(true)
   alice:program_status('blocked', {kind = 'question', msg = 'Fault one'})
-  local p = prompt_of('alice', 'Fault one')
+  local p = prompt_of(alice.id, 'Fault one')
   local f = fault({point = 'prompt-answer', mode = 'close', when = 'before-write'})
   local r = answer(p.prompt_id, 'f-1', {keys = '1'})
   expect(fault_fired(f)).to_be(true)
   expect(r.phase).to_be('refused')
   -- The record is still blocked: the next report opens a new prompt.
   alice:program_status('blocked', {kind = 'question', msg = 'Fault two'})
-  local q = prompt_of('alice', 'Fault two')
+  local q = prompt_of(alice.id, 'Fault two')
   f = fault({point = 'prompt-answer', mode = 'close', when = 'before-enter'})
   r = answer(q.prompt_id, 'f-2', {text = 'red', submit = true})
   expect(r.phase).to_be('partial')
@@ -117,7 +117,7 @@ test('a write that Rex refuses with not_found is failed; a lost Enter reply is u
   local alice = agent('alice')
   alice:input(true)
   alice:program_status('blocked', {kind = 'question', msg = 'Errors'})
-  local p = prompt_of('alice', 'Errors')
+  local p = prompt_of(alice.id, 'Errors')
   fault({point = 'prompt-answer', mode = 'refuse', when = 'write'})
   local r = answer(p.prompt_id, 'e-1', {keys = '1'})
   expect(r.phase).to_be('failed')
@@ -133,16 +133,16 @@ test('a lost push reply, then a close: the plugin ends with no prompt', function
   local alice = agent('alice')
   pf('pf.fail', {n = 1})
   alice:program_status('blocked', {kind = 'question', msg = 'Lost'})
-  prompt_of('alice', 'Lost') -- applied, but the hub saw a failure
+  prompt_of(alice.id, 'Lost') -- applied, but the hub saw a failure
   alice:program_status('working', {})
-  no_prompt('alice')
+  no_prompt(alice.id)
 end)
 
 test('a hub restart: a new generation, every prompt closed; a repeated answer returns its record', function()
   local alice = agent('alice')
   alice:input(true)
   alice:program_status('blocked', {kind = 'question', msg = 'Before restart'})
-  local p = prompt_of('alice', 'Before restart')
+  local p = prompt_of(alice.id, 'Before restart')
   expect(answer(p.prompt_id, 'r-1', {keys = '1'}).phase).to_be('done')
   wait('the key', function() return alice:input(true) == '1' end)
   local old = pf('pf.state', {}).generation
