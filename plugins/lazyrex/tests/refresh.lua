@@ -1,6 +1,7 @@
 -- Read-tracking audit of the home plugin (docs/hub.md, "SQL read tracking"; the default is
--- tracked). The home plugin has no SQL: every render reads hub actions, so the hub never installs
--- a table set for it, and hub data changes render its views again. Each test primes an attached
+-- tracked). The home plugin has no SQL: every render reads covered hub actions with its render ID,
+-- so the hub installs an empty table set and the change names of those reads, and a change of one
+-- of those names renders its views again. Each test primes an attached
 -- view once with a render, changes hub data, then reads the renderer's cached snapshot (View:get)
 -- and never asks for a render, so a missing render is seen as a stale snapshot. The file stops the
 -- launcher stub first: the home plugin registers Launch Profile… only while no other plugin offers
@@ -88,4 +89,30 @@ test('a launch notice reaches the open Agents… panel', function()
   end)
   view('launch'):action('launch/shell', 'launch', {values = {title = 'Navigated'}}, 'rt-launch-ok')
   shows(p, 'the next launch clears the notice', function(tree) return H.node(tree, 'navigation_notice') == nil end)
+end)
+
+-- The render ID: each covered read of a render passes it, so the render stays tracked. The case
+-- checks a settled render that a render request causes, not a hub change: a hub.changed makes the
+-- plugin read hub.plugins without a render ID (sync), and that read can untrack a render at the
+-- same time (docs/hub.md).
+local function tracked(v)
+  for _, c in ipairs(renders('lazyrex')) do if c.view_id == v.id then return c.sql_tracked end end
+end
+local function settle()
+  local last = -1
+  wait('the renders to settle', function()
+    local n = 0
+    for _, c in ipairs(renders('lazyrex')) do n = n + c.attempts end
+    if n == last then return true end
+    last = n
+    rex.sleep(1)
+  end, 20)
+end
+
+test('a settled render of the Agents… panel stays tracked', function()
+  local v = view('agents')
+  settle()
+  v:render()
+  settle()
+  expect(tracked(v), 'the Agents… render is tracked').to_be(true)
 end)

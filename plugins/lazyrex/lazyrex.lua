@@ -30,6 +30,9 @@ local function hub(action, args)
   if type(response.result) ~= 'table' then fail('internal', 'Invalid hub result') end
   return response.result
 end
+-- read is a covered hub read of a render (docs/hub.md, "Hub reads in a render"): the render ID
+-- keeps the render tracked. A render passes its own ID; no other code borrows it.
+local function read(render_id, action) return hub(action, {render = render_id}) end
 -- set_notice changes the launch notice. The notice is Lua state that the Agents… panel shows, not hub
 -- data, so a change renders the open panel again (hub.ui.invalidate). A failure is ignored, as the
 -- SDK app.refresh does; the call raises nothing.
@@ -66,16 +69,16 @@ local function worker_detail(worker)
   if type(worker.error) == 'string' and worker.error ~= '' then detail = detail .. ' · ' .. worker.error end
   return detail
 end
-local function registered(id)
-  for _, plugin in ipairs(hub('hub.plugins').plugins or {}) do if plugin.id == id then return true end end
+local function registered(id, render_id)
+  for _, plugin in ipairs(read(render_id, 'hub.plugins').plugins or {}) do if plugin.id == id then return true end end
   return false
 end
 
 -- /panels/agents: what runs and what the user can talk to. One action per list item.
-local function panel_tree()
-  local workers = hub('hub.workers').workers or {}
-  local agents = hub('hub.agents').agents or {}
-  local has_messages = registered('messaging')
+local function panel_tree(render_id)
+  local workers = read(render_id, 'hub.workers').workers or {}
+  local agents = read(render_id, 'hub.agents').agents or {}
+  local has_messages = registered('messaging', render_id)
   local nodes, agent_items, worker_items = {}, {}, {}
   if navigation_notice then nodes[#nodes + 1] = {id = 'navigation_notice', type = 'widget', text = navigation_notice} end
   for _, agent in ipairs(agents) do
@@ -103,9 +106,9 @@ local function panel_tree()
 end
 
 -- /forms/worker/<spawn_id>: the menu of one active worker.
-local function worker_tree(spawn_id)
+local function worker_tree(spawn_id, render_id)
   local worker
-  for _, w in ipairs(hub('hub.workers').workers or {}) do if w.spawn_id == spawn_id then worker = w end end
+  for _, w in ipairs(read(render_id, 'hub.workers').workers or {}) do if w.spawn_id == spawn_id then worker = w end end
   if not worker then
     return {title = 'Worker', menu = true, nodes = {
       {id = 'gone', type = 'widget', text = 'This worker is no longer listed.'}, cancel_node('Close')}}
@@ -122,9 +125,9 @@ local function worker_tree(spawn_id)
 end
 
 -- /forms/stop: the keyboard path, a select of the active workers.
-local function stop_tree()
+local function stop_tree(render_id)
   local options = {}
-  for _, worker in ipairs(hub('hub.workers').workers or {}) do
+  for _, worker in ipairs(read(render_id, 'hub.workers').workers or {}) do
     if active(worker) then options[#options + 1] = {value = worker.spawn_id, label = worker_label(worker)} end
   end
   local nodes = {}
@@ -140,8 +143,8 @@ local function stop_tree()
 end
 
 -- /forms/launch: one launch form per profile (registered only while no Profiles plugin is).
-local function launch_tree()
-  local profiles_ok, profile_result = pcall(hub, 'hub.profiles')
+local function launch_tree(render_id)
+  local profiles_ok, profile_result = pcall(read, render_id, 'hub.profiles')
   local profiles = profiles_ok and (profile_result.profiles or {}) or {}
   local nodes = {}
   for _, profile in ipairs(profiles) do
@@ -163,11 +166,11 @@ local function launch_tree()
   return {title = 'Launch Profile', nodes = nodes}
 end
 
-local function render(route)
-  if route == '/panels/agents' then return panel_tree() end
-  if route == '/forms/stop' then return stop_tree() end
-  if route == '/forms/launch' then return launch_tree() end
-  return worker_tree(route:match('^/forms/worker/(.+)$'))
+local function render(route, render_id)
+  if route == '/panels/agents' then return panel_tree(render_id) end
+  if route == '/forms/stop' then return stop_tree(render_id) end
+  if route == '/forms/launch' then return launch_tree(render_id) end
+  return worker_tree(route:match('^/forms/worker/(.+)$'), render_id)
 end
 
 local function stop(spawn_id, key)
@@ -275,7 +278,7 @@ local function known_route(route)
   return type(route) == 'string' and (routes[route] or route:match('^/forms/worker/.+$') ~= nil)
 end
 local handlers = {
-  ['view.render'] = function(args) return {tree = render(args.route)} end,
+  ['view.render'] = function(args) return {tree = render(args.route, args.render)} end,
   ['view.action'] = perform,
   ['view.seen'] = function(args) return {} end,
   ['hub.changed'] = function(args) sync(); return {} end,
