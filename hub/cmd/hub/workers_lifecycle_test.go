@@ -97,3 +97,21 @@ func TestSpawnAdmissionIsAChange(t *testing.T) {
 	h.spawnAdmitted(&spawnRow{ID: "spawn-2", Agent: "agent-2"}, Profile{ID: "agent"}, "Agent 2")
 	wait("workers", "agents")
 }
+
+// workerGone reports a stored close also when its read of the row afterward fails.
+func TestWorkerGoneReportsAStoredCloseWhenTheReadFails(t *testing.T) {
+	h, s := workerTestHub(t)
+	if _, err := h.db.Exec(`UPDATE spawns SET status = 'open' WHERE spawn_id = 'spawn-test'`); err != nil {
+		t.Fatal(err)
+	}
+	s.Status = "open"
+	// The row vanishes after the close, so the read in workerGone finds nothing.
+	if _, err := h.db.Exec(`CREATE TRIGGER vanish AFTER UPDATE ON spawns BEGIN DELETE FROM spawns WHERE spawn_id = NEW.spawn_id; END`); err != nil {
+		t.Fatal(err)
+	}
+	wait := changedNames(t, h)
+	if err := h.workerGone(context.Background(), s, "pane gone"); err == nil {
+		t.Fatal("the read of a vanished row did not fail")
+	}
+	wait("workers")
+}
