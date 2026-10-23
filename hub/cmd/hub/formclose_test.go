@@ -48,6 +48,12 @@ func answerRex(t *testing.T, fail string) *rex.Rex {
 // or an error code.
 func replyRex(t *testing.T, reply func(method string) (any, string)) *rex.Rex {
 	t.Helper()
+	return payloadRex(t, func(method string, _ json.RawMessage) (any, string) { return reply(method) })
+}
+
+// payloadRex is replyRex with the request payload: reply(method, payload).
+func payloadRex(t *testing.T, reply func(method string, payload json.RawMessage) (any, string)) *rex.Rex {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "fr") // a unix socket path must be short
 	if err != nil {
 		t.Fatal(err)
@@ -69,11 +75,14 @@ func replyRex(t *testing.T, reply func(method string) (any, string)) *rex.Rex {
 			if err != nil {
 				return
 			}
-			var f struct{ Type, ID, Method string }
+			var f struct {
+				Type, ID, Method string
+				Payload          json.RawMessage
+			}
 			json.Unmarshal(data, &f)
 			frame := map[string]any{"type": "welcome"}
 			if f.Type == "request" {
-				payload, fail := reply(f.Method)
+				payload, fail := reply(f.Method, f.Payload)
 				frame = map[string]any{"type": "response", "id": f.ID, "payload": payload}
 				if fail != "" {
 					frame = map[string]any{"type": "response", "id": f.ID, "error": map[string]any{"code": fail, "message": "test"}}

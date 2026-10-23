@@ -39,7 +39,7 @@ func openDB(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // one writer; transactions are short and never span an RPC
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + peerSchema); err != nil {
 		return nil, err
 	}
 	// Columns added after the first release. "duplicate column" means the store has them already.

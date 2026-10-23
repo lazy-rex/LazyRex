@@ -796,6 +796,11 @@ func (h *Hub) resolveAgent(args map[string]any) (any, error) {
 	if to == "" {
 		return nil, bad("invalid: to is required")
 	}
+	if local, remote, ok, err := h.resolveQualified(to); err != nil || remote != nil {
+		return remote, err
+	} else if ok {
+		to = local
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if i, ok := h.aliases[to]; ok {
