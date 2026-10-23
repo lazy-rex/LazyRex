@@ -507,26 +507,11 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 			err = relFail("closing the view %s: %v", opened.ViewID, cerr)
 		}
 	}()
-	var snap struct {
-		Route    string          `json:"route"`
-		Revision json.RawMessage `json:"revision"`
-		Tree     json.RawMessage `json:"tree"`
-	}
-	var got json.RawMessage
-	for i := 0; i < 50; i++ {
-		if got, err = c.perform(ctx, tv, "testview.get", map[string]any{"route": it.Route}); err == nil {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	snap, err := waitViewAction(ctx, func(ctx context.Context) (json.RawMessage, error) {
+		return c.perform(ctx, tv, "testview.get", map[string]any{"route": it.Route})
+	}, it.Route, it.NodeID, it.Action)
 	if err != nil {
 		return relFail("the view %s: %v", opened.ViewID, err)
-	}
-	if json.Unmarshal(got, &snap) != nil || snap.Route != it.Route {
-		return relFail("the view %s is at %q, not %s", opened.ViewID, snap.Route, it.Route)
-	}
-	if !treeHasAction(snap.Tree, it.NodeID, it.Action) {
-		return relFail("the view %s has no node %s with the action %s", opened.ViewID, it.NodeID, it.Action)
 	}
 	input := it.Input
 	if len(input) == 0 {
@@ -615,6 +600,41 @@ func (h *rehearsal) viewOperation(ctx context.Context, c *helperConn, tv string,
 			return op.Result, nil
 		default:
 			return nil, relFail("the operation %s is %s: %s", key, op.Status, raw)
+		}
+	}
+}
+
+type relViewSnap struct {
+	Route    string          `json:"route"`
+	Revision json.RawMessage `json:"revision"`
+	Tree     json.RawMessage `json:"tree"`
+}
+
+// waitViewAction gets the view until it is at route and its tree has the node id with the action.
+// The hub gives a loading tree (revision 0) while the plugin snapshot is pending, so the first
+// reply can be a success without the node. At the end of ctx, the error gives the last reply.
+func waitViewAction(ctx context.Context, get func(context.Context) (json.RawMessage, error), route, id, action string) (relViewSnap, error) {
+	var snap relViewSnap
+	var last string
+	for {
+		snap = relViewSnap{}
+		got, err := get(ctx)
+		switch {
+		case err != nil:
+			last = err.Error()
+		case json.Unmarshal(got, &snap) != nil:
+			last = "not a view snapshot: " + string(got)
+		case snap.Route != route:
+			last = fmt.Sprintf("at %q, not %s", snap.Route, route)
+		case !treeHasAction(snap.Tree, id, action):
+			last = fmt.Sprintf("no node %s with the action %s: %s", id, action, got)
+		default:
+			return snap, nil
+		}
+		select {
+		case <-ctx.Done():
+			return relViewSnap{}, fmt.Errorf("%v; the last reply: %s", ctx.Err(), last)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }

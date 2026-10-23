@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -428,5 +429,44 @@ func TestReleaseSetSeedPlaceholders(t *testing.T) {
 		if err := checkFilled([]byte(`{"runs":[{"session_id":"session:seed"}]}`), expect, h.placeholders(plugin, "session:x", "block:x")); err == nil {
 			t.Errorf("%q: an expect with a seed placeholder passed", plugin)
 		}
+	}
+}
+
+// codex-26: the hub gives a successful loading tree while the plugin snapshot is pending. A view item
+// waits for the route and the action; a tree that never gets the action fails with the last reply.
+func TestReleaseSetViewWaitsForAction(t *testing.T) {
+	snap := func(route string, rev int, tree json.RawMessage) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{"route": route, "revision": fmt.Sprint(rev), "tree": tree})
+		return b
+	}
+	ready := json.RawMessage(`{"nodes":[{"id":"dir_choices","type":"list","items":[{"id":"default","action":{"name":"default"}}]}]}`)
+	replies := []json.RawMessage{snap("/forms/start-accessory", 0, loadingTree()), snap("/forms/start-accessory", 0, loadingTree()),
+		snap("/forms/start-accessory", 3, ready)}
+	calls := 0
+	get := func(context.Context) (json.RawMessage, error) {
+		r := replies[min(calls, len(replies)-1)]
+		calls++
+		return r, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := waitViewAction(ctx, get, "/forms/start-accessory", "dir_choices", "default")
+	if err != nil || calls != 3 || string(got.Revision) != `"3"` {
+		t.Fatalf("loading then ready: calls %d, %+v, %v", calls, got, err)
+	}
+
+	never := func(context.Context) (json.RawMessage, error) { return snap("/forms/start-accessory", 0, loadingTree()), nil }
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel2()
+	if _, err := waitViewAction(ctx2, never, "/forms/start-accessory", "dir_choices", "default"); err == nil ||
+		!strings.Contains(err.Error(), "no node dir_choices with the action default") || !strings.Contains(err.Error(), "$loading") {
+		t.Fatalf("a tree without the action: %v", err)
+	}
+	wrong := func(context.Context) (json.RawMessage, error) { return snap("/other", 3, ready), nil }
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel3()
+	if _, err := waitViewAction(ctx3, wrong, "/forms/start-accessory", "dir_choices", "default"); err == nil ||
+		!strings.Contains(err.Error(), `at "/other", not /forms/start-accessory`) {
+		t.Fatalf("a wrong route: %v", err)
 	}
 }
