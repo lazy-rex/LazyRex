@@ -66,7 +66,7 @@ func (h *rehearsal) setPhase() error {
 		s.ref[e.Plugin] = ref
 		s.note("seed", e.Plugin, fmt.Sprintf("reference: user_version %d, %d tables", ref.UserVersion, len(ref.Tables)), nil)
 	}
-	if err := h.setChecks("seeded", nil); err != nil {
+	if err := h.setChecks("seeded"); err != nil {
 		return err
 	}
 	for i := range s.file.Plugins {
@@ -75,7 +75,7 @@ func (h *rehearsal) setPhase() error {
 			return relFail("the probes of %s on FROM: %v", e.Plugin, err)
 		}
 	}
-	if err := h.setChecks("probes on FROM", nil); err != nil {
+	if err := h.setChecks("probes on FROM"); err != nil {
 		return err
 	}
 	for i := range s.file.Plugins {
@@ -86,7 +86,7 @@ func (h *rehearsal) setPhase() error {
 	if err := h.chunkProbe("after the last plugin forward", h.spDigest); err != nil {
 		return err
 	}
-	if err := h.setChecks("chunking probe", nil); err != nil {
+	if err := h.setChecks("chunking probe"); err != nil {
 		return err
 	}
 	for i := len(s.file.Plugins) - 1; i >= 0; i-- {
@@ -128,29 +128,45 @@ func (h *rehearsal) pluginForward(e *relSetEntry) error {
 			return err
 		}
 		if st == "backup" || st == "replace" || st == "verify" {
-			if err := h.setChecks(e.Plugin+" "+st, nil); err != nil {
+			if err := h.setChecks(e.Plugin + " " + st); err != nil {
 				return err
 			}
 		}
 	}
-	// The rerun: the same pins and the same data.
+	// The rerun: the same pins and the same data. Each plugin's data after the rerun must equal its
+	// snapshot right before the rerun exactly; the cumulative rules against the seed reference
+	// still apply.
+	pre := map[string]*relSnap{}
+	for i := range h.set.file.Plugins {
+		p := &h.set.file.Plugins[i]
+		s, err := h.snapPlugin(p)
+		if err != nil {
+			return relFail("the snapshot of %s before the rerun: %v", p.Plugin, err)
+		}
+		pre[p.Plugin] = s
+	}
 	for _, st := range []string{"replace", "verify"} {
 		if err := step(st); err != nil {
 			return relFail("the rerun of %v", err)
 		}
 	}
-	if err := h.setChecks(e.Plugin+" rerun", func(d *relSnapDiff) error {
-		if len(d.Changed)+len(d.Inserted) > 0 {
-			return relFail("the rerun of replace and verify changed data: %v %v", d.Changed, d.Inserted)
+	for i := range h.set.file.Plugins {
+		p := &h.set.file.Plugins[i]
+		s, err := h.snapPlugin(p)
+		if err != nil {
+			return relFail("the snapshot of %s after the rerun: %v", p.Plugin, err)
 		}
-		return nil
-	}); err != nil {
+		if err := sameSnap(pre[p.Plugin], s); err != nil {
+			return relFail("the rerun of replace and verify of %s changed the data of %s: %v", e.Plugin, p.Plugin, err)
+		}
+	}
+	if err := h.setChecks(e.Plugin + " rerun"); err != nil {
 		return err
 	}
 	if err := h.runItems(e, e.Probe, "to", true); err != nil {
 		return relFail("the probes of %s on TO: %v", e.Plugin, err)
 	}
-	return h.setChecks(e.Plugin+" probes on TO", nil)
+	return h.setChecks(e.Plugin + " probes on TO")
 }
 
 // pluginRollback rolls one plugin back to FROM in its lab plugin run, then runs its probes on FROM.
@@ -159,13 +175,13 @@ func (h *rehearsal) pluginRollback(e *relSetEntry) error {
 	if err := h.child("rollback", nil, "-run", run); err != nil {
 		return relFail("%s: %v", e.Plugin, err)
 	}
-	if err := h.setChecks(e.Plugin+" rollback", nil); err != nil {
+	if err := h.setChecks(e.Plugin + " rollback"); err != nil {
 		return err
 	}
 	if err := h.runItems(e, e.Probe, "from-after", true); err != nil {
 		return relFail("the probes of %s on FROM after the rollback: %v", e.Plugin, err)
 	}
-	return h.setChecks(e.Plugin+" probes after the rollback", nil)
+	return h.setChecks(e.Plugin + " probes after the rollback")
 }
 
 // pluginDBPath is the SQL database of a plugin in the lab, "" when it has none.
@@ -210,8 +226,8 @@ func (h *rehearsal) snapPlugin(e *relSetEntry) (*relSnap, error) {
 }
 
 // setChecks checks the data of every plugin of the set against its reference, and runs the
-// invariants. more, when set, checks each diff further (the rerun).
-func (h *rehearsal) setChecks(phase string, more func(*relSnapDiff) error) error {
+// invariants.
+func (h *rehearsal) setChecks(phase string) error {
 	for i := range h.set.file.Plugins {
 		e := &h.set.file.Plugins[i]
 		cur, err := h.snapPlugin(e)
@@ -251,11 +267,6 @@ func (h *rehearsal) setChecks(phase string, more func(*relSnapDiff) error) error
 		} else if err := check(nil); err != nil {
 			return relFail("%s, %s: %v", phase, e.Plugin, err)
 		}
-		if more != nil {
-			if err := more(d); err != nil {
-				return relFail("%s, %s: %v", phase, e.Plugin, err)
-			}
-		}
 		h.set.note(phase, e.Plugin, "data ok", d)
 	}
 	h.say("set data %s: the data of %d plugins passes", phase, len(h.set.file.Plugins))
@@ -283,7 +294,7 @@ func (h *rehearsal) runItems(e *relSetEntry, items []relSetItem, phase string, c
 				return relFail("item %d (%s) exited %d: %s", idx[j]+1, it.Action, o.Code, strings.TrimSpace(string(o.Out)))
 			}
 			if check {
-				if err := checkExpects(o.Out, it.Expect); err != nil {
+				if err := checkExpects(o.Out, fillExpects(it.Expect, o.Vals)); err != nil {
 					return relFail("item %d (%s): %v", idx[j]+1, it.Action, err)
 				}
 			}
@@ -403,7 +414,7 @@ func labViewWrapper(lab, tool, server string) (relRewrite, error) {
 // (with the phase appended in a probe, so each phase has its own key), the wait for the final
 // operation, the expects, a replay of the same operation, and then the close of the view and the
 // pane.
-func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check bool) error {
+func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check bool) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	dir := filepath.Join(h.lab, strings.TrimPrefix(it.PaneDir, "<LAB>/"))
@@ -445,7 +456,12 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	}); err != nil {
 		return relFail("the source pane: %v", err)
 	}
-	defer h.closePane(session, block, "")
+	// A failed cleanup fails the item, unless the item already failed.
+	defer func() {
+		if cerr := h.closePane(session, block, ""); cerr != nil && err == nil {
+			err = relFail("closing the source pane: %v", cerr)
+		}
+	}()
 	time.Sleep(500 * time.Millisecond) // the pane's first output (the OSC 7 directory)
 	c := &helperConn{r: h.l.r}
 	self, err := h.runnerClient(ctx, c)
@@ -474,7 +490,11 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	if tv == "" {
 		return relFail("no lab renderer attached the view %s", opened.ViewID)
 	}
-	defer c.perform(ctx, tv, "testview.close", map[string]any{})
+	defer func() {
+		if _, cerr := c.perform(ctx, tv, "testview.close", map[string]any{}); cerr != nil && err == nil {
+			err = relFail("closing the view %s: %v", opened.ViewID, cerr)
+		}
+	}()
 	var snap struct {
 		Route    string          `json:"route"`
 		Revision json.RawMessage `json:"revision"`
@@ -507,11 +527,16 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 		return err
 	}
 	if check {
-		if err := checkExpects(result, it.Expect); err != nil {
+		if err := checkExpects(result, fillExpects(it.Expect, h.placeholders(session, block))); err != nil {
 			return err
 		}
 	}
-	// The replay: the same key and arguments give the recorded result and no new effect.
+	// The replay: the same key and arguments give the recorded result and no new effect. The data
+	// after the replay must equal the data after the first operation exactly.
+	before, err := h.snapPlugin(e)
+	if err != nil {
+		return relFail("the snapshot before the replay of %s: %v", key, err)
+	}
 	again, err := h.viewOperation(ctx, c, tv, act, key)
 	if err != nil {
 		return relFail("the replay of %s: %v", key, err)
@@ -520,6 +545,13 @@ func (h *rehearsal) viewItem(e *relSetEntry, it relSetItem, phase string, check 
 	bc, _ := canonicalJSON(again)
 	if string(ac) != string(bc) {
 		return relFail("the replay of %s gave %s, not %s", key, bc, ac)
+	}
+	after, err := h.snapPlugin(e)
+	if err != nil {
+		return relFail("the snapshot after the replay of %s: %v", key, err)
+	}
+	if err := sameSnap(before, after); err != nil {
+		return relFail("the replay of %s changed data: %v", key, err)
 	}
 	return nil
 }

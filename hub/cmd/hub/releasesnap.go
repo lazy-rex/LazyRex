@@ -334,6 +334,61 @@ func sameSchema(ref, cur []relSchemaRow) error {
 	return nil
 }
 
+// sameSnap refuses any difference between two snapshots: user_version, the DDL, and every table
+// with its columns, key and typed rows. It names the first difference.
+func sameSnap(a, b *relSnap) error {
+	if a.UserVersion != b.UserVersion {
+		return fmt.Errorf("user_version %d is now %d", a.UserVersion, b.UserVersion)
+	}
+	if err := sameSchema(a.Schema, b.Schema); err != nil {
+		return err
+	}
+	names := map[string]bool{}
+	for n := range a.Tables {
+		names[n] = true
+	}
+	for n := range b.Tables {
+		names[n] = true
+	}
+	sorted := make([]string, 0, len(names))
+	for n := range names {
+		sorted = append(sorted, n)
+	}
+	sort.Strings(sorted)
+	for _, n := range sorted {
+		at, bt := a.Tables[n], b.Tables[n]
+		switch {
+		case at == nil || bt == nil:
+			return fmt.Errorf("table %s is in only one snapshot", n)
+		case !slices.Equal(at.Columns, bt.Columns) || !slices.Equal(at.Key, bt.Key):
+			return fmt.Errorf("table %s has other columns or another key", n)
+		}
+		keys := map[string]bool{}
+		for k := range at.Rows {
+			keys[k] = true
+		}
+		for k := range bt.Rows {
+			keys[k] = true
+		}
+		ks := make([]string, 0, len(keys))
+		for k := range keys {
+			ks = append(ks, k)
+		}
+		sort.Strings(ks)
+		for _, k := range ks {
+			ar, aok := at.Rows[k]
+			br, bok := bt.Rows[k]
+			if !aok || !bok {
+				return fmt.Errorf("table %s row %s is in only one snapshot", n, k)
+			}
+			if !slices.Equal(ar, br) {
+				return fmt.Errorf("table %s row %s changed", n, k)
+			}
+		}
+	}
+	return nil
+}
+
 // relSnapDiff is what a check found: the allowed changes and inserts, for the record.
 type relSnapDiff struct {
 	Changed  []string `json:"changed,omitempty"`  // "table key column"

@@ -12,7 +12,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,7 +123,12 @@ func (h *rehearsal) chunkProbe(when, digest string) error {
 	}
 	rec.SPInstance = inst
 	logp := filepath.Join(labCfg.state, "dev", "hub.log")
-	offset := fileSize(logp)
+	mark, err := markLog(logp)
+	if err != nil {
+		restore()
+		return relFail("%s: %v", when, err)
+	}
+	defer mark.f.Close()
 	key := "rehearsal-chunk-" + strings.ReplaceAll(when, " ", "-")
 	save := json.RawMessage(fmt.Sprintf(`{"kb":%d,"key":%q}`, relChunkKB, key))
 	outs, err := h.agentBatch("chunk-"+strings.ReplaceAll(when, " ", "-"), []relSetItem{
@@ -132,7 +139,7 @@ func (h *rehearsal) chunkProbe(when, digest string) error {
 		probeErr = checkChunkOuts(outs, &rec)
 	}
 	if probeErr == nil {
-		probeErr = checkChunkLog(logp, offset, &rec)
+		probeErr = checkChunkLog(mark, logp, &rec)
 	}
 	// The cleanup runs also after a failed probe; a failed cleanup fails the window.
 	if err := restore(); err != nil {
@@ -198,29 +205,71 @@ func checkChunkOuts(outs []relCallOut, rec *relChunkCheck) error {
 	return nil
 }
 
-// checkChunkLog reads the hub.log lines after offset: they must have hub.reply.part lines (the
-// replies came in parts, not inline) and no parts_invalid or too_large refusal.
-func checkChunkLog(logp string, offset int64, rec *relChunkCheck) error {
-	f, err := os.Open(logp)
+// relLogMark is the hub log before a probe: the open file, its identity and its size then.
+type relLogMark struct {
+	f      *os.File
+	fi     os.FileInfo
+	offset int64
+}
+
+// markLog opens the hub log at p and records its identity and size. The caller closes m.f.
+func markLog(p string) (*relLogMark, error) {
+	f, err := os.Open(p)
 	if err != nil {
-		return err
+		return nil, relFail("the hub log %s: %v", p, err)
 	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil || fi.Size() < offset {
-		return relFail("the hub log %s was cut or replaced during the probe", logp)
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, relFail("the hub log %s: %v", p, err)
 	}
-	if _, err := f.Seek(offset, 0); err != nil {
-		return err
+	return &relLogMark{f: f, fi: fi, offset: fi.Size()}, nil
+}
+
+// checkChunkLog reads the hub log lines that came after the mark m: they must have
+// hub.reply.part lines (the replies came in parts, not inline) and no parts_invalid or too_large
+// refusal. The file at logp must still be the marked file, not cut below the mark, and every read
+// must succeed up to its end.
+func checkChunkLog(m *relLogMark, logp string, rec *relChunkCheck) error {
+	now, err := os.Stat(logp)
+	if err != nil {
+		return relFail("the hub log %s: %v", logp, err)
 	}
-	b := make([]byte, 0, 1<<20)
+	if !os.SameFile(m.fi, now) {
+		return relFail("the hub log %s was replaced during the probe", logp)
+	}
+	cur, err := m.f.Stat()
+	if err != nil {
+		return relFail("the hub log %s: %v", logp, err)
+	}
+	if cur.Size() < m.offset {
+		return relFail("the hub log %s was cut during the probe (%d bytes, %d before)", logp, cur.Size(), m.offset)
+	}
+	b, err := readFrom(m.f, m.offset)
+	if err != nil {
+		return relFail("the hub log %s: %v", logp, err)
+	}
+	return chunkLogLines(b, rec)
+}
+
+// readFrom reads r from offset to its end. Any error other than the end fails.
+func readFrom(r io.ReaderAt, offset int64) ([]byte, error) {
+	var b []byte
 	buf := make([]byte, 64<<10)
 	for {
-		n, err := f.Read(buf)
-		b = append(b, buf[:n]...)
+		n, err := r.ReadAt(buf, offset)
+		b, offset = append(b, buf[:n]...), offset+int64(n)
+		if errors.Is(err, io.EOF) {
+			return b, nil
+		}
 		if err != nil {
-			break
+			return nil, err
 		}
 	}
+}
+
+// chunkLogLines checks the log text b of one probe window.
+func chunkLogLines(b []byte, rec *relChunkCheck) error {
 	for _, line := range strings.Split(string(b), "\n") {
 		if strings.Contains(line, "parts_invalid") || strings.Contains(line, "too_large") {
 			return relFail("the hub log has a refusal: %s", line)
@@ -233,14 +282,6 @@ func checkChunkLog(logp string, offset int64, rec *relChunkCheck) error {
 		return relFail("the hub log has no hub.reply.part line: the replies did not come in parts")
 	}
 	return nil
-}
-
-func fileSize(p string) int64 {
-	fi, err := os.Stat(p)
-	if err != nil {
-		return 0
-	}
-	return fi.Size()
 }
 
 // waitPluginState waits (60 s) until the lab hub reports plugin name running and registered

@@ -23,6 +23,20 @@ const (
 type relCallOut struct {
 	Code int
 	Out  []byte
+	Vals map[string]string // the placeholder values of the batch
+}
+
+// fillExpects returns expects with the lab placeholders replaced in each expected value. The set
+// bytes stay as the owner reviewed them.
+func fillExpects(expects []relSetExpect, vals map[string]string) []relSetExpect {
+	out := make([]relSetExpect, len(expects))
+	for i, x := range expects {
+		out[i] = x
+		if len(x.Value) > 0 {
+			out[i].Value = json.RawMessage(fillPlaceholders(x.Value, vals))
+		}
+	}
+	return out
 }
 
 // fillPlaceholders replaces the lab placeholders in a JSON text. Each value is JSON-escaped, so a
@@ -121,7 +135,7 @@ func (h *rehearsal) agentBatch(name string, calls []relSetItem) ([]relCallOut, e
 	}
 	outs := make([]relCallOut, len(calls))
 	for i := range calls {
-		outs[i] = relCallOut{Code: readCode(filepath.Join(dir, fmt.Sprintf("code-%d", i))), Out: mustReadFile(filepath.Join(dir, fmt.Sprintf("out-%d", i)))}
+		outs[i] = relCallOut{Code: readCode(filepath.Join(dir, fmt.Sprintf("code-%d", i))), Out: mustReadFile(filepath.Join(dir, fmt.Sprintf("out-%d", i))), Vals: vals}
 	}
 	if err := h.closePane(session, block, relSeedAgent); err != nil {
 		return nil, err
