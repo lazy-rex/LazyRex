@@ -1192,6 +1192,9 @@ func (h *Hub) beginFileAttempt(ctx context.Context, op *pluginOp, call, out stri
 		return "", err
 	}
 	attempt := hex.EncodeToString(b)
+	if !slices.Contains(opAttemptCalls, call) {
+		return "", fmt.Errorf("the attempt call %q is not in opAttemptCalls", call)
+	}
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -1304,6 +1307,9 @@ func (h *Hub) opCall(ctx context.Context, op *pluginOp, call string) error {
 	}
 	// The start and stop handlers bind the attempt (target_instance, target_block, intent_id) and
 	// commit sent_at before their first effect (adminattempt.go).
+	if !slices.Contains(opAttemptCalls, call) {
+		return fmt.Errorf("the attempt call %q is not in opAttemptCalls", call)
+	}
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO plugin_op_attempts (attempt, op_id, call, expect_run, at) VALUES (?, ?, ?, ?, ?)`,
 		attempt, op.ID, call, expectRun, time.Now().UnixMilli()); err != nil {
 		return err
@@ -1782,35 +1788,48 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 	return "", fmt.Sprintf("the start's intent is %q with status %q, and it has not registered. A new start runs only after the hub resolves the spawn intent (unresolved_intent).", intent, status), intent != "" && status != "abandoned", nil
 }
 
-// observeLater proves the sent start, stop and replace attempts that are still unresolved, when exact
-// evidence appears later: for example, the instance of a start's created intent registers after
-// the op ended unknown (a lost answer, or a hub restart before the registration). Each attempt has
-// an outcome, so its call cannot act any more. It never calls again and never changes the op's
-// phase: only the attempt's proof (docs/hub.md, "attempt").
+// opAttemptCalls are the calls of plugin_op_attempts: the lifecycle calls (opCall) and the file
+// writes (renameAttempt). An attempt of another call is not stored. observeLater looks for Rex
+// evidence of the sent ones of opEvidenceCalls; it counts the passes of every call.
+var (
+	opAttemptCalls  = []string{"start", "stop", "replace", "reload", "write:managed", "write:lock", "write:lock-old"}
+	opEvidenceCalls = []string{"start", "stop", "replace"}
+)
+
+// observeLater observes the unproved attempts of every ended op, of every call. It proves a sent
+// start, stop or replace attempt when exact evidence appears later: for example, the instance of
+// a start's created intent registers after the op ended unknown (a lost answer, or a hub restart
+// before the registration). The op has ended, so its calls cannot act any more. It never calls
+// again and never changes the op's phase: only the attempt's proof and outcome (docs/hub.md,
+// "attempt").
 //
 // The observation is bounded. An attempt without a proof after opObservePasses passes, at least
 // opObservePoll apart, ends unproven: its outcome gets the prefix "unproven:" in the one UPDATE that
-// ends the observation. addRow counts it as settled, so the plugin name is free again. A late
-// effect of the old call is a recorded instance, and the next start retires it.
+// ends the observation. A reload or a file write has nothing to observe in Rex, and ends unproven
+// after the same passes. addRow counts an unproven attempt as settled, so the plugin name is free
+// again. A late effect of an old start is a recorded instance, and the next start retires it. A
+// reload and a file write run in the hub process and end before their outcome is stored, so
+// they have no late effect. An open bound attempt (bound_at, no outcome) is not observed: its
+// handler can still act.
 //
 // It returns the number of attempts that stay unresolved: the manager passes again after
 // opObservePoll while there are any.
 func (h *Hub) observeLater(ctx context.Context) (left int) {
-	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
+	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.sent_at, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
 		JOIN plugin_ops o ON o.op_id = a.op_id
-		WHERE a.proof = '' AND a.outcome != '' AND a.outcome NOT LIKE 'unproven:%' AND a.sent_at != '' AND a.call IN ('start', 'stop', 'replace') AND o.phase = 'unknown'`)
+		WHERE a.proof = '' AND a.outcome NOT LIKE 'unproven:%' AND (a.outcome != '' OR a.bound_at = '') AND o.phase IN ('done', 'failed', 'conflict', 'unknown')`)
 	if err != nil {
 		log.Printf("plugin ops: the later observation: %v", err)
 		return 0
 	}
 	type open struct {
-		attempt, op, call string
-		t                 attemptTarget
+		attempt, op, call, sent string
+		t                       attemptTarget
 	}
 	var list []open
 	for rows.Next() {
 		var a open
-		if rows.Scan(&a.attempt, &a.op, &a.call, &a.t.instance, &a.t.block, &a.t.session, &a.t.intent) == nil {
+		if rows.Scan(&a.attempt, &a.op, &a.call, &a.sent, &a.t.instance, &a.t.block, &a.t.session, &a.t.intent) == nil {
 			list = append(list, a)
 		}
 	}
@@ -1826,8 +1845,13 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 		if err != nil {
 			continue
 		}
-		proof, _, _, err := h.attemptEvidence(ctx, op, a.call, a.t)
-		if err == nil && proof != "" {
+		proof := ""
+		if a.sent != "" && slices.Contains(opEvidenceCalls, a.call) {
+			if proof, _, _, err = h.attemptEvidence(ctx, op, a.call, a.t); err != nil {
+				proof = ""
+			}
+		}
+		if proof != "" {
 			res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = ''`, proof+" (later)", a.attempt)
 			if err != nil {
 				left++
@@ -1848,7 +1872,7 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 			left++
 			continue
 		}
-		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ? || outcome WHERE attempt = ? AND proof = '' AND outcome NOT LIKE 'unproven:%'`,
+		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ? || outcome WHERE attempt = ? AND proof = '' AND outcome NOT LIKE 'unproven:%' AND (outcome != '' OR bound_at = '')`,
 			unprovenPrefix, a.attempt)
 		if err != nil {
 			left++

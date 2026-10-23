@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writingAdd admits an add of src with id, and runs it to the writing phase.
@@ -345,5 +347,102 @@ func TestPluginOpAddRowCleanup(t *testing.T) {
 				t.Fatalf("the row %+v, want %+v", after, changed)
 			}
 		})
+	}
+}
+
+// observePasses runs more than opObservePasses passes of the later observation, each one after
+// the poll interval.
+func observePasses(h *Hub) {
+	for i := 0; i <= opObservePasses; i++ {
+		for k, p := range h.pops.later {
+			p.last = time.Time{}
+			h.pops.later[k] = p
+		}
+		h.observeLater(context.Background())
+	}
+}
+
+// Every unproved attempt of an ended op reaches a terminal outcome without an operator (lead-a1h):
+// for each call of opAttemptCalls, an attempt with no proof of an op on notes that ended, then more
+// than opObservePasses passes: the attempt ends unproven, and an add of notes is admitted. A
+// reload or a file write has no sent Rex call to observe and is still counted. An open bound
+// attempt (its handler can still act) and an attempt of an op that has not ended stay, and keep
+// the add out.
+func TestPluginOpEveryAttemptEndsUnproven(t *testing.T) {
+	type tc struct {
+		name, call, phase, bound, outcome string
+		ends                              bool
+	}
+	var cases []tc
+	for _, call := range opAttemptCalls {
+		cases = append(cases, tc{call, call, "unknown", "t", "error: lost", true})
+	}
+	cases = append(cases,
+		tc{"write:managed of a failed op", "write:managed", "failed", "t", "unknown: the file is not the intended output", true},
+		tc{"an unbound start with no outcome of an ended op", "start", "unknown", "", "", true},
+		tc{"an open bound start", "start", "unknown", "t", "", false},
+		tc{"a reload of an op that has not ended", "reload", "reloading", "", "error: lost", false})
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := rowHub(t)
+			ctx := context.Background()
+			next := writingAdd(t, h, "next", toolsSource, "tools")
+			sent := ""
+			if slices.Contains(opEvidenceCalls, c.call) {
+				sent = "t"
+			}
+			for _, q := range [][]any{
+				{`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('old', 's', 'old', 'f', '{}', 'remove', 'managed:old', 'notes', '', '', '', ?, 1, 1)`, c.phase},
+				{`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, sent_at, outcome) VALUES ('a-old', 'old', ?, 1, ?, ?, ?)`, c.call, c.bound, sent, c.outcome},
+			} {
+				if _, err := h.db.Exec(q[0].(string), q[1:]...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observePasses(h)
+			var outcome, proof string
+			if err := h.db.QueryRow(`SELECT outcome, proof FROM plugin_op_attempts WHERE attempt = 'a-old'`).Scan(&outcome, &proof); err != nil {
+				t.Fatal(err)
+			}
+			if ended := outcome == unprovenPrefix+c.outcome && proof == ""; ended != c.ends {
+				t.Fatalf("outcome %q, proof %q; want ended %v", outcome, proof, c.ends)
+			}
+			if err := h.opWrite(ctx, next); err != nil {
+				t.Fatal(err)
+			}
+			if c.ends && next.Phase != "reloading" || !c.ends && next.Phase != "conflict" {
+				t.Fatalf("the add: phase %s, error %s", next.Phase, next.Error)
+			}
+		})
+	}
+}
+
+// codex-26's reproducer: a reload of a remove on notes returns an error that is not "invalid", so
+// its attempt stays unproved and the op ends unknown. After more than opObservePasses passes the
+// attempt is unproven, and an add of notes is admitted.
+func TestPluginOpUnknownReloadFreesName(t *testing.T) {
+	h := rowHub(t)
+	ctx := context.Background()
+	next := writingAdd(t, h, "next", toolsSource, "tools")
+	if _, err := h.db.Exec(`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated)
+		VALUES ('old', 's', 'old', 'f', '{}', 'remove', 'managed:old', 'notes', '', '', '', 'reloading', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	old, err := h.loadOp(ctx, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reload := opReload
+	t.Cleanup(func() { opReload = reload })
+	opReload = func(context.Context, *Hub) (any, error) { return nil, errors.New("reload response lost") }
+	if err := h.opCall(ctx, old, "reload"); err != nil || old.Phase != "unknown" {
+		t.Fatalf("reload: phase %s, error %v", old.Phase, err)
+	}
+	observePasses(h)
+	if err := h.opWrite(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	if next.Phase != "reloading" {
+		t.Fatalf("the add: phase %s, error %s", next.Phase, next.Error)
 	}
 }
