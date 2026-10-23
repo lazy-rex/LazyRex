@@ -997,8 +997,9 @@ popups.
   plugin that declares no tabs, the home plugin too, gets a pass, so its open tab view closes as undeclared.
 
 Tests: `tests/harness/tests/no_tabs.lua`, `TestHomePluginDeclaresNoTabs`,
-`TestUIPluginsIncludesLiveTabViews`, and
-`plugins/lazyrex/tests` (README coverage table).
+`TestUIPluginsIncludesLiveTabViews`, `TestHomeRouteRefusedLab` (lab: a home form at `/` gets the
+hub's error tree, and the hub log names the plugin's refusal), and `plugins/lazyrex/tests` (README
+coverage table).
 
 ### Worktrees plugin
 
