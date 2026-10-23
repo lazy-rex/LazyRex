@@ -679,3 +679,37 @@ func TestPinnedCommitBadLock(t *testing.T) {
 		t.Fatalf("pinned_commit %v (present %v)", v, ok)
 	}
 }
+
+// An explicit start that waits and cannot save its selection keeps the earlier selected run, in
+// memory too: a later save of the record does not store the failed selection (codex-27,
+// plugins-p1-source-findings-1).
+func TestSelectedRunWaitSaveFails(t *testing.T) {
+	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p", "d")}, map[string]string{"d": `{"name":"d","main":"p.lua"}`})
+	pl, d := h.plugins["p"], h.plugins["d"]
+	p1Register(h, d)
+	p1Spawned(t, h, pl, p1Start(t, h, pl), p1A)
+	var before string
+	h.db.QueryRow(`SELECT selected_run FROM plugins WHERE name = 'p'`).Scan(&before)
+	h.mu.Lock()
+	d.ClientID = ""
+	h.mu.Unlock()
+	p1Pin(t, h, "p", p1B, p1Manifest("p", "d"))
+	if _, err := h.db.Exec(`CREATE TRIGGER refuse_sel BEFORE UPDATE OF selected_run ON plugins WHEN NEW.selected_run != OLD.selected_run
+		BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p1Start(t, h, pl); err == nil || !strings.Contains(err.Error(), "the selected run is not saved") {
+		t.Fatalf("the waiting start: %v", err)
+	}
+	if _, err := h.db.Exec(`DROP TRIGGER refuse_sel`); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	h.savePlugin(context.Background(), pl) // any later save of the record
+	h.mu.Unlock()
+	var after string
+	h.db.QueryRow(`SELECT selected_run FROM plugins WHERE name = 'p'`).Scan(&after)
+	if after != before {
+		t.Fatalf("the failed selection was stored:\n%s\n%s", before, after)
+	}
+}
