@@ -1195,9 +1195,9 @@ The 4.3 goal (timeout audit, 2026-10-22): every `client.perform` that the hub se
 | The view worker's calls to a plugin (`viewsvc.go`, `callPlugin`) | no hub deadline, by design | The worker is serial for each plugin, and `runOps` retries an unknown outcome. With a deadline, each retry would add one more queued call to a plugin that does not take its queue. Without one, one call waits, and the plugin is the cause. | by design |
 | `view.reload` (`ui.go`, `uiReload`) | `timeout_ms + performMargin`, 7 s | Only the event (`view_reload` with the error). No retry, as before. | bounded |
 | `view.retire` (`ui.go`, `retireLegacy`) | `timeout_ms + performMargin`, 7 s | This hub process sends no other `view.retire` to that attachment. A new attachment gets one, and so can a new hub process (the mark is in memory). A failure that Rex reports is retried after 10 s, as before. | bounded |
-| `view.close_request` (`pair.go`) | none yet | | audit row 12, to do |
-| App calls: `pane.insert_path`, `session.select` (`appaction.go`, `ui.go`) | none yet | | audit row 13, to do |
-| `hub.forward` (`agentface.go`) | none yet | | audit row 8, to do |
+| `view.close_request` (`pair.go`) | none yet | | pending (audit row 12) |
+| App calls: `pane.insert_path`, `session.select` (`appaction.go`, `ui.go`) | none yet | | pending (audit row 13) |
+| `hub.forward` (`agentface.go`) | none yet | | pending (audit row 8) |
 
 Tests: `TestViewReloadHasADeadline`, `TestViewRetireAfterACut` (`perform_test.go`).
 
