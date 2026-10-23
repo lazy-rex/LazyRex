@@ -94,3 +94,62 @@ func TestRetireSchemaDropsEntryStamp(t *testing.T) {
 		t.Fatal("plugins.entry_stamp stays after the open")
 	}
 }
+
+// A hub.db of the transcript pane pair loses view_transcripts with its rows and the layout columns
+// of views and ui_tabs at open, and keeps the rows of views and ui_tabs. A second open finds nothing
+// to do. A new hub.db with the UI schema has none of them.
+func TestRetireSchemaDropsTranscriptPair(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.db")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		uiSchema,
+		`ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE view_transcripts (view_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+		  block_id TEXT NOT NULL DEFAULT '', child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '',
+		  client_id TEXT NOT NULL DEFAULT '', attachment TEXT NOT NULL DEFAULT '', crashes INTEGER NOT NULL DEFAULT 0,
+		  close_pending INTEGER NOT NULL DEFAULT 0, requested TEXT NOT NULL DEFAULT '')`,
+		`INSERT INTO view_transcripts (view_id, status, block_id) VALUES ('v1', 'open', 'block:t')`,
+		`INSERT INTO views (view_id, plugin, tab, route, status, layout) VALUES ('v1', 'p', 't', '/', 'open', 'transcript')`,
+		`INSERT INTO ui_tabs (plugin, tab, title, route, pos, layout) VALUES ('p', 't', 'T', '/', 0, 'transcript')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	for i := 0; i < 2; i++ {
+		db, err := openDB(path)
+		if err != nil {
+			t.Fatalf("open %d: %v", i+1, err)
+		}
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'view_transcripts'`).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("open %d: view_transcripts stays (%d, %v)", i+1, n, err)
+		}
+		for _, table := range []string{"views", "ui_tabs"} {
+			if columnExists(t, db.DB, table, "layout") {
+				t.Fatalf("open %d: %s.layout stays", i+1, table)
+			}
+		}
+		var status, title string
+		if err := db.QueryRow(`SELECT v.status, u.title FROM views v, ui_tabs u WHERE v.view_id = 'v1' AND u.plugin = 'p' AND u.tab = 't'`).Scan(&status, &title); err != nil || status != "open" || title != "T" {
+			t.Fatalf("open %d: the rows are %q %q (%v)", i+1, status, title, err)
+		}
+		db.Close()
+	}
+	fresh, err := openDB(filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if _, err := fresh.Exec(uiSchema); err != nil {
+		t.Fatal(err)
+	}
+	if columnExists(t, fresh.DB, "views", "layout") || columnExists(t, fresh.DB, "ui_tabs", "layout") {
+		t.Fatal("the UI schema creates a layout column")
+	}
+}

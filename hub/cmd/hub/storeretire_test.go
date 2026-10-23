@@ -164,7 +164,10 @@ func TestOpenRemovesOnlyDeclared(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "hub.db")
 	reopen(t, path) // the current schema, then each object that a step removes
-	oldStoreDB(t, path, `CREATE TABLE ui_tabs (key TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', rev_known INTEGER NOT NULL DEFAULT 0)`,
+	oldStoreDB(t, path, `CREATE TABLE ui_tabs (key TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', rev_known INTEGER NOT NULL DEFAULT 0, layout TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE views (view_id TEXT PRIMARY KEY, layout TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE view_transcripts (view_id TEXT PRIMARY KEY, status TEXT NOT NULL)`,
+		`INSERT INTO view_transcripts VALUES ('v1', 'open')`,
 		`ALTER TABLE plugins ADD COLUMN entry_stamp TEXT NOT NULL DEFAULT ''`,
 		`INSERT INTO records VALUES ('alpha', 'k', '1', 1)`, `INSERT INTO ops VALUES ('beta', 'op', 'fp', '{}')`)
 	before := hubSchema(t, path)
@@ -189,5 +192,8 @@ func TestOpenRemovesOnlyDeclared(t *testing.T) {
 	}
 	if !after["ui_tabs.title"] {
 		t.Error("the column ui_tabs.title went with rev_known")
+	}
+	if !after["views.view_id"] {
+		t.Error("the column views.view_id went with layout")
 	}
 }

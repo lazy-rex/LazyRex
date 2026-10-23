@@ -341,6 +341,8 @@ A plugin may declare its tabs again to change only a title (for example "Team (3
 
 The hub no longer reads or writes the column `ui_tabs.rev_known` of the 4.2 hub. An open drops it (`retiredSchema` in `store.go`; test `TestRetireSchemaDropsRevKnown`).
 
+The transcript pane pair is removed. An open drops the table `view_transcripts` with its rows, and the columns `views.layout` and `ui_tabs.layout` (`retiredSchema`; test `TestRetireSchemaDropsTranscriptPair`).
+
 The renderer retains text, cursor, focus, and scroll state by node ID across revisions.
 A node type change invalidates the old control state.
 A removed dirty control retains its unsaved text in a recovery state until the user resolves it.

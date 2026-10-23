@@ -90,6 +90,14 @@ var retiredSchema = []retiredStep{
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'records'`, statement: `DROP TABLE records`},
 	{table: "ops",
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'ops'`, statement: `DROP TABLE ops`},
+	// The transcript pane removal: view_transcripts (the transcript role of a view) and the layout
+	// columns of views and ui_tabs ("transcript" or '') have no reader. Their rows go with them.
+	{table: "view_transcripts",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'view_transcripts'`, statement: `DROP TABLE view_transcripts`},
+	{table: "views", column: "layout",
+		check: `SELECT COUNT(*) FROM pragma_table_info('views') WHERE name = 'layout'`, statement: `ALTER TABLE views DROP COLUMN layout`},
+	{table: "ui_tabs", column: "layout",
+		check: `SELECT COUNT(*) FROM pragma_table_info('ui_tabs') WHERE name = 'layout'`, statement: `ALTER TABLE ui_tabs DROP COLUMN layout`},
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.
