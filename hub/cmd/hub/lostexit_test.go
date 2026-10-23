@@ -80,7 +80,7 @@ func TestCheckMappedTakesAnExitBeforeTheRecord(t *testing.T) {
 	h, clock, events, pl := oneHub(t)
 	ctx := context.Background()
 	procRex(t, h, exitedRead)
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	pl.lifecycle.Lock()
 	h.checkMapped(ctx, pl, "s", "block:p-1")
 	pl.lifecycle.Unlock()
@@ -102,7 +102,7 @@ func TestCheckMappedOnlyAnExitCounts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h, _, events, pl := oneHub(t)
 			procRex(t, h, read)
-			running(h, pl, "p-1")
+			running(t, h, pl, "p-1")
 			h.checkMapped(context.Background(), pl, "s", "block:p-1")
 			if n := exitsOf(t, events, 1); n != 0 {
 				t.Fatalf("%d plugin_exited events", n)
@@ -208,7 +208,7 @@ func TestCheckMappedReadIsBounded(t *testing.T) {
 	shortChildRead(t)
 	h, _, events, pl := oneHub(t)
 	procRex(t, h, map[string]any{"hang": true})
-	running(h, pl, "p-1")
+	running(t, h, pl, "p-1")
 	returnsWithin(t, "checkMapped", 3*time.Second, func() { h.checkMapped(context.Background(), pl, "s", "block:p-1") })
 	if n := exitsOf(t, events, 1); n != 0 {
 		t.Fatalf("%d plugin_exited events", n)
