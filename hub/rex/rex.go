@@ -54,7 +54,7 @@ func SocketPath(server string) (string, error) {
 func Dial(ctx context.Context, socket string) (*Rex, error) { return DialHello(ctx, socket, nil) }
 
 // DialHello connects with extra hello fields, for example {"client": {"kind": "app", "name": n,
-// "label": n}} for a fake app in test mode (rex-client.mjs connectControl does the same).
+// "label": n}} for a fake app in test mode.
 func DialHello(ctx context.Context, socket string, hello map[string]any) (*Rex, error) {
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
