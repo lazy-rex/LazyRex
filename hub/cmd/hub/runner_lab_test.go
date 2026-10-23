@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -21,10 +22,12 @@ func TestRunnerMalformedParityRoutesLab(t *testing.T) {
 	cmd := exec.Command("rex", "-S", l.server, "--autostart=false", "--timeout", "30s", "do",
 		filepath.Join(root, "lab", "test", "runner.lua"), "file="+filepath.Join(root, "tests", "harness", "tests", "assertions.lua"),
 		"lib="+filepath.Join(root, "lab", "test"), "parity_routes=[\"/a\",")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	start := time.Now()
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("runner: %v\n%s", err, out)
+		t.Fatalf("runner: %v\nstdout:\n%s\nstderr:\n%s", err, out, stderr.Bytes())
 	}
 	var lines []string
 	for _, s := range strings.Split(strings.TrimSpace(string(out)), "\n") {
