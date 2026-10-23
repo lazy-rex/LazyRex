@@ -88,3 +88,12 @@ func TestRetiredDynamicAgentRefusesJoin(t *testing.T) {
 		})
 	}
 }
+
+// An admitted spawn is listed before Rex answers: hub.workers shows it starting, and hub.agents
+// lists its agent. hub.changed carries both names at the admission, not only at the outcome.
+func TestSpawnAdmissionIsAChange(t *testing.T) {
+	h, _ := workerTestHub(t)
+	wait := changedNames(t, h)
+	h.spawnAdmitted(&spawnRow{ID: "spawn-2", Agent: "agent-2"}, Profile{ID: "agent"}, "Agent 2")
+	wait("workers", "agents")
+}
