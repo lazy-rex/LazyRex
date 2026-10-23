@@ -533,19 +533,19 @@ func TestPeerSendConcurrent(t *testing.T) {
 // other hub is unknown_hub.
 func TestPeerResolve(t *testing.T) {
 	a := peerHub(t, "a", "b", nil)
-	a.agents, a.idents, a.aliases = map[string]*Agent{}, map[string]*Agent{"claude:x1": {ID: "claude:x1", Kind: "claude", IdState: "current"}}, map[string]string{}
-	res, err := a.resolveAgent(map[string]any{"to": "claude:x1@a"})
+	a.idents = map[string]*Agent{"claude:x1": {ID: "claude:x1", Kind: "claude", IdState: "current"}}
+	res, err := a.resolveAgent(context.Background(), map[string]any{"to": "claude:x1@a"})
 	if m, _ := res.(map[string]any); err != nil || m["id"] != "claude:x1" {
 		t.Fatalf("own hub: %v %v", res, err)
 	}
-	res, err = a.resolveAgent(map[string]any{"to": "claude:zz@b"})
+	res, err = a.resolveAgent(context.Background(), map[string]any{"to": "claude:zz@b"})
 	if m, _ := res.(map[string]any); err != nil || m["id"] != "claude:zz@b" || m["via"] != "remote" || m["hub"] != "b" {
 		t.Fatalf("a peer: %v %v", res, err)
 	}
-	if _, err := a.resolveAgent(map[string]any{"to": "claude:zz@c"}); errCode(err) != "unknown_hub" {
+	if _, err := a.resolveAgent(context.Background(), map[string]any{"to": "claude:zz@c"}); errCode(err) != "unknown_hub" {
 		t.Fatalf("another hub: %v", err)
 	}
-	if _, err := a.resolveAgent(map[string]any{"to": "@b"}); err == nil {
+	if _, err := a.resolveAgent(context.Background(), map[string]any{"to": "@b"}); err == nil {
 		t.Fatal("no agent before @")
 	}
 }

@@ -289,7 +289,7 @@ func (h *Hub) homeRecordLocked(name string) bool {
 }
 
 // pluginOpAgent answers hub.plugins.op and hub.plugins.ops on the agent face. The caller must be a
-// joined agent or a current conversation (agentOfPID): a plugin process has none, so it is refused.
+// current conversation (agentOfPID): a plugin process has none, so it is refused.
 func (h *Hub) pluginOpAgent(ctx context.Context, p perform) (any, error) {
 	var args map[string]json.RawMessage
 	if len(p.Args) > 0 && string(p.Args) != "null" {

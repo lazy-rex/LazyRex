@@ -38,9 +38,9 @@ test('report = false gives no identity until a report', function()
   expect(ident('claude:quiet').block_id).to_be(a.block)
 end)
 
-test('join is refused in identity mode', function()
-  expect_error(function() agent('joiner', {join = 'joiner'}) end, 'join is the roster mode')
-  expect_error(function() agent('joiner', {join = false}) end, 'join is the roster mode')
+test('join is refused', function()
+  expect_error(function() agent('joiner', {join = 'joiner'}) end, 'join is removed')
+  expect_error(function() agent('joiner', {join = false}) end, 'join is removed')
 end)
 
 test('a bad kind and the name user are refused', function()
