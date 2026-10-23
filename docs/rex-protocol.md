@@ -1068,18 +1068,20 @@ text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-
   - At program start, Rex answers Bubble Tea's terminal queries with two DECRQM replies
     (`CSI ? 2026 ; 2 $ y`, `CSI ? 2027 ; 2 $ y`) and `CSI ? 1 u` (kitty keyboard flags).
 
-### The iOS app (observed on iOS, 2026-10-22, Rex Dev 0.1.0 (1376) on an iPhone over Tailscale, Rex server 0.0.1792158932-g88fd41 on the Mac, Bubble Tea v2.1.0)
+### The iOS app (observed on iOS, 2026-10-22, Rex Dev 0.1.0 (1376) on an iPhone with iOS 26 over Tailscale, Rex server 0.0.1792158932-g88fd41 on the Mac, Bubble Tea v2.1.0)
 
 One teaprobe pane on the user's real server, in its own session, under a one-time user exception
 (teaprobe built from hub main c6e3ff93). The user worked the phone; the Rex app for the Mac was
 also connected. The pane was captured with `rex block capture` at each change, and the input bytes
-were logged by `teaprobe tea -bytes`. iOS version: not reported.
+were logged by `teaprobe tea -bytes`. iOS version: 26 (reported by the user). All captures are
+server-side (`rex block capture` of the block's grid) while the user drove the iOS app; they show
+what Rex held, not what the phone drew.
 
 - Size follows the phone. When the phone opened the pane, the size changed from 80x24 to the
   phone's 48x41. With the on-screen keyboard shown it was 48x23. In landscape it was 93x41, and
   93x14 with the keyboard. Back in portrait it was 48x41 again. The program saw each size.
-- Printed lines (`tea.Println`, 100 cells each) soft-wrapped to 3 rows at 48 columns and to 2 rows
-  at 93 columns. After the rotations and the keyboard changes, each of the 33 lines was whole and
+- Printed lines (`tea.Println`, 106-cell lines: `Lnn|`, a 100-cell body, `|E`) soft-wrapped to 3
+  rows at 48 columns and to 2 rows at 93 columns. After the rotations and the keyboard changes, each of the 33 lines was whole and
   appeared once, in order.
 - A line printed while the alt screen was on did not stay. The user pressed a (alt on), p, a (alt
   off). The capture during alt showed the printed line (L34) on the alt screen. After alt off, the
@@ -1089,7 +1091,7 @@ were logged by `teaprobe tea -bytes`. iOS version: not reported.
   - `x`: `78`. Return: `0d` (Bubble Tea: `enter`, code 13).
   - Esc: `1b 5b 32 37 75` (CSI 27 u, the kitty keyboard form). Bubble Tea parses it as `esc`.
   - Right arrow: `1b 5b 43` (CSI C). Bubble Tea parses it as `right`.
-  - The on-screen keyboard sent no modified Return; there was no key for Shift+Return.
+  - No modified Return was recorded in this session.
   - At program start: the same three answers as on the Mac (`CSI ? 2026 ; 2 $ y`,
     `CSI ? 2027 ; 2 $ y`, `CSI ? 1 u`).
 - Not tested: a hardware keyboard (none was connected), so Shift+Return and Option+Return from
