@@ -128,10 +128,6 @@ A lock with a latest entry is version 2. Its other entries keep the form above.
   reads versions 1 and 2. A version 1 lock with a latest form is refused: `the entry for <source>:
   a latest entry needs version 2`. Another version: `version N is not supported (this hub reads
   versions 1 and 2)`.
-- A hub before `@latest` refuses a version 2 lock (`version 2 is not supported (this hub reads
-  version 1)`): it refuses every GitHub entry, and its local entries start. It reads a version 1
-  lock of this hub as its own: the bytes are equal except for the random cache token, and its
-  `plugin sync` leaves that lock unchanged (lab: `TestLatestOldBinaryLab`, old hub 6ed5c58).
 - `tag` is the release tag that `@latest` selected (section 5). Only a latest entry has it; it is
   absent, never empty or null, on every other entry.
 - The key is the source string exactly as the config writes it. A changed source string (for
@@ -453,9 +449,7 @@ A document with a latest entry is version 2. Its other entries keep the form abo
 - `version` follows the content, as for the lock (section 3): 2 when an entry is a latest entry,
   else 1, with no `tag` field. A hub reads 1 and 2. A version 1 document with a latest entry is
   refused: `entry N (<source>): a latest entry needs pin document version 2`. Another version:
-  `pin document version N is not supported by this hub (it reads versions 1 and 2)`. A hub before
-  `@latest` refuses a version 2 document with its text (`pin document version 2 is not supported
-  by this hub (it reads version 1)`), and its lock stays unchanged (lab: `TestLatestOldBinaryLab`).
+  `pin document version N is not supported by this hub (it reads versions 1 and 2)`.
 - `tag`: only on a latest entry, and required there. Texts: `tag is missing`, `tag "<t>" is not a
   version tag vX.Y.Z`, `tag is set, but ref_kind is <kind>`.
 - The entries are sorted by source. The same pull identity (`hub`) and the same pins give the same
@@ -865,7 +859,6 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A legacy entry (ref latest, kind branch or tag) | sync, pull and the hub refuse it with the conversion text; only its plugin is refused; update converts it | U, L (`TestLatestLegacyLab`) |
 | The lock, pin document and base versions | version 2 only with a latest form, else the bytes before `@latest`; a version 1 file with a latest form refused; back to version 1 when the last latest entry goes | U |
 | pull with tags: the same commit with another tag; a lower tag; a conflict with `-take`, `-keep` | a difference (taken, or a conflict without a base); taken, a warning on standard error only; resolved | U |
-| A hub before `@latest` (6ed5c58) with the files of this hub | version 2 lock: every GitHub entry refused, local entries start; version 1 lock: equal after the cache token, unchanged by its sync, its GitHub entry runs; version 2 pin document: refused, the lock unchanged | L (`TestLatestOldBinaryLab`, needs `LAZYREX_OLD_HUB`) |
 | `plugin status` of a latest, a tag and a branch entry | `ref latest v1.0.0`; `ref v0.2.0`; `ref main` | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
 | sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
