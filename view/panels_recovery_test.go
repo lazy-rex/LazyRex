@@ -136,12 +136,15 @@ func TestResumeBeforeAttachReplyIsRecovered(t *testing.T) {
 // V2: view.resume is applied after the attachment is set and before the attach reply's state. The
 // model answers it with no replacement; the attach reply then freezes, and the read resumes.
 func TestResumeBeforeRecoveredStateIsRecovered(t *testing.T) {
-	f := &protocolFixture{attachReplacement: opening("r1"), readAnswers: []any{cancelled("r1")}, replies: make(chan map[string]json.RawMessage, 8)}
+	// The subscribe reply waits until the resume is applied, so the Snapshot cannot come first.
+	subscribed := make(chan struct{})
+	f := &protocolFixture{attachReplacement: opening("r1"), readAnswers: []any{cancelled("r1")}, replies: make(chan map[string]json.RawMessage, 8), holdSubscribe: subscribed}
 	r := newRecovery(t, f)
 	recovered := r.next(isRecovered)
 	r.sendResume(f, "r1")
 	r.apply(r.next(isResume), false) // before the recovered state
 	read := r.apply(recovered, true)
+	close(subscribed)
 	r.apply(r.next(isSnapshot), false)
 	// The resume ended r1 (the hub sends it after the end is durable): the attach reply for an
 	// ended replacement does not freeze the renderer (row 7), and it asks for no read.

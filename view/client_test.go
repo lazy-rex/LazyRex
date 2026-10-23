@@ -45,6 +45,9 @@ type protocolFixture struct {
 	inspect       map[string]string
 	// holdSaves: hub.view.draft.save gets no reply (print_test.go, the bounded failure save).
 	holdSaves bool
+	// holdSubscribe: the first hub.view.subscribe reply waits until the test closes the channel.
+	// The read loop goes on, so the fixture still answers other calls (panels_recovery_test.go).
+	holdSubscribe chan struct{}
 	// tree: the snapshot for hub.view.subscribe and hub.view.get in place of testSnapshot.
 	tree any
 	gets int
@@ -88,6 +91,7 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		var result any = map[string]any{}
 		var problem *wireError
+		var held chan struct{}
 		switch req.Method {
 		case "client.reply":
 			if f.replies != nil {
@@ -181,6 +185,7 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 				result = map[string]any{"status": "accepted"}
 			case "hub.view.subscribe":
 				f.subscriptions++
+				held, f.holdSubscribe = f.holdSubscribe, nil
 				result = testSnapshot("saved", "1")
 				if f.tree != nil {
 					result = f.tree
@@ -225,6 +230,16 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 		if problem != nil {
 			delete(reply, "payload")
 			reply["error"] = problem
+		}
+		if held != nil {
+			go func() {
+				select {
+				case <-held:
+					write(reply)
+				case <-ctx.Done():
+				}
+			}()
+			continue
 		}
 		write(reply)
 	}
