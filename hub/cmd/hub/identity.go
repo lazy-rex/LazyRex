@@ -530,6 +530,10 @@ func (h *Hub) identityChanged(ctx context.Context) {
 	h.changed("agents", "workers")
 }
 
+// identitySyncGap runs in identitySync while h.mu is free between the copy and the install. A
+// test replaces it.
+var identitySyncGap = func() {}
+
 // identitySync rebuilds h.idents and h.aliases from the store. A current identity is bound to its
 // pane's process generation; its program status is read once when its pane changes.
 func (h *Hub) identitySync(ctx context.Context) error {
@@ -584,10 +588,11 @@ func (h *Hub) identitySync(ctx context.Context) error {
 			}
 		}
 	}
+	kept := map[string]*Agent{}
 	for id, a := range next {
 		if old := h.idents[id]; old != nil && old.BlockID == a.BlockID && old.ChildPID == a.ChildPID && old.StatusRecord == a.StatusRecord {
-			a.State, a.Record = old.State, old.Record
 			a.delivered, a.ClientID = old.delivered, old.ClientID
+			kept[id] = old
 			continue
 		}
 		if l := legacy[id]; l != nil {
@@ -600,10 +605,16 @@ func (h *Hub) identitySync(ctx context.Context) error {
 		}
 	}
 	h.mu.Unlock()
+	identitySyncGap()
 	for _, a := range fresh {
 		a.setRecord(h.recordState(ctx, a.Session, a.BlockID, a.StatusRecord))
 	}
 	h.mu.Lock()
+	// The status of a kept binding is copied under this lock: a program status event can write
+	// the old record while h.mu is free for the reads above.
+	for id, old := range kept {
+		next[id].State, next[id].Record = old.State, old.Record
+	}
 	h.idents, h.aliases = next, aliases
 	h.syncPrompts()
 	h.mu.Unlock()
