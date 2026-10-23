@@ -254,8 +254,8 @@ func (h *Hub) agentDispatch(ctx context.Context, p perform) (any, error) {
 // from that agent to that plugin client is in flight, so a plugin cannot choose an agent by itself.
 // The count is for each agent and plugin client, not for each forward: a late delivery of a forward
 // that the hub stopped waiting for can act inside another open window of the same agent and
-// plugin. This serves synchronous work only: work that runs after the forward returns needs
-// another proof.
+// plugin. This serves synchronous work only: work that runs after all forwards of that agent to
+// that plugin client ended needs another proof.
 func (h *Hub) beginForward(client string, pid int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
