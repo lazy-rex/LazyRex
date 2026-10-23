@@ -1,14 +1,16 @@
 package main
 
-// lazyrex-hub stop|status -config <cfg> [-real-server] (docs/hub.md, "Stop and status"). Both
-// read the config, then look at two things:
+// lazyrex-hub stop|status -config <cfg> [-real-server] and lazyrex-hub restart -config <cfg>
+// [-real-server] -expect-exec <n> (docs/hub.md, "Stop and status", "Restart"). Each reads the
+// config, then looks at two things:
 //   - the hub of this config: a connected Rex client labeled lazyrex-hub whose hub.info state is
 //     the config's canonical state;
 //   - the restart wrapper of that state: the holder of the fcntl lock on <state>/restart.lock,
 //     and <state>/restart.json, trusted only when its pid is the holder and that pid has the
 //     start time in the file.
 // stop never sends a signal: a running hub gets hub.admin.shutdown (the admin guard applies), and
-// a wrapper without a hub (starting, backoff) is stopped in its own pane.
+// a wrapper without a hub (starting, backoff) is stopped in its own pane. restart sends
+// hub.admin.relaunch once to a hub that runs under its wrapper, then watches the wrapper exec itself.
 
 import (
 	"bytes"
@@ -40,6 +42,8 @@ const (
 
 var ctlStopWait = 10 * time.Second // a test shortens it
 
+var ctlRestartWait = 60 * time.Second // a test shortens it
+
 type ctlView struct {
 	cfg      Config
 	rex      string
@@ -58,9 +62,11 @@ type ctlView struct {
 }
 
 type hubClient struct {
-	ID    string
-	State string
-	PID   int
+	ID     string
+	State  string
+	PID    int
+	Exec   int    // the exec count of its restart wrapper (hub.info)
+	Commit string // the build's VCS revision (hub.info)
 }
 
 func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
@@ -68,8 +74,14 @@ func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "", "hub configuration JSON (required)")
 	realServer := fs.Bool("real-server", false, "the config names the user's real Rex server")
-	if err := fs.Parse(args); err != nil || *cfgPath == "" || fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "usage: lazyrex-hub %s -config <cfg> [-real-server]\n", cmd)
+	usage := fmt.Sprintf("usage: lazyrex-hub %s -config <cfg> [-real-server]", cmd)
+	expectExec := -1
+	if cmd == "restart" {
+		fs.IntVar(&expectExec, "expect-exec", -1, "the exec count that lazyrex-hub status shows (required)")
+		usage += " -expect-exec <n>"
+	}
+	if err := fs.Parse(args); err != nil || *cfgPath == "" || fs.NArg() > 0 || (cmd == "restart" && expectExec < 0) {
+		fmt.Fprintln(stderr, usage)
 		return ctlUsage
 	}
 	cfg, err := loadConfig(*cfgPath)
@@ -88,6 +100,9 @@ func ctlMain(cmd string, args []string, stdout, stderr io.Writer) int {
 		code, text := v.statusText()
 		fmt.Fprintln(stdout, text)
 		return code
+	}
+	if cmd == "restart" {
+		return v.restart(stdout, expectExec, func() *ctlView { return ctlLook(cfg) })
 	}
 	return v.stop(stdout)
 }
@@ -248,11 +263,13 @@ func (v *ctlView) hubs() ([]hubClient, error) {
 		h := hubClient{ID: id}
 		if out, err := v.rexCmd(time.Now().Add(5*time.Second), "-C", id, "do", "hub.info"); err == nil {
 			var info struct {
-				State string `json:"state"`
-				PID   int    `json:"pid"`
+				State  string `json:"state"`
+				PID    int    `json:"pid"`
+				Exec   int    `json:"exec"`
+				Commit string `json:"commit"`
 			}
 			if json.Unmarshal(out, &info) == nil {
-				h.State, h.PID = info.State, info.PID
+				h.State, h.PID, h.Exec, h.Commit = info.State, info.PID, info.Exec, info.Commit
 			}
 		}
 		hubs = append(hubs, h)
@@ -439,4 +456,74 @@ func (v *ctlView) stopTimedOut(stdout io.Writer, seen stopSeen, sendErr error) {
 	if seen.seenErr != nil {
 		fmt.Fprintf(stdout, "the last failed look: %v\n", seen.seenErr)
 	}
+}
+
+// restart relaunches the hub of this config inside its restart wrapper (docs/hub.md, "Restart").
+// The checks before the send only read: a hub of this state, its wrapper (trusted, phase running)
+// and exec n. Then it sends hub.admin.relaunch once, and never again: Rex can still deliver a
+// request whose call failed. Only the hub's refusal ends restart early. Every other outcome is
+// watched with fresh looks until the one deadline, and only a look decides:
+//   - exit 0: the same wrapper process (pid and start time) is ready with a new hub at exec n+1;
+//   - exit 1: the same wrapper is ready with a new hub at exec n, after a failed exec to n+1 (the
+//     old version runs again);
+//   - exit 4 at the deadline: not confirmed. A hub that cannot be seen never counts as restarted.
+func (v *ctlView) restart(stdout io.Writer, n int, look func() *ctlView) int {
+	code, text := v.statusText()
+	switch {
+	case code != ctlRunning:
+		fmt.Fprintf(stdout, "%s\nrestart: no hub of this config runs; nothing was sent\n", text)
+		return 1
+	case !v.trusted || v.status.Phase != "running":
+		fmt.Fprintf(stdout, "restart: the hub (pid %d) runs without a restart wrapper; stop it and start it again by hand; nothing was sent\n", v.own.PID)
+		return 1
+	case v.own.Exec != n:
+		fmt.Fprintf(stdout, "restart: the hub (pid %d) runs exec %d, not %d: it was restarted already, or -expect-exec is wrong; nothing was sent\n", v.own.PID, v.own.Exec, n)
+		return 1
+	}
+	old, wrapper := *v.own, *v.status
+	deadline := time.Now().Add(ctlRestartWait) // one bound for all of restart
+	_, sendErr := v.perform(deadline, "hub.admin.relaunch", map[string]any{"expect_exec": n})
+	if _, refused := performOutcome(sendErr, []string{"refused", "invalid_input"}); refused {
+		fmt.Fprintf(stdout, "hub.admin.relaunch: %v\n", sendErr)
+		return 1
+	}
+	if sendErr != nil {
+		fmt.Fprintf(stdout, "hub.admin.relaunch: %v; the request may still apply: watching the hub\n", sendErr)
+	} else {
+		fmt.Fprintf(stdout, "relaunching: hub pid %d, exec %d; restart wrapper pid %d\n", old.PID, n, wrapper.PID)
+	}
+	last := ""
+	for ; time.Until(deadline) >= ctlLookMin; time.Sleep(200 * time.Millisecond) {
+		seen := look()
+		if code, text, done := restartOutcome(seen, old, wrapper, n); done {
+			fmt.Fprintln(stdout, text)
+			return code
+		}
+		_, last = seen.statusText()
+	}
+	fmt.Fprintf(stdout, "the restart is not confirmed within %g s: run lazyrex-hub status\n", ctlRestartWait.Seconds())
+	if last != "" {
+		fmt.Fprintf(stdout, "the last look: %s\n", strings.ReplaceAll(last, "\n", "; "))
+	}
+	return ctlUnknown
+}
+
+// restartOutcome reads one look after a relaunch of the hub old at exec n under the wrapper whose
+// status was wrapper. It decides only when that wrapper process (same pid and start time) is ready
+// with a new hub process of this state.
+func restartOutcome(v *ctlView, old hubClient, wrapper restartStatus, n int) (code int, text string, done bool) {
+	if v.localErr != nil || v.ownTwice || v.own == nil || !v.trusted {
+		return 0, "", false
+	}
+	h, s := v.own, v.status
+	if s.PID != wrapper.PID || s.Start != wrapper.Start || s.Phase != "running" || h.PID == old.PID || s.LastExec == nil || s.LastExec.Target != n+1 {
+		return 0, "", false
+	}
+	switch {
+	case s.LastExec.Outcome == "ok" && s.Exec == n+1 && h.Exec == n+1:
+		return 0, fmt.Sprintf("restarted: hub pid %d (client %s), exec %d, commit %s; restart wrapper pid %d", h.PID, h.ID, h.Exec, h.Commit, s.PID), true
+	case s.LastExec.Outcome == "failed" && s.Exec == n && h.Exec == n:
+		return 1, fmt.Sprintf("the exec of the new version failed: %s\nthe old version runs again: hub pid %d (client %s), exec %d, commit %s; restart wrapper pid %d", s.LastExec.Error, h.PID, h.ID, h.Exec, h.Commit, s.PID), true
+	}
+	return 0, "", false
 }

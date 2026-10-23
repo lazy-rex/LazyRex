@@ -348,7 +348,7 @@ func main() {
 			os.Exit(hookMain(os.Args[2:]))
 		case "setup":
 			os.Exit(setupMain(os.Args[2:]))
-		case "stop", "status":
+		case "stop", "status", "restart":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:], os.Stdout, os.Stderr))
 		case "version":
 			fmt.Println(versionText())
