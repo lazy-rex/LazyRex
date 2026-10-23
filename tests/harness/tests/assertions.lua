@@ -55,3 +55,16 @@ test('show prints a list of more than 2559 items (Rex Lua table.concat limit)', 
   expect(s:sub(1, 6)).to_be('{1, 2,')
   expect(#s <= 603, 'the text is cut').to_be(true)
 end)
+
+-- rex.json.decode does not raise on invalid JSON (it returns nil and an error); the harness's
+-- checked decode does, with the SDK's wording. JSON null is nil without an error.
+test('json_decode raises on invalid JSON and decodes null as nil', function()
+  local e = expect_error(function() H.json_decode('{"a":1,', 'x') end)
+  expect(e.code).to_be('internal')
+  expect(tostring(e.message):find('x: invalid JSON: ', 1, true) == 1, tostring(e.message)).to_be(true)
+  expect(tostring(e.message):find('; text starts with {"a":1,', 1, true) ~= nil, tostring(e.message)).to_be(true)
+  expect(H.json_decode(' null ', 'x')).to_be(nil)
+  expect(H.json_decode('{"a":1}', 'x').a).to_be(1)
+  local n = expect_error(function() H.json_decode(7, 'x') end)
+  expect(n.message).to_be('x: invalid JSON: not a string (number)')
+end)

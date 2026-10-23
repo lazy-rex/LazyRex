@@ -63,7 +63,7 @@ if not setup_ok or not chunk then
   return
 end
 env.FIXTURE = A.fixture
-env.PARITY_ROUTES = A.parity_routes and rex.json.decode(A.parity_routes) or {}
+env.PARITY_ROUTES = A.parity_routes and H.json_decode(A.parity_routes, 'parity_routes') or {}
 env.load_fixture = function(path)
   local f, err = load_file(path)
   if not f then error(err, 2) end

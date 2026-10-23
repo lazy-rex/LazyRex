@@ -304,6 +304,20 @@ local function chunked(source, fields)
   return table.concat(parts)
 end
 
+-- json_decode decodes text, read at what (a store key, a render, a runner arg). rex.json.decode
+-- does not raise: invalid JSON returns nil and an error, and JSON null returns nil alone (Rex
+-- 0.0.1792158932-g88fd41). The error and its wording are the SDK's app.json.decode.
+function H.json_decode(text, what)
+  if type(text) ~= 'string' then
+    error(setmetatable({code = 'internal', message = what .. ': invalid JSON: not a string (' .. type(text) .. ')'}, Err), 0)
+  end
+  local v, err = rex.json.decode(text)
+  if err then
+    error(setmetatable({code = 'internal', message = what .. ': invalid JSON: ' .. tostring(err) .. '; text starts with ' .. text:sub(1, 80)}, Err), 0)
+  end
+  return v
+end
+
 -- store returns {value, rev} of one record of the plugin (default: the plugin under test). An
 -- absent record is {rev = '0'}. A large record is read in chunks of one revision; if it changes
 -- during the read, the read starts again.
@@ -315,7 +329,7 @@ function H.store(key, plugin)
     local big = out.too_large and out.too_large[key]
     if not big then fail('store: no answer for ' .. show(key), 2) end
     local ok, text = pcall(chunked, 'record', {plugin = plugin, key = key, rev = big.rev})
-    if ok then return {value = rex.json.decode(text), rev = big.rev} end
+    if ok then return {value = H.json_decode(text, 'store ' .. key), rev = big.rev} end
     if not (H.is_error(text) and text.code == 'changed') and not tostring(text):find('changed') then error(text, 0) end
   end
   fail('store: ' .. key .. ' kept changing during a chunked read', 2)
@@ -789,7 +803,7 @@ function View:render()
   if r.status ~= 'ok' then error(setmetatable({code = 'render_failed', message = self.route .. ': ' .. tostring(r.error)}, Err), 0) end
   self.revision = r.revision
   if r.tree then return r.tree end
-  return rex.json.decode(chunked('render', {view_id = self.id, generation = r.generation}))
+  return H.json_decode(chunked('render', {view_id = self.id, generation = r.generation}), 'render ' .. self.route)
 end
 
 -- try_render returns the render result without raising: {status = 'ok', tree} or {status = 'failed', error}.
