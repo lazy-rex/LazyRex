@@ -14,15 +14,26 @@ import (
 // The composer's keys (keys.go) through Bubble Tea's own input decoder: the test writes a
 // terminal's bytes into the program's input, as Rex does for a pane.
 
-// typeInto starts a thread view with a composer, writes each chunk of bytes as one input write,
-// and returns the texts of the hub.view.send requests (draft saves succeed).
-func typeInto(t *testing.T, chunks ...string) []string {
+// The modes of the key tests: a thread tree (history and composer) and an alt tree (a composer
+// only). The renderer decides the mode once per process (mode.go), so each case is a new program.
+var keyModes = []struct {
+	name string
+	mode viewMode
+	tree Snapshot
+}{
+	{"thread", viewThread, page(msgs(1), false, 1)},
+	{"alt", viewAlt, treeOf(tvComposer)},
+}
+
+// typeInto starts a view in mode with tree, writes each chunk of bytes as one input write, and
+// returns the texts of the hub.view.send requests (draft saves succeed).
+func typeInto(t *testing.T, mode viewMode, tree Snapshot, chunks ...string) []string {
 	t.Helper()
 	in, w := io.Pipe()
 	r := startPrintInput(t, &testTerm{}, nil, in)
 	t.Cleanup(func() { w.Close() })
-	r.p.Send(page(msgs(1), false, 1))
-	r.wait("the thread frame", func(s probeState) bool { return s.mode == viewThread && s.printed["m1"] })
+	r.p.Send(tree)
+	r.wait("the first frame", func(s probeState) bool { return s.mode == mode && (mode != viewThread || s.printed["m1"]) })
 	for _, c := range chunks {
 		if _, err := w.Write([]byte(c)); err != nil {
 			t.Fatal(err)
@@ -54,18 +65,26 @@ func typeInto(t *testing.T, chunks ...string) []string {
 // TestNewlineKeysLegacyBytes (codex-29): without key disambiguation, Alt+Enter is ESC CR and Ctrl+J
 // is LF; both insert a newline. ESC CR must not become an Enter send. CR (Enter) sends once.
 func TestNewlineKeysLegacyBytes(t *testing.T) {
-	sent := typeInto(t, "a", "\x1b\r", "b", "\n", "c", "\r")
-	if !slices.Equal(sent, []string{"a\nb\nc"}) {
-		t.Fatalf("legacy keys sent %q, want one send of %q", sent, "a\nb\nc")
+	for _, k := range keyModes {
+		t.Run(k.name, func(t *testing.T) {
+			sent := typeInto(t, k.mode, k.tree, "a", "\x1b\r", "b", "\n", "c", "\r")
+			if !slices.Equal(sent, []string{"a\nb\nc"}) {
+				t.Fatalf("%s mode: legacy keys sent %q, want one send of %q", k.name, sent, "a\nb\nc")
+			}
+		})
 	}
 }
 
 // TestNewlineKeysEnhancedBytes: with key disambiguation (Rex answers CSI ?1u), Shift+Enter is
 // CSI 13;2u and Alt+Enter is CSI 13;3u; both insert a newline. CR sends once.
 func TestNewlineKeysEnhancedBytes(t *testing.T) {
-	sent := typeInto(t, "a", "\x1b[13;2u", "b", "\x1b[13;3u", "c", "\r")
-	if !slices.Equal(sent, []string{"a\nb\nc"}) {
-		t.Fatalf("enhanced keys sent %q, want one send of %q", sent, "a\nb\nc")
+	for _, k := range keyModes {
+		t.Run(k.name, func(t *testing.T) {
+			sent := typeInto(t, k.mode, k.tree, "a", "\x1b[13;2u", "b", "\x1b[13;3u", "c", "\r")
+			if !slices.Equal(sent, []string{"a\nb\nc"}) {
+				t.Fatalf("%s mode: enhanced keys sent %q, want one send of %q", k.name, sent, "a\nb\nc")
+			}
+		})
 	}
 }
 

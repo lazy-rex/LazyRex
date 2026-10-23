@@ -7,9 +7,9 @@ import (
 // The composer's keys (thread view plan item 5). Enter sends (send_action). The newline keys are
 // declared once: the editor binds every one of them, and the footer hint names the first one, so
 // the hint never names a key that the editor does not bind. Alt+Enter is a renderer binding: the
-// keys that a Mac or a hardware iOS keyboard sends for it are not observed. The on-screen keyboard
-// of the iOS app sends no modified Return (docs/rex-protocol.md), so multi-line input there is an
-// accepted limit.
+// keys that a Mac or a hardware iOS keyboard sends for it are not observed. The iOS probe recorded
+// no modified Return from the app's on-screen keyboard (docs/rex-protocol.md), and multi-line input
+// there is an accepted limit. A hardware keyboard on iOS is not tested.
 
 type newlineKey struct {
 	key  string // the Bubble Tea key string
