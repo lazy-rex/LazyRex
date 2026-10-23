@@ -131,3 +131,127 @@ func TestPluginOpUpdateEvidenceNamesNewEntry(t *testing.T) {
 		t.Fatalf("the evidence: proof %q, detail %q, %v", proof, detail, err)
 	}
 }
+
+// replaceOpHub is a hub whose plugin x runs instance x-1-aaaaaaaa from its entry, and a restart op
+// of x in its replacing phase. The fake replace makes the attempt's intent x-2-bbbbbbbb and saves
+// that instance, as the handler's spawn does.
+func replaceOpHub(t *testing.T) (*Hub, *opsCalls, *Plugin, *pluginOp) {
+	t.Helper()
+	h, c, dir := opsTestHub(t, "")
+	ctx := context.Background()
+	writeManaged(t, dir, opsLocal(t, t.TempDir(), "x"))
+	opsLoadEntries(t, h)
+	e := opsEntry(t, h, "managed:x")
+	pl := &Plugin{Name: "x", entry: e}
+	h.plugins["x"] = pl
+	if err := h.loadPluginRow(ctx, pl); err != nil {
+		t.Fatal(err)
+	}
+	pl.ClientID, pl.ChildPID, pl.ChildStart, pl.InstanceID = "client:x", os.Getpid(), startTime(os.Getpid()), "x-1-aaaaaaaa"
+	pl.run = pluginRun{Name: "x", Source: e.Source}
+	id := opsMust(t, h, "restart", opRequest{Op: "restart", Entry: "managed:x"})
+	op := opsOf(t, h, id)
+	if err := h.setOpPhase(ctx, op, "replacing", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	c.reply = func(_ string, args map[string]any) (any, error) {
+		pl.opAttempt = args["attempt"].(string)
+		defer func() { pl.opAttempt = "" }()
+		if err := h.insertIntent(ctx, pl, "x-2-bbbbbbbb", "session:home"); err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		pl.InstanceID, pl.SessionID, pl.BlockID, pl.ClientID = "x-2-bbbbbbbb", "session:home", "", ""
+		return nil, h.savePlugin(ctx, pl)
+	}
+	return h, c, pl, op
+}
+
+// The replace call of an op (C5 plan r1 items 1 and 5, r2 D): a restart replaces its stored
+// instance with its stored run, and sends its entry as expect_entry and the attempt. A crash after
+// the call leaves the attempt open: the observation ends the op unknown while the intent is open,
+// and a later registration of the intent's instance proves the replace (later).
+func TestPluginOpReplaceCall(t *testing.T) {
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
+	registerWait = 0
+	ctx := context.Background()
+
+	h, c, pl, op := replaceOpHub(t)
+	if err := h.opCall(ctx, op, "replace"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"plugin": "x", "expect_instance": "x-1-aaaaaaaa", "expect_run": map[string]any{"source": pl.entry.Source}, "expect_entry": entryIdentity(pl.entry)}
+	var got map[string]any
+	for _, call := range c.list() {
+		if s, ok := strings.CutPrefix(call, "hub.admin.replace "); ok {
+			json.Unmarshal([]byte(s), &got)
+		}
+	}
+	if !reflect.DeepEqual(got, want) || op.Phase != "done" {
+		t.Fatalf("the replace: %v, want %v; op %+v", got, want, op)
+	}
+
+	h, _, pl, op = replaceOpHub(t)
+	h.pops.fault = func(p string) bool { return p == "plugin-op-after-replace" }
+	if err := h.opCall(ctx, op, "replace"); err != errOpCrash {
+		t.Fatalf("the crash after the replace: %v", err)
+	}
+	h.pops.fault = nil
+	if err := h.opCall(ctx, op, "replace"); err != nil {
+		t.Fatal(err)
+	}
+	if op := opsOf(t, h, op.ID); op.Phase != "unknown" || opsProof(t, h, op.ID, "replace") != "" {
+		t.Fatalf("an open intent: op %+v", op)
+	}
+	if _, err := h.db.Exec(`UPDATE spawn_intents SET status = 'created', block_id = 'block:2' WHERE instance_id = 'x-2-bbbbbbbb'`); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	pl.BlockID, pl.ClientID, pl.ChildPID, pl.ChildStart = "block:2", "client:x2", os.Getpid(), startTime(os.Getpid())
+	err := h.savePlugin(ctx, pl)
+	h.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.observeLater(ctx)
+	if proof := opsProof(t, h, op.ID, "replace"); !strings.HasPrefix(proof, "applied") || !strings.HasSuffix(proof, "(later)") {
+		t.Fatalf("the later proof: %q", proof)
+	}
+	if op := opsOf(t, h, op.ID); op.Phase != "unknown" {
+		t.Fatalf("the later proof changed the phase: %+v", op)
+	}
+}
+
+// An add whose plugin has a pending instance at starting (C5 plan r2 E; coverage of today's rule,
+// not a new behavior): the start refuses unresolved_intent before its own effect, so the attempt
+// is not_applied and the op ends failed with that text.
+func TestPluginOpAddStartPending(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	h, c := fetchTestHubCalls(t, r)
+	ctx := context.Background()
+	reload := opReload
+	opReload = func(ctx context.Context, h *Hub) (any, error) {
+		res, err := reload(ctx, h)
+		e := opsEntry(t, h, "managed:notes")
+		h.mu.Lock()
+		h.plugins["notes"] = &Plugin{Name: "notes", entry: e}
+		h.mu.Unlock()
+		return res, err
+	}
+	c.reply = func(action string, _ map[string]any) (any, error) {
+		if action == "hub.admin.start" {
+			return nil, refuse("unresolved_intent", "plugin notes has the open intent notes-1-aaaaaaaa")
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	op := writingAdd(t, h, "add-pending", "github:acme/notes@v1.0.0", "notes")
+	if err := h.runOp(ctx, op); err != nil {
+		t.Fatal(err)
+	}
+	proof := opsProof(t, h, op.ID, "start")
+	if op.Phase != "failed" || !strings.Contains(op.Error, "unresolved_intent") || !strings.HasPrefix(proof, "not_applied") {
+		t.Fatalf("op %+v, proof %q", op, proof)
+	}
+}
