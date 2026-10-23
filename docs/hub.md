@@ -503,7 +503,7 @@ Found while testing:
 - A renderer can start before the hub records its pane. `hub.view.attach` returns `not_ready`, and the renderer retries (added to the contract).
 - Event handlers closed tabs while the worker reordered them (`move_window: not_found`). Now handlers only record state, and one worker per plugin makes every Rex change.
 - A stopped hub or plugin stays listed as lost under its label during Rex's grace period, so a label lookup returns `ambiguous`. Renderers count only connected candidates. Tests address clients by full ID.
-- After 3 renderer exits, a tab stays closed until a navigation (bounded respawn).
+- After 3 renderer exits, a tab stays closed until a navigation (bounded respawn). An exit counts once, from Rex's child_exited or from a reconcile pass that finds the renderer of a view that this hub process opened gone. A dead renderer of an earlier hub process closes with no count (`rendererExited`, `unseenExit`; tests `TestUnseenExit*`, `TestUnseenRendererExitLab`).
 
 ### View services and messaging views, first integration (Claude, lab, Rex 1203, 2026-10-16)
 

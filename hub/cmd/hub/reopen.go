@@ -261,6 +261,7 @@ func (h *Hub) spawnTabPane(ctx context.Context, r *slotRow) error {
 		VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never', ?)`, r.New, r.Plugin, tc.Tab, r.Route, r.Session, tc.Layout, tc.Open); err != nil {
 		return err
 	}
+	h.markOwn(r.New)
 	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": r.Session, "event_scope": "session"}, nil); err != nil {
 		return h.slotRefused(ctx, r, err) // nothing was sent
 	}

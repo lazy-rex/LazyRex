@@ -1,0 +1,112 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+)
+
+// unseenHub is reopenTestHub with one more open, unattached tab view per id in ids (pane b-<id>),
+// each inserted as this hub process would (own) when own is true.
+func unseenHub(t *testing.T, own bool, ids ...string) (*Hub, *reopenRex) {
+	t.Helper()
+	h, x, _ := reopenTestHub(t)
+	mustExec(t, h, `UPDATE views SET status = 'closed' WHERE view_id = 'old'`)
+	for _, id := range ids {
+		mustExec(t, h, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, window_id, block_id, attach_state)
+			VALUES (?, 'p', 'main', '/main', 'open', 's', 'w', ?, 'never')`, id, "b-"+id)
+		if own {
+			h.markOwn(id)
+		}
+	}
+	return h, x
+}
+
+func unseenView(t *testing.T, h *Hub, id string) *view {
+	t.Helper()
+	v, err := h.viewByBlock(context.Background(), "b-"+id)
+	if err != nil || v == nil {
+		t.Fatalf("view %s: %v %v", id, v, err)
+	}
+	return v
+}
+
+func tabCrashes(h *Hub) (crashes, suppressed int) {
+	h.db.QueryRow(`SELECT crashes, suppressed FROM ui_tabs WHERE plugin = 'p' AND tab = 'main'`).Scan(&crashes, &suppressed)
+	return
+}
+
+// A pass that finds the renderer of an own view gone counts the crash; the exit event that comes
+// later counts nothing more (U1). The event first, then the pass: one count (U2).
+func TestUnseenExitCountsOnce(t *testing.T) {
+	ctx := context.Background()
+	h, x := unseenHub(t, true, "v1")
+	h.unseenExit(ctx, unseenView(t, h, "v1"))
+	h.uiChildExited(ctx, "b-v1")
+	if c, _ := tabCrashes(h); c != 1 {
+		t.Fatalf("the pass first: crashes %d, want 1", c)
+	}
+	if s, by, _ := viewStatus(h, "v1"); s != "closed" || by != "hub" || len(x.closed) != 1 {
+		t.Fatalf("the view: %s by %s, closed panes %v", s, by, x.closed)
+	}
+
+	h, _ = unseenHub(t, true, "v2")
+	v := unseenView(t, h, "v2") // the pass read the row before the event
+	h.uiChildExited(ctx, "b-v2")
+	h.unseenExit(ctx, v)
+	if c, _ := tabCrashes(h); c != 1 {
+		t.Fatalf("the event first: crashes %d, want 1", c)
+	}
+}
+
+// Both paths read the row as open, then run at the same time: one transition, one count (U3).
+func TestUnseenExitConcurrent(t *testing.T) {
+	ctx := context.Background()
+	h, _ := unseenHub(t, true, "v1")
+	v := unseenView(t, h, "v1")
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				h.rendererExited(ctx, v)
+			} else {
+				h.uiChildExited(ctx, "b-v1")
+			}
+		}()
+	}
+	wg.Wait()
+	if c, _ := tabCrashes(h); c != 1 {
+		t.Fatalf("crashes %d, want 1", c)
+	}
+}
+
+// A dead renderer of an earlier hub process (not own) closes with no count, also three times, so
+// hub restarts never suppress a tab (U4). Three own unseen exits suppress it (U5).
+func TestUnseenExitOwnOnly(t *testing.T) {
+	ctx := context.Background()
+	ids := []string{"v1", "v2", "v3"}
+	h, x := unseenHub(t, false, ids...)
+	for _, id := range ids {
+		h.unseenExit(ctx, unseenView(t, h, id))
+	}
+	if c, s := tabCrashes(h); c != 0 || s != 0 || len(x.closed) != 3 {
+		t.Fatalf("earlier views: crashes %d, suppressed %d, closed %v", c, s, x.closed)
+	}
+
+	h, _ = unseenHub(t, true, ids...)
+	for _, id := range ids {
+		h.unseenExit(ctx, unseenView(t, h, id))
+	}
+	if c, s := tabCrashes(h); c != maxCrashes || s != 1 {
+		t.Fatalf("own views: crashes %d, suppressed %d; want %d and 1", c, s, maxCrashes)
+	}
+	h.ui.mu.Lock()
+	left := fmt.Sprint(h.ui.own)
+	h.ui.mu.Unlock()
+	if left != "map[]" {
+		t.Fatalf("a closed view stays in the own set: %s", left)
+	}
+}

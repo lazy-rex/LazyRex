@@ -113,7 +113,7 @@ func reopenTestHub(t *testing.T) (*Hub, *reopenRex, *performRex) {
 	h.rex = fr.dial(t)
 	h.selfClosed = map[string]bool{}
 	h.cfg.View = "view"
-	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{"s": uiSessionKey}}
+	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{"s": uiSessionKey}, own: map[string]bool{}}
 	h.vs = newViewSvc()
 	h.vs.workers["p"] = make(chan struct{}, 1) // a kick is recorded, and no worker runs
 	child := exec.Command("/bin/sh", "-c", "sleep 60; true", reopenViewID(reopenID("p", "k")))
