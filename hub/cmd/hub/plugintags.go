@@ -115,7 +115,7 @@ func (h *Hub) pluginTags(args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	r, err := h.loadRequest(h.loads.tags, key, in.Refresh)
+	r, err := h.loadRequest(h.loads.tags, key, in.Refresh, nil)
 	if err != nil {
 		return nil, err
 	}
