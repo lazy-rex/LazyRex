@@ -26,16 +26,15 @@ const (
 // fetch is one running history fetch: a contiguous run of messages, oldest first, that ends at the
 // current page.
 type fetch struct {
-	kind    string
-	seq     int
-	gen     uint64
-	ctx     context.Context // cancelled when the fetch stops: its call and its retry end
-	cancel  context.CancelFunc
-	cursor  string          // the oldest ID held: the next page ends before it
-	run     []Message       // the first page, the fetched pages and the later current pages, oldest first
-	held    map[string]bool // the IDs in run
-	current int             // the number of messages at the end of run that came from current pages
-	more    bool            // the last page's has_more
+	kind   string
+	seq    int
+	gen    uint64
+	ctx    context.Context // cancelled when the fetch stops: its call and its retry end
+	cancel context.CancelFunc
+	cursor string          // the oldest ID held: the next page ends before it
+	run    []Message       // the first page, the fetched pages and the later current pages, oldest first
+	held   map[string]bool // the IDs in run
+	more   bool            // the last page's has_more
 }
 
 // historyPageMsg is one page of a fetch. A result whose seq or gen is not current is dropped.
@@ -105,7 +104,6 @@ func (m *model) extend(f *fetch, page []Message) {
 		if !f.held[x.ID] {
 			f.held[x.ID] = true
 			f.run = append(f.run, x)
-			f.current++
 			if f.kind == fetchOpen {
 				m.print.openSeen[x.ID] = true
 			}
@@ -185,7 +183,7 @@ func (m *model) finishFetch() tea.Cmd {
 	if f.kind == fetchOpen {
 		cmd = m.finishOpen(f.run, f.more)
 	} else {
-		cmd = m.finishGap(f.run, f.current)
+		cmd = m.finishGap(f.run)
 	}
 	return tea.Batch(cmd, m.printTree())
 }
@@ -225,20 +223,17 @@ func (m *model) finishOpen(all []Message, more bool) tea.Cmd {
 }
 
 // finishGap prints the messages after the last printed ID of the run, in page order, not late.
-// A fetched message before that anchor is never printed by the fill. A run without a printed ID
-// has no anchor: the thread no longer holds a printed message. Then the fill prints the messages
-// of the current pages only, as a later frame would; their IDs are then queued, so the same page
-// does not start the fill again.
-func (m *model) finishGap(all []Message, current int) tea.Cmd {
+// A fetched message before that anchor is never printed by the fill, and an excluded ID is never
+// an anchor. A run without a printed ID reached has_more = false: it is the whole thread, and the
+// fill prints every message in it that is not printed or excluded, oldest first, not late
+// (lead-tv-noanchor). Their IDs are then queued, so the same page does not start the fill again.
+func (m *model) finishGap(all []Message) tea.Cmd {
 	p := &m.print
 	anchor := -1
 	for i, x := range all {
 		if p.printed[x.ID] || p.queued[x.ID] {
 			anchor = i
 		}
-	}
-	if anchor < 0 {
-		return m.queue(all[len(all)-current:], nil, "")
 	}
 	return m.queue(all[anchor+1:], nil, "")
 }

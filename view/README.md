@@ -122,7 +122,8 @@ The gap fill:
 
 - A gap is a page with `has_more` that holds no printed, queued or excluded ID (for example, after a reattach that missed many messages).
 - The renderer fetches older pages until a page holds a printed ID. It then prints the messages after the last printed ID in page order (the anchor), oldest first, not late. The fill never prints a fetched message before the anchor.
-- When no page holds a printed ID, the fill prints the messages of the current pages only.
+- Excluded IDs are never an anchor.
+- When no page holds a printed ID, the fill has fetched the whole thread. It prints every fetched message that is not printed or excluded, oldest first, not late (lead-tv-noanchor).
 
 Page rules:
 

@@ -376,9 +376,10 @@ func TestFetchNoSeenWhileFetching(t *testing.T) {
 	wantSequence(t, r.term.String(), span(1, 1100))
 }
 
-// TestFetchGapWithoutAnchor: the thread no longer holds a printed message. The fill pages back to
-// the start and finds no anchor. It prints the current page only (11..13), never the fetched
-// 7..10, and the same page again starts no fill.
+// TestFetchGapWithoutAnchor (lead-tv-noanchor): 1..3 printed; the thread now holds only 7..13, and
+// the current page is 11..13 with has_more. The fill fetches 8..10, then 7 with has_more false: no
+// page holds a printed ID. It prints 7..13 once, in order, not late; then a frame with 11..13
+// prints nothing and starts no fill.
 func TestFetchGapWithoutAnchor(t *testing.T) {
 	f := &fakePages{thread: msgs(span(7, 13)...), size: 3}
 	r := startFetchRun(t, f)
@@ -389,9 +390,10 @@ func TestFetchGapWithoutAnchor(t *testing.T) {
 	r.p.Send(page(msgs(11, 12, 13), true, 7))
 	r.wait("the same page", idle)
 	r.stop()
-	wantSequence(t, r.term.String(), []int{1, 2, 3, 11, 12, 13})
-	if calls, _ := f.counts(); calls != 2 {
-		t.Fatalf("%d page calls, want 2", calls)
+	out := r.term.String()
+	wantSequence(t, out, []int{1, 2, 3, 7, 8, 9, 10, 11, 12, 13})
+	if calls, _ := f.counts(); calls != 2 || strings.Contains(out, "(late)") {
+		t.Fatalf("%d page calls (want 2), late marks %d", calls, strings.Count(out, "(late)"))
 	}
 }
 
