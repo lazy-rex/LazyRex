@@ -216,6 +216,11 @@ hub then refuses a profile whose env sets a reserved key or names a path outside
 a profile `cwd` outside the roots. A spawn `cwd` must also stay in the roots. The default `cwd` is
 `HOME`, which is the lab home.
 
+The lab config also has `test_source_runs` with the plugin dir (docs/plugin-sources.md, section 4,
+"Source runs"). The plugin under test runs from its source dir, not from a snapshot. A plugin that
+writes into its own dir passes its suite but fails in a release, where the dir is read-only. The
+home plugin and the `test.plugins` dependencies run from snapshots, as in a release.
+
 Limits:
 
 - This is not filesystem confinement. It stops accidental use of real-home state through `HOME`,
@@ -649,7 +654,7 @@ their `REX_SERVER`. The proof:
 
 `lazyrex-hub test` and `lab/server.sh` both write `lab.json`. So a hub started by hand with
 `-test` on a `lab/server.sh` lab passes the proof. `-test` also needs `test_roots` in the config
-(see "Isolation"); without `-test`, the hub refuses `test_roots`.
+(see "Isolation"); without `-test`, the hub refuses `test_roots` and `test_source_runs`.
 
 Without `-test`, the hub (and `lazyrex-hub status` and `stop`) asks the rex CLI on PATH for its
 default server (`rex --autostart=false server status --json`, without `REX_SERVER` and `-S`,

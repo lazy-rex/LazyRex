@@ -132,15 +132,22 @@ func (h *Hub) startAutomatic(ctx context.Context, pl *Plugin) error {
 
 // checkRun checks a selected run before an automatic start: its published entry exists and has
 // the run's digest (the whole entry), its plugin directory is a directory, and the hub can start
-// its sdk. It reads no lock.
+// its sdk. A source run (testSourceRun) has no entry: its dir and its main file must exist. It
+// reads no lock.
 func (h *Hub) checkRun(run *pluginRun) error {
 	gone := fmt.Errorf("plugin %s: run %s is no longer available; start it again", run.Name, runIdentity(run))
-	if run.Entry == "" {
+	switch {
+	case run.Entry == "" && h.testSourceRun(run.Dir):
+		if fi, err := os.Stat(run.Path); err != nil || !fi.Mode().IsRegular() {
+			return gone
+		}
+	case run.Entry == "":
 		return gone // a run from before the selected run recorded its entry
-	}
-	d, err := dirDigest(filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(run.Entry)))
-	if err != nil || d != run.Digest {
-		return gone
+	default:
+		d, err := dirDigest(filepath.Join(h.cfg.State, "plugins", filepath.FromSlash(run.Entry)))
+		if err != nil || d != run.Digest {
+			return gone
+		}
 	}
 	if fi, err := os.Stat(run.Dir); err != nil || !fi.IsDir() {
 		return gone
