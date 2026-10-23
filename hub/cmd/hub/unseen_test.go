@@ -110,3 +110,33 @@ func TestUnseenExitOwnOnly(t *testing.T) {
 		t.Fatalf("a closed view stays in the own set: %s", left)
 	}
 }
+
+// Every path that closes a view row deletes it from the own set: the close of its session, a
+// close that only one caller wins, and Ctrl+Q in the view (viewClose).
+func TestUnseenOwnForgotten(t *testing.T) {
+	ctx := context.Background()
+	h, _ := unseenHub(t, true, "v1", "v2")
+	h.forgetSession(ctx, "s", "test")
+	if h.ownView("v1") || h.ownView("v2") {
+		t.Fatalf("a session close keeps own views: %v", h.ui.own)
+	}
+
+	h, _ = unseenHub(t, true, "v1")
+	if won, err := h.closeViewOnce(ctx, "v1", "hub", false); !won || err != nil {
+		t.Fatalf("closeViewOnce: %v %v", won, err)
+	}
+	if h.ownView("v1") {
+		t.Fatal("closeViewOnce keeps the own view")
+	}
+
+	h, _, _ = reopenTestHub(t)
+	h.markOwn("old")
+	var p perform
+	p.Requester.ClientID = "c"
+	if _, err := h.viewClose(ctx, p, map[string]any{"view_id": "old", "attachment": "att"}); err != nil {
+		t.Fatal(err)
+	}
+	if h.ownView("old") {
+		t.Fatal("viewClose keeps the own view")
+	}
+}

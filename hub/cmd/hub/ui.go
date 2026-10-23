@@ -294,7 +294,6 @@ func (h *Hub) loadTabs(ctx context.Context, plugin string) ([]tab, error) {
 	return out, rows.Err()
 }
 
-// closeViewRow closes a view's row. A paired view's transcript closes with it (pair.go).
 // markOwn records a view that this hub process inserted (uiState.own).
 func (h *Hub) markOwn(id string) {
 	h.ui.mu.Lock()
@@ -308,10 +307,16 @@ func (h *Hub) ownView(id string) bool {
 	return h.ui.own[id]
 }
 
-func (h *Hub) closeViewRow(ctx context.Context, id, by string) {
+// forgetOwn deletes a closed view from uiState.own. Every path that closes a view row calls it.
+func (h *Hub) forgetOwn(id string) {
 	h.ui.mu.Lock()
 	delete(h.ui.own, id)
 	h.ui.mu.Unlock()
+}
+
+// closeViewRow closes a view's row. A paired view's transcript closes with it (pair.go).
+func (h *Hub) closeViewRow(ctx context.Context, id, by string) {
+	h.forgetOwn(id)
 	h.forgetView(id)
 	h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = ?, client_id = '', attachment = '' WHERE view_id = ?`, by, id)
 	h.closeTranscript(ctx, id)
@@ -333,6 +338,7 @@ func (h *Hub) closeViewOnce(ctx context.Context, id, by string, keepAttach bool)
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
 		return false, err
 	}
+	h.forgetOwn(id)
 	h.forgetView(id)
 	h.closeTranscript(ctx, id)
 	return true, nil
@@ -440,6 +446,7 @@ func (h *Hub) forgetSession(ctx context.Context, sess, reason string) {
 		rows.Close()
 	}
 	for _, id := range ids {
+		h.forgetOwn(id)
 		h.forgetView(id)
 	}
 	h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = 'session', client_id = '', attachment = ''
@@ -563,6 +570,7 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// session that is not its tab's target retires: its tab opens again here when it is gone.
 			byTab := map[string]*view{}
 			legacyTab := map[string]bool{} // tabs whose legacy view still runs: no replacement yet
+			failedTab := map[string]bool{} // tabs that this pass suppressed (unseenExit): tabs is older
 			for _, v := range views {
 				if v.Session != "" && v.Session != sess {
 					running := true
@@ -625,7 +633,9 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 					// An attached renderer is alive; check the others. The pane keeps open with no child.
 					if v.Attachment == "" {
 						if pid, err := h.childIn(ctx, sess, v.Block); err == nil && pid == 0 {
-							h.unseenExit(ctx, v)
+							if h.unseenExit(ctx, v) {
+								failedTab[v.Tab] = true
+							}
 							continue
 						}
 					}
@@ -640,7 +650,7 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			// 2. Close views whose tab is no longer wanted, or whose route changed.
 			want := map[string]tab{}
 			for _, t := range tabs {
-				if !t.Suppressed {
+				if !t.Suppressed && !failedTab[t.Key] {
 					want[t.Key] = t
 				}
 			}
@@ -1175,6 +1185,7 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	h.forgetOwn(v.ID)
 	h.forgetView(v.ID)
 	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": tabKey, "by": "user", "from": "view"})
 	h.tabReplUserClosed(ctx, v.ID)
@@ -1234,14 +1245,14 @@ func (h *Hub) uiChildExited(ctx context.Context, blockID string) bool {
 // that finds the renderer of an own view gone (reconcile). Only the call whose update moves the
 // row from open to exited ends a waiting reopen and counts the crash. So the event and the pass
 // count one exit once, in either order and also when both read the row as open.
-func (h *Hub) rendererExited(ctx context.Context, v *view) {
+func (h *Hub) rendererExited(ctx context.Context, v *view) (suppressed bool) {
 	res, err := h.db.ExecContext(ctx, `UPDATE views SET status = 'exited', client_id = '', attachment = '' WHERE view_id = ? AND status = 'open'`, v.ID)
 	if err != nil {
 		log.Printf("ui: renderer exit of %s: %v", v.ID, err)
-		return
+		return false
 	}
 	if n, err := res.RowsAffected(); err != nil || n != 1 {
-		return
+		return false
 	}
 	h.tabReplExited(ctx, v.ID) // before the pane request a reopen ends; later it goes on
 	var crashes int
@@ -1250,18 +1261,22 @@ func (h *Hub) rendererExited(ctx context.Context, v *view) {
 	if crashes >= maxCrashes {
 		h.db.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 1 WHERE plugin = ? AND tab = ?`, v.Plugin, v.Tab)
 		h.ev.emit("view_failed", map[string]any{"plugin": v.Plugin, "tab": v.Tab})
+		return true
 	}
+	return false
 }
 
 // unseenExit closes an open, unattached view whose pane has no child (a pass found it). For a view
 // that this hub process opened, the exit event can still come, or the pass can be first: either one
 // counts the crash, once (rendererExited). A dead renderer of an earlier hub process counts none,
-// so hub restarts never suppress a tab.
-func (h *Hub) unseenExit(ctx context.Context, v *view) {
+// so hub restarts never suppress a tab. It reports whether this exit suppressed the tab: the pass
+// read its tabs before, and must not open the tab again.
+func (h *Hub) unseenExit(ctx context.Context, v *view) (suppressed bool) {
 	if h.ownView(v.ID) {
-		h.rendererExited(ctx, v)
+		suppressed = h.rendererExited(ctx, v)
 	}
 	h.closeView(ctx, v, "renderer exited unseen")
+	return suppressed
 }
 
 func (h *Hub) viewByBlock(ctx context.Context, blockID string) (*view, error) {
