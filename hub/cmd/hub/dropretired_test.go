@@ -34,10 +34,12 @@ func TestOpenDropsListed(t *testing.T) {
 			t.Fatal(err)
 		}
 		var tableN, goneN, keptN int
-		db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'old_t'`).Scan(&tableN)
-		db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('old_c') WHERE name = 'gone'`).Scan(&goneN)
-		db.QueryRow(`SELECT COUNT(*) FROM old_c WHERE k = 'a'`).Scan(&keptN)
+		err = db.QueryRow(`SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'old_t'),
+			(SELECT COUNT(*) FROM pragma_table_info('old_c') WHERE name = 'gone'), (SELECT COUNT(*) FROM old_c WHERE k = 'a')`).Scan(&tableN, &goneN, &keptN)
 		db.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if tableN != 0 || goneN != 0 || keptN != 1 {
 			t.Fatalf("table old_t %d, column old_c.gone %d, row of old_c %d; want 0, 0, 1", tableN, goneN, keptN)
 		}
