@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,9 +171,16 @@ func (h *Hub) opCmd(op *pluginOp, phase string) pluginCmdOpts {
 }
 
 // opFetch is the fetching phase: it fetches the stored target into the plugin cache and stores
-// the pin (the lock entry). A stored pin whose directory still verifies is not fetched again. A
-// hub stop stores nothing and keeps the phase, so the replay fetches again into a new directory.
-// A failed fetch changed neither the lock nor the managed file, so the op ends failed.
+// the pin (the lock entry). Before the fetch, each step is skipped when its result is in place
+// (step 4 plan r2 B, C4 plan r2 item 1); every check reads only files and the store, so a replay
+// repeats them:
+//  1. "already at" (update): the op ends done, and writes nothing (alreadyAt).
+//  2. A stored pin whose directory still verifies is not fetched again.
+//  3. The fetch skip: the lock entry of the key is the target (lockedTarget), and it becomes the
+//     op's pin.
+//
+// A hub stop stores nothing and keeps the phase, so the replay fetches again into a new
+// directory. A failed fetch changed neither the lock nor the managed file, so the op ends failed.
 func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 	var t opResolved
 	if err := json.Unmarshal([]byte(op.Target), &t); err != nil {
@@ -182,6 +190,15 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 	if err := e.checkSource(""); err != nil {
 		return h.setOpPhase(ctx, op, "failed", "", "fetch: "+err.Error())
 	}
+	if op.Kind == "update" {
+		at, err := h.alreadyAt(ctx, op, t, e)
+		if err != nil {
+			return err
+		}
+		if at != "" {
+			return h.setOpPhase(ctx, op, "done", at, "")
+		}
+	}
 	if op.Pin != "" {
 		var le lockEntry
 		if json.Unmarshal([]byte(op.Pin), &le) == nil {
@@ -189,6 +206,14 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 				return h.setOpPhase(ctx, op, op.nextPhase("fetching"), fmt.Sprintf("fetched %s %s", le.Name, le.Commit), "")
 			}
 		}
+	}
+	if le := h.lockedTarget(t, e); le != nil {
+		b, _ := json.Marshal(le)
+		if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET pin = ?, updated = ? WHERE op_id = ?`, string(b), time.Now().UnixMilli(), op.ID); err != nil {
+			return err
+		}
+		op.Pin = string(b)
+		return h.setOpPhase(ctx, op, op.nextPhase("fetching"), fmt.Sprintf("the lock has %s at %s; no fetch", t.Source, le.Commit), "")
 	}
 	tmpRoot := filepath.Join(h.cfg.State, "plugins", ".tmp")
 	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
@@ -216,4 +241,65 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 	}
 	op.Pin = string(b)
 	return h.setOpPhase(ctx, op, op.nextPhase("fetching"), fmt.Sprintf("fetched %s %s", le.Name, le.Commit), "")
+}
+
+// lockedTarget is the lock entry of the target's key when it is the target (the commit, ref_kind
+// and tag) and its directory verifies (lockedDir), else nil. The read takes no flock: the lock is
+// replaced by a rename, so it reads one whole version, and the locking and writing phases check
+// it again under the flocks.
+func (h *Hub) lockedTarget(t opResolved, e *configEntry) *lockEntry {
+	lock, err := readLock(lockPath(h.cfg.path, h.cfg.Lock))
+	if err != nil {
+		return nil
+	}
+	le := lock.Plugins[t.Source]
+	if le == nil || le.Commit != t.Commit || le.RefKind != t.RefKind || le.Tag != t.Tag {
+		return nil
+	}
+	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: le}}, e); err != nil {
+		return nil
+	}
+	return le
+}
+
+// alreadyAt gives the result of an update that has nothing to do, or "" (C4 plan r2, item 1). All
+// of these must hold:
+//   - the managed entry's source is the target source;
+//   - the lock entry of the key is the target, and its directory verifies (lockedTarget);
+//   - the plugin's record is at the target: no row; or desired stopped with no instance bound
+//     (block_id empty and child_pid 0); or desired running with the selected run of the current entry
+//     at the pin's commit and digest, in every state (running, waiting, crashing, refused,
+//     retained). An automatic start runs the selected run, so another selected run (or none) is
+//     not at the target: the op goes on to its lifecycle phase.
+func (h *Hub) alreadyAt(ctx context.Context, op *pluginOp, t opResolved, e *configEntry) (string, error) {
+	_, list, err := readManaged(h.cfg.managedPath)
+	if err != nil {
+		return "", nil // the writing phase reports the file
+	}
+	m := managedByID(list, op.managedID())
+	if m == nil || m.Source != t.Source {
+		return "", nil
+	}
+	le := h.lockedTarget(t, e)
+	if le == nil {
+		return "", nil
+	}
+	var desired, block, selected string
+	var pid int
+	err = h.db.QueryRowContext(ctx, `SELECT desired, block_id, child_pid, selected_run FROM plugins WHERE name = ?`, le.Name).Scan(&desired, &block, &pid, &selected)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return "", err
+	case desired == "stopped" && block == "" && pid == 0:
+	case desired == "running":
+		var sel selectedRun
+		if selected == "" || json.Unmarshal([]byte(selected), &sel) != nil || sel.Entry != entryIdentity(m) ||
+			sel.Run.Commit != le.Commit || sel.Run.Digest != le.Digest {
+			return "", nil
+		}
+	default:
+		return "", nil
+	}
+	return fmt.Sprintf("already at %s %s", t.Source, le.Commit), nil
 }
