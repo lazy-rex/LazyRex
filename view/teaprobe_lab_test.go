@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -148,8 +149,14 @@ func (l *teaLab) resize(cols, rows int) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	var size json.RawMessage
-	l.owner.call(l.ctx, "block.method", map[string]any{"session_id": l.session, "block_id": l.pane, "method": "size", "args": map[string]any{}}, &size)
-	l.note("resize asked %dx%d; size: %s", cols, rows, size)
+	if err := l.owner.call(l.ctx, "block.method", map[string]any{"session_id": l.session, "block_id": l.pane, "method": "size", "args": map[string]any{}}, &size); err != nil {
+		l.t.Fatalf("the size after a resize to %dx%d: %v", cols, rows, err)
+	}
+	var got struct{ Columns, Rows int }
+	if err := json.Unmarshal(size, &got); err != nil || got.Columns == 0 {
+		l.t.Fatalf("the size after a resize to %dx%d: %v %s", cols, rows, err, size)
+	}
+	l.note("resize asked %dx%d; size reports %dx%d: %s", cols, rows, got.Columns, got.Rows, size)
 }
 
 func (l *teaLab) screen() string {
@@ -193,10 +200,11 @@ func (l *teaLab) capture(name string, want ...string) string {
 		}
 	}
 	counts := map[string]int{}
-	var cut []string
+	var cut, seq []string
 	for _, row := range strings.Split(unwrapped, "\n") {
 		for _, m := range probeLine.FindAllStringSubmatch(row, -1) {
 			counts[m[1]]++
+			seq = append(seq, m[1])
 		}
 		if m := probeLine.FindStringSubmatch(row); m != nil && !strings.Contains(row, "|E") {
 			cut = append(cut, m[1])
@@ -218,8 +226,15 @@ func (l *teaLab) capture(name string, want ...string) string {
 	if len(nums) > 0 {
 		first, last = nums[0], nums[len(nums)-1]
 	}
-	l.note("step %02d %s: %d captured rows (unwrapped); printed lines %d distinct (first %s, last %s); more than once %v; without |E %v; Connecting row %v; LIVE rows %d",
-		l.step, name, len(rows), len(nums), first, last, twice, cut, strings.Contains(unwrapped, "Connecting"), strings.Count(unwrapped, "LIVE "))
+	// In order: the numbers in capture order are exactly 01, 02, ... with no gap and no repeat.
+	inOrder := true
+	for i, n := range seq {
+		if n != fmt.Sprintf("%02d", i+1) {
+			inOrder = false
+		}
+	}
+	l.note("step %02d %s: %d captured rows (unwrapped); printed lines %d distinct (first %s, last %s); exactly 01..%02d in capture order %v; more than once %v; without |E %v; Connecting row %v; LIVE rows %d",
+		l.step, name, len(rows), len(nums), first, last, len(seq), inOrder, twice, cut, strings.Contains(unwrapped, "Connecting"), strings.Count(unwrapped, "LIVE "))
 	return unwrapped
 }
 
@@ -296,9 +311,12 @@ func TestTeaProbeA2Width(t *testing.T) {
 // A3: which heights a resize from the owner applies.
 func TestTeaProbeA3Height(t *testing.T) {
 	l := newTeaLab(t, 80, 24, "tea", "-delay", "500ms", "-mode", "inline")
+	l.waitScreen("the first tree", func(s string) bool { return strings.Contains(s, "| tree alt=false") })
 	for _, rows := range []int{20, 60, 200} {
 		l.resize(80, rows)
-		l.capture(fmt.Sprintf("rows-%d", rows), "LIVE ")
+		geometry := fmt.Sprintf(" 80x%d ", rows)
+		l.waitScreen("the live geometry"+geometry, func(s string) bool { return strings.Contains(s, geometry) })
+		l.capture(fmt.Sprintf("rows-%d", rows), geometry)
 	}
 }
 
@@ -318,9 +336,19 @@ func TestTeaProbeBytesTee(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(l.lab, "captures", "input-bytes.log"), b, 0o600)
 	os.Remove(log)
-	if !strings.Contains(string(b), " 78") {
-		t.Fatalf("the input log has no byte 78 for x:\n%s", b)
+	// Raw: the bytes of each key, each in a read of its own after the start replies.
+	var reads []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if _, hex, ok := strings.Cut(line, " "); ok {
+			reads = append(reads, hex)
+		}
 	}
-	l.note("input bytes (x, enter, shift+enter by rex send-key):\n%s", b)
-	l.capture("keys", `key "x"`)
+	for _, want := range []string{"78", "0d", "1b 5b 31 33 3b 32 75"} {
+		if !slices.Contains(reads, want) {
+			t.Fatalf("the input log has no read %q (x, enter, shift+enter):\n%s", want, b)
+		}
+	}
+	l.note("raw input reads (x, enter, shift+enter by rex send-key):\n%s", b)
+	// Parsed: the key message of each key, from the live region.
+	l.capture("keys", `key "x" code=120 mod=0`, `key "enter" code=13 mod=0`, `key "shift+enter" code=13 mod=1`)
 }
