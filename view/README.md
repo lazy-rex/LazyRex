@@ -148,7 +148,7 @@ Page rules:
 - The opening exclusions stay across a restart. A result of an old fetch or an old attachment is dropped.
 - A failed page, or a page with `has_more` and no new message, is asked again after 2 s.
 - A reattach, a reload, a close, an output failure or a lost connection stops the fetch and its page call.
-- A close (Ctrl+Q or the hub), a reload or a retirement stops the fetch when it is requested, also while it waits for drafts or operation results. Until it ends, no tree starts a fetch. A failed close ends it: the view reads its current tree again and fetches again.
+- A close (Ctrl+Q or the hub) or a reload stops the fetch when it is requested, also while it waits for drafts or operation results. Until it ends, no tree starts a fetch. A failed close ends it: the view reads its current tree again and fetches again.
 - Seen stays closed while a fetch runs.
 
 ### Keys (thread mode)
@@ -291,25 +291,6 @@ with a new Rex client at `2026-10-16T20:57:38.516623Z`. The composer restored
 Tests verify that reload waits for a save result, a generic action result, and
 connection recovery. Tests also verify that conflicts, removed controls, and dirty
 text or choice fields prevent reload. These tests pass with the Go race detector.
-
-### Renderer retirement
-
-The renderer declares `view.retire` for migration between UI sessions. The request
-must name the current view and attachment and come from the attached hub. The
-renderer replies `{status: "accepted"}` before it starts retirement.
-
-Retirement uses the reload safety checks. It saves composer drafts and waits for
-operation results and a hub connection. Conflicts, unsaved forms, and recovery
-text prevent exit. The status line identifies the blocking condition.
-
-After these checks pass, the renderer restores the terminal, clears its program
-status, and exits. It does not execute the binary again. Retirement takes priority
-when reload is also pending. The hub must observe process exit before it creates
-the replacement view. An admission reply does not prove retirement is complete.
-
-Model tests cover blocked retirement, draft saves, pending actions, and reload
-priority. Protocol fixture tests cover admission and hub, view, and attachment
-checks. Full migration with the real hub remains untested by these tests.
 
 ### Layout and read notices
 

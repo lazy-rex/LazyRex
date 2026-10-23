@@ -522,7 +522,7 @@ func TestFetchGapNewMessageInsideTheHeldRange(t *testing.T) {
 }
 
 // TestFetchStopsWhileTheViewEnds (codex-29 blocker at 8f104d33): an open fetch runs, and an
-// operation is outstanding. Ctrl+Q, a reload or a retirement stops the fetch's
+// operation is outstanding. Ctrl+Q or a reload stops the fetch's
 // call, and a later tree starts no fetch while the request waits. Through model.Update.
 func TestFetchStopsWhileTheViewEnds(t *testing.T) {
 	for _, tc := range []struct {
@@ -531,7 +531,6 @@ func TestFetchStopsWhileTheViewEnds(t *testing.T) {
 	}{
 		{"ctrl+q", tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl}},
 		{"reload", reloadRequested{}},
-		{"retire", retireRequested{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newModel(&viewClient{ViewID: "v1", Plugin: "messaging", Route: "/thread/42", Requests: make(chan mutation, 16)})

@@ -70,21 +70,10 @@ func sessionGone(err error) bool {
 	return errors.As(err, &re) && (re.Code == "session_not_found" || re.Code == "not_found")
 }
 
-// legacyView reports whether a view's session is not the LazyRex session, which every plugin
-// shares. Callers also check notHome: a view outside the LazyRex session and outside its tab's
-// home retires, and its tab opens again in its target session.
-func (h *Hub) legacyView(sess string) bool {
-	h.ui.mu.Lock()
-	defer h.ui.mu.Unlock()
-	return h.ui.sess[sess] != uiSessionKey
-}
-
 type uiState struct {
 	mu         sync.Mutex
 	kick       chan struct{}
 	spawned    int                       // views opened in this pass (worker only)
-	retire     map[string]time.Time      // attachment -> last view.retire request (worker only)
-	retireCut  map[string]bool           // attachment -> a view.retire that the hub's wait cut: its outcome is unknown (mu)
 	retryArmed bool                      // a delayed kick is scheduled (retryLater)
 	badHomes   map[string]bool           // tab homes reported as not a Rex session ID (worker only)
 	labeled    map[string]string         // session_id -> the label the worker last set
@@ -146,7 +135,7 @@ func randomID(prefix string) string {
 
 // uiStart creates the tables, attaches the sessions and starts the worker.
 func (h *Hub) uiStart(ctx context.Context) error {
-	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}, retire: map[string]time.Time{}, retireCut: map[string]bool{}, labeled: map[string]string{}, own: map[string]bool{}}
+	h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{}, labeled: map[string]string{}, own: map[string]bool{}}
 	if _, err := h.db.ExecContext(ctx, uiSchema); err != nil {
 		return err
 	}
@@ -185,7 +174,7 @@ func (h *Hub) uiStart(ctx context.Context) error {
 		return err
 	}
 	for sess, plugin := range h.ui.sess {
-		// Legacy sessions too: their close events retire their views.
+		// Every recorded session: its close events close its views.
 		if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
 			log.Printf("ui: session %s (%s): %v", sess, plugin, err)
 		}
@@ -488,7 +477,7 @@ func (h *Hub) childIn(ctx context.Context, sess, blockID string) (int, error) {
 
 // uiPlugins returns the plugins with declared tabs or a live tab view (the views that loadViews
 // reads), the home plugin first. A plugin that declares no tabs keeps its pass while a view of it
-// is live, so that view closes (or retires) and is not stranded.
+// is live, so that view closes and is not stranded.
 func (h *Hub) uiPlugins(ctx context.Context) ([]string, error) {
 	rows, err := h.db.QueryContext(ctx, `SELECT plugin FROM ui_tabs UNION
 		SELECT plugin FROM views WHERE status != 'closed' AND tab != '`+formTab+`' ORDER BY plugin`)
@@ -558,22 +547,11 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 			}
 
 			// 1. Resolve spawns with an unknown outcome, and views whose pane is gone. A view in a
-			// session that is not its tab's target retires: its tab opens again here when it is gone.
+			// session that is not its tab's target closes: its tab opens again here.
 			byTab := map[string]*view{}
-			legacyTab := map[string]bool{} // tabs whose legacy view still runs: no replacement yet
 			for _, v := range views {
 				if v.Session != "" && v.Session != sess {
-					running := true
-					switch {
-					case v.Status == "open":
-						running = h.retireLegacy(ctx, v)
-					case v.Status == "exited" || v.Status == "prepared" || v.Status == "sending":
-						running = !h.closeLegacy(ctx, v, "legacy "+v.Status)
-					}
-					if running {
-						legacyTab[v.Tab] = true
-						h.retryLater() // a retirement or a failed close needs no other event to go on
-					}
+					h.closeView(ctx, v, "moved")
 					continue
 				}
 				if r := reserved[v.Tab]; r != nil {
@@ -662,9 +640,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 					continue
 				}
 				v := byTab[t.Key]
-				if v == nil && legacyTab[t.Key] {
-					continue // the legacy view retires first (its exit kicks a new pass)
-				}
 				if v == nil && reserved[t.Key] != nil {
 					continue // the reopen opens the view
 				}
@@ -1085,12 +1060,7 @@ func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool
 		}
 		return true
 	}
-	legacy := h.legacyView(sess) && h.notHome(ctx, plugin, tabKey, sess)
-	if !self && legacy {
-		// A view of an older hub's session: retiring it does not close the tab.
-		h.closeViewRow(ctx, id, "legacy")
-		h.ev.emit("view_closed", map[string]any{"plugin": plugin, "view_id": id, "tab": tabKey, "by": "user", "legacy": true})
-	} else if !self {
+	if !self {
 		// Not the hub's close: the view closes, the data stays, and the tab stays closed until
 		// the next navigation to it (architecture.md, "Closes").
 		h.closeViewRow(ctx, id, "user")
@@ -1201,14 +1171,6 @@ func (h *Hub) uiChildExited(ctx context.Context, blockID string) bool {
 		go h.formEnded(context.Background(), v.ID, fc, false, "")
 		return true
 	}
-	if h.legacyView(v.Session) && h.notHome(ctx, v.Plugin, v.Tab, v.Session) {
-		// A view of an older hub's session: its exit retires it and counts no crash for the tab.
-		// The handler only records it; the worker closes the pane (closeLegacy).
-		h.db.ExecContext(ctx, `UPDATE views SET status = 'exited', client_id = '', attachment = '' WHERE view_id = ? AND status = 'open'`, v.ID)
-		h.ev.emit("view_exited", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "legacy": true})
-		h.kickUI(v.Plugin)
-		return true
-	}
 	h.rendererExited(ctx, v)
 	h.kickUI(v.Plugin)
 	return true
@@ -1300,7 +1262,7 @@ func (h *Hub) uiSessionDestroyed(ctx context.Context, sess string) {
 	_, ok := h.ui.sess[sess]
 	h.ui.mu.Unlock()
 	if ok {
-		// The LazyRex session comes back at once. A legacy session is gone.
+		// The LazyRex session comes back at once. Another recorded session is gone.
 		h.forgetSession(ctx, sess, "destroyed")
 		h.kickUI("")
 	}
@@ -1617,7 +1579,6 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 	}
 	h.ev.emit("view_attached", map[string]any{"view_id": id, "client_id": p.Requester.ClientID})
 	h.markView(v.Plugin, id, causeAttach) // render the first snapshot for this attachment
-	h.kickUI(v.Plugin)                    // a legacy view's new attachment can now be asked to retire
 	out := map[string]any{"view_id": id, "plugin": v.Plugin, "route": v.Route, "user": viewUser,
 		"hub_generation": revString(h.generation), "attachment": attachment}
 	// A renderer that waits on a side-slot replacement (frozen or prompting) names it; the
@@ -1681,71 +1642,4 @@ func (h *Hub) viewCommand(id, plugin, route string) []string {
 		cmd = append(cmd, "-real-server")
 	}
 	return append(cmd, plugin, route)
-}
-
-// retireLegacy moves one view of an older hub's session toward retirement. It reports whether
-// the view still runs (its tab then waits). The renderer exits when nothing is unsaved
-// (view.retire, the same gate as reload); its exit closes the pane (uiChildExited).
-func (h *Hub) retireLegacy(ctx context.Context, v *view) bool {
-	if v.Attachment == "" {
-		// No attachment: an alive renderer reattaches soon; a dead one is done.
-		if pid, err := h.childIn(ctx, v.Session, v.Block); err == nil && pid == 0 {
-			return !h.closeLegacy(ctx, v, "legacy renderer gone")
-		} else if err != nil {
-			var re *rex.RexError
-			if errors.As(err, &re) && re.Code == "not_found" {
-				h.closeViewRow(ctx, v.ID, "legacy missing")
-				return false
-			}
-		}
-		return true
-	}
-	if last, ok := h.ui.retire[v.Attachment]; ok && time.Since(last) < 10*time.Second {
-		return true
-	}
-	h.ui.mu.Lock()
-	cut := h.ui.retireCut[v.Attachment]
-	h.ui.mu.Unlock()
-	if cut {
-		// The hub's wait cut an earlier request: Rex can still deliver it, so the hub sends no
-		// other one to this attachment. A new attachment (a reloaded renderer) gets one.
-		return true
-	}
-	h.ui.retire[v.Attachment] = time.Now()
-	go func() {
-		ctx, cancel := performCtx(context.Background(), 5000)
-		defer cancel()
-		err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.retire",
-			"args": map[string]any{"view_id": v.ID, "attachment": v.Attachment}, "timeout_ms": 5000}, nil)
-		cut := errors.Is(err, context.DeadlineExceeded)
-		if cut { // before the event: a pass after the event sees the cut
-			h.ui.mu.Lock()
-			h.ui.retireCut[v.Attachment] = true
-			h.ui.mu.Unlock()
-		}
-		h.ev.emit("view_retire", map[string]any{"view_id": v.ID, "error": errString(err)})
-		if err != nil && !cut {
-			// A failure that Rex reports: an old renderer that does not know view.retire refuses.
-			// The hub asks again after it reloads (a new attachment) or after 10 s.
-			time.AfterFunc(10*time.Second, func() { h.kickUI(v.Plugin) })
-		}
-	}()
-	return true
-}
-
-// closeLegacy closes a retired legacy view's exact recorded pane, then its row. It reports
-// whether both are done. A failed close keeps the row, so the tab keeps waiting and a later pass
-// tries again. A recorded legacy session with no blocks left is destroyed; one with any other
-// block stays.
-func (h *Hub) closeLegacy(ctx context.Context, v *view, why string) bool {
-	if v.Block != "" {
-		if err := h.closeBlock(ctx, v.Session, v.Block); err != nil {
-			log.Printf("ui: retire %s: %v", v.ID, err)
-			return false
-		}
-	}
-	h.closeViewRow(ctx, v.ID, why)
-	h.ev.emit("view_retired", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "why": why})
-	h.kickUI(v.Plugin)
-	return true
 }

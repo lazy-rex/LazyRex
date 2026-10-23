@@ -8,7 +8,6 @@ import (
 )
 
 type reloadRequested struct{}
-type retireRequested struct{}
 
 func (e *editor) dirty() bool {
 	if e.Kind == "boolean" || e.Kind == "select" {
@@ -43,7 +42,7 @@ func (e *editor) setText(s string) {
 
 // Update checks reload safety after each model change.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.reloadReady || m.retireReady || m.closeReady {
+	if m.reloadReady || m.closeReady {
 		return m, nil
 	}
 	// An inline frame turns mouse reporting off: the terminal owns the pointer and the scrollback.
@@ -96,8 +95,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	_, snapshot := msg.(Snapshot)
 	follow := !snapshot && m.scroll >= max(0, len(m.bodyRows())-beforeHeight)
 	_, cmd := m.update(msg)
-	// A close, reload or retirement that waits or runs stops the history fetch, whichever path asked
-	// for it (Ctrl+Q, the hub, a reload or a migration). startFetch starts none until it ends.
+	// A close or reload that waits or runs stops the history fetch, whichever path asked for it
+	// (Ctrl+Q, the hub or a reload). startFetch starts none until it ends.
 	if m.ending() {
 		m.cancelFetch()
 	}
@@ -113,15 +112,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.revealFocus()
 	}
 	m.refreshHover()
-	if m.replacement != nil || m.closeRunning || m.closeReady || (!m.reloadPending && !m.retirePending && !m.closePending) {
+	if m.replacement != nil || m.closeRunning || m.closeReady || (!m.reloadPending && !m.closePending) {
 		return m, cmd
 	}
 	operation := "Reload"
 	if m.closePending {
 		operation = "Close"
-	}
-	if m.retirePending {
-		operation = "Retirement"
 	}
 	if len(m.recovery) > 0 {
 		m.status = operation + " waits: copy the text from removed controls, then quit and reopen this view."
@@ -156,12 +152,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Closing the tab…"
 		return m, func() tea.Msg { return closeFinished{err: m.client.closeView()} }
 	}
-	if m.retirePending {
-		m.retireReady = true
-		m.status = "Closing the migrated view…"
-	} else {
-		m.reloadReady = true
-		m.status = "Reloading renderer…"
-	}
+	m.reloadReady = true
+	m.status = "Reloading renderer…"
 	return m, m.quit()
 }

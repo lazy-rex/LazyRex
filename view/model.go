@@ -75,7 +75,6 @@ type model struct {
 	selectText                             bool
 	operations                             map[string]bool
 	reloadPending, reloadReady             bool
-	retirePending, retireReady             bool
 	closePending, closeRunning, closeReady bool
 	dark                                   bool
 	themeReady                             bool
@@ -698,9 +697,6 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.RequestBackgroundColor, m.nextPrint())
 	case tea.BlurMsg:
 		m.client.focus(false, "")
-		return m, nil
-	case retireRequested:
-		m.retirePending = true
 		return m, nil
 	case reloadRequested:
 		m.reloadPending = true

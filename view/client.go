@@ -222,7 +222,7 @@ func (v *viewClient) event(raw json.RawMessage) {
 			return
 		}
 		v.mu.Lock()
-		valid := (p.Action == "view.changed" || p.Action == "view.reload" || p.Action == "view.retire" || p.Action == "view.release" || p.Action == "view.resume") && p.Requester.ClientID == v.hub && p.Args.ViewID == v.ViewID && p.Args.Attachment == v.attachment
+		valid := (p.Action == "view.changed" || p.Action == "view.reload" || p.Action == "view.release" || p.Action == "view.resume") && p.Requester.ClientID == v.hub && p.Args.ViewID == v.ViewID && p.Args.Attachment == v.attachment
 		w := v.w
 		v.mu.Unlock()
 		if w == nil {
@@ -248,9 +248,6 @@ func (v *viewClient) event(raw json.RawMessage) {
 		reply := map[string]any{"call_id": p.CallID}
 		if valid {
 			reply["result"] = map[string]any{"received": true}
-			if p.Action == "view.retire" {
-				reply["result"] = map[string]any{"status": "accepted"}
-			}
 			if p.Action == "view.changed" {
 				v.pulse()
 			}
@@ -261,11 +258,8 @@ func (v *viewClient) event(raw json.RawMessage) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := w.call(ctx, "client.reply", reply, nil); err == nil && valid {
-				switch p.Action {
-				case "view.reload":
+				if p.Action == "view.reload" {
 					v.emit(reloadRequested{})
-				case "view.retire":
-					v.emit(retireRequested{})
 				}
 			}
 		}()
@@ -338,7 +332,7 @@ func (v *viewClient) connect(ctx context.Context) error {
 		v.mu.Lock()
 		v.w = w
 		v.mu.Unlock()
-		if err = w.call(ctx, "client.keymap", map[string]any{"actions": []any{map[string]any{"name": "view.changed", "kind": "client", "title": "Refresh view"}, map[string]any{"name": "view.reload", "kind": "client", "title": "Reload renderer"}, map[string]any{"name": "view.retire", "kind": "client", "title": "Retire migrated view"}, map[string]any{"name": "view.release", "kind": "client", "title": "Replace panel"}, map[string]any{"name": "view.resume", "kind": "client", "title": "Resume panel"}}}, nil); err != nil {
+		if err = w.call(ctx, "client.keymap", map[string]any{"actions": []any{map[string]any{"name": "view.changed", "kind": "client", "title": "Refresh view"}, map[string]any{"name": "view.reload", "kind": "client", "title": "Reload renderer"}, map[string]any{"name": "view.release", "kind": "client", "title": "Replace panel"}, map[string]any{"name": "view.resume", "kind": "client", "title": "Resume panel"}}}, nil); err != nil {
 			w.conn.CloseNow()
 			return err
 		}

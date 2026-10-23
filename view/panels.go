@@ -90,7 +90,7 @@ func (m *model) updateReplacement(msg tea.Msg) (bool, tea.Cmd) {
 			}
 			return true, msg.reply("released")
 		}
-		if m.closePending || m.closeRunning || m.reloadPending || m.retirePending {
+		if m.closePending || m.closeRunning || m.reloadPending {
 			return true, msg.reply("conflict")
 		}
 		state, answer := "opening", "released"

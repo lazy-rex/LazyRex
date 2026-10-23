@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +19,7 @@ import (
 // the order they arrived, to handleEvent, then runs one reconcile. So these tests check the rows
 // and the panes that Rex reports, not the worker's scheduling. The "renderer" is a shell loop that
 // keeps its arguments (the hub's process proof); it never attaches, so the test ends it where a
-// real renderer exits (a crash, or its exit after view.retire). A second connection acts as the
+// real renderer exits (a crash). A second connection acts as the
 // user. These replace tests/hometabs-lab.mjs and tests/session-rename-lab.mjs; the hub's restart
 // and a rename while it is stopped are TestSessionRenameKeptLab (a real hub process).
 type homeLab struct {
@@ -410,26 +409,17 @@ func TestHomeTabLab(t *testing.T) {
 	}
 	l.until("the navigation focuses the home tab", 20*time.Second, func() bool { return l.view(H).Active == v2.Window })
 
-	// 4. Dropping the home moves the tab to the app session; the view in H goes. The view in H
-	// retires (retireLegacy): a real renderer gets view.retire and exits; this one never attaches,
-	// so the hub waits for it, and the test ends it as that exit would. The exit is a retirement,
-	// not a crash.
+	// 4. Dropping the home moves the tab to the app session: the next pass closes the view in H (a
+	// view outside its tab's target session), with no crash, and the tab opens in the app session.
 	l.declare("", "r2")
-	l.passesFor(1500 * time.Millisecond)
-	if v := l.homed(); v == nil || v.ID != v2.ID {
-		t.Fatalf("before its renderer exits, the view in H must stay: %+v", v)
+	l.until("the close of the view in H", 20*time.Second, func() bool { return l.event("view_closed", "view_id", v2.ID) != nil })
+	if e := l.event("view_closed", "view_id", v2.ID); e["by"] != "hub" || e["why"] != "moved" {
+		t.Fatalf("the view outside the tab's target session: %v, want a hub close, why moved", e)
 	}
-	l.kill(v2.ID)
-	// Either the exit event retires it (view_exited legacy) or a pass finds the renderer gone first
-	// (closeLegacy: view_retired, why "legacy ..."). Never a crash.
-	l.until("the retirement", 20*time.Second, func() bool {
-		return l.event("view_exited", "view_id", v2.ID) != nil || l.event("view_retired", "view_id", v2.ID) != nil
-	})
-	if e := l.event("view_exited", "view_id", v2.ID); e != nil && e["legacy"] != true {
-		t.Fatalf("an exit outside the tab's home must retire the view, not count a crash: %v", e)
-	}
-	if e := l.event("view_retired", "view_id", v2.ID); e != nil && !strings.HasPrefix(fmt.Sprint(e["why"]), "legacy") {
-		t.Fatalf("the view outside the tab's home must retire: %v", e)
+	var crashes int
+	l.h.db.QueryRow(`SELECT crashes FROM ui_tabs WHERE plugin = 'formprobe' AND tab = 'homed'`).Scan(&crashes)
+	if crashes != 0 {
+		t.Fatalf("the move counted %d crashes", crashes)
 	}
 	l.until("moved to the app session", 20*time.Second, func() bool { v := l.homed(); return v != nil && v.Session == l.app })
 	l.until("gone from H", 20*time.Second, func() bool { return !strings.Contains(strings.Join(l.labels(H), ","), "Homed") })
@@ -471,8 +461,8 @@ func TestHomeTabLab(t *testing.T) {
 		t.Fatalf("describe home_redirects[%s] = %q, want %s", H2, got, v6.Session)
 	}
 
-	// 7. In the replacement session the tab is at home: a renderer exit is a crash, not a legacy
-	// retirement; a user close is a user close; the revision rules hold there.
+	// 7. In the replacement session the tab is at home: a renderer exit is a crash; a user close is
+	// a user close; the revision rules hold there.
 	l.call("session.attach", map[string]any{"session_id": v6.Session, "event_scope": "session"})
 	// This case exercises event-first crash classification: the test feeds the exit event before
 	// any pass. A running hub does not guarantee that order; a pass first closes the row as
@@ -482,8 +472,8 @@ func TestHomeTabLab(t *testing.T) {
 	l.drain()
 	var exited map[string]any
 	waitFor(t, "the renderer exit", 10*time.Second, func() bool { exited = l.event("view_exited", "view_id", v6.ID); return exited != nil })
-	if exited["legacy"] == true || exited["crashes"] != float64(1) {
-		t.Fatalf("an exit at home must count one crash, not retire the view: %v", exited)
+	if exited["crashes"] != float64(1) {
+		t.Fatalf("an exit at home must count one crash: %v", exited)
 	}
 	var v7 *homeView
 	l.until("the tab opened again in the replacement", 20*time.Second, func() bool {
@@ -493,7 +483,7 @@ func TestHomeTabLab(t *testing.T) {
 	l.call("block.close", map[string]any{"session_id": v7.Session, "block_id": v7.Block})
 	var closed map[string]any
 	l.until("the user close", 20*time.Second, func() bool { closed = l.event("view_closed", "view_id", v7.ID); return closed != nil })
-	if closed["legacy"] == true || closed["by"] != "user" {
+	if closed["by"] != "user" {
 		t.Fatalf("a close at home must be a user close: %v", closed)
 	}
 	l.declare(H2, "r5")

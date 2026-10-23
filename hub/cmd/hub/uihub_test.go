@@ -46,16 +46,6 @@ func eventsNamed(t *testing.T, path, name string) []map[string]any {
 	return out
 }
 
-func TestLegacyViewIsAnySessionButTheLazyRexSession(t *testing.T) {
-	h, _ := uiTestHub(t)
-	h.ui.sess = map[string]string{"session:home": uiSessionKey, "session:app": "app:messaging", "session:old": "messaging"}
-	for sess, legacy := range map[string]bool{"session:home": false, "session:app": true, "session:old": true, "session:unknown": true} {
-		if got := h.legacyView(sess); got != legacy {
-			t.Errorf("legacyView(%s) = %v, want %v", sess, got, legacy)
-		}
-	}
-}
-
 // A new hub.db gets every UI column from the CREATE statements that uiStart runs, in its order: no
 // column upgrade adds them.
 func TestNewDatabaseHasTheUIColumns(t *testing.T) {

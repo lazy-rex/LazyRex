@@ -67,10 +67,10 @@ func (m *model) historyNode() *Node {
 
 func (m *model) full() bool { return m.snapshot.Open != nil && m.snapshot.Open.Full }
 
-// ending reports a close, reload or retirement that waits or runs. A failed close ends it: the
+// ending reports a close or reload that waits or runs. A failed close ends it: the
 // view stays, and its next tree can fetch again.
 func (m *model) ending() bool {
-	return m.closePending || m.closeRunning || m.closeReady || m.reloadPending || m.reloadReady || m.retirePending || m.retireReady
+	return m.closePending || m.closeRunning || m.closeReady || m.reloadPending || m.reloadReady
 }
 
 // startFetch starts a fetch of kind back from the current page. An ending view starts none

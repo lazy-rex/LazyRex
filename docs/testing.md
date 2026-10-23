@@ -471,8 +471,7 @@ a record (`plugstart_lab_test.go`). A hub without `-test` refuses the key.
 - The file `LAB/testview-hold` controls the test views of one route: line 1 is the route, line 2
   the mode. `hold` (the default) keeps them between attach and subscribe, at most 20 s; the
   subscribe is not sent yet. `fail-subscribe-once` makes the first subscribe fail, simulated by
-  the test view. `retire-wait` stands for unsaved text: the test view accepts `view.retire`, but it exits
-  only after the file stops naming `retire-wait` for its route. `testview.status` reports `held`, `hold_expired`, `subscribed`,
+  the test view. `testview.status` reports `held`, `hold_expired`, `subscribed`,
   `subscribe_failures` and `changes` (the count of `view.changed` notifications).
 
 ### Faults

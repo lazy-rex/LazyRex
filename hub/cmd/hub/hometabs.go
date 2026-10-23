@@ -44,7 +44,7 @@ type tabGroup struct {
 
 // tabGroups splits a plugin's tabs and views by target session. The app session (appSess, ""
 // when it does not exist) comes first and also gets the views of any session that no tab targets:
-// those retire there (the legacy path). Without an app session they wait.
+// those close there. Without an app session they wait.
 func (h *Hub) tabGroups(ctx context.Context, appSess string, tabs []tab, views []*view) ([]tabGroup, error) {
 	order := []string{appSess}
 	idx := map[string]int{appSess: 0}
@@ -288,35 +288,6 @@ func (h *Hub) homeAlive(ctx context.Context, sess string) (bool, error) {
 		return false, nil
 	}
 	return false, err
-}
-
-// homeOf reports whether sess is where the plugin's tab lives: its declared home session, or
-// the session that replaced that home. A view there is not a legacy view. The callers treat an
-// error as "home": an uncertain answer never retires a view as legacy.
-func (h *Hub) homeOf(ctx context.Context, plugin, tabKey, sess string) (bool, error) {
-	var home string
-	err := h.db.QueryRowContext(ctx, `SELECT session_id FROM ui_tabs WHERE plugin = ? AND tab = ?`, plugin, tabKey).Scan(&home)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && home == "") {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if home == sess {
-		return true, nil
-	}
-	cur, err := h.followHome(ctx, home)
-	return cur == sess, err
-}
-
-// notHome reports whether a view in sess is definitely not in the tab's home (see homeOf).
-func (h *Hub) notHome(ctx context.Context, plugin, tabKey, sess string) bool {
-	home, err := h.homeOf(ctx, plugin, tabKey, sess)
-	if err != nil {
-		log.Printf("home of %s/%s: %v", plugin, tabKey, err)
-		return false
-	}
-	return !home
 }
 
 // rememberHomeLabel stores label as the name of home sess, seen at time at. A name seen earlier

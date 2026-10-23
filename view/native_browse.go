@@ -32,7 +32,7 @@ func (m *model) startBrowse(c control) tea.Cmd {
 		m.endBrowse()
 		return nil
 	}
-	if !m.ready || m.replacement != nil || m.closePending || m.closeRunning || m.reloadPending || m.retirePending || len(m.operations) > 0 {
+	if !m.ready || m.replacement != nil || m.closePending || m.closeRunning || m.reloadPending || len(m.operations) > 0 {
 		m.status = "The folder browser is unavailable while the view waits for the hub."
 		return nil
 	}

@@ -247,7 +247,7 @@ func testViewMain(argv []string) int {
 	log.SetPrefix("testview " + *viewID + " ")
 	ctx := context.Background()
 	actions := []map[string]any{}
-	for _, n := range []string{"view.changed", "view.reload", "view.retire", "view.release", "view.resume"} {
+	for _, n := range []string{"view.changed", "view.reload", "view.release", "view.resume"} {
 		actions = append(actions, clientAction(n, n, nil))
 	}
 	for _, n := range []string{"testview.status", "testview.get", "testview.action", "testview.draft", "testview.send", "testview.operation",
@@ -367,26 +367,6 @@ func testViewMain(argv []string) int {
 				c.reply(p.CallID, map[string]any{}, nil)
 				self, _ := os.Executable()
 				syscall.Exec(self, os.Args, os.Environ()) // like the renderer: the same process, a new attachment
-			case "view.retire":
-				c.reply(p.CallID, map[string]any{"status": "accepted"}, nil)
-				if p.Action == "view.retire" && readHold(*hold, fs.Arg(1)) == "retire-wait" {
-					// Unsaved text, as the real renderer has: it leaves once the hold file stops
-					// naming retire-wait for this route (the user saved or discarded).
-					go func() {
-						for readHold(*hold, fs.Arg(1)) == "retire-wait" {
-							time.Sleep(100 * time.Millisecond)
-						}
-						select {
-						case exit <- 0:
-						default:
-						}
-					}()
-					return
-				}
-				select {
-				case exit <- 0: // no unsaved text: the renderer leaves; its exit closes the pane
-				default:
-				}
 			}
 			return
 		}
@@ -469,7 +449,7 @@ func testViewMain(argv []string) int {
 }
 
 // The hold file (lab tests): the first line is a route, the second a mode, "hold" (the default) or
-// "fail-subscribe-once" or "retire-wait" (view.retire waits; see testview). readHold returns the mode when the file names route, else "".
+// "fail-subscribe-once". readHold returns the mode when the file names route, else "".
 func readHold(path, route string) string {
 	if path == "" {
 		return ""

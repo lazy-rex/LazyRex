@@ -17,19 +17,12 @@ func testHomeHub(t *testing.T) *Hub {
 	return h
 }
 
-// A view in the session that replaced a tab's home is a home view, also after several
-// replacements: a close there is a user close, not a legacy retirement (Codex review of b3d5465).
-func TestHomeOfFollowsReplacements(t *testing.T) {
+// Each replaced home goes to the last replacement (Codex review of b3d5465).
+func TestHomeRedirectsFollowReplacements(t *testing.T) {
 	h := testHomeHub(t)
 	ctx := context.Background()
 	h.db.ExecContext(ctx, `INSERT INTO ui_tabs (plugin, tab, title, route, pos, session_id) VALUES ('messaging', 'thread/a', 'A', '/thread/a', 0, 'session:a')`)
 	h.db.ExecContext(ctx, `INSERT INTO ui_homes (session_id, label, moved_to) VALUES ('session:a', 'work', 'session:b'), ('session:b', 'work', 'session:c'), ('session:c', 'work', '')`)
-	for sess, want := range map[string]bool{"session:a": true, "session:c": true, "session:b": false, "session:x": false} {
-		got, err := h.homeOf(ctx, "messaging", "thread/a", sess)
-		if err != nil || got != want {
-			t.Errorf("homeOf %s = %v, %v; want %v", sess, got, err, want)
-		}
-	}
 	r, err := h.homeRedirects(ctx)
 	if err != nil || r["session:a"] != "session:c" || r["session:b"] != "session:c" || len(r) != 2 {
 		t.Fatalf("redirects %v %v: each home goes to the last replacement", r, err)
@@ -44,12 +37,6 @@ func TestHomeReplacementCycleIsAnError(t *testing.T) {
 	if _, err := h.homeRedirects(ctx); err == nil {
 		t.Error("homeRedirects accepted a cycle")
 	}
-	if _, err := h.homeOf(ctx, "messaging", "thread/a", "session:z"); err == nil {
-		t.Error("homeOf accepted a cycle")
-	}
-	if h.notHome(ctx, "messaging", "thread/a", "session:z") {
-		t.Error("an uncertain home must not retire a view as legacy")
-	}
 }
 
 func TestHomeReadErrorsFail(t *testing.T) {
@@ -62,9 +49,6 @@ func TestHomeReadErrorsFail(t *testing.T) {
 	}
 	if _, err := h.resolveHome(ctx, "session:a", true, new(*sessionList)); err == nil {
 		t.Error("resolveHome hid a read error")
-	}
-	if h.notHome(ctx, "messaging", "thread/a", "session:b") {
-		t.Error("a read error must not retire a view as legacy")
 	}
 }
 
