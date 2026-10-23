@@ -221,7 +221,7 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 	}
 	fctx, cancel := context.WithTimeout(ctx, fetchLimit)
 	cfg := &pluginCmdConfig{path: h.cfg.path, state: h.cfg.State}
-	le, err := fetchAt(fctx, cfg, h.opCmd(op, "fetching"), tmpRoot, e.githubRef(), t.FetchRef, t.Commit, t.RefKind, t.Tag, t.RefKind == "commit")
+	le, err := fetchAt(fctx, cfg, h.opCmd(op, "fetching"), tmpRoot, e.githubRef(), t.FetchRef, t.Commit, t.RefKind, t.Tag, t.RefKind == "commit" || t.ByID)
 	timedOut := errors.Is(fctx.Err(), context.DeadlineExceeded)
 	cancel()
 	switch {
@@ -231,6 +231,8 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 		return h.setOpPhase(ctx, op, "failed", "", fmt.Sprintf("fetch %s: not done within %v; the lock and the managed file are unchanged", t.Source, fetchLimit))
 	case err != nil:
 		return h.setOpPhase(ctx, op, "failed", "", fmt.Sprintf("fetch %s: %v; the lock and the managed file are unchanged", t.Source, err))
+	case t.Digest != "" && le.Digest != t.Digest:
+		return h.setOpPhase(ctx, op, "failed", "", fmt.Sprintf("fetch %s: the tree of %s is %s, not the peer's %s; the lock and the managed file are unchanged", t.Source, t.Commit, le.Digest, t.Digest))
 	}
 	if h.opFault("plugin-op-after-fetch") {
 		return errOpCrash
@@ -253,7 +255,7 @@ func (h *Hub) lockedTarget(t opResolved, e *configEntry) *lockEntry {
 		return nil
 	}
 	le := lock.Plugins[t.Source]
-	if le == nil || le.Commit != t.Commit || le.RefKind != t.RefKind || le.Tag != t.Tag {
+	if le == nil || le.Commit != t.Commit || le.RefKind != t.RefKind || le.Tag != t.Tag || (t.Digest != "" && le.Digest != t.Digest) {
 		return nil
 	}
 	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: le}}, e); err != nil {

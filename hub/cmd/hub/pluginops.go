@@ -137,8 +137,8 @@ type opWait struct {
 func (w *opWait) Error() string { return w.why }
 
 type opOrigin struct {
-	Kind string `json:"kind"` // "user" or "agent"
-	ID   string `json:"id"`   // the view ID of the user's operation, or the agent ID
+	Kind string `json:"kind"` // "user", "agent" or "peer" (a plugin sync from a peer hub, peersync.go)
+	ID   string `json:"id"`   // the view ID of the user's operation, the agent ID, or the peer hub name
 }
 
 // opRequest is the request of an op: the same fields from an agent and from the panel.
@@ -147,6 +147,9 @@ type opRequest struct {
 	Entry  string          `json:"entry"`  // "managed:<id>", or the exact source of a config entry
 	Expect json.RawMessage `json:"expect"` // start from the panel: the run that the panel showed
 	Input  json.RawMessage `json:"input"`  // settings: {args, watch_roots}; add: {source, id?, args?, watch_roots?}; update: {to}
+	// Target: a peer update only (peersync.go): the peer's pin of the source, a pin document entry.
+	// It is the stored target, so the op does not resolve; the fetch must give its digest.
+	Target json.RawMessage `json:"target"`
 }
 
 type opSettings struct {
@@ -380,7 +383,11 @@ func opFingerprint(req opRequest) string {
 		}
 		return v
 	}
-	b, _ := json.Marshal(map[string]any{"op": req.Op, "entry": req.Entry, "expect": canon(req.Expect), "input": canon(req.Input)})
+	m := map[string]any{"op": req.Op, "entry": req.Entry, "expect": canon(req.Expect), "input": canon(req.Input)}
+	if len(req.Target) > 0 {
+		m["target"] = canon(req.Target)
+	}
+	b, _ := json.Marshal(m)
 	return hashBytes(b)
 }
 
@@ -453,6 +460,10 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 	if len(req.Input) > 0 && req.Op != "settings" && req.Op != "add" && req.Op != "update" {
 		return nil, bad("invalid: only settings, add and update have input")
 	}
+	// A peer makes only updates with a target, and only a peer gives a target (peersync.go).
+	if (origin.Kind == "peer") != (len(req.Target) > 0) || (origin.Kind == "peer" && (req.Op != "update" || len(req.Input) > 0)) {
+		return nil, bad("invalid: only a peer sync gives target, and it is an update with no input")
+	}
 	// An agent add or update is a request that the user confirms (B9). Until B9, the code is
 	// user_only, and the text names what the agent can do (P1; docs/hub.md).
 	if origin.Kind == "agent" && (req.Op == "add" || req.Op == "update") {
@@ -518,6 +529,14 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		if !github {
 			return nil, bad("invalid: update needs a GitHub source; %s is %s", req.Entry, source)
 		}
+		if len(req.Target) > 0 {
+			t, err := peerTarget(req.Target, source)
+			if err != nil {
+				return nil, err
+			}
+			op.Target = t
+			break
+		}
 		var in opUpdateInput
 		if err := decodeManifest("input", req.Input, &in); err != nil {
 			return nil, bad("invalid: %v", err)
@@ -560,9 +579,16 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		var base managedFileEntry
 		json.Unmarshal([]byte(op.Input), &in)
 		json.Unmarshal([]byte(op.Base), &base)
-		keys := []string{opNewSource(base.Source, in.To, false)}
-		if in.To != "latest" {
-			keys = append(keys, opNewSource(base.Source, in.To, true))
+		var keys []string
+		if op.Target != "" {
+			var t opResolved
+			json.Unmarshal([]byte(op.Target), &t)
+			keys = []string{t.Source}
+		} else {
+			keys = []string{opNewSource(base.Source, in.To, false)}
+			if in.To != "latest" {
+				keys = append(keys, opNewSource(base.Source, in.To, true))
+			}
 		}
 		if !slices.Contains(keys, base.Source) {
 			keys = append(keys, base.Source) // the old key: unpinning compares against it (C5f)
