@@ -53,11 +53,9 @@ func TestSessionRenameKeptLab(t *testing.T) {
 	}
 	stopHub := func() {
 		t.Helper()
-		// The hub's keeper: SIGTERM, then the wait (labkeeper.go), as restartHub does.
-		l.snapshot()
-		if p := l.hub.stop(); len(p) > 0 {
-			l.unproved = append(l.unproved, p...)
-			t.Fatalf("the hub did not stop cleanly: %s", strings.Join(p, "; "))
+		// The hub's keeper: SIGTERM, then the wait for hub.lock, as restartHub does.
+		if err := stopHubForRestart(ctx, l, "term"); err != nil {
+			t.Fatalf("the hub did not stop cleanly: %v", err)
 		}
 		l.restarts++
 		os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts)))

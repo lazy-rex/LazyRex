@@ -180,14 +180,14 @@ func (s *startLab) start() {
 	})
 }
 
-// stop stops the hub through its keeper (SIGTERM to its group). Its plugin processes stay in their
-// blocks.
+// stop stops the hub through its keeper (SIGTERM to its group) and waits until the old hub has
+// released hub.lock (stopHubForRestart). Its plugin processes stay in their blocks.
 func (s *startLab) stop() {
 	s.t.Helper()
-	s.l.snapshot()
-	if p := s.l.hub.stop(); len(p) > 0 {
-		s.l.unproved = append(s.l.unproved, p...)
-		s.t.Fatalf("the hub did not stop cleanly: %v", p)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := stopHubForRestart(ctx, s.l, "term"); err != nil {
+		s.t.Fatalf("the hub did not stop cleanly: %v", err)
 	}
 }
 

@@ -68,10 +68,8 @@ func TestHomeRouteRefusedLab(t *testing.T) {
 		db.QueryRow(`SELECT session_id FROM ui_sessions WHERE plugin = ?`, uiSessionKey).Scan(&sess)
 		return sess != ""
 	})
-	l.snapshot()
-	if p := l.hub.stop(); len(p) > 0 {
-		l.unproved = append(l.unproved, p...)
-		t.Fatalf("the hub did not stop cleanly: %s", strings.Join(p, "; "))
+	if err := stopHubForRestart(ctx, l, "term"); err != nil {
+		t.Fatalf("the hub did not stop cleanly: %v", err)
 	}
 	l.restarts++
 	os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, "hub.1.log"))

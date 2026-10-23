@@ -841,6 +841,21 @@ var restartAfterStop func(l *lab)
 var restartProbeFailed func()
 
 func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
+	if err := stopHubForRestart(ctx, l, mode); err != nil {
+		return err
+	}
+	l.restarts++
+	if err := os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts))); err != nil {
+		return err
+	}
+	return o.startHub(ctx, l)
+}
+
+// stopHubForRestart stops the lab hub (mode term: SIGTERM to its keeper's group, then the wait;
+// mode kill: SIGKILL to that group) and returns when the old hub is gone and has released
+// hub.lock (waitOldHub). restartHub and the Go lab tests that act between a stop and a start use
+// it, so every restart path waits for hub.lock. A failed stop or wait is unproved cleanup.
+func stopHubForRestart(ctx context.Context, l *lab, mode string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -870,9 +885,5 @@ func (o *testOpts) restartHub(ctx context.Context, l *lab, mode string) error {
 		}
 		return fmt.Errorf("the old hub: %w", err)
 	}
-	l.restarts++
-	if err := os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, fmt.Sprintf("hub.%d.log", l.restarts))); err != nil {
-		return err
-	}
-	return o.startHub(ctx, l)
+	return nil
 }
