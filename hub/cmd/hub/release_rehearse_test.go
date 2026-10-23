@@ -138,6 +138,9 @@ func TestReleaseLabFiles(t *testing.T) {
 	c = copyMap(cfg)
 	c["test_roots"] = []any{lab}
 	refuse("test mode key", "test-mode key", c, managed, profiles, nil)
+	c = copyMap(cfg)
+	c["test_source_runs"] = []any{lab}
+	refuse("test_source_runs", `test-mode key "test_source_runs"`, c, managed, profiles, nil)
 }
 
 // C-u2: each tier reason selects full; none selects default; -tier full raises.

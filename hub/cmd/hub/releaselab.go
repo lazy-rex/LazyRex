@@ -108,7 +108,7 @@ func labFiles(live relLiveFiles, lab string, labArgs map[string]map[string]strin
 			return "", nil, relFail("the live config has the key %q, which the rehearsal does not know", k)
 		}
 	}
-	for _, k := range []string{"test_roots", "test_hold_recovery"} {
+	for _, k := range []string{"test_roots", "test_hold_recovery", "test_source_runs"} {
 		if _, ok := cfg[k]; ok {
 			return "", nil, relFail("the live config has the test-mode key %q", k)
 		}

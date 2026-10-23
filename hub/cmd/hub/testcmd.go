@@ -554,7 +554,7 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 	}
 	cfg := map[string]any{"server": l.server, "state": filepath.Join(l.dir, "hub"), "rex": o.rexBin, "view": view,
 		"agents": agents, "plugins": plugins, "transcript": o.m.Test.Transcript,
-		"profiles": l.profiles, "test_roots": o.m.roots(o.dir, l.dir)}
+		"profiles": l.profiles, "test_roots": o.m.roots(o.dir, l.dir), "test_source_runs": []string{o.dir}}
 	if o.m.Test.UISlot != "" {
 		cfg["ui_slot"] = o.m.Test.UISlot
 	}
