@@ -90,6 +90,10 @@ type manifest struct {
 		// Profiles is a profile file (relative to the manifest dir) that the harness copies to
 		// LAB/profiles.json, the hub's profile file.
 		Profiles string `json:"profiles"`
+		// HubName and Peers are the lab hub's hub_name and peers (docs/hub.md, "Peer hubs"). A
+		// peer may name a server that does not exist: hub.peer.send queues for it.
+		HubName string       `json:"hub_name"`
+		Peers   []PeerConfig `json:"peers"`
 	} `json:"test"`
 	mainPath string     // the absolute main file (pluginMain)
 	deps     []*testDep // the test.plugins manifests, in manifest order
@@ -557,6 +561,12 @@ func (o *testOpts) hubConfig(l *lab) (string, error) {
 		"profiles": l.profiles, "test_roots": o.m.roots(o.dir, l.dir), "test_source_runs": []string{o.dir}}
 	if o.m.Test.UISlot != "" {
 		cfg["ui_slot"] = o.m.Test.UISlot
+	}
+	if o.m.Test.HubName != "" {
+		cfg["hub_name"] = o.m.Test.HubName
+	}
+	if o.m.Test.Peers != nil {
+		cfg["peers"] = o.m.Test.Peers
 	}
 	b, _ := json.MarshalIndent(cfg, "", " ")
 	path := filepath.Join(l.dir, "hub.json")

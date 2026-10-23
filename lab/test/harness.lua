@@ -320,6 +320,16 @@ end
 
 function H.notice(agent, plugin) return hub('hub.test.notice', {plugin = plugin or A.plugin, agent = agent}) end
 
+-- peer_deliver gives one envelope {from_hub, key, body} to the plugin (default: the plugin under
+-- test) through the hub's real delivery path for a pulled envelope (docs/hub.md, "Peer hubs"). It
+-- returns {reply = <the plugin's result>}, or {skipped = true} for a plugin that is stopped. A
+-- plugin error, or a plugin that does not run, raises the error not_processed.
+function H.peer_deliver(spec)
+  return hub('hub.test.peer.deliver', {plugin = spec.plugin or A.plugin, from_hub = spec.from_hub, key = spec.key, body = spec.body})
+end
+-- peer_status is hub.peer.status: {hub_name, peers = {{name, state, outbox, ...}}}.
+function H.peer_status() return hub('hub.peer.status', {}) end
+
 -- invalidates counts the plugin's hub.ui.invalidate calls. A count that stays the same over an
 -- interval proves only that the plugin made no such call in that interval.
 function H.invalidates(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).invalidates end

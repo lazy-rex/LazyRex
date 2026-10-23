@@ -2419,16 +2419,32 @@ The receiver gives each envelope, in `seq` order, to its local plugin with the s
   refusal and moves on. A refusal is a result, not an error.
 - A plugin that is not installed on the receiver (not in its config), or is desired stopped, gets
   no envelope. The hub logs the envelope and moves on.
-- An installed plugin that is desired running but does not run now (starting, restarting,
-  crashing) stops the pull. The hub tries that envelope again for at most 5 minutes per hub
-  process: a hub restart starts the bound again. Then the hub logs the envelope and moves on. Delivery is in `seq` order, so while it waits, every later envelope from that peer
-  waits too, also for other plugins. `hub.peer.status` shows `blocked_plugin` and `blocked_since`
-  on that peer's row (lead-fed-r2).
-- Any other error stops the pull: a failed peer call, a failed or lost `peer.receive`. The envelope comes again on the next pull. A plugin must accept a repeat of a key.
+- An envelope that the plugin did not process stops the pull: an installed, desired-running plugin
+  that does not run now (starting, restarting, crashing), an error reply of `peer.receive` (a raised
+  Lua error: the plugin's transaction rolls back), or a lost reply. The hub tries that envelope
+  again for at most 5 minutes per hub process: a hub restart starts the bound again. Then the hub
+  logs the envelope and moves on (lead-fed-r2, lead-fed-sdk3). So a transient error comes again,
+  and a plugin defect cannot block the peer for ever. A plugin refuses on purpose only with the
+  refusal result, never with an error.
+- Delivery is in `seq` order, so while an envelope waits, every later envelope from that peer waits
+  too, also for other plugins. `hub.peer.status` shows `blocked_plugin` and `blocked_since` on that
+  peer's row.
+- A failed peer call stops the pull with no bound: nothing was delivered. A plugin must accept a
+  repeat of a key.
 - The cursor moves past an envelope only after the plugin answered. The cursor never moves back.
 
 The Messaging plugin uses its message ID as the key. B stores the sender as `<from>@A`. A message to
 an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
+
+### Tests
+
+- Unit tests: `hub/cmd/hub/peers_test.go`. Two-hub lab: `TestPeerHubsLab` (HARNESS_LAB=1).
+- Plugin tests: `hub.test.peer.deliver {plugin, from_hub, key, body}` (test mode only; harness
+  `H.peer_deliver`) gives one envelope to the plugin through the same function as a pulled
+  envelope (`peerReceive`). It returns `{reply}`, or `{skipped: true}` for a stopped plugin; an
+  envelope that the plugin did not process is the error `not_processed`. The test manifest keys
+  `test.hub_name` and `test.peers` set the lab hub's config; a peer whose server does not exist
+  shows the send side in `hub.peer.status` (harness `H.peer_status`). Example: `tests/peers`.
 
 ### Trust limit
 

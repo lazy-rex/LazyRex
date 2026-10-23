@@ -1,0 +1,8 @@
+{
+ "name": "peerfix",
+ "main": "fixture.lua",
+ "test": {
+  "hub_name": "lab",
+  "peers": [{"name": "away", "server": "unix:///nonexistent/peerfix/rex.sock"}]
+ }
+}

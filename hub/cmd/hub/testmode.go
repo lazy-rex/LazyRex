@@ -42,7 +42,8 @@ const testReplyLimit = 48 << 10
 var testActions = []string{"hub.test.status", "hub.test.sql", "hub.test.chunk", "hub.test.notice", "hub.test.notice_renudge", "hub.test.stats",
 	"hub.test.tabs", "hub.test.views", "hub.test.operation", "hub.test.inject", "hub.test.inject.cancel", "hub.test.injection", "hub.test.view.render",
 	"hub.test.view.result", "hub.test.parity", "hub.test.finish", "hub.test.commands", "hub.test.events",
-	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover"}
+	"hub.test.app", "hub.test.app.calls", "hub.test.calls", "hub.test.renders", "hub.test.app.close", "hub.test.fault", "hub.test.fault_state", "hub.test.fault_release", "hub.test.recover",
+	"hub.test.peer.deliver"}
 
 type testState struct {
 	mu           sync.Mutex
@@ -214,6 +215,25 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		return h.sql.test(ctx, plugin, args)
 	case "hub.test.chunk":
 		return h.testChunk(args)
+	case "hub.test.peer.deliver":
+		// One envelope to the plugin through peerReceive, the path of a pulled envelope.
+		if err := needPlugin(); err != nil {
+			return nil, err
+		}
+		from, _ := args["from_hub"].(string)
+		key, _ := args["key"].(string)
+		body, ok := args["body"].(string)
+		if !hubName.MatchString(from) || key == "" || !ok {
+			return nil, bad("invalid: peer.deliver needs from_hub (a hub name), key and a string body")
+		}
+		res, err := h.peerReceive(ctx, from, plugin, key, body)
+		if err != nil {
+			return nil, refuse("not_processed", "%v", err)
+		}
+		if res == nil {
+			return map[string]any{"skipped": true}, nil
+		}
+		return map[string]any{"reply": res}, nil
 	case "hub.test.notice":
 		agent, _ := args["agent"].(string)
 		var pending bool

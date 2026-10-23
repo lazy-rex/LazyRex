@@ -94,8 +94,9 @@ type peerLink struct {
 	lastOK  time.Time
 	lastErr string
 	more    bool // the last pull said that the peer holds more
-	// blocked: the envelope blockSeq waits for blockPlugin, which is installed and desired running
-	// but does not run, since blockSince. Only the peer loop writes it; mu guards it for status.
+	// blocked: the envelope blockSeq for blockPlugin was not processed (the plugin does not run, or
+	// it replied with an error) since blockSince. Only the peer loop writes it; mu guards it for
+	// status.
 	blockSeq    int64
 	blockPlugin string
 	blockSince  time.Time
@@ -395,8 +396,38 @@ func (h *Hub) peerPluginClient(name string) (client string, wait bool) {
 	return pl.ClientID, pl.ClientID == ""
 }
 
-// peerBlocked records that envelope seq waits for plugin, and returns false when it has waited
-// peerBlockMax: then the caller skips it.
+// peerReceive gives one envelope from peer fromHub to the local plugin's peer.receive, and returns the
+// plugin's reply. It is the one delivery path: the peer pull and the test call hub.test.peer.deliver
+// use it. A plugin that is not installed here or is desired stopped gets nothing: the reply is nil and
+// the hub logs the skip. A refusal (the result {"refused": "<code>", "message"}) is a reply, logged
+// here; it is final. An error means "not processed": an installed, desired-running plugin that does
+// not run now, or an error reply (the plugin's transaction rolled back), or a lost reply. The pull
+// retries an error for at most peerBlockMax (lead-fed-sdk2).
+func (h *Hub) peerReceive(ctx context.Context, fromHub, plugin, key, body string) (json.RawMessage, error) {
+	client, wait := h.peerPluginClient(plugin)
+	switch {
+	case wait:
+		return nil, fmt.Errorf("the plugin %q does not run here", plugin)
+	case client == "":
+		log.Printf("peer %s: %s key %q skipped: the plugin is not installed or is stopped here", fromHub, plugin, key)
+		return nil, nil
+	}
+	res, err := h.performPlugin(ctx, client, "peer.receive", map[string]any{"from_hub": fromHub, "key": key, "body": body}, 10000)
+	if err != nil {
+		return nil, fmt.Errorf("%s peer.receive: %v", plugin, err)
+	}
+	var ans struct {
+		Refused string `json:"refused"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(res, &ans) == nil && ans.Refused != "" {
+		log.Printf("peer %s: %s key %q refused: %s: %s", fromHub, plugin, key, ans.Refused, ans.Message)
+	}
+	return res, nil
+}
+
+// peerBlocked records that envelope seq for plugin was not processed, and returns false when its
+// retries began peerBlockMax ago: then the caller skips it.
 func (l *peerLink) peerBlocked(seq int64, plugin string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -409,10 +440,11 @@ func (l *peerLink) peerBlocked(seq int64, plugin string) bool {
 // peerPull pulls the envelopes that the peer holds for this hub and gives each, in seq order, to the
 // local plugin of the same name. The cursor moves past an envelope only after the plugin answered:
 // accepted, or refused with a result {"refused": code}. An envelope for a plugin that is not
-// installed here or is desired stopped is logged and skipped; so is one that waited peerBlockMax
-// for a desired-running plugin that does not run. Delivery is in seq order, so a wait blocks every
-// later envelope from that peer. Any other error (the peer call, a failed perform) stops the pull,
-// and the envelope comes again.
+// installed here or is desired stopped is logged and skipped (peerReceive). An envelope that was not
+// processed (peerReceive's error: the plugin does not run, an error reply, a lost reply) stops the
+// pull and comes again, for at most peerBlockMax per hub process; then it is logged and skipped.
+// Delivery is in seq order, so a retry blocks every later envelope from that peer. A failed peer
+// call stops the pull with no bound: nothing was delivered.
 func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) {
 	after, err := h.peerAfter(ctx, l.cfg.Name)
 	if err != nil {
@@ -438,26 +470,12 @@ func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) 
 		if e.Seq <= after {
 			continue // a reply to an older cursor
 		}
-		client, wait := h.peerPluginClient(e.Plugin)
+		_, err := h.peerReceive(ctx, l.cfg.Name, e.Plugin, e.Key, e.Body)
 		switch {
-		case wait && l.peerBlocked(e.Seq, e.Plugin):
-			return false, fmt.Errorf("envelope %d: the plugin %q does not run here", e.Seq, e.Plugin)
-		case wait:
-			log.Printf("peer %s: envelope %d (%s, key %q) skipped: the plugin did not run for %s", l.cfg.Name, e.Seq, e.Plugin, e.Key, peerBlockMax)
-		case client == "":
-			log.Printf("peer %s: envelope %d (%s, key %q) skipped: the plugin is not installed or is stopped here", l.cfg.Name, e.Seq, e.Plugin, e.Key)
-		default:
-			res, err := h.performPlugin(ctx, client, "peer.receive", map[string]any{"from_hub": l.cfg.Name, "key": e.Key, "body": e.Body}, 10000)
-			if err != nil {
-				return false, fmt.Errorf("envelope %d: %s peer.receive: %v", e.Seq, e.Plugin, err)
-			}
-			var ans struct {
-				Refused string `json:"refused"`
-				Message string `json:"message"`
-			}
-			if json.Unmarshal(res, &ans) == nil && ans.Refused != "" {
-				log.Printf("peer %s: envelope %d (%s, key %q) refused: %s: %s", l.cfg.Name, e.Seq, e.Plugin, e.Key, ans.Refused, ans.Message)
-			}
+		case err != nil && l.peerBlocked(e.Seq, e.Plugin):
+			return false, fmt.Errorf("envelope %d: %v", e.Seq, err)
+		case err != nil:
+			log.Printf("peer %s: envelope %d (%s, key %q) skipped after %s: %v", l.cfg.Name, e.Seq, e.Plugin, e.Key, peerBlockMax, err)
 		}
 		// The cursor never moves back: a late reply to an older pull cannot lower it.
 		if _, err := h.db.ExecContext(ctx, `INSERT INTO peer_inbox (peer, after) VALUES (?, ?)

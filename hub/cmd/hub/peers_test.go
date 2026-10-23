@@ -413,6 +413,50 @@ func TestPeerPullPluginWait(t *testing.T) {
 	}
 }
 
+// TestPeerPullErrorBound (lead-fed-sdk3): an error reply of peer.receive (the listener raised; its
+// transaction rolled back) is retried, for at most peerBlockMax, then skipped; a refusal is final at
+// once. Both later envelopes are delivered.
+func TestPeerPullErrorBound(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	a := peerHub(t, "a", "b", nil)
+	b := peerHub(t, "b", "a", func(args map[string]any) (any, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		key := args["key"].(string)
+		got = append(got, key)
+		switch key {
+		case "bad":
+			return nil, "failed" // the error reply
+		case "drop":
+			return map[string]any{"refused": "unknown_recipient", "message": "no such agent"}, ""
+		}
+		return map[string]any{}, ""
+	})
+	linkHubs(a, b, func() bool { return false })
+	for _, k := range []string{"drop", "ok1", "bad", "ok2"} {
+		if _, err := peerSendAs(a, "c-a", "b", k, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, l := context.Background(), b.peers.links["a"]
+	cursor := func() int64 { n, _ := b.peerAfter(ctx, "a"); return n }
+	for range 2 { // the error reply is retried
+		if _, err := b.peerPull(ctx, l); err == nil || !strings.Contains(err.Error(), "envelope 3") || cursor() != 2 {
+			t.Fatalf("an error reply: %v, cursor %d; want envelope 3 and cursor 2", err, cursor())
+		}
+	}
+	l.mu.Lock()
+	l.blockSince = l.blockSince.Add(-peerBlockMax) // the bound ran out
+	l.mu.Unlock()
+	if _, err := b.peerPull(ctx, l); err != nil || cursor() != 4 {
+		t.Fatalf("after the bound: %v, cursor %d; want 4", err, cursor())
+	}
+	if want := "drop,ok1,bad,bad,bad,ok2"; strings.Join(got, ",") != want {
+		t.Fatalf("delivered %v, want %s", got, want)
+	}
+}
+
 // TestPeerSendSizes: the body limit counts encoded bytes, and each accepted envelope fits alone in
 // one pull reply, also on a Rex connection with the 64 KiB reference limit.
 func TestPeerSendSizes(t *testing.T) {
