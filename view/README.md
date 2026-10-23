@@ -78,6 +78,15 @@ A composer's editor and Send are one focus span, so a short window holds the edi
 
 The last frame before the exit is empty, on the screen that is active, also during a panel replacement.
 
+### The clear at process start
+
+Every renderer process clears its pane once (cursor home, ESC[2J, ESC[3J), before Bubble Tea writes anything.
+This applies to thread mode and alt mode, because the mode is not decided at start (lead-tv-clear2).
+A renderer restarted in the same pane (a reload, or a respawn after an output failure) would otherwise print the thread history a second time below the old copy.
+In a new pane, the clear removes nothing.
+If the clear's write fails, the process exits with status 1 before it starts Bubble Tea or connects to the hub.
+The `-transcript` printer keeps its own clear at its first rebuild.
+
 ### Printed messages (thread mode)
 
 Thread mode prints each message of the current history page once, above the live region, oldest first (view/print.go).

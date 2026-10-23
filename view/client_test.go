@@ -51,6 +51,8 @@ type protocolFixture struct {
 	// tree: the snapshot for hub.view.subscribe and hub.view.get in place of testSnapshot.
 	tree any
 	gets int
+	// conns counts the connections that reached the fixture (exit_test.go).
+	conns int
 }
 
 // changed sends view.changed for the current attachment, as the hub does after a change.
@@ -66,6 +68,9 @@ func (f *protocolFixture) changed(t *testing.T) {
 }
 
 func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.conns++
+	f.mu.Unlock()
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"rex.control.v1"}})
 	if err != nil {
 		return
