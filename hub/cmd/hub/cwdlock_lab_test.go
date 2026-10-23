@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,18 +11,12 @@ import (
 )
 
 // hub.cwd.lock asks Rex for every terminal pane's live cwd, in every session: a shell that ran cd
-// into the path refuses the lock, though no hub record names it. Lab only (WORKER_LAB_SOCKET).
+// into the path refuses the lock, though no hub record names it. Lab only (rexLab: HARNESS_LAB=1).
 func TestCwdLockLivePanesLab(t *testing.T) {
-	socket := os.Getenv("WORKER_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set WORKER_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-worker-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	r, err := rex.Dial(ctx, socket)
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +26,7 @@ func TestCwdLockLivePanesLab(t *testing.T) {
 	}()
 	h, _ := workerTestHub(t)
 	h.db.Exec(`DELETE FROM spawns`)
-	h.rex = r
+	h.rex, h.cfg.Server = r, l.server
 	h.ui = &uiState{sess: map[string]string{}, kick: make(chan struct{}, 1)}
 	root, _ := filepath.EvalSymlinks(t.TempDir())
 	tree := filepath.Join(root, "repo", "feature")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,16 +19,10 @@ func TestWorkerPlacementValidation(t *testing.T) {
 }
 
 func TestWorkerPlacementLab(t *testing.T) {
-	socket := os.Getenv("WORKER_LAB_SOCKET")
-	if socket == "" {
-		t.Skip("set WORKER_LAB_SOCKET to an isolated Rex lab socket")
-	}
-	if !strings.HasPrefix(socket, "/tmp/rexlab-worker-") || !strings.HasSuffix(socket, "/rex.sock") {
-		t.Fatal("refuse a non-lab socket")
-	}
+	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	r, err := rex.Dial(ctx, socket)
+	r, err := rex.Dial(ctx, l.socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +59,7 @@ func TestWorkerPlacementLab(t *testing.T) {
 		if _, err := h.db.Exec(`DELETE FROM spawns; DELETE FROM bindings`); err != nil {
 			t.Fatal(err)
 		}
-		h.rex = r
+		h.rex, h.cfg.Server = r, l.server
 		h.ui = &uiState{sess: map[string]string{session(t): uiSessionKey}, kick: make(chan struct{}, 1)}
 		h.selfClosed = map[string]bool{}
 		h.vs = &viewSvc{dirty: map[string]bool{}, workers: map[string]chan struct{}{"test": make(chan struct{}, 1)}}

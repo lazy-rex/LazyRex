@@ -549,7 +549,7 @@ A worker in a previous live session stays recorded and can be stopped. The agent
 
 Verification: `workers_session_test.go` calls the worker entry points against an isolated Rex server. Six lab cases passed on Rex 1203 (`0.0.1792158932-g88fd41`): session loss with same-key retry, stop in a previous session, legacy block discovery, legacy late-join adoption, a pending worker in a previous session, and pending loss versus unknown legacy state. The previous-session cases detach the test connection first. The schema test preserves an old row through two migrations. The hub test package passed with these lab cases enabled. The late-join case tests adoption after caller proof; it does not run a new agent's complete handshake. No live workspace changed during this verification.
 
-Run the lab cases with `WORKER_LAB_SOCKET=/tmp/rexlab-worker-<name>/rex.sock go test ./cmd/hub -run TestWorkerSessionLab -v` from the hub directory. Start that isolated server with `spikes/lab/server.sh` first. Without this variable, the lab cases skip. Integration with the plugin recovery changes remains the integration owner's next step.
+Run the lab cases with `HARNESS_LAB=1 go test ./cmd/hub -run TestWorkerSessionLab -v` from the hub directory. Each lab case starts its own lab Rex server (rexLab). Without HARNESS_LAB=1, the lab cases skip. Integration with the plugin recovery changes remains the integration owner's next step.
 
 
 ### Lab results (Claude, real hub path, Rex 1203, 2026-10-16)
