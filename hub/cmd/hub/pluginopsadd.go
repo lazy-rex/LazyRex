@@ -44,8 +44,9 @@ type opRestartTarget struct {
 func (t *opRestartTarget) run() *expectRun { return &expectRun{t.Source, t.Commit, t.Digest} }
 
 // updateTarget reports whether to is "@", "latest" or a tag name. "@" keeps the entry's source and
-// resolves its own ref again: a branch gives its tip, latest the newest release, and a tag the same
-// commit. A branch and a commit are not targets of an update: a full ref (refs/...) or 40 hex is
+// resolves its own ref again: a branch gives its tip, latest the newest release, and a tag the
+// commit the tag names now (no change unless the tag was moved; lead-c2t). A branch and a commit
+// are not targets of an update: a full ref (refs/...) or 40 hex is
 // refused here, and the resolve reads refs/tags/<to> only, so a branch name with no tag is refused
 // there.
 func updateTarget(to string) bool {
