@@ -45,8 +45,6 @@ func tvAction(id string) Node {
 }
 
 func TestDecideViewMode(t *testing.T) {
-	paired := treeOf(tvHistory, tvComposer)
-	paired.Layout = "transcript"
 	cases := []struct {
 		name string
 		tree Snapshot
@@ -60,7 +58,6 @@ func TestDecideViewMode(t *testing.T) {
 		{"menu before history", treeOf(tvMenu, tvHistory, tvComposer), viewThread, ""},
 		{"widget beside history", treeOf(tvAction("w"), tvHistory, tvError("e", "x", false)), viewThread, ""},
 		{"read-only thread", treeOf(Node{ID: "notice", Type: "widget", Text: "Observer"}, tvHistory), viewThread, ""},
-		{"paired transcript layout", paired, viewAlt, ""},
 		{"Gallery: list, form, history, composer", treeOf(tvList, tvForm, tvHistory, tvComposer), viewAlt, noteHistoryBesideListForm},
 		{"form beside history", treeOf(tvHistory, tvForm), viewAlt, noteHistoryBesideListForm},
 		{"list", treeOf(tvList), viewAlt, ""},
@@ -120,20 +117,6 @@ func TestGalleryTreeDecidesAltWithItsNote(t *testing.T) {
 	}
 	if v := m.View(); !v.AltScreen || !strings.Contains(v.Content, "hello") {
 		t.Fatalf("the Gallery is not drawn as today's alt view: alt=%t", v.AltScreen)
-	}
-}
-
-func TestPairedTreeDecidesAltWithoutNote(t *testing.T) {
-	m := modeModel(30)
-	paired := treeOf(tvHistory, tvComposer)
-	paired.Layout = "transcript"
-	m.apply(paired)
-	m.apply(paired)
-	if m.mode != viewAlt || strings.HasPrefix(m.status, "view defect") {
-		t.Fatalf("mode=%d status=%q", m.mode, m.status)
-	}
-	if v := m.View(); !v.AltScreen || strings.Contains(v.Content, "hello") {
-		t.Fatal("the paired composer is not today's alt composer")
 	}
 }
 

@@ -99,9 +99,9 @@ func TestReopenTabPaneLab(t *testing.T) {
 // opening. The passes open no third view and close neither view; the exit counts once. After the
 // row expires, the next passes replace the exited view: the tab is back with one open view.
 func TestReopenReservationLab(t *testing.T) {
-	h := pairLabHub(t)
+	h := uiLabHub(t)
 	ctx := context.Background()
-	declarePair(t, h, "")
+	declareThreadTab(t, h)
 	passes(t, h, 2)
 	old := onlyView(t, h)
 	if old.Block == "" || old.Session == "" {
@@ -155,9 +155,9 @@ func TestReopenReservationLab(t *testing.T) {
 // adopted, one renderer exit is counted, the old pane closes, and the reconcile passes open a new
 // view for the tab.
 func TestReopenChildlessPaneLab(t *testing.T) {
-	h := pairLabHub(t)
+	h := uiLabHub(t)
 	ctx := context.Background()
-	declarePair(t, h, "")
+	declareThreadTab(t, h)
 	passes(t, h, 2)
 	old := onlyView(t, h)
 	fc, _ := json.Marshal(formContext{SessionID: old.Session, WindowID: old.Window, SourceViewID: old.ID, SourceRoute: old.Route})

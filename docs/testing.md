@@ -138,7 +138,6 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
   "test": {
     "plugins": [{"source": "../Profiles"}],
     "agents": [{"id": "alice", "name": "Alice"}, {"id": "bob", "name": "Bob"}],
-    "transcript": false,
     "parity_fixture": "tests/parity_fixture.lua",
     "parity_routes": ["/forms/thread-menu"],
     "env": {"GIT_AUTHOR_NAME": "Lab", "WT_CACHE": "${LAB}/cache"},
@@ -156,7 +155,6 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `notice` | The text that the hub writes into an agent pane for a pending notice of this plugin No control characters (the hub pastes it, then sends CR). Without it, a `notify` op of the plugin fails with code `no_notice`, and nothing in that batch is written. |
 | `test.plugins` | Other plugins that the hub loads for the tests: `[{"source": "<dir>"}]`. Each source is a directory relative to the manifest directory, with its own `lazyrex.json`. The names come from those manifests. `lazyrex` is refused (the harness adds the home plugin), and so is a name used twice. |
 | `test.agents` | Roster agents in the test hub config. `user` is always there. |
-| `test.transcript` | The hub config `transcript` option. |
 | `test.ui_slot` | The hub config `ui_slot` option: `"split"` or `"layer"` (an experiment; docs/hub.md). Another value fails at the manifest load. |
 | `test.parity_fixture` | A Lua file that renders the routes that open only from another view. |
 | `test.parity_routes` | Those contextual routes. The fixture must render each one. |
@@ -168,7 +166,7 @@ The same cleanup runs after a failure, a startup failure, a timeout and an inter
 | `test.profiles` | A profile file, relative to the manifest dir. The harness copies it to `LAB/profiles.json`, the hub's profile file. A configured file that is missing is an error. Without it, the hub has only the builtin shell profile. |
 
 The file is one JSON object of at most 65536 bytes. Unknown fields are refused. The harness owns the rest of the hub config (`server`, `state`,
-`rex`, `view`, `home`, `agents`, `plugins`, `transcript`, `palette_lua`, `profiles`,
+`rex`, `view`, `home`, `agents`, `plugins`, `palette_lua`, `profiles`,
 `test_roots`). The manifest cannot set them.
 
 ## Isolation

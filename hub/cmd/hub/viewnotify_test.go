@@ -179,21 +179,18 @@ func (hr *holdRex) settle(t *testing.T, want map[string]int) {
 	}
 }
 
-// notifyHub is a hub with one open view v1 of the plugin p: the composer client "composer" with
-// att-c, and the printer client "printer" with att-p. Each render of v1 returns a new tree.
+// notifyHub is a hub with one open view v1 of the plugin p: the renderer client "composer" with
+// att-c. Each render of v1 returns a new tree.
 func notifyHub(t *testing.T) (*Hub, *holdRex) {
 	t.Helper()
 	h := testUIHub(t)
-	for _, m := range []string{pairSchema, `ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE views ADD COLUMN layout TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN layout TEXT NOT NULL DEFAULT ''`} {
+	for _, m := range []string{`ALTER TABLE views ADD COLUMN context TEXT NOT NULL DEFAULT ''`, `ALTER TABLE ui_tabs ADD COLUMN status TEXT NOT NULL DEFAULT ''`} {
 		if _, err := h.db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			t.Fatal(err)
 		}
 	}
 	if _, err := h.db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, session_id, block_id, client_id, attachment) VALUES
 		('v1', 'p', 'home', '/a', 'open', 's1', 'b1', 'composer', 'att-c')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.db.Exec(`INSERT INTO view_transcripts (view_id, status, client_id, attachment) VALUES ('v1', 'open', 'printer', 'att-p')`); err != nil {
 		t.Fatal(err)
 	}
 	h.vs = depsHub().vs
@@ -232,46 +229,25 @@ func (h *Hub) renderOnce(t *testing.T) {
 
 // A renderer that is busy holds the view.changed request. 20 renders during that time send no
 // more requests to it; its answer sends one more, with the latest revision; then none (timeout
-// audit, row 10). Before, each render sent its own request: 21 to each renderer.
+// audit, row 10). Before, each render sent its own request: 21.
 func TestViewChangedOneOutstanding(t *testing.T) {
 	h, hr := notifyHub(t)
 	h.renderOnce(t)
 	hr.waitSent(t, "att-c", 1)
-	hr.waitSent(t, "att-p", 1)
 	for i := 0; i < 20; i++ {
 		h.renderOnce(t)
 	}
-	hr.settle(t, map[string]int{"att-c": 1, "att-p": 1})
-	for _, att := range []string{"att-c", "att-p"} {
-		hr.release(t, att, "")
-		hr.waitSent(t, att, 2)
-		if got := hr.sent(att)[1].revision; got != revString(h.vs.rev) {
-			t.Errorf("%s: the second request tells revision %s, want the latest %d", att, got, h.vs.rev)
-		}
-		hr.release(t, att, "")
+	hr.settle(t, map[string]int{"att-c": 1})
+	hr.release(t, "att-c", "")
+	hr.waitSent(t, "att-c", 2)
+	if got := hr.sent("att-c")[1].revision; got != revString(h.vs.rev) {
+		t.Errorf("the second request tells revision %s, want the latest %d", got, h.vs.rev)
 	}
-	hr.settle(t, map[string]int{"att-c": 2, "att-p": 2})
+	hr.release(t, "att-c", "")
+	hr.settle(t, map[string]int{"att-c": 2})
 }
 
-// The composer and the printer have separate requests: a busy composer does not hold the
-// printer's notifications.
-func TestViewChangedRolesSeparate(t *testing.T) {
-	h, hr := notifyHub(t)
-	h.renderOnce(t)
-	hr.waitSent(t, "att-c", 1)
-	for i := 2; i <= 4; i++ {
-		hr.waitSent(t, "att-p", i-1)
-		hr.release(t, "att-p", "")
-		h.renderOnce(t)
-		hr.waitSent(t, "att-p", i)
-	}
-	if n := len(hr.outstanding("att-c")); n != 1 {
-		t.Errorf("composer: %d requests outstanding, want 1", n)
-	}
-	hr.settle(t, map[string]int{"att-c": 1, "att-p": 4})
-}
-
-// A new composer attachment gets its request at once, while the request to the old attachment is
+// A new attachment gets its request at once, while the request to the old attachment is
 // still held. The old answer, later, sends nothing more.
 func TestViewChangedNewAttachment(t *testing.T) {
 	h, hr := notifyHub(t)
@@ -289,11 +265,11 @@ func TestViewChangedNewAttachment(t *testing.T) {
 	hr.settle(t, map[string]int{"att-c": 1, "att-c2": 2})
 }
 
-// notifierOf returns the composer notifier of v1 for the attachment, or nil.
-func notifierOf(h *Hub, role, attachment string) *viewNotifier {
+// notifierOf returns the notifier of v1 for the attachment, or nil.
+func notifierOf(h *Hub, attachment string) *viewNotifier {
 	h.vs.mu.Lock()
 	defer h.vs.mu.Unlock()
-	return h.vs.senders[notifyKey{"v1", role, attachment}]
+	return h.vs.senders[notifyKey{"v1", attachment}]
 }
 
 // waitDone waits until the sender has ended.
@@ -315,9 +291,8 @@ func TestViewChangedFailures(t *testing.T) {
 	defer func() { viewChangedRetry = old }()
 
 	h, hr := notifyHub(t)
-	h.db.Exec(`DELETE FROM view_transcripts`)
 	h.renderOnce(t)
-	n := notifierOf(h, roleComposer, "att-c")
+	n := notifierOf(h, "att-c")
 	for i := 1; i <= 3; i++ {
 		hr.waitSent(t, "att-c", i)
 		if k := len(hr.outstanding("att-c")); k != 1 {
@@ -329,7 +304,7 @@ func TestViewChangedFailures(t *testing.T) {
 	hr.settle(t, map[string]int{"att-c": 3})
 
 	h.renderOnce(t)
-	n = notifierOf(h, roleComposer, "att-c")
+	n = notifierOf(h, "att-c")
 	hr.waitSent(t, "att-c", 4)
 	hr.release(t, "att-c", "not_found")
 	waitDone(t, n, "not_found")
@@ -360,23 +335,18 @@ func TestViewChangedCloseAndStop(t *testing.T) {
 	h.vs.ctx = ctx
 	h.renderOnce(t)
 	hr.waitSent(t, "att-c", 1)
-	hr.waitSent(t, "att-p", 1)
-	c, p := notifierOf(h, roleComposer, "att-c"), notifierOf(h, rolePrinter, "att-p")
+	c := notifierOf(h, "att-c")
 	h.renderOnce(t)
 	h.forgetView("v1")
-	waitDone(t, c, "view close (composer)")
-	waitDone(t, p, "view close (printer)")
+	waitDone(t, c, "view close")
 	hr.release(t, "att-c", "")
-	hr.release(t, "att-p", "")
-	hr.settle(t, map[string]int{"att-c": 1, "att-p": 1})
+	hr.settle(t, map[string]int{"att-c": 1})
 
 	h.renderOnce(t)
 	hr.waitSent(t, "att-c", 2)
-	hr.waitSent(t, "att-p", 2)
-	c, p = notifierOf(h, roleComposer, "att-c"), notifierOf(h, rolePrinter, "att-p")
+	c = notifierOf(h, "att-c")
 	cancel()
-	waitDone(t, c, "hub stop (composer)")
-	waitDone(t, p, "hub stop (printer)")
+	waitDone(t, c, "hub stop")
 	h.vs.mu.Lock()
 	left := len(h.vs.senders)
 	h.vs.mu.Unlock()
@@ -389,11 +359,12 @@ func TestViewChangedCloseAndStop(t *testing.T) {
 func TestViewChangedPrune(t *testing.T) {
 	h, hr := notifyHub(t)
 	h.renderOnce(t)
-	hr.waitSent(t, "att-p", 1)
-	p := notifierOf(h, rolePrinter, "att-p")
-	h.db.Exec(`UPDATE view_transcripts SET attachment = '' WHERE view_id = 'v1'`)
+	hr.waitSent(t, "att-c", 1)
+	c := notifierOf(h, "att-c")
+	h.db.Exec(`UPDATE views SET attachment = '' WHERE view_id = 'v1'`)
 	h.renderOnce(t)
-	waitDone(t, p, "printer detached")
+	waitDone(t, c, "view detached")
+	hr.release(t, "att-c", "")
 }
 
 // Notifications at the same time start one sender.
@@ -404,7 +375,7 @@ func TestViewChangedConcurrentStart(t *testing.T) {
 		wg.Add(1)
 		go func(rev int64) {
 			defer wg.Done()
-			h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", rev)
+			h.tellViewChanged("p", "composer", "v1", "att-c", rev)
 		}(int64(i))
 	}
 	wg.Wait()
@@ -418,14 +389,13 @@ func TestViewChangedConcurrentStart(t *testing.T) {
 // sent it.
 func TestViewChangedEndHandoff(t *testing.T) {
 	h, hr := notifyHub(t)
-	h.db.Exec(`DELETE FROM view_transcripts`)
 	var once sync.Once
 	var second *viewNotifier // the sender that the render at the end starts
 	ended := make(chan struct{})
 	senderEndHook = func(k notifyKey) {
 		once.Do(func() {
-			h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 99)
-			second = notifierOf(h, roleComposer, "att-c")
+			h.tellViewChanged("p", "composer", "v1", "att-c", 99)
+			second = notifierOf(h, "att-c")
 			close(ended)
 		})
 	}
@@ -457,10 +427,9 @@ func TestViewChangedEndHandoff(t *testing.T) {
 // ended the sender.
 func TestViewChangedSameRevision(t *testing.T) {
 	h, hr := notifyHub(t)
-	h.db.Exec(`DELETE FROM view_transcripts`)
-	h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 1)
+	h.tellViewChanged("p", "composer", "v1", "att-c", 1)
 	hr.waitSent(t, "att-c", 1)
-	h.tellViewChanged("p", roleComposer, "composer", "v1", "att-c", 1)
+	h.tellViewChanged("p", "composer", "v1", "att-c", 1)
 	hr.release(t, "att-c", "")
 	hr.waitSent(t, "att-c", 2)
 	if got := hr.sent("att-c")[1].revision; got != "1" {

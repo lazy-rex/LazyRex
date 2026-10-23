@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/x/ansi"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -275,34 +274,6 @@ func TestPopulatedSnapshotClearsOnlyLoadingStatus(t *testing.T) {
 	m.apply(testSnapshot("updated", "4"))
 	if m.status != "Could not save" {
 		t.Fatal("Populated snapshot cleared an unrelated status")
-	}
-}
-
-// The hub pairs and unpairs a view in place (Snapshot.Layout): the history rows go and come back,
-// and the unsaved draft stays.
-func TestSnapshotLayoutTogglesHistoryInPlace(t *testing.T) {
-	m := testModel()
-	m.editors["composer"].setText("unsaved draft")
-	snap := func(layout string) Snapshot {
-		s := testSnapshot("", "1")
-		s.Revision = "2"
-		s.Layout = layout
-		history := Node{ID: "history", Type: "history", PageSize: 10, Messages: []Message{{ID: "1", Author: "codex", Text: "message from the agent", At: "2026-10-18T00:00:00Z"}}}
-		s.Tree.Nodes = append([]Node{history}, s.Tree.Nodes...)
-		return s
-	}
-	for _, step := range []struct {
-		layout  string
-		history bool
-	}{{"transcript", false}, {"", true}, {"transcript", false}} {
-		m.apply(snap(step.layout))
-		out := ansi.Strip(m.View().Content)
-		if strings.Contains(out, "message from the agent") != step.history {
-			t.Fatalf("layout %q: history shown = %v, want %v", step.layout, !step.history, step.history)
-		}
-		if m.editors["composer"].text() != "unsaved draft" {
-			t.Fatalf("layout %q: the draft changed to %q", step.layout, m.editors["composer"].text())
-		}
 	}
 }
 

@@ -97,9 +97,6 @@ type Snapshot struct {
 	Route         string  `json:"route"`
 	Revision      string  `json:"revision"`
 	Tree          Tree    `json:"tree"`
-	// Layout is the hub's effective layout for this view: "transcript" when a transcript pane
-	// above prints the history, "" otherwise. A hub without pairs omits it.
-	Layout string `json:"layout,omitempty"`
 	// Open holds the args of the view's last reopen (thread view v1.1), or nil for none.
 	Open *OpenArgs `json:"open,omitempty"`
 	// gen is the client's attachment generation of the call that fetched this tree (client.go).

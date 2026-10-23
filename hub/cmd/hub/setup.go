@@ -345,13 +345,11 @@ func setupHubConfig(e setupEnv, dir, server string) (b []byte, skipped []string,
 		Plugins    []entry             `json:"plugins"`
 		Profiles   string              `json:"profiles"`
 		PaletteLua string              `json:"palette_lua"`
-		Transcript bool                `json:"transcript"`
 	}{
 		Server: server, State: filepath.Join(dir, "state"), View: filepath.Join(filepath.Dir(e.exe), "lazyrex-view"),
 		Agents:   []map[string]string{{"id": "user", "name": "User", "status_record": ""}},
 		Plugins:  plugins,
 		Profiles: filepath.Join(dir, "profiles.json"), PaletteLua: filepath.Join(filepath.Dir(e.rexConfigFile()), "lazyrex_palette.lua"),
-		Transcript: true,
 	}
 	b, err = json.MarshalIndent(c, "", "  ")
 	return append(b, '\n'), skipped, err

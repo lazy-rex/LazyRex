@@ -57,20 +57,6 @@ func TestSlotPaneLayer(t *testing.T) {
 	}
 }
 
-// The pair check reads the layer that holds the composer: a pair in a floating layer is found
-// there, and a composer in no layer asks for no move.
-func TestHasBlock(t *testing.T) {
-	leaf := func(b string) layoutNode { return layoutNode{BlockID: b} }
-	n := layoutNode{Split: &struct {
-		Direction string     `json:"direction"`
-		Before    layoutNode `json:"before"`
-		After     layoutNode `json:"after"`
-	}{Direction: "vertical", Before: leaf("block:t"), After: leaf("block:c")}}
-	if !hasBlock(n, "block:c") || !hasBlock(n, "block:t") || hasBlock(n, "block:x") || !hasBlock(leaf("block:c"), "block:c") {
-		t.Error("hasBlock")
-	}
-}
-
 // test.ui_slot goes into the lab hub config; another value fails at the manifest load.
 func TestTestUISlot(t *testing.T) {
 	if _, err := manifestIn(t, `{"name":"p","main":"p.lua","test":{"ui_slot":"float"}}`); err == nil || !strings.Contains(err.Error(), `test.ui_slot is "split" or "layer"`) {

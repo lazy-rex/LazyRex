@@ -34,7 +34,6 @@ type snapshot struct {
 	rev    int64
 	tree   json.RawMessage
 	status string // the tab status, JSON (tabstatus.go); "" = none
-	layout string // the effective layout (effectiveLayout): "transcript" = the composer leaves the history to the transcript
 }
 
 type viewSvc struct {
@@ -162,7 +161,7 @@ func (h *Hub) sendSeen(ctx context.Context, plugin string) {
 // viewSeen records that the user looks at a view: its pane has focus in an app. The renderer
 // calls it on focus, and on a new snapshot while it has focus.
 func (h *Hub) viewSeen(ctx context.Context, p perform, args map[string]any) (any, error) {
-	v, err := h.readCaller(ctx, p, args) // the transcript pane reports focus too
+	v, err := h.boundCaller(ctx, p, args)
 	if err != nil {
 		return nil, err
 	}
@@ -236,8 +235,7 @@ func (h *Hub) snapshotOf(v *boundView) map[string]any {
 	if s.status != "" {
 		status = json.RawMessage(s.status)
 	}
-	snap := map[string]any{"schema_version": 1, "view_id": v.ID, "route": v.Route, "revision": revString(s.rev), "tree": s.tree, "status": status,
-		"layout": s.layout}
+	snap := map[string]any{"schema_version": 1, "view_id": v.ID, "route": v.Route, "revision": revString(s.rev), "tree": s.tree, "status": status}
 	if v.Open != "" {
 		snap["open"] = json.RawMessage(v.Open) // the reopen args, before the renderer's first fetch (reopen.go)
 	}
@@ -245,7 +243,7 @@ func (h *Hub) snapshotOf(v *boundView) map[string]any {
 }
 
 func (h *Hub) viewSubscribe(ctx context.Context, p perform, args map[string]any) (any, error) {
-	v, err := h.readCaller(ctx, p, args)
+	v, err := h.boundCaller(ctx, p, args)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +252,7 @@ func (h *Hub) viewSubscribe(ctx context.Context, p perform, args map[string]any)
 }
 
 func (h *Hub) viewGet(ctx context.Context, p perform, args map[string]any) (any, error) {
-	v, err := h.readCaller(ctx, p, args)
+	v, err := h.boundCaller(ctx, p, args)
 	if err != nil {
 		return nil, err
 	}
@@ -262,15 +260,15 @@ func (h *Hub) viewGet(ctx context.Context, p perform, args map[string]any) (any,
 }
 
 // viewHistory handles hub.view.history {view_id, attachment, before}: a page of messages older than
-// the message ID before, from the plugin (view.history). Only the view's renderers call it: the
-// transcript pane fetches the history that a view tree cannot hold (rex-protocol.md: 64 KiB).
+// the message ID before, from the plugin (view.history). Only the view's renderer calls it: thread
+// mode fetches the history that a view tree cannot hold (rex-protocol.md: 64 KiB).
 //
 // A hub handler must never wait for a plugin: Rex sends the hub its next request only after the
 // hub answers this one, and the plugin's own calls to the hub wait in that queue (rex-protocol.md,
 // "The hub has one request queue"). So the first call starts the fetch and answers
 // {status: "pending"}; the renderer asks again until the page is there.
 func (h *Hub) viewHistory(ctx context.Context, p perform, args map[string]any) (any, error) {
-	v, err := h.readCaller(ctx, p, args)
+	v, err := h.boundCaller(ctx, p, args)
 	if err != nil {
 		return nil, err
 	}
@@ -618,26 +616,25 @@ var viewRenderHook func(h *Hub, ctx context.Context, plugin string, args map[str
 var renderPruneHook func()
 
 func (h *Hub) renderViews(ctx context.Context, plugin string) {
-	rows, err := h.db.QueryContext(ctx, `SELECT v.view_id, v.route, v.client_id, v.attachment, v.context, v.open_args, COALESCE(t.status, ''), `+effectiveLayout+`
-		FROM views v LEFT JOIN ui_tabs t ON t.plugin = v.plugin AND t.tab = v.tab LEFT JOIN view_transcripts x ON x.view_id = v.view_id
+	rows, err := h.db.QueryContext(ctx, `SELECT v.view_id, v.route, v.client_id, v.attachment, v.context, v.open_args, COALESCE(t.status, '')
+		FROM views v LEFT JOIN ui_tabs t ON t.plugin = v.plugin AND t.tab = v.tab
 		WHERE v.plugin = ? AND v.status = 'open' AND v.attachment != ''`, plugin)
 	if err != nil {
 		return
 	}
-	type target struct{ id, route, client, attachment, context, open, status, layout string }
+	type target struct{ id, route, client, attachment, context, open, status string }
 	var targets []target
 	for rows.Next() {
 		var t target
-		rows.Scan(&t.id, &t.route, &t.client, &t.attachment, &t.context, &t.open, &t.status, &t.layout)
+		rows.Scan(&t.id, &t.route, &t.client, &t.attachment, &t.context, &t.open, &t.status)
 		targets = append(targets, t)
 	}
 	rows.Close()
-	printers := h.transcriptTargets(ctx, plugin)
-	composers := map[string]string{}
+	attached := map[string]string{}
 	for _, t := range targets {
-		composers[t.id] = t.attachment
+		attached[t.id] = t.attachment
 	}
-	h.vs.pruneNotifiers(plugin, composers, printers)
+	h.vs.pruneNotifiers(plugin, attached)
 	if renderPruneHook != nil {
 		renderPruneHook()
 	}
@@ -756,10 +753,10 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		tree, _ := json.Marshal(out.Tree)
 		h.vs.mu.Lock()
 		s := h.vs.snaps[t.id]
-		changed := s == nil || string(s.tree) != string(tree) || s.status != status || s.layout != t.layout
+		changed := s == nil || string(s.tree) != string(tree) || s.status != status
 		if changed {
 			h.vs.rev++
-			s = &snapshot{rev: h.vs.rev, tree: tree, status: status, layout: t.layout}
+			s = &snapshot{rev: h.vs.rev, tree: tree, status: status}
 			h.vs.snaps[t.id] = s
 		}
 		send := changed || h.vs.notify[t.id]
@@ -768,10 +765,7 @@ func (h *Hub) renderViews(ctx context.Context, plugin string) {
 		h.vs.mu.Unlock()
 		h.testRenderDone(t.id, gen, renderErr == "", renderErr, rev, tree)
 		if send {
-			h.tellViewChanged(plugin, roleComposer, t.client, t.id, t.attachment, rev)
-			if pr, ok := printers[t.id]; ok {
-				h.tellViewChanged(plugin, rolePrinter, pr[0], t.id, pr[1], rev)
-			}
+			h.tellViewChanged(plugin, t.client, t.id, t.attachment, rev)
 		}
 	}
 }

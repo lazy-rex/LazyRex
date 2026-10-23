@@ -522,7 +522,7 @@ func TestFetchGapNewMessageInsideTheHeldRange(t *testing.T) {
 }
 
 // TestFetchStopsWhileTheViewEnds (codex-29 blocker at 8f104d33): an open fetch runs, and an
-// operation is outstanding. Ctrl+Q, the hub's close, a reload or a retirement stops the fetch's
+// operation is outstanding. Ctrl+Q, a reload or a retirement stops the fetch's
 // call, and a later tree starts no fetch while the request waits. Through model.Update.
 func TestFetchStopsWhileTheViewEnds(t *testing.T) {
 	for _, tc := range []struct {
@@ -530,7 +530,6 @@ func TestFetchStopsWhileTheViewEnds(t *testing.T) {
 		msg  tea.Msg
 	}{
 		{"ctrl+q", tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl}},
-		{"close", closeRequested{}},
 		{"reload", reloadRequested{}},
 		{"retire", retireRequested{}},
 	} {
@@ -559,14 +558,14 @@ func TestFetchStopsWhileTheViewEnds(t *testing.T) {
 	}
 }
 
-// TestFetchAgainAfterAFailedClose: a close stops the open fetch; the close fails, and the view
+// TestFetchAgainAfterAFailedClose: a close (Ctrl+Q) stops the open fetch; the close fails, and the view
 // stays. The current tree fetches again at once.
 func TestFetchAgainAfterAFailedClose(t *testing.T) {
 	m := newModel(&viewClient{ViewID: "v1", Plugin: "messaging", Route: "/thread/42", Requests: make(chan mutation, 16)})
 	m.ready = true
 	m.print.pages = (&fakePages{thread: msgs(span(1, 600)...), size: 300}).get
 	m.Update(page(msgs(span(301, 600)...), true, 600))
-	m.Update(closeRequested{})
+	m.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
 	if !m.closeRunning || m.print.fetch != nil {
 		t.Fatalf("the close did not run, or the fetch did not stop (running %v)", m.closeRunning)
 	}

@@ -10,10 +10,6 @@ import (
 type reloadRequested struct{}
 type retireRequested struct{}
 
-// closeRequested is the hub's view.close_request: the user closed the transcript of this pair,
-// so the composer closes through the same gate as Ctrl+Q.
-type closeRequested struct{}
-
 func (e *editor) dirty() bool {
 	if e.Kind == "boolean" || e.Kind == "select" {
 		return !reflect.DeepEqual(e.Choice, e.SavedChoice)

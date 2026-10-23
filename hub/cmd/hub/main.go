@@ -52,9 +52,6 @@ type Config struct {
 	// run, localsnapshot.go). `lazyrex-hub test` names only the plugin under test, so ${PLUGIN} is
 	// the dir it runs from. Only -test accepts it, and each dir must be in test_roots.
 	TestSourceRuns []string `json:"test_source_runs"`
-	// Transcript opens tabs that declare layout "transcript" as a transcript pane over a composer
-	// pane (pair.go). Off: those tabs open as one view, as before.
-	Transcript bool `json:"transcript"`
 	// UISlot is where forms and panels open, for an experiment (the user, 2026-10-22): "split" (the
 	// window's right split, the default) or "layer" (a floating layer in the same window). It goes
 	// away when the user decides.
@@ -770,9 +767,6 @@ func (h *Hub) blockEvent(ctx context.Context, blockID, name string, payload json
 			return
 		}
 		go h.tabReplPaneExited(ctx, blockID) // a reopen's new renderer before its adoption
-		if h.transcriptChildExited(ctx, blockID) {
-			return
-		}
 		h.mu.Lock()
 		var exited *Plugin
 		for _, p := range h.plugins {

@@ -30,8 +30,8 @@ import (
 const uiSchema = `
 -- plugin '*' is the LazyRex session, which every plugin shares. It is the only row.
 CREATE TABLE IF NOT EXISTS ui_sessions (plugin TEXT PRIMARY KEY, session_id TEXT NOT NULL);
--- key 'nav': the latest navigation target "<plugin>/<tab>", done when shown. It commits before any
--- layout change. (key 'active' is from the single-session build and is not read.)
+-- key 'nav': the latest navigation target "<plugin>/<tab>", done when shown. (key 'active' is from
+-- the single-session build and is not read.)
 CREATE TABLE IF NOT EXISTS ui_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- A restore in progress: its placeholder pane carries the nonce. Recorded before the pane exists.
 CREATE TABLE IF NOT EXISTS ui_restores (nonce TEXT PRIMARY KEY, view_id TEXT NOT NULL, created TEXT NOT NULL);
@@ -39,12 +39,12 @@ CREATE TABLE IF NOT EXISTS ui_restores (nonce TEXT PRIMARY KEY, view_id TEXT NOT
 CREATE TABLE IF NOT EXISTS ui_tabs (plugin TEXT NOT NULL, tab TEXT NOT NULL, title TEXT NOT NULL, route TEXT NOT NULL,
   pos INTEGER NOT NULL, suppressed INTEGER NOT NULL DEFAULT 0, crashes INTEGER NOT NULL DEFAULT 0,
   session_id TEXT NOT NULL DEFAULT '', revision TEXT NOT NULL DEFAULT '', closed_revision TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '', PRIMARY KEY (plugin, tab));
+  status TEXT NOT NULL DEFAULT '', PRIMARY KEY (plugin, tab));
 -- status: prepared (request not sent), sending (outcome unknown), open, exited (renderer ended; the worker closes it), closed
 CREATE TABLE IF NOT EXISTS views (view_id TEXT PRIMARY KEY, plugin TEXT NOT NULL, tab TEXT NOT NULL, route TEXT NOT NULL,
   status TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', window_id TEXT NOT NULL DEFAULT '', block_id TEXT NOT NULL DEFAULT '',
   child_pid INTEGER NOT NULL DEFAULT 0, child_start TEXT NOT NULL DEFAULT '', client_id TEXT NOT NULL DEFAULT '',
-  attachment TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '',
+  attachment TEXT NOT NULL DEFAULT '', closed_by TEXT NOT NULL DEFAULT '',
   attach_state TEXT NOT NULL DEFAULT 'unknown', open_args TEXT NOT NULL DEFAULT '');
 -- attach_state (panels.go): never (a new view, no renderer yet), attached, or claimed (a replacement
 -- took the never-attached view). Every insert names it; 'unknown' counts as attached.
@@ -127,7 +127,6 @@ type view struct {
 	ID, Plugin, Tab, Route, Status, Session, Window, Block string
 	ChildPID                                               int
 	ChildStart, ClientID, Attachment                       string
-	Layout                                                 string // "transcript": a pair (pair.go)
 }
 
 type tab struct {
@@ -137,7 +136,6 @@ type tab struct {
 	Session           string // the home session (hometabs.go); empty: the plugin's app session
 	Revision          string // reopens a closed tab when it changes (hometabs.go)
 	Status            string // declared tab status, JSON (tabstatus.go); "" = none
-	Layout            string // "transcript": a transcript pane over the composer (pair.go)
 }
 
 func randomID(prefix string) string {
@@ -165,9 +163,6 @@ func (h *Hub) uiStart(ctx context.Context) error {
 		return err
 	}
 	if _, err := h.db.ExecContext(ctx, homeSchema); err != nil {
-		return err
-	}
-	if err := h.pairStart(ctx); err != nil {
 		return err
 	}
 	// Attachments belong to one hub generation (Renderer contract). Renderers attach again.
@@ -260,7 +255,7 @@ func (h *Hub) uiWorker(ctx context.Context) {
 
 func (h *Hub) loadViews(ctx context.Context, plugin string) ([]*view, error) {
 	rows, err := h.db.QueryContext(ctx, `SELECT view_id, tab, route, status, session_id, window_id, block_id, child_pid, child_start,
-		client_id, attachment, layout FROM views WHERE plugin = ? AND status != 'closed' AND tab != '`+formTab+`'`, plugin)
+		client_id, attachment FROM views WHERE plugin = ? AND status != 'closed' AND tab != '`+formTab+`'`, plugin)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +264,7 @@ func (h *Hub) loadViews(ctx context.Context, plugin string) ([]*view, error) {
 	for rows.Next() {
 		v := &view{Plugin: plugin}
 		if err := rows.Scan(&v.ID, &v.Tab, &v.Route, &v.Status, &v.Session, &v.Window, &v.Block, &v.ChildPID, &v.ChildStart,
-			&v.ClientID, &v.Attachment, &v.Layout); err != nil {
+			&v.ClientID, &v.Attachment); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -278,7 +273,7 @@ func (h *Hub) loadViews(ctx context.Context, plugin string) ([]*view, error) {
 }
 
 func (h *Hub) loadTabs(ctx context.Context, plugin string) ([]tab, error) {
-	rows, err := h.db.QueryContext(ctx, `SELECT tab, title, route, pos, suppressed, crashes, session_id, revision, layout FROM ui_tabs WHERE plugin = ? ORDER BY pos`, plugin)
+	rows, err := h.db.QueryContext(ctx, `SELECT tab, title, route, pos, suppressed, crashes, session_id, revision FROM ui_tabs WHERE plugin = ? ORDER BY pos`, plugin)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +281,7 @@ func (h *Hub) loadTabs(ctx context.Context, plugin string) ([]tab, error) {
 	var out []tab
 	for rows.Next() {
 		var t tab
-		if err := rows.Scan(&t.Key, &t.Title, &t.Route, &t.Pos, &t.Suppressed, &t.Crashes, &t.Session, &t.Revision, &t.Layout); err != nil {
+		if err := rows.Scan(&t.Key, &t.Title, &t.Route, &t.Pos, &t.Suppressed, &t.Crashes, &t.Session, &t.Revision); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -314,12 +309,11 @@ func (h *Hub) forgetOwn(id string) {
 	h.ui.mu.Unlock()
 }
 
-// closeViewRow closes a view's row. A paired view's transcript closes with it (pair.go).
+// closeViewRow closes a view's row.
 func (h *Hub) closeViewRow(ctx context.Context, id, by string) {
 	h.forgetOwn(id)
 	h.forgetView(id)
 	h.db.ExecContext(ctx, `UPDATE views SET status = 'closed', closed_by = ?, client_id = '', attachment = '' WHERE view_id = ?`, by, id)
-	h.closeTranscript(ctx, id)
 }
 
 // closeViewOnce closes a view row that is not closed yet, and reports whether this call closed
@@ -340,7 +334,6 @@ func (h *Hub) closeViewOnce(ctx context.Context, id, by string, keepAttach bool)
 	}
 	h.forgetOwn(id)
 	h.forgetView(id)
-	h.closeTranscript(ctx, id)
 	return true, nil
 }
 
@@ -534,8 +527,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	h.sweepTranscripts(ctx)
-
 	more := false
 	byKey := map[string]*view{} // mounted views, keys "<plugin>/<tab>"
 	for _, plugin := range plugins {
@@ -651,22 +642,15 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 					want[t.Key] = t
 				}
 			}
-			// A layout change converts the view in place: the composer stays, and only the
-			// transcript pane comes or goes (an unsaved draft survives a config change).
 			for key, v := range byTab {
 				if reserved[key] != nil {
-					continue // no close and no layout change while the reopen runs
+					continue // no close while the reopen runs
 				}
 				t, ok := want[key]
 				if !ok || t.Route != v.Route {
 					h.closeView(ctx, v, "undeclared")
 					delete(byTab, key)
 					continue
-				}
-				if l := h.pairLayout(t); l != v.Layout {
-					if err := h.setViewLayout(ctx, v, l); err != nil {
-						return false, err
-					}
 				}
 			}
 
@@ -694,11 +678,6 @@ func (h *Hub) reconcile(ctx context.Context) (bool, error) {
 					}
 				} else if v.Window == "" {
 					if err := h.restoreView(ctx, sess, v, t.Title); err != nil {
-						return false, err
-					}
-				}
-				if v != nil && v.Status == "open" && v.Layout == layoutTranscript {
-					if err := h.ensureTranscript(ctx, sess, v, blocks); err != nil {
 						return false, err
 					}
 				}
@@ -906,12 +885,12 @@ func (h *Hub) spawnView(ctx context.Context, plugin, sess string, t tab) (*view,
 	if h.cfg.View == "" {
 		return nil, errors.New("no renderer: set \"view\" in the hub config")
 	}
-	v := &view{ID: randomID("view-"), Plugin: plugin, Tab: t.Key, Route: t.Route, Status: "prepared", Layout: h.pairLayout(t)}
+	v := &view{ID: randomID("view-"), Plugin: plugin, Tab: t.Key, Route: t.Route, Status: "prepared"}
 	// The pass read its tabs before: a crash limit or a user close since then suppressed the tab, and
 	// the insert reads that in the same statement. No view then (nil).
-	res, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, layout, attach_state)
-		SELECT ?, ?, ?, ?, 'prepared', ?, ?, 'never' WHERE NOT EXISTS (SELECT 1 FROM ui_tabs WHERE plugin = ? AND tab = ? AND suppressed = 1)`,
-		v.ID, plugin, t.Key, t.Route, sess, v.Layout, plugin, t.Key)
+	res, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, session_id, attach_state)
+		SELECT ?, ?, ?, ?, 'prepared', ?, 'never' WHERE NOT EXISTS (SELECT 1 FROM ui_tabs WHERE plugin = ? AND tab = ? AND suppressed = 1)`,
+		v.ID, plugin, t.Key, t.Route, sess, plugin, t.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -1086,9 +1065,6 @@ func (h *Hub) selectOnApps(ctx context.Context, sess, window string, about map[s
 
 // uiBlockClosed handles a closed view pane. It reports whether the block was a view.
 func (h *Hub) uiBlockClosed(ctx context.Context, blockID string, self bool) bool {
-	if h.transcriptBlockClosed(ctx, blockID, self) {
-		return true
-	}
 	var id, plugin, tabKey, sess string
 	err := h.db.QueryRowContext(ctx, `SELECT view_id, plugin, tab, session_id FROM views WHERE block_id = ? AND status = 'open'`, blockID).Scan(&id, &plugin, &tabKey, &sess)
 	if err != nil {
@@ -1138,9 +1114,6 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 		AND attachment = ? AND attachment != '' AND client_id = ?`, args["view_id"], args["attachment"], p.Requester.ClientID).Scan(&n)
 	if n == 1 {
 		return map[string]any{"status": "closed"}, nil
-	}
-	if out, ok := h.transcriptClose(ctx, p, args); ok {
-		return out, nil
 	}
 	v, err := h.boundCaller(ctx, p, args)
 	if err != nil {
@@ -1200,7 +1173,6 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 		if err := h.closeBlock(context.Background(), sess, block); err != nil {
 			log.Printf("ui: close %s: %v", v.ID, err)
 		}
-		h.closeTranscript(context.Background(), v.ID)
 	}()
 	h.kickUI(v.Plugin)
 	return map[string]any{"status": "closed"}, nil
@@ -1210,9 +1182,6 @@ func (h *Hub) viewClose(ctx context.Context, p perform, args map[string]any) (an
 // the plugin's worker closes the tab and opens a new one, up to maxCrashes times per tab.
 // A navigation resets the count.
 func (h *Hub) uiChildExited(ctx context.Context, blockID string) bool {
-	if h.transcriptChildExited(ctx, blockID) {
-		return true
-	}
 	v, err := h.viewByBlock(ctx, blockID)
 	if err != nil || v == nil {
 		return false
@@ -1369,12 +1338,8 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 		if err != nil {
 			return nil, bad("tab %d: %v", i, err)
 		}
-		layout, _ := m["layout"].(string)
-		if m["layout"] != nil && layout != "" && layout != layoutTranscript {
-			return nil, bad("tab %d: layout must be %q or absent", i, layoutTranscript)
-		}
 		seen[key] = true
-		tabs = append(tabs, tab{Key: key, Title: title, Route: route, Pos: i, Session: home, Revision: rev, Status: status, Layout: layout})
+		tabs = append(tabs, tab{Key: key, Title: title, Route: route, Pos: i, Session: home, Revision: rev, Status: status})
 	}
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1421,8 +1386,8 @@ func (h *Hub) uiTabs(ctx context.Context, plugin string, args map[string]any) (a
 			o.suppressed = false
 			h.ev.emit("tab_reopened", map[string]any{"plugin": plugin, "tab": t.Key, "revision": t.Revision})
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ui_tabs (plugin, tab, title, route, pos, suppressed, crashes, session_id, revision, closed_revision, status, layout)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, plugin, t.Key, t.Title, t.Route, t.Pos, o.suppressed, o.crashes, t.Session, t.Revision, o.closedRev, t.Status, t.Layout); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ui_tabs (plugin, tab, title, route, pos, suppressed, crashes, session_id, revision, closed_revision, status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, plugin, t.Key, t.Title, t.Route, t.Pos, o.suppressed, o.crashes, t.Session, t.Revision, o.closedRev, t.Status); err != nil {
 			return nil, err
 		}
 	}
@@ -1559,10 +1524,6 @@ func (h *Hub) navigateCommit(ctx context.Context, plugin, key string, seq int64)
 	}
 	h.ev.emit("navigation_committed", map[string]any{"plugin": plugin, "tab": key, "seq": seq})
 	h.kickUI(plugin)
-	// A transcript that comes back changes the effective layout of the views of this tab only.
-	if _, err := h.markViews(ctx, plugin, causeLayout, `tab = ?`, key); err != nil {
-		h.kickViews(plugin, causeLayout)
-	}
 	return map[string]any{"status": "accepted"}, nil
 }
 
@@ -1572,16 +1533,13 @@ func (h *Hub) navigateCommitLocked(ctx context.Context, plugin, key string, seq 
 	if seq != h.ui.navSeq {
 		return false, nil
 	}
-	// The target commits before any layout change: a crash then resumes the focus.
+	// The target commits first: a crash then resumes the focus.
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND tab = ?`, plugin, key); err != nil {
-		return false, err
-	}
-	if err := resetTranscripts(ctx, tx, plugin, key); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ui_state VALUES ('nav', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, plugin+"/"+key); err != nil {
@@ -1608,16 +1566,6 @@ func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
 		return nil, err
 	}
 	n := 0
-	for id, target := range h.transcriptTargets(ctx, plugin) {
-		n++
-		go func(id, client, att string) {
-			ctx, cancel := performCtx(context.Background(), 5000)
-			defer cancel()
-			err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": client, "action": "view.reload",
-				"args": map[string]any{"view_id": id, "attachment": att}, "timeout_ms": 5000}, nil)
-			h.ev.emit("view_reload", map[string]any{"plugin": plugin, "view_id": id, "role": layoutTranscript, "error": errString(err)})
-		}(id, target[0], target[1])
-	}
 	for _, v := range views {
 		if v.Status != "open" || v.Attachment == "" {
 			continue
@@ -1641,11 +1589,7 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 	if sv, _ := args["schema_version"].(float64); sv != 1 {
 		return nil, bad("unsupported_schema: this hub speaks schema version 1")
 	}
-	switch role, _ := args["role"].(string); role {
-	case layoutTranscript:
-		return h.transcriptAttach(ctx, p, id)
-	case "", "composer":
-	default:
+	if role, _ := args["role"].(string); role != "" && role != "composer" {
 		return nil, bad("unknown role %q", role)
 	}
 	var v view
@@ -1672,9 +1616,8 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 		return nil, bad("unknown or closed view %q", id)
 	}
 	h.ev.emit("view_attached", map[string]any{"view_id": id, "client_id": p.Requester.ClientID})
-	h.composerAttached(ctx, v.Plugin, id, p.Requester.ClientID, attachment) // the user closed the pair meanwhile
-	h.markView(v.Plugin, id, causeAttach)                                   // render the first snapshot for this attachment
-	h.kickUI(v.Plugin)                                                      // a legacy view's new attachment can now be asked to retire
+	h.markView(v.Plugin, id, causeAttach) // render the first snapshot for this attachment
+	h.kickUI(v.Plugin)                    // a legacy view's new attachment can now be asked to retire
 	out := map[string]any{"view_id": id, "plugin": v.Plugin, "route": v.Route, "user": viewUser,
 		"hub_generation": revString(h.generation), "attachment": attachment}
 	// A renderer that waits on a side-slot replacement (frozen or prompting) names it; the
@@ -1706,10 +1649,7 @@ func (h *Hub) uiDescribe(ctx context.Context, args map[string]any) (any, error) 
 	}
 	vl := []any{}
 	for _, v := range views {
-		row := map[string]any{"view_id": v.ID, "tab": v.Tab, "status": v.Status, "session_id": v.Session, "window_id": v.Window, "block_id": v.Block, "attached": v.Attachment != "", "layout": v.Layout}
-		if tr, _ := h.loadTranscript(ctx, v.ID); tr != nil {
-			row["transcript"] = map[string]any{"status": tr.Status, "block_id": tr.Block, "attached": tr.Attachment != "", "crashes": tr.Crashes}
-		}
+		row := map[string]any{"view_id": v.ID, "tab": v.Tab, "status": v.Status, "session_id": v.Session, "window_id": v.Window, "block_id": v.Block, "attached": v.Attachment != ""}
 		vl = append(vl, row)
 	}
 	// default_session_id: where tabs without a home session live (the LazyRex session).
@@ -1735,13 +1675,11 @@ func errString(err error) string {
 // Linux pane has no REX_SERVER, and the renderer never guesses one. On an approved real-server run
 // the renderer must accept the real socket, so it gets -real-server too. The renderer argv is an
 // interface between two binaries of one release.
-// flags go before the plugin and route (for example -transcript, pair.go).
-func (h *Hub) viewCommand(id, plugin, route string, flags ...string) []string {
+func (h *Hub) viewCommand(id, plugin, route string) []string {
 	cmd := []string{h.cfg.View, "-view-id", id, "-server", h.cfg.Server}
 	if h.cfg.Real {
 		cmd = append(cmd, "-real-server")
 	}
-	cmd = append(cmd, flags...)
 	return append(cmd, plugin, route)
 }
 

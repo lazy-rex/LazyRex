@@ -276,3 +276,13 @@ func TestSlotLayerLab(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// layoutNode is a node of a session.view layout tree: a leaf with block_id, or a split.
+type layoutNode struct {
+	BlockID string `json:"block_id"`
+	Split   *struct {
+		Direction string     `json:"direction"`
+		Before    layoutNode `json:"before"`
+		After     layoutNode `json:"after"`
+	} `json:"split"`
+}
