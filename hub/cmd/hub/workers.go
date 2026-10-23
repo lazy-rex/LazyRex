@@ -1157,15 +1157,16 @@ func (h *Hub) workerGone(ctx context.Context, s *spawnRow, why string) error {
 	if err != nil {
 		return err
 	}
+	// The change is stored: report it before the read below, which can fail.
+	if n, _ := res.RowsAffected(); n == 1 {
+		h.ev.emit(event, map[string]any{"spawn_id": s.ID, "session_id": s.Session, "error": why})
+		h.changed("workers", "agents")
+	}
 	current, err := h.spawnByID(ctx, s.ID)
 	if err != nil {
 		return err
 	}
 	*s = *current
-	if n, _ := res.RowsAffected(); n == 1 {
-		h.ev.emit(event, map[string]any{"spawn_id": s.ID, "session_id": s.Session, "error": why})
-		h.changed("workers", "agents")
-	}
 	return nil
 }
 
