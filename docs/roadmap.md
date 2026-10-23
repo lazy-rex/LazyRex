@@ -111,3 +111,11 @@ Ordered by value to LazyRex.
   runtime case is not verified. It ends with the transcript sweep (claude-43), which removes
   `requestClose` and `close_pending` with the transcript and composer pair. If the sweep keeps
   `view.close_request`, the fix comes back to the hub lead.
+
+## Cleanup and test debt
+
+One line per item: what, its owner, and why it waits.
+
+- `viewnotify.go`: remove the nil `ctx` fallback to `context.Background()`, and give each test hub a
+  `ctx` (`newViewSvc()` then `h.vs.ctx`). Owner: Hub Features. Waits: it was outside the
+  constructor change's scope (lead-c37-item6g1); it is a test-only guard with no production effect.
