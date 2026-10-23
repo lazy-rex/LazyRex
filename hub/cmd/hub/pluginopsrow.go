@@ -82,8 +82,8 @@ func (c *pluginRowCols) free() bool {
 // writing checks and before the managed rename. The guard, the row write and the record in the op
 // row are one transaction, so the outcome is never unknown and there is no attempt row. The guard:
 // no row, or a free row (free); no spawn intent of name that is prepared or sending; no unsettled
-// attempt (no proof and not resolved) of an op on name; no open bound handler of an op on name
-// (bound_at set, outcome empty), even when proof or an operator settles its attempt. The add's own
+// attempt (no proof, and not unproven: observeLater ended it) of an op on name; no open bound
+// handler of an op on name (bound_at set, outcome empty), even when proof settles its attempt. The add's own
 // attempts do not count. The graph check of the writing phase covers "no entry gives name". A
 // failed guard is conflict, and nothing more is written. The same transaction stores the name in
 // the op (op.Name), so the guard of a later add sees this add's attempts.
@@ -120,7 +120,7 @@ func (h *Hub) addRow(ctx context.Context, op *pluginOp, name, identity string) (
 	}
 	var busy int
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM spawn_intents WHERE plugin = ? AND status IN ('prepared', 'sending'))
-		+ (SELECT COUNT(*) FROM plugin_op_attempts a JOIN plugin_ops o ON o.op_id = a.op_id WHERE o.name = ? AND o.op_id != ? AND (a.proof = '' AND a.resolved_by = '' OR a.bound_at != '' AND a.outcome = ''))`, name, name, op.ID).Scan(&busy); err != nil {
+		+ (SELECT COUNT(*) FROM plugin_op_attempts a JOIN plugin_ops o ON o.op_id = a.op_id WHERE o.name = ? AND o.op_id != ? AND (a.proof = '' AND a.outcome NOT LIKE 'unproven:%' OR a.bound_at != '' AND a.outcome = ''))`, name, name, op.ID).Scan(&busy); err != nil {
 		return true, err
 	}
 	if busy > 0 || c != nil && !c.free() {

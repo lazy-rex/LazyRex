@@ -103,6 +103,12 @@ var retiredSchema = []retiredStep{
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dyn_agents'`, statement: `DROP TABLE dyn_agents`},
 	{table: "identity_aliases",
 		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'identity_aliases'`, statement: `DROP TABLE identity_aliases`},
+	// The release hold and the operator resolve (hub.plugins.hold.*, hub.plugins.attempt.resolve)
+	// are removed: the later observation of an attempt ends unproven by itself (observeLater).
+	{table: "plugin_hold",
+		check: `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'plugin_hold'`, statement: `DROP TABLE plugin_hold`},
+	{table: "plugin_op_attempts", column: "resolved_by",
+		check: `SELECT COUNT(*) FROM pragma_table_info('plugin_op_attempts') WHERE name = 'resolved_by'`, statement: `ALTER TABLE plugin_op_attempts DROP COLUMN resolved_by`},
 }
 
 // retireSchema runs the steps of retiredSchema that are still due.

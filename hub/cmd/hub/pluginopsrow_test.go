@@ -87,8 +87,9 @@ func TestPluginOpAddRowNamedByManifest(t *testing.T) {
 // The guard (lead-b8-step4-final, C4 plan NEW 1): a row with an instance bound or running, a
 // desired running row, a row with a run or a selected run, a prepared or sending intent, and an
 // unsettled attempt of an op on the name are conflict; nothing more is written. An open bound
-// handler (bound_at set, outcome empty) is conflict even when proof or an operator settles its
-// attempt. Resolved intents and an operator-resolved attempt with no open handler pass.
+// handler (bound_at set, outcome empty) is conflict even when proof settles its attempt. An
+// unproven attempt (its later observation ended) is settled, but an unresolved spawn intent beside
+// it is still conflict. Resolved intents and an unproven attempt with no open handler pass.
 func TestPluginOpAddRowGuard(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -109,18 +110,26 @@ func TestPluginOpAddRowGuard(t *testing.T) {
 		{"resolved intents", []string{
 			`INSERT INTO spawn_intents (instance_id, plugin, status) VALUES ('notes-2', 'notes', 'created')`,
 			`INSERT INTO spawn_intents (instance_id, plugin, status) VALUES ('notes-3', 'notes', 'abandoned')`}, true},
-		{"an operator-resolved attempt", []string{
+		{"an unproven attempt", []string{
 			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
-			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, resolved_by) VALUES ('a1', 'o1', 'start', 1, '{"by":"operator"}')`}, true},
-		{"an open bound handler, operator-resolved", []string{
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, outcome) VALUES ('a1', 'o1', 'start', 1, 'unproven: observation ended after 10 passes; error: lost')`}, true},
+		{"an unproven attempt and a recorded block (a late effect)", []string{
 			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
-			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, resolved_by) VALUES ('a1', 'o1', 'start', 1, 't', '{"by":"operator"}')`}, false},
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, outcome) VALUES ('a1', 'o1', 'start', 1, 'unproven: observation ended after 10 passes; error: lost')`,
+			`INSERT INTO plugins (name, desired, instance_id, block_id) VALUES ('notes', 'stopped', 'notes-1', 'b1')`}, false},
+		{"an unproven attempt and a prepared intent", []string{
+			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, outcome) VALUES ('a1', 'o1', 'start', 1, 'unproven: observation ended after 10 passes; error: lost')`,
+			`INSERT INTO spawn_intents (instance_id, plugin, status) VALUES ('notes-2', 'notes', 'prepared')`}, false},
+		{"an observed attempt with an unknown outcome", []string{
+			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, outcome) VALUES ('a1', 'o1', 'start', 1, 't', 'error: lost')`}, false},
 		{"an open bound handler, proved", []string{
 			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
 			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, proof) VALUES ('a1', 'o1', 'start', 1, 't', 'not_applied')`}, false},
-		{"a bound handler with an outcome, operator-resolved", []string{
+		{"a bound handler with an unproven outcome", []string{
 			`INSERT INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, created, updated) VALUES ('o1', 's', 'k', 'f', '{}', 'start', 'managed:x', 'notes', '', '', '', 'unknown', 1, 1)`,
-			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, outcome, resolved_by) VALUES ('a1', 'o1', 'start', 1, 't', 'unknown', '{"by":"operator"}')`}, true},
+			`INSERT INTO plugin_op_attempts (attempt, op_id, call, at, bound_at, outcome) VALUES ('a1', 'o1', 'start', 1, 't', 'unproven: observation ended after 10 passes; error: lost')`}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := rowHub(t)

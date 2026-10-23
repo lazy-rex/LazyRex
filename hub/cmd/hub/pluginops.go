@@ -59,17 +59,15 @@ CREATE TABLE IF NOT EXISTS plugin_ops (op_id TEXT PRIMARY KEY, scope TEXT NOT NU
 -- bound_at: the handler bound the attempt (with target_instance, target_block, target_session) before its first
 -- effect. sent_at: the handler committed it before its first effect; empty sent_at means that no
 -- effect began. intent_id: the spawn intent of a start or a replace. proof: how the outcome is
--- known (separate from the outcome text). resolved_by: the operator that resolved the attempt.
+-- known (separate from the outcome text). An outcome that starts with "unproven:" ends the later
+-- observation without a proof (observeLater).
 -- A file write (call write:managed or write:lock) has its own attempt: intended is the hash of the bytes that it
 -- renames; bound_at is the insert, sent_at the moment just before the rename.
 CREATE TABLE IF NOT EXISTS plugin_op_attempts (attempt TEXT PRIMARY KEY, op_id TEXT NOT NULL, call TEXT NOT NULL,
   expect_run TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL,
   outcome TEXT NOT NULL DEFAULT '', bound_at TEXT NOT NULL DEFAULT '', target_instance TEXT NOT NULL DEFAULT '',
   target_block TEXT NOT NULL DEFAULT '', target_session TEXT NOT NULL DEFAULT '', intent_id TEXT NOT NULL DEFAULT '', sent_at TEXT NOT NULL DEFAULT '',
-  proof TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '', intended TEXT NOT NULL DEFAULT '');
--- The release hold: at most one row. A release tool holds it while no manager write may run.
-CREATE TABLE IF NOT EXISTS plugin_hold (one INTEGER PRIMARY KEY CHECK (one = 1), release_id TEXT NOT NULL,
-  acquired_at TEXT NOT NULL);
+  proof TEXT NOT NULL DEFAULT '', intended TEXT NOT NULL DEFAULT '');
 `
 
 // pluginOpPhases are the working phases of each kind, in order.
@@ -100,6 +98,9 @@ const (
 	opRegisterPoll = time.Second
 	// opObservePoll is the interval of the later observation while an attempt stays unresolved.
 	opObservePoll = 30 * time.Second
+	// opObservePasses bounds the later observation: an attempt that gets no proof in this many
+	// passes, at least opObservePoll apart (5 minutes), ends unproven (observeLater).
+	opObservePasses = 10
 )
 
 // opRegisterWait bounds the wait of a start observation for the registration of its intent's
@@ -116,6 +117,9 @@ type pluginOpsSvc struct {
 	busy map[string]time.Time // op ID -> the first busy try (the manager goroutine only)
 	// observing: attempt -> the first observation that waits for a registration (the manager goroutine only)
 	observing map[string]time.Time
+	// later: attempt -> its counted passes of the later observation (the manager goroutine only).
+	// The count is per hub process.
+	later map[string]laterPasses
 	// fault is a test hook: true at a point stops the manager there, as a crash would.
 	fault func(point string) bool
 	// cmd are the options of the git commands of the resolving and fetching phases (a test sets the
@@ -428,15 +432,10 @@ func (h *Hub) admitOp(ctx context.Context, origin opOrigin, scope, key string, r
 	if op.Phase == "" {
 		op.Phase = "queued"
 	}
-	// OR IGNORE: a second admission of the same key in a race finds the first one. The hold check
-	// and the insert are one BEGIN IMMEDIATE transaction (pluginhold.go): under a hold, no op is
-	// inserted.
-	if err := h.admitUnderHold(ctx, func(c *sql.Conn) error {
-		_, err := c.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, result, base, entry_identity, lock_base, created, updated)
+	// OR IGNORE: a second admission of the same key in a race finds the first one.
+	if _, err := h.db.ExecContext(ctx, `INSERT OR IGNORE INTO plugin_ops (op_id, scope, key, fingerprint, origin, kind, entry, name, expect, input, target, phase, result, base, entry_identity, lock_base, created, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Phase, op.Result, op.Base, op.EntryIdentity, op.LockBase, now, now)
-		return err
-	}); err != nil {
+		op.ID, scope, key, fp, string(ob), op.Kind, op.Entry, op.Name, string(req.Expect), op.Input, op.Target, op.Phase, op.Result, op.Base, op.EntryIdentity, op.LockBase, now, now); err != nil {
 		return nil, err
 	}
 	if id, err = find(); err != nil {
@@ -705,24 +704,20 @@ func (h *Hub) opView(ctx context.Context, id string) (any, error) {
 		return nil, err
 	}
 	v := op.view()
-	// attempts: each attempt record, oldest first. resolved_by (with its note) only when stored.
+	// attempts: each attempt record, oldest first.
 	attempts := []map[string]any{}
-	rows, err := h.db.QueryContext(ctx, `SELECT attempt, call, at, outcome, proof, resolved_by FROM plugin_op_attempts WHERE op_id = ? ORDER BY at, rowid`, id)
+	rows, err := h.db.QueryContext(ctx, `SELECT attempt, call, at, outcome, proof FROM plugin_op_attempts WHERE op_id = ? ORDER BY at, rowid`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var attempt, call, outcome, proof, by string
+		var attempt, call, outcome, proof string
 		var at int64
-		if err := rows.Scan(&attempt, &call, &at, &outcome, &proof, &by); err != nil {
+		if err := rows.Scan(&attempt, &call, &at, &outcome, &proof); err != nil {
 			return nil, err
 		}
-		a := map[string]any{"attempt": attempt, "call": call, "at": at, "outcome": outcome, "proof": proof}
-		if by != "" {
-			a["resolved_by"], a["note"] = resolvedRecord(by), resolvedNote
-		}
-		attempts = append(attempts, a)
+		attempts = append(attempts, map[string]any{"attempt": attempt, "call": call, "at": at, "outcome": outcome, "proof": proof})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1791,16 +1786,19 @@ func (h *Hub) attemptEvidence(ctx context.Context, op *pluginOp, call string, t 
 // evidence appears later: for example, the instance of a start's created intent registers after
 // the op ended unknown (a lost answer, or a hub restart before the registration). Each attempt has
 // an outcome, so its call cannot act any more. It never calls again and never changes the op's
-// phase: only the attempt's proof (docs/hub.md, "attempt"). The hold reads that proof. An attempt with
-// an operator resolution (resolved_by) never changes: the SELECT and the UPDATE both require
-// resolved_by to be empty.
+// phase: only the attempt's proof (docs/hub.md, "attempt").
+//
+// The observation is bounded. An attempt without a proof after opObservePasses passes, at least
+// opObservePoll apart, ends unproven: its outcome gets the prefix "unproven:" in the one UPDATE that
+// ends the observation. addRow counts it as settled, so the plugin name is free again. A late
+// effect of the old call is a recorded instance, and the next start retires it.
 //
 // It returns the number of attempts that stay unresolved: the manager passes again after
 // opObservePoll while there are any.
 func (h *Hub) observeLater(ctx context.Context) (left int) {
 	rows, err := h.db.QueryContext(ctx, `SELECT a.attempt, a.op_id, a.call, a.target_instance, a.target_block, a.target_session, a.intent_id FROM plugin_op_attempts a
 		JOIN plugin_ops o ON o.op_id = a.op_id
-		WHERE a.proof = '' AND a.resolved_by = '' AND a.outcome != '' AND a.sent_at != '' AND a.call IN ('start', 'stop', 'replace') AND o.phase = 'unknown'`)
+		WHERE a.proof = '' AND a.outcome != '' AND a.outcome NOT LIKE 'unproven:%' AND a.sent_at != '' AND a.call IN ('start', 'stop', 'replace') AND o.phase = 'unknown'`)
 	if err != nil {
 		log.Printf("plugin ops: the later observation: %v", err)
 		return 0
@@ -1817,30 +1815,67 @@ func (h *Hub) observeLater(ctx context.Context) (left int) {
 		}
 	}
 	rows.Close()
+	if h.pops.later == nil {
+		h.pops.later = map[string]laterPasses{}
+	}
+	now := time.Now()
+	listed := map[string]bool{}
 	for _, a := range list {
+		listed[a.attempt] = true
 		op, err := h.loadOp(ctx, a.op)
 		if err != nil {
 			continue
 		}
 		proof, _, _, err := h.attemptEvidence(ctx, op, a.call, a.t)
-		if err != nil || proof == "" {
+		if err == nil && proof != "" {
+			res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = ''`, proof+" (later)", a.attempt)
+			if err != nil {
+				left++
+				continue
+			}
+			if n, _ := res.RowsAffected(); n == 1 {
+				h.ev.emit("plugin_op_attempt", map[string]any{"op_id": a.op, "attempt": a.attempt, "call": a.call, "proof": proof + " (later)"})
+				h.changed("plugins")
+			}
+			continue
+		}
+		p := h.pops.later[a.attempt]
+		if now.Sub(p.last) >= opObservePoll {
+			p.n, p.last = p.n+1, now
+		}
+		h.pops.later[a.attempt] = p
+		if p.n < opObservePasses {
 			left++
 			continue
 		}
-		h.opFault("observe-before-proof") // a test: a resolution between the read and the write
-		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET proof = ? WHERE attempt = ? AND proof = '' AND resolved_by = ''`, proof+" (later)", a.attempt)
+		res, err := h.db.ExecContext(ctx, `UPDATE plugin_op_attempts SET outcome = ? || outcome WHERE attempt = ? AND proof = '' AND outcome NOT LIKE 'unproven:%'`,
+			unprovenPrefix, a.attempt)
 		if err != nil {
 			left++
 			continue
 		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			continue
+		delete(h.pops.later, a.attempt)
+		if n, _ := res.RowsAffected(); n == 1 {
+			h.ev.emit("plugin_op_attempt", map[string]any{"op_id": a.op, "attempt": a.attempt, "call": a.call, "outcome": "unproven"})
+			h.changed("plugins")
 		}
-		h.ev.emit("plugin_op_attempt", map[string]any{"op_id": a.op, "attempt": a.attempt, "call": a.call, "proof": proof + " (later)"})
-		h.changed("plugins")
+	}
+	for k := range h.pops.later {
+		if !listed[k] {
+			delete(h.pops.later, k)
+		}
 	}
 	return left
 }
+
+// laterPasses counts the passes of the later observation of one attempt.
+type laterPasses struct {
+	n    int
+	last time.Time
+}
+
+// unprovenPrefix starts the outcome of an attempt whose later observation ended without a proof.
+var unprovenPrefix = fmt.Sprintf("unproven: observation ended after %d passes; ", opObservePasses)
 
 // settingsSchema is the agent-face schema of the settings input and of its expect.
 var settingsSchema = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{

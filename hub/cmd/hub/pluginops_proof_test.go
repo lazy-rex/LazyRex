@@ -405,20 +405,55 @@ func TestPluginOpLateRegistration(t *testing.T) {
 		}
 	}
 
-	h, pl, id = startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
-	// An operator resolution is its own field (resolved_by), and the proof stays empty.
-	const by = `{"outcome":"not_applied","note":"the operator checked"}`
-	if _, err := h.db.Exec(`UPDATE plugin_op_attempts SET resolved_by = ? WHERE op_id = ?`, by, id); err != nil {
+}
+
+// The later observation is bounded: an attempt that gets no proof stays observed for
+// opObservePasses passes (at least opObservePoll apart), then the pass that reaches the bound ends
+// it with an "unproven:" outcome, and no later pass observes it. A registration after that proves
+// nothing: the outcome is final.
+func TestPluginOpLaterObservationBound(t *testing.T) {
+	wait := registerWait
+	t.Cleanup(func() { registerWait = wait })
+	registerWait = 0
+	ctx := context.Background()
+	h, pl, id := startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
+	h.opsRun(ctx) // the op ends unknown (its later observation ran before the op)
+	var attempt, outcome string
+	if err := h.db.QueryRow(`SELECT attempt, outcome FROM plugin_op_attempts WHERE op_id = ? AND call = 'start'`, id).Scan(&attempt, &outcome); err != nil {
 		t.Fatal(err)
+	}
+	if op := opsOf(t, h, id); op.Phase != "unknown" || outcome == "" || strings.HasPrefix(outcome, "unproven:") {
+		t.Fatalf("op %+v, outcome %q", op, outcome)
+	}
+	// The passes of a busy manager do not count: a second pass at once leaves the count at 1.
+	h.observeLater(ctx)
+	h.observeLater(ctx)
+	if p := h.pops.later[attempt]; p.n != 1 {
+		t.Fatalf("passes %d after two passes at once; want 1", p.n)
+	}
+	for pass := 2; pass <= opObservePasses; pass++ {
+		p := h.pops.later[attempt]
+		p.last = time.Time{} // the poll interval has passed
+		h.pops.later[attempt] = p
+		left := h.observeLater(ctx)
+		if err := h.db.QueryRow(`SELECT outcome FROM plugin_op_attempts WHERE attempt = ?`, attempt).Scan(&outcome); err != nil {
+			t.Fatal(err)
+		}
+		ended := strings.HasPrefix(outcome, unprovenPrefix)
+		if pass < opObservePasses && (ended || left != 1) {
+			t.Fatalf("pass %d: outcome %q, left %d", pass, outcome, left)
+		}
+		if pass == opObservePasses && (!ended || left != 0) {
+			t.Fatalf("the last pass: outcome %q, left %d", outcome, left)
+		}
+	}
+	if _, ok := h.pops.later[attempt]; ok {
+		t.Fatal("the ended attempt keeps its pass count")
 	}
 	createAndRegister(t, h, pl)
 	h.opsRun(ctx)
-	var got string
-	if err := h.db.QueryRow(`SELECT resolved_by FROM plugin_op_attempts WHERE op_id = ?`, id).Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	if proof := opsProof(t, h, id, "start"); proof != "" || got != by {
-		t.Errorf("a resolved attempt changed: proof %q, resolved_by %q", proof, got)
+	if proof := opsProof(t, h, id, "start"); proof != "" {
+		t.Errorf("an unproven attempt got a proof: %q", proof)
 	}
 }
 
@@ -496,41 +531,6 @@ func TestReplaceStoppedAfterSentIsUnresolved(t *testing.T) {
 	refusal := refuse("stopped", "plugin a: the block of instance a-1-x was closed; the plugin is stopped")
 	if proof, err := h.returnProof(context.Background(), "replace", "r1", refusal); err != nil || proof != "" {
 		t.Fatalf("the proof %q, %v; want unresolved", proof, err)
-	}
-}
-
-// An operator resolution that commits after observeLater read the attempt and before its proof
-// write: the conditional UPDATE changes no row, and proof and resolved_by stay as the operator
-// wrote them (codex-27, plugins-b8-c2c-source-received-1).
-func TestPluginOpLaterObservationResolutionRace(t *testing.T) {
-	wait := registerWait
-	t.Cleanup(func() { registerWait = wait })
-	registerWait = 0
-	ctx := context.Background()
-	h, pl, id := startOpHub(t, refuse("spawn_unknown", "may still create a block"), false)
-	createAndRegister(t, h, pl)
-	const by = `{"outcome":"not_applied","note":"the operator checked"}`
-	resolved := false
-	h.pops.fault = func(p string) bool {
-		if p == "observe-before-proof" && !resolved {
-			resolved = true
-			if _, err := h.db.Exec(`UPDATE plugin_op_attempts SET resolved_by = ? WHERE op_id = ?`, by, id); err != nil {
-				t.Error(err)
-			}
-		}
-		return false
-	}
-	h.opsRun(ctx)
-	h.pops.fault = nil
-	if !resolved {
-		t.Fatal("the observation did not reach its proof write")
-	}
-	var proof, got string
-	if err := h.db.QueryRow(`SELECT proof, resolved_by FROM plugin_op_attempts WHERE op_id = ?`, id).Scan(&proof, &got); err != nil {
-		t.Fatal(err)
-	}
-	if proof != "" || got != by {
-		t.Errorf("proof %q, resolved_by %q", proof, got)
 	}
 }
 
