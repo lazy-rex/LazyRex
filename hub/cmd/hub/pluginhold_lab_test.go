@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -277,8 +279,8 @@ type oldStep struct {
 	typ, notnull, dflt string // the column as pragma_table_info shows it
 }
 
-// oldSteps: main a1d13d7c ("ui_tabs.rev_known goes through retireSchema") drops ui_tabs.rev_known
-// at each open, and OLD's ui.go migration adds it again.
+// oldSteps: H's uiSchema has no ui_tabs.rev_known, and OLD's ui.go migration adds it. Main keeps
+// the column after that until 2d (0ee52baf, coord-revk-1): see h2Schema.
 // Observed: SQLite stores ADD COLUMN after the last column definition; Rex-independent (Linux,
 // modernc.org/sqlite v1.61.0 with SQLite 3.54.1, CGO_ENABLED=0; bdc7a84a b8-tip.log).
 var oldSteps = []oldStep{
@@ -339,16 +341,69 @@ func (b *b8Life) sameB8(s1, s2 b8Snapshot) {
 	b.note("OLD effects, spawn_intents: S1 %s; S2 %s", j(s1.Intents), j(s2.Intents))
 }
 
-// h2Schema asserts that H2's open restores the whole schema of S1 byte for byte: retireSchema
-// (store.go) runs each step whose check still finds its column, at every open (lead-c3v3).
+// h2UITabs and h2RevKnown are the ui_tabs rows that OLD's own step leaves: the sqlite_master SQL
+// and the added pragma_table_info column. Observed from a run of the frozen OLD binary (darwin,
+// cp1 3302c890 on main 0ee52baf, b8start-3302c890.log), held as literals (the hub lead's
+// lead-c3v4b). Main keeps the column until 2d (retiredSchema is empty, coord-revk-1). The 2d
+// commit that adds the retiredSchema entry again removes both literals and wants S3 == S1.
+const h2UITabs = `CREATE TABLE ui_tabs (plugin TEXT NOT NULL, tab TEXT NOT NULL, title TEXT NOT NULL, route TEXT NOT NULL,
+  pos INTEGER NOT NULL, suppressed INTEGER NOT NULL DEFAULT 0, crashes INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT NOT NULL DEFAULT '', revision TEXT NOT NULL DEFAULT '', closed_revision TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '', layout TEXT NOT NULL DEFAULT '', rev_known INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (plugin, tab))`
+
+var h2RevKnown = map[string]string{"tbl": "ui_tabs", "name": "rev_known", "type": "INTEGER", "notnull": "1", "dflt": "0", "pk": "0"}
+
+// h2Schema asserts that H2's schema (S3) is byte-equal to S1 with exactly two changes: the
+// ui_tabs row of sqlite_master holds h2UITabs, and h2RevKnown follows the last ui_tabs column of
+// S1 (the next cid). Every other row stays byte-equal. A guard checks that S1 and S3 differ in
+// those two rows only, so a second added column or table fails.
 func (b *b8Life) h2Schema(s1 b8Snapshot) {
 	b.t.Helper()
 	j := func(v any) string { raw, _ := json.Marshal(v); return string(raw) }
 	s3 := b.snapshot("S3")
-	if j(s1.Schema) != j(s3.Schema) {
-		b.t.Errorf("H2's open does not restore the schema of S1:\nS1 %s\nS3 %s", j(s1.Schema), j(s3.Schema))
+	var want []map[string]string
+	var old map[string]string
+	for i, e := range s1.Schema {
+		if e["type"] == "table" && e["name"] == "ui_tabs" {
+			old = e
+			e = maps.Clone(e)
+			e["sql"] = h2UITabs
+		}
+		want = append(want, e)
+		if e["tbl"] == "ui_tabs" && (i+1 == len(s1.Schema) || s1.Schema[i+1]["tbl"] != "ui_tabs") {
+			want = append(want, h2RevKnown)
+		}
 	}
-	b.note("S1 and S3 (after H2's open): the schema is byte-equal: %v", j(s1.Schema) == j(s3.Schema))
+	if j(want) != j(s3.Schema) {
+		b.t.Errorf("H2's schema is not S1 with OLD's ui_tabs rows:\nwant %s\nS3   %s", j(want), j(s3.Schema))
+	}
+	// The guard: the rows of S1 that S3 lacks, and the rows of S3 that S1 lacks.
+	in := func(s []map[string]string) map[string]bool {
+		m := map[string]bool{}
+		for _, e := range s {
+			m[j(e)] = true
+		}
+		return m
+	}
+	a, c := in(s1.Schema), in(s3.Schema)
+	var gone, added []string
+	for k := range a {
+		if !c[k] {
+			gone = append(gone, k)
+		}
+	}
+	for k := range c {
+		if !a[k] {
+			added = append(added, k)
+		}
+	}
+	slices.Sort(added)
+	wantAdded := []string{j(h2RevKnown), j(want[slices.IndexFunc(want, func(e map[string]string) bool { return e["type"] == "table" && e["name"] == "ui_tabs" })])}
+	slices.Sort(wantAdded)
+	if old == nil || !slices.Equal(gone, []string{j(old)}) || !slices.Equal(added, wantAdded) {
+		b.t.Errorf("S1 and S3 differ in other rows than OLD's ui_tabs rows:\nonly in S1 %v\nonly in S3 %v", gone, added)
+	}
+	b.note("S3 (after H2's open) is S1 with OLD's ui_tabs rows: %v; the only differences: %d gone, %d added", j(want) == j(s3.Schema), len(gone), len(added))
 }
 
 func (b *b8Life) state() string {
