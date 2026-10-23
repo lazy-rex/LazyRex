@@ -1032,7 +1032,7 @@ These facts support the thread view (hub lead's thread contract v1.1, points H a
 observations only; the build rules that follow from them are in the thread contract. The probe
 program is `view/testdata/teaprobe`; the lab driver is `view/teaprobe_lab_test.go`
 (`TEAPROBE_LAB=1 go test -run TestTeaProbe` in `view/`). Each step keeps raw captures (text,
-text `--unwrap`, vt) in its lab. Two independent runs passed (claude-52 and codex-29).
+text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-52 and codex-29). The iOS subsection is one user-driven session.
 
 ### Rex on the Mac (observed 2026-10-22, Rex 0.0.1792158932-g88fd41, lab, Bubble Tea v2.1.0, Go 1.27.2, macOS 27.0.1)
 
@@ -1068,8 +1068,30 @@ text `--unwrap`, vt) in its lab. Two independent runs passed (claude-52 and code
   - At program start, Rex answers Bubble Tea's terminal queries with two DECRQM replies
     (`CSI ? 2026 ; 2 $ y`, `CSI ? 2027 ; 2 $ y`) and `CSI ? 1 u` (kitty keyboard flags).
 
-### The iOS app (not observed yet)
+### The iOS app (observed on iOS, 2026-10-22, Rex Dev 0.1.0 (1376) on an iPhone over Tailscale, Rex server 0.0.1792158932-g88fd41 on the Mac, Bubble Tea v2.1.0)
 
-No iOS fact is recorded. The width change by rotation and the bytes of Shift+Enter from the iOS
-soft keyboard need a direct observation on the device. Mac and Linux results do not stand in for
-them.
+One teaprobe pane on the user's real server, in its own session, under a one-time user exception
+(teaprobe built from hub main c6e3ff93). The user worked the phone; the Rex app for the Mac was
+also connected. The pane was captured with `rex block capture` at each change, and the input bytes
+were logged by `teaprobe tea -bytes`. iOS version: not reported.
+
+- Size follows the phone. When the phone opened the pane, the size changed from 80x24 to the
+  phone's 48x41. With the on-screen keyboard shown it was 48x23. In landscape it was 93x41, and
+  93x14 with the keyboard. Back in portrait it was 48x41 again. The program saw each size.
+- Printed lines (`tea.Println`, 100 cells each) soft-wrapped to 3 rows at 48 columns and to 2 rows
+  at 93 columns. After the rotations and the keyboard changes, each of the 33 lines was whole and
+  appeared once, in order.
+- A line printed while the alt screen was on did not stay. The user pressed a (alt on), p, a (alt
+  off). The capture during alt showed the printed line (L34) on the alt screen. After alt off, the
+  primary screen held the 33 earlier lines and not L34. The program's count said 34 prints.
+- Alt on and off after inline output: the 33 earlier lines came back once each (as on the Mac).
+- Input bytes from the on-screen keyboard and its toolbar (read before the parser):
+  - `x`: `78`. Return: `0d` (Bubble Tea: `enter`, code 13).
+  - Esc: `1b 5b 32 37 75` (CSI 27 u, the kitty keyboard form). Bubble Tea parses it as `esc`.
+  - Right arrow: `1b 5b 43` (CSI C). Bubble Tea parses it as `right`.
+  - The on-screen keyboard sent no modified Return; there was no key for Shift+Return.
+  - At program start: the same three answers as on the Mac (`CSI ? 2026 ; 2 $ y`,
+    `CSI ? 2027 ; 2 $ y`, `CSI ? 1 u`).
+- Not tested: a hardware keyboard (none was connected), so Shift+Return and Option+Return from
+  iOS are unknown. The user was asked to scroll with a finger; no capture shows
+  the effect, and the user reported no problem with it in words. Selection and copy were not tested.
