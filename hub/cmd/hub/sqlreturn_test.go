@@ -25,7 +25,7 @@ func newSQLReturnHub(t *testing.T) *sqlReturnHub {
 	h.cfg.State = t.TempDir()
 	h.vs = newViewSvc()
 	h.faults = &faults{}
-	h.agents["a"] = &Agent{ID: "a", delivered: map[string]int64{}}
+	h.idents["a"] = &Agent{ID: "a", delivered: map[string]int64{}}
 	pl := &Plugin{Name: "p", ClientID: "c1", Desired: "running", run: pluginRun{Notice: "n"}}
 	h.plugins = map[string]*Plugin{"p": pl}
 	r := &sqlReturnHub{Hub: h, pl: pl}

@@ -24,9 +24,9 @@ func TestProfileResumeTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := byID["codex"]
-	got := strings.Join(resumeArgv(&spawnRow{Agent: "codex-3"}, p, map[string]string{"model": "sol"}, "conv-1"), " ")
+	got := strings.Join(resumeArgv(&spawnRow{Agent: "spawn:spawn-3"}, p, map[string]string{"model": "sol"}, "conv-1"), " ")
 	// argv[0] goes through LookPath, as for the command.
-	if !strings.HasSuffix(got, "codex --no-daemon -m sol resume conv-1") || !strings.Contains(got, " LAZYREX_AGENT=codex-3 ") {
+	if !strings.HasSuffix(got, "codex --no-daemon -m sol resume conv-1") || strings.Contains(got, "LAZYREX_AGENT") {
 		t.Errorf("argv: %s", got)
 	}
 	// The resume launch keeps the spawn's environment cleanup.

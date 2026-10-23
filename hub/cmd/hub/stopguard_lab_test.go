@@ -22,17 +22,13 @@ func (s *startLab) stopCmd() (int, string, time.Duration) {
 }
 
 // A stop from a process in an agent pane is refused by the admin guard, and the refused stop exits
-// at once with the hub's text. The pane is an agent binding that the hub loads at its start: the
-// process that holds it runs the stop.
+// at once with the hub's text. The pane holds a current identity that the hub loads at its start:
+// the process that holds it runs the stop.
 func TestStopRefusedFromAnAgentPaneLab(t *testing.T) {
 	s := newStartLab(t)
 	var c map[string]any
 	b, _ := os.ReadFile(s.cfg)
 	json.Unmarshal(b, &c)
-	agents, _ := c["agents"].([]any)
-	c["agents"] = append(agents, map[string]any{"id": "guard", "name": "Guard", "status_record": ""})
-	b, _ = json.MarshalIndent(c, "", " ")
-	os.WriteFile(s.cfg, b, 0o600)
 	state, _ := c["state"].(string)
 
 	// The agent process: it waits for go, then runs the real stop and keeps its output.
@@ -45,15 +41,16 @@ func TestStopRefusedFromAnAgentPaneLab(t *testing.T) {
 	}
 	t.Cleanup(func() { agent.Process.Kill(); agent.Wait() })
 
-	// The first start makes the database; the binding goes in before the second start loads it.
+	// The first start makes the database; the identity goes in before the second start loads it.
 	s.start()
 	s.stop()
 	db, err := openDB(filepath.Join(state, "hub.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`INSERT INTO bindings (agent, session_id, block_id, child_pid, child_start) VALUES ('guard', '', 'block:guard-lab', ?, ?)`,
-		agent.Process.Pid, startTime(agent.Process.Pid))
+	pid := agent.Process.Pid
+	_, err = db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:guard-lab', '', ?, ?, 'claude', 'claude:guard');
+		INSERT INTO identities VALUES ('claude:guard', 'claude', 'guard', 'current', 'block:guard-lab', '', 'Guard', 'x', 'x')`, pid, startTime(pid))
 	db.Close()
 	if err != nil {
 		t.Fatal(err)

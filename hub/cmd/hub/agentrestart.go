@@ -135,7 +135,7 @@ func (h *Hub) restartTargets(ctx context.Context, req map[string]any) ([]opTarge
 	var ids []string
 	if a, ok := req["agent"].(string); ok {
 		id := a
-		h.db.QueryRowContext(ctx, `SELECT identity FROM identity_aliases WHERE legacy = ?`, a).Scan(&id)
+		id = h.spawnIdentity(ctx, a)
 		var n int
 		if h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identities WHERE identity = ?`, id).Scan(&n); n == 0 {
 			return nil, bad("unknown: no agent identity %q", a)

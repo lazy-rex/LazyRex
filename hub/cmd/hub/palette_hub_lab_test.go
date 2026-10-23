@@ -41,8 +41,7 @@ func TestHubPaletteLab(t *testing.T) {
 
 	state := filepath.Join(tmp, "state")
 	cfg := filepath.Join(tmp, "hub.json")
-	b, _ := json.Marshal(map[string]any{"server": socket, "state": state, "palette_lua": filepath.Join(lab, "lazyrex_palette.lua"),
-		"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
+	b, _ := json.Marshal(map[string]any{"server": socket, "state": state, "palette_lua": filepath.Join(lab, "lazyrex_palette.lua")})
 	if err := os.WriteFile(cfg, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +121,7 @@ func TestHubPaletteStartFailsLab(t *testing.T) {
 	socket := "unix://" + lab + "/rex.sock"
 	state := filepath.Join(tmp, "state")
 	cfg := filepath.Join(tmp, "hub.json")
-	b, _ := json.Marshal(map[string]any{"server": socket, "state": state, "palette_lua": filepath.Join(lab, "lazyrex_palette.lua"),
-		"agents": []map[string]any{{"id": "user", "name": "User", "status_record": ""}}})
+	b, _ := json.Marshal(map[string]any{"server": socket, "state": state, "palette_lua": filepath.Join(lab, "lazyrex_palette.lua")})
 	if err := os.WriteFile(cfg, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
