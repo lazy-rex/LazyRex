@@ -50,6 +50,7 @@ const (
 	peerCallTimeout = 10 * time.Second
 	peerPollUp      = 2 * time.Second
 	peerPollDown    = 30 * time.Second
+	peerBlockMax    = 5 * time.Minute // the retries of one envelope for a plugin that does not run
 )
 
 // checkPeers checks hub_name and peers: peers need a name for this hub; each peer has a valid,
@@ -93,6 +94,11 @@ type peerLink struct {
 	lastOK  time.Time
 	lastErr string
 	more    bool // the last pull said that the peer holds more
+	// blocked: the envelope blockSeq waits for blockPlugin, which is installed and desired running
+	// but does not run, since blockSince. Only the peer loop writes it; mu guards it for status.
+	blockSeq    int64
+	blockPlugin string
+	blockSince  time.Time
 }
 
 type peerSet struct {
@@ -310,9 +316,12 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 			}
 			l.mu.Lock()
 			row := map[string]any{"name": p.Name, "server": p.Server, "state": l.state, "last_error": l.lastErr, "outbox": outbox,
-				"after": after, "more": l.more, "last_ok": nil, "oldest_age_s": nil}
+				"after": after, "more": l.more, "last_ok": nil, "oldest_age_s": nil, "blocked_plugin": nil, "blocked_since": nil}
 			if !l.lastOK.IsZero() {
 				row["last_ok"] = l.lastOK.UTC().Format(time.RFC3339)
+			}
+			if l.blockSeq > after {
+				row["blocked_plugin"], row["blocked_since"] = l.blockPlugin, l.blockSince.UTC().Format(time.RFC3339)
 			}
 			l.mu.Unlock()
 			if t, err := time.Parse(time.RFC3339Nano, oldest.String); oldest.Valid && err == nil {
@@ -372,23 +381,38 @@ func (h *Hub) peerLoop(ctx context.Context, l *peerLink) {
 	}
 }
 
-// peerPluginClient returns the client of the plugin name and whether a config entry installs it
-// here. A kept record without an entry (the plugin was removed) is not installed.
-func (h *Hub) peerPluginClient(name string) (client string, installed bool) {
+// peerPluginClient returns the client of the plugin name, or "" and wait: true when the plugin is
+// installed here (a config entry binds it) and desired running, but does not run now (starting,
+// restarting, crashing). A plugin that is not installed (no record, or a kept record without an
+// entry) or is desired stopped gives "" and false.
+func (h *Hub) peerPluginClient(name string) (client string, wait bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pl := h.plugins[name]
-	if pl == nil || pl.entry == nil {
+	if pl == nil || pl.entry == nil || pl.Desired == "stopped" {
 		return "", false
 	}
-	return pl.ClientID, true
+	return pl.ClientID, pl.ClientID == ""
+}
+
+// peerBlocked records that envelope seq waits for plugin, and returns false when it has waited
+// peerBlockMax: then the caller skips it.
+func (l *peerLink) peerBlocked(seq int64, plugin string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.blockSeq != seq {
+		l.blockSeq, l.blockPlugin, l.blockSince = seq, plugin, time.Now()
+	}
+	return time.Since(l.blockSince) < peerBlockMax
 }
 
 // peerPull pulls the envelopes that the peer holds for this hub and gives each, in seq order, to the
 // local plugin of the same name. The cursor moves past an envelope only after the plugin answered:
-// accepted, or refused with a result {"refused": code}; an envelope for a plugin that is not
-// installed here is logged and skipped. Any error (the peer call, an installed plugin that does not
-// run, a failed perform) stops the pull, and the envelope comes again.
+// accepted, or refused with a result {"refused": code}. An envelope for a plugin that is not
+// installed here or is desired stopped is logged and skipped; so is one that waited peerBlockMax
+// for a desired-running plugin that does not run. Delivery is in seq order, so a wait blocks every
+// later envelope from that peer. Any other error (the peer call, a failed perform) stops the pull,
+// and the envelope comes again.
 func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) {
 	after, err := h.peerAfter(ctx, l.cfg.Name)
 	if err != nil {
@@ -414,12 +438,14 @@ func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) 
 		if e.Seq <= after {
 			continue // a reply to an older cursor
 		}
-		client, installed := h.peerPluginClient(e.Plugin)
+		client, wait := h.peerPluginClient(e.Plugin)
 		switch {
-		case !installed:
-			log.Printf("peer %s: envelope %d (%s, key %q) skipped: the plugin is not installed here", l.cfg.Name, e.Seq, e.Plugin, e.Key)
-		case client == "":
+		case wait && l.peerBlocked(e.Seq, e.Plugin):
 			return false, fmt.Errorf("envelope %d: the plugin %q does not run here", e.Seq, e.Plugin)
+		case wait:
+			log.Printf("peer %s: envelope %d (%s, key %q) skipped: the plugin did not run for %s", l.cfg.Name, e.Seq, e.Plugin, e.Key, peerBlockMax)
+		case client == "":
+			log.Printf("peer %s: envelope %d (%s, key %q) skipped: the plugin is not installed or is stopped here", l.cfg.Name, e.Seq, e.Plugin, e.Key)
 		default:
 			res, err := h.performPlugin(ctx, client, "peer.receive", map[string]any{"from_hub": l.cfg.Name, "key": e.Key, "body": e.Body}, 10000)
 			if err != nil {

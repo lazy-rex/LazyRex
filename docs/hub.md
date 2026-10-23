@@ -2409,7 +2409,8 @@ Each hub pulls from its peers. A hub never pushes data.
   smaller reply frames ("Reply size"), that smaller limit applies.
 - **Status.** Each peer row has `name`, `server`, `state` (`unknown`, `up`, `down`), `last_ok`,
   `last_error`, `outbox` (envelopes not acked), `oldest_age_s`, `after` (this hub's cursor for that
-  peer) and `more`.
+  peer), `more`, and `blocked_plugin` and `blocked_since` (null unless an envelope waits for a
+  plugin).
 
 ### Delivery
 
@@ -2419,10 +2420,14 @@ The receiver gives each envelope, in `seq` order, to its local plugin with the s
 - The plugin accepts with any result.
 - The plugin refuses with the result `{"refused": "<code>", "message": "..."}`. The hub logs the
   refusal and moves on. A refusal is a result, not an error.
-- A plugin that is not installed on the receiver (not in its config) gets no envelope. The hub
-  logs the envelope and moves on.
-- Any error stops the pull: a failed peer call, an installed plugin that does not run now, a failed
-  or lost `peer.receive`. The envelope comes again on the next pull. A plugin must accept a repeat of a key.
+- A plugin that is not installed on the receiver (not in its config), or is desired stopped, gets
+  no envelope. The hub logs the envelope and moves on.
+- An installed plugin that is desired running but does not run now (starting, restarting,
+  crashing) stops the pull. The hub tries that envelope again for at most 5 minutes, then logs it
+  and moves on. Delivery is in `seq` order, so while it waits, every later envelope from that peer
+  waits too, also for other plugins. `hub.peer.status` shows `blocked_plugin` and `blocked_since`
+  on that peer's row (lead-fed-r2).
+- Any other error stops the pull: a failed peer call, a failed or lost `peer.receive`. The envelope comes again on the next pull. A plugin must accept a repeat of a key.
 - The cursor moves past an envelope only after the plugin answered. The cursor never moves back.
 
 The Messaging plugin uses its message ID as the key. B stores the sender as `<from>@A`. A message to
