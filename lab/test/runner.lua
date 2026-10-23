@@ -53,17 +53,24 @@ local function load_file(path)
   return chunk
 end
 
-local setup_ok, setup_err = pcall(H.setup, A)
+-- The setup decodes the runner's parity_routes first: a malformed value fails the file as a setup
+-- failure, before the hub is asked. setup_out is the routes or the error, because a write to a
+-- captured local can be lost after a caught error (docs/rex-protocol.md, "Rex Lua runtime").
+local setup_ok, setup_out = pcall(function()
+  local routes = A.parity_routes and H.json_decode(A.parity_routes, 'parity_routes') or {}
+  H.setup(A)
+  return routes
+end)
 local chunk, load_err
 if setup_ok then chunk, load_err = load_file(A.file) end
 if not setup_ok or not chunk then
   out('plan 1')
-  out('fail 1 setup # ' .. tostring(setup_ok and load_err or setup_err))
+  out('fail 1 setup # ' .. tostring(setup_ok and load_err or setup_out))
   out('done 0 1')
   return
 end
 env.FIXTURE = A.fixture
-env.PARITY_ROUTES = A.parity_routes and H.json_decode(A.parity_routes, 'parity_routes') or {}
+env.PARITY_ROUTES = setup_out
 env.load_fixture = function(path)
   local f, err = load_file(path)
   if not f then error(err, 2) end
