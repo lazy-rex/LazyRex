@@ -168,13 +168,95 @@ func peerSyncLink(t *testing.T, a, b *Hub) {
 	a.cfg.HubName, a.cfg.Peers = "mac", []PeerConfig{{Name: "linux", Server: "lab-linux"}}
 	b.cfg.HubName, b.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
 	a.peers, b.peers = newPeerSet(a.cfg), newPeerSet(b.cfg)
-	b.peers.call = func(ctx context.Context, _ PeerConfig, action string, args any) ([]byte, error) {
-		raw, _ := json.Marshal(args)
-		res, err := a.dispatch(ctx, perform{Action: action, Args: raw})
-		if err != nil {
-			return nil, err
+	link := func(to *Hub) func(context.Context, PeerConfig, string, any) ([]byte, error) {
+		return func(ctx context.Context, _ PeerConfig, action string, args any) ([]byte, error) {
+			raw, _ := json.Marshal(args)
+			res, err := to.dispatch(ctx, perform{Action: action, Args: raw})
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(res)
 		}
-		return json.Marshal(res)
+	}
+	// a calls b too: a's lock write nudges its peers (hub.peer.nudge what "plugins").
+	a.peers.call, b.peers.call = link(b), link(a)
+}
+
+// hub.peer.nudge what "plugins" kicks the plugin sync of a plugins_from link only; no what kicks the
+// pull; another what is invalid.
+func TestPeerNudgePlugins(t *testing.T) {
+	b := peerHub(t, "linux", "mac", nil)
+	b.cfg.Peers = []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}, {Name: "pi", Server: "lab-pi"}}
+	b.peers = newPeerSet(b.cfg)
+	mac, pi := b.peers.links["mac"], b.peers.links["pi"]
+	if _, err := b.peerNudge(map[string]any{"hub": "mac", "what": "plugins"}); err != nil || len(mac.syncKick) != 1 || len(mac.kick) != 0 {
+		t.Fatalf("plugins: %v, sync kicks %d, pull kicks %d", err, len(mac.syncKick), len(mac.kick))
+	}
+	if _, err := b.peerNudge(map[string]any{"hub": "mac"}); err != nil || len(mac.kick) != 1 {
+		t.Fatalf("no what: %v, pull kicks %d", err, len(mac.kick))
+	}
+	if _, err := b.peerNudge(map[string]any{"hub": "pi", "what": "plugins"}); err != nil || len(pi.syncKick) != 0 || len(pi.kick) != 0 {
+		t.Fatalf("not plugins_from: %v, %d %d", err, len(pi.syncKick), len(pi.kick))
+	}
+	if _, err := b.peerNudge(map[string]any{"hub": "mac", "what": "agents"}); err == nil || !strings.Contains(err.Error(), "what must be") {
+		t.Fatalf("another what: %v", err)
+	}
+}
+
+// A lock write of the plugin manager nudges each peer with what "plugins"; the receiver's plugins
+// loop syncs at once on it, not after its minute.
+func TestLockWriteNudgesPeers(t *testing.T) {
+	r, _ := fetchTestRepo(t)
+	a := fetchTestHub(t, r)
+	a.cfg.HubName, a.cfg.Peers = "mac", []PeerConfig{{Name: "linux", Server: "lab-linux"}}
+	a.peers = newPeerSet(a.cfg)
+	nudged := make(chan map[string]any, 4)
+	a.peers.call = func(_ context.Context, _ PeerConfig, action string, args any) ([]byte, error) {
+		if action == "hub.peer.nudge" {
+			var m map[string]any
+			json.Unmarshal(rawJSON(args), &m)
+			nudged <- m
+		}
+		return []byte(`{}`), nil
+	}
+	add := fetchedAdd(t, a, "nudge-add", "github:acme/notes@v1.0.0")
+	select {
+	case m := <-nudged:
+		t.Fatalf("a nudge before the lock write: %v", m)
+	default:
+	}
+	if err := a.opLock(context.Background(), add); err != nil || add.Phase != "writing" {
+		t.Fatalf("the lock write: %+v %v", add, err)
+	}
+	select {
+	case m := <-nudged:
+		if m["hub"] != "mac" || m["what"] != "plugins" {
+			t.Fatalf("the nudge %v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no nudge after the lock write")
+	}
+
+	// The receiver: its plugins loop syncs at the start, then at once on the nudge.
+	b := peerHub(t, "linux", "mac", nil)
+	b.cfg.Peers = []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	b.peers = newPeerSet(b.cfg)
+	syncs := make(chan struct{}, 4)
+	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
+		syncs <- struct{}{}
+		return nil, errors.New("exit status 1: dial: connection refused")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.peerPluginsLoop(ctx, b.peers.links["mac"])
+	<-syncs // the first sync
+	if _, err := b.peerNudge(map[string]any{"hub": "mac", "what": "plugins"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-syncs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no sync after the nudge")
 	}
 }
 

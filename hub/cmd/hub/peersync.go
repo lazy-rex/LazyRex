@@ -122,7 +122,8 @@ type peerSkip struct {
 	Why    string `json:"why"`
 }
 
-// peerPluginsLoop syncs the plugins of the plugins_from peer: at the start, then every minute.
+// peerPluginsLoop syncs the plugins of the plugins_from peer: at the start, then every minute, and
+// at once after the peer's nudge.
 func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 	for {
 		s, err := h.peerPluginsSync(ctx, l)
@@ -130,6 +131,7 @@ func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-l.syncKick: // the peer's pins changed (hub.peer.nudge what "plugins")
 		case <-time.After(h.peerSyncWait(err)):
 		}
 	}

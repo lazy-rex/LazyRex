@@ -1272,6 +1272,9 @@ func (h *Hub) renameAttempt(ctx context.Context, op *pluginOp, call, path string
 		}
 		log.Printf("plugin op %s: %v (the new file is in place)", op.ID, err)
 	}
+	if strings.HasPrefix(call, "write:lock") {
+		h.peerNudgePlugins() // a pin changed: the peers that sync from this hub sync now
+	}
 	if h.opFault("plugin-op-after-" + fault) {
 		return errOpCrash
 	}

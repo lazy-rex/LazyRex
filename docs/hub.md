@@ -2308,6 +2308,11 @@ Each hub pulls from its peers. A hub never pushes data.
   connect). The error is logged once.
 - After a send, the hub sends `hub.peer.nudge` to the peer. The peer pulls at once. A nudge
   carries no data, so a lost nudge only adds delay.
+- After the plugin manager writes the lock file (a pin changed), the hub sends `hub.peer.nudge
+  {hub, what: "plugins"}` to each peer (lead-nudge). A peer whose `plugins_from` peer is this hub
+  syncs its plugins at once ("Plugin sync"); another peer does nothing. A lost nudge only adds
+  delay: the sync's minute timer stays. Limit: during a deploy window, a peer that runs an older
+  hub refuses `what` (`invalid_input`), and its timer takes the change.
 
 ### Actions
 
@@ -2315,7 +2320,7 @@ Each hub pulls from its peers. A hub never pushes data.
 |---|---|---|---|
 | `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB JSON-encoded), `plugin` (optional: the target plugin on the peer) | `{seq, queued}` |
 | `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after`, `outbox_id` (optional) | `{envelopes: [{seq, plugin, target, key, body, created}], more, outbox_id}` |
-| `hub.peer.nudge` | a peer hub | `hub` | `{}` |
+| `hub.peer.nudge` | a peer hub | `hub`, `what` (optional: `"plugins"` starts the plugin sync; absent: the pull) | `{}` |
 | `hub.peer.plugins` | a peer hub | `hub` | `{pins, managed: [{id, source}]}` ("Plugin sync") |
 | `hub.peer.agents` | a peer hub | `hub` | `{agents: [{id, name, kind, state, joined}]}` ("Peer agents") |
 | `hub.peer.plugin_tree` | a peer hub | `hub`, `source`, `commit`, `digest`, `from` | `{files: [{path, exec, size, sha256}], from, next, count, size}` ("Plugin sync", "Fetch from the peer") |

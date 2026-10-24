@@ -99,13 +99,16 @@ func checkPeers(c Config) error {
 
 // peerLink is the receiver's state of one peer.
 type peerLink struct {
-	cfg     PeerConfig
-	kick    chan struct{}
-	mu      sync.Mutex
-	state   string // unknown, up or down
-	lastOK  time.Time
-	lastErr string
-	more    bool // the last pull said that the peer holds more
+	cfg  PeerConfig
+	kick chan struct{}
+	// syncKick starts the plugin sync at once (hub.peer.nudge what "plugins"); only the plugins
+	// loop of a plugins_from link reads it.
+	syncKick chan struct{}
+	mu       sync.Mutex
+	state    string // unknown, up or down
+	lastOK   time.Time
+	lastErr  string
+	more     bool // the last pull said that the peer holds more
 	// blocked: the envelope blockSeq for blockPlugin was not processed (the plugin does not run, or
 	// it replied with an error) since blockSince. Only the peer loop writes it; mu guards it for
 	// status.
@@ -139,7 +142,7 @@ type peerSet struct {
 func newPeerSet(c Config) *peerSet {
 	s := &peerSet{links: map[string]*peerLink{}}
 	for _, p := range c.Peers {
-		s.links[p.Name] = &peerLink{cfg: p, kick: make(chan struct{}, 1), state: "unknown"}
+		s.links[p.Name] = &peerLink{cfg: p, kick: make(chan struct{}, 1), syncKick: make(chan struct{}, 1), state: "unknown"}
 	}
 	return s
 }
@@ -424,11 +427,34 @@ func (h *Hub) peerNudge(args map[string]any) (any, error) {
 	if l == nil {
 		return nil, refuse("unknown_hub", "%q is not a configured peer", peer)
 	}
+	kick := l.kick
+	switch what, ok := args["what"]; {
+	case !ok:
+	case what == "plugins":
+		// The peer's pins changed: sync now, if this hub takes its plugins from it (lead-nudge).
+		if !l.cfg.PluginsFrom {
+			return map[string]any{}, nil
+		}
+		kick = l.syncKick
+	default:
+		return nil, bad(`invalid: what must be "plugins" or absent`)
+	}
 	select {
-	case l.kick <- struct{}{}:
+	case kick <- struct{}{}:
 	default:
 	}
 	return map[string]any{}, nil
+}
+
+// peerNudgePlugins tells each peer that this hub's pins changed (a lock write), so a peer that
+// takes its plugins from this hub syncs at once. Best effort: the minute timer of the sync stays.
+func (h *Hub) peerNudgePlugins() {
+	if h.peers == nil {
+		return
+	}
+	for _, l := range h.peers.links {
+		go h.peerCall(context.Background(), l.cfg, "hub.peer.nudge", map[string]string{"hub": h.cfg.HubName, "what": "plugins"})
+	}
 }
 
 // peerStatus is hub.peer.status.
