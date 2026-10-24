@@ -148,7 +148,7 @@ test('a Codex-like agent: one Ctrl-C stops it, then it resumes in a new pane', f
   restarted(finished('x-k1', {agent = id}), id, old, sess, 'exited after the exit keys')
   expect(log('k1')).not_to_contain('signal: TERM')
   -- The resumed agent got its first prompt.
-  expect(log('k1')).to_contain('messaging_read')
+  expect(log('k1')).to_contain('LazyRex: this conversation was resumed in a new pane.')
   -- A retry of the key replays the same outcome.
   expect(target(restart({key = 'x-k1', agent = id}), id).stop).to_be('exited after the exit keys')
 end)
@@ -157,6 +157,8 @@ test('a Claude-like agent: two Ctrl-C stop it, no signal', function()
   local id, old, sess = started('claudelike', 'claude', 'k2')
   restarted(finished('x-k2', {agent = id}), id, old, sess, 'exited after the exit keys')
   expect(log('k2')).not_to_contain('signal: TERM')
+  -- Claude reports at its start: the hub writes it no first prompt (harness.go resumePrompt).
+  expect(log('k2')).not_to_contain('resumed in a new pane')
 end)
 
 test('an agent that ignores Ctrl-C gets SIGTERM', function()

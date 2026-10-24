@@ -1,29 +1,46 @@
 -- Agent resume in a new pane (hub.admin.resume; docs/hub.md, "Agent resume"). A fake agent CLI
 -- (../fake-agent.sh) reports its identity at its start (as Claude) or at its first prompt (as Codex).
+-- The kind of the identity decides the hub's first prompt (harness.go resumePrompt): Codex gets the
+-- neutral text, Claude gets none.
 
 local alice = agent('alice')
 local fake = H.args.file:match('^(.*)/tests/[^/]*$') .. '/fake-agent.sh'
 local lab = H.args.lab
+local neutral = 'LazyRex: this conversation was resumed in a new pane.'
 
-local function profile(id, resume_when, delay)
+local function profile(id, resume_when, delay, kind)
+  kind = kind or 'codex'
   return {id = id, name = id, kind = 'agent', cwd = lab,
-    command = {'/bin/sh', fake, 'codex', '${conv}', 'startup', 'start'}, args = {{name = 'conv', required = true}},
-    resume = {'/bin/sh', fake, 'codex', '${conversation_id}', 'resume', resume_when, delay or '0'}}
+    command = {'/bin/sh', fake, kind, '${conv}', 'startup', 'start'}, args = {{name = 'conv', required = true}},
+    resume = {'/bin/sh', fake, kind, '${conversation_id}', 'resume', resume_when, delay or '0'}}
 end
 
 write_profiles({profiles = {profile('codexlike', 'prompt'), profile('claudelike', 'start'),
+    profile('claude', 'start', '0', 'claude'),
     profile('silent', 'never'), profile('late', 'prompt', '4'), profile('foreign', 'foreign'),
     {id = 'noresume', name = 'noresume', kind = 'agent', cwd = lab,
       command = {'/bin/sh', fake, 'codex', '${conv}', 'startup', 'start'}, args = {{name = 'conv', required = true}}}}})
 
--- prompts counts the first prompts that reached the fake agents of a conversation (their input log).
-local function prompts(conv)
+-- lines is the input log of the fake agents of a conversation.
+local function lines(conv)
+  local out = {}
   local f = io.open(lab .. '/fake-' .. conv .. '.log')
-  if not f then return 0 end
-  local n = 0
-  for l in f:lines() do if l:find('messaging_read', 1, true) then n = n + 1 end end
+  if not f then return out end
+  for l in f:lines() do out[#out + 1] = l end
   f:close()
+  return out
+end
+
+-- count counts the log lines of conv with text.
+local function count(conv, text)
+  local n = 0
+  for _, l in ipairs(lines(conv)) do if l:find(text, 1, true) then n = n + 1 end end
   return n
+end
+
+-- prompts counts the first prompts that reached the fake agents of a conversation.
+local function prompts(conv)
+  return count(conv, neutral)
 end
 
 local function identity(id)
@@ -38,10 +55,11 @@ local function write_block(sess, block, data)
   return r
 end
 
--- started spawns a fake agent through hub.spawn and waits until its identity is current.
-local function started(prof, conv)
+-- started spawns a fake agent through hub.spawn and waits until its identity (kind, default codex)
+-- is current.
+local function started(prof, conv, kind)
   local s = alice:hub('hub.spawn', {profile = prof, key = 'spawn-' .. conv, args = {conv = conv}})
-  local id = 'codex:' .. conv
+  local id = (kind or 'codex') .. ':' .. conv
   H.wait('the identity of ' .. conv, function()
     local i = identity(id)
     return i and i.state == 'current' and i.block_id == s.block_id
@@ -97,6 +115,57 @@ test('a Claude-like agent rebinds at its start; the first prompt is not needed',
   local t = target(finished('r-c2', {agent = id}), id)
   expect(t.phase).to_be('rebound')
   expect(identity(id).block_id).to_be(t.block_id)
+end)
+
+test('a Claude agent rebinds at its start and gets no first prompt from the hub', function()
+  local id, old, sess = started('claude', 'c9', 'claude')
+  detached(id, old, sess)
+  local t = target(finished('r-c9', {agent = id}), id)
+  expect(t.phase).to_be('rebound')
+  expect(identity(id).block_id).to_be(t.block_id)
+  rex.sleep(1)
+  expect(prompts('c9')).to_be(0)
+end)
+
+-- notified commits one unread plugin notice for id, as Messaging does for a new message.
+local function notified(id, notice)
+  local r = alice:call('fix.notify', {notices = {notice or {agent = id, pending = true, once = true}}})
+  expect(r.error, 'the notice commit').to_be(nil)
+end
+
+-- at is the index of the first log line of conv with text, or nil.
+local function at(conv, text)
+  for i, l in ipairs(lines(conv)) do if l:find(text, 1, true) then return i end end
+end
+
+-- lead-harness2 item 4: an unread notice of a detached agent wakes it in its new pane, after the
+-- rebind. The hub's own prompt names no plugin.
+for _, c in ipairs({{kind = 'claude', prof = 'claude', conv = 'n1', first = 0}, {kind = 'codex', prof = 'codexlike', conv = 'n2', first = 1}}) do
+  test('a resumed ' .. c.kind .. ' agent with one unread notice gets the plugin notice after the rebind', function()
+    local id, old, sess = started(c.prof, c.conv, c.kind)
+    detached(id, old, sess)
+    notified(id)
+    local t = target(finished('r-' .. c.conv, {agent = id}), id)
+    expect(t.phase).to_be('rebound')
+    H.wait('the plugin notice in the new pane', function() return count(c.conv, 'Fixture notice.') == 1 end, 20)
+    expect(prompts(c.conv)).to_be(c.first)
+    if c.first == 1 then
+      expect(at(c.conv, neutral) < at(c.conv, 'Fixture notice.'), 'the neutral prompt comes first').to_be(true)
+    end
+    rex.sleep(1.5)
+    expect(count(c.conv, 'Fixture notice.'), 'one notice').to_be(1)
+  end)
+end
+
+test('a read notice gives no nudge after the resume (the once rule)', function()
+  local id, old, sess = started('claude', 'n3', 'claude')
+  detached(id, old, sess)
+  notified(id)
+  notified(id, {agent = id, read = true})
+  local t = target(finished('r-n3', {agent = id}), id)
+  expect(t.phase).to_be('rebound')
+  rex.sleep(3)
+  expect(count('n3', 'Fixture notice.')).to_be(0)
 end)
 
 test('refusals: a current agent, no resume template, no agent', function()
