@@ -154,7 +154,11 @@ func TestPeerFetchLab(t *testing.T) {
 	a.setPeer("a", "b", tcp)
 	b.setPeer("b", "a", a.l.server)
 	a.editConfig(func(c map[string]any) { c["test_reply_limit"] = 65536 })
-	b.editConfig(func(c map[string]any) { c["peers"].([]any)[0].(map[string]any)["plugins_from"] = true })
+	// b syncs every 2 s (test_peer_sync_every), not every minute: each step waits for one sync.
+	b.editConfig(func(c map[string]any) {
+		c["peers"].([]any)[0].(map[string]any)["plugins_from"] = true
+		c["test_peer_sync_every"] = 2
+	})
 	a.writeManagedFile(`{"plugins":[{"id":"speer","source":"` + peerFetchSource + `"}]}`)
 	b.writeManagedFile(`{"plugins":[{"id":"speer","source":"` + peerFetchSource + `","fetch":"peer"}]}`)
 	a.start()

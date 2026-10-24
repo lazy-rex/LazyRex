@@ -221,7 +221,8 @@ func (v *labView) action(node, action string, input map[string]any, key string) 
 	return st
 }
 
-// waitLong is wait with the bound d: a plugin sync runs once a minute (peerSyncEvery).
+// waitLong is wait with the bound d: a plugin sync runs once a minute (peerSyncEvery), or every
+// test_peer_sync_every seconds.
 func (s *startLab) waitLong(what string, d time.Duration, ok func() bool) {
 	s.t.Helper()
 	for deadline := time.Now().Add(d); !ok(); time.Sleep(300 * time.Millisecond) {
@@ -321,6 +322,7 @@ func TestOfferConfirmLab(t *testing.T) {
 	a.setConfig("peers", []any{map[string]any{"name": "b", "server": b.l.server}})
 	b.setConfig("hub_name", "b")
 	b.setConfig("peers", []any{map[string]any{"name": "a", "server": a.l.server, "plugins_from": true}})
+	b.setConfig("test_peer_sync_every", 2) // b syncs every 2 s, not every minute
 	b.setConfig("plugins", []any{map[string]any{"source": b.o.home.dir}})
 	a.start()
 	b.start()
