@@ -153,19 +153,52 @@ func TestHubAutostartLab(t *testing.T) {
 		}
 	}
 
-	cycle("lazyrex-hub", startHubPane)
+	restartServer := func(sig syscall.Signal) {
+		t.Helper()
+		os.Remove(logPath)
+		srv.Process.Signal(sig)
+		for deadline := time.Now().Add(10 * time.Second); exec.Command("rex", "-S", socket, "--autostart=false", "--timeout", "1s", "ls").Run() == nil; time.Sleep(100 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the lab server did not stop")
+			}
+		}
+		srv = startLabServer(t, root, lab)
+	}
+	hubPID := func(id string) int {
+		t.Helper()
+		out := must("-C", id, "do", "hub.info")
+		var info struct {
+			PID int `json:"pid"`
+		}
+		if i := strings.Index(out, "{"); i < 0 || json.Unmarshal([]byte(out[i:]), &info) != nil || info.PID <= 0 {
+			t.Fatalf("hub.info: %s", out)
+		}
+		return info.PID
+	}
+	// crash: the server dies while the hub runs, as at a reboot (SIGKILL: the server cleans up
+	// nothing). After the new start, the old hub has ended, and cycle sees one new hub in one pane.
+	crash := func(session, pane string) {
+		t.Helper()
+		waitLog(`started: pane "` + pane + `" in session "` + session + `"`)
+		old := hubPID(waitHub(true))
+		restartServer(syscall.SIGKILL)
+		for deadline := time.Now().Add(20 * time.Second); syscall.Kill(old, 0) == nil; time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the hub (pid %d) of the killed server still runs", old)
+			}
+		}
+		cycle(session, pane)
+		if id := hubClient(); id != "" {
+			t.Fatalf("a hub after the cycle: %s", id)
+		}
+	}
+
+	crash("lazyrex-hub", startHubPane)
 
 	// A server restart, with live's kind of command: a hub without the wrapper.
 	writeBoot(&setupAutostart{argv: []string{bin, "-config", cfg}, session: "lazyrex-live-keep", pane: "lazyrex-dev-process"})
-	os.Remove(logPath)
-	srv.Process.Signal(syscall.SIGTERM)
-	for deadline := time.Now().Add(10 * time.Second); exec.Command("rex", "-S", socket, "--autostart=false", "--timeout", "1s", "ls").Run() == nil; time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the lab server did not stop")
-		}
-	}
-	startLabServer(t, root, lab)
-	cycle("lazyrex-live-keep", "lazyrex-dev-process")
+	restartServer(syscall.SIGTERM)
+	crash("lazyrex-live-keep", "lazyrex-dev-process")
 	if got := panes(startHubPane); len(got) != 0 {
 		t.Fatalf("panes of the old server instance: %v", got)
 	}
