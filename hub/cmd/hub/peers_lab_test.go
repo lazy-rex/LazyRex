@@ -163,3 +163,69 @@ func TestPeerHubsLab(t *testing.T) {
 		t.Fatalf("hub.peer.status through the agent face: %v, %v", st, err)
 	}
 }
+
+// TestPeerOutboxResetLab (lead-fedreset): a's hub.db is replaced while b holds a cursor for a's old
+// outbox. The new a's first envelope has seq 1, at or under b's cursor; b still gets it, because
+// its first pull names the old outbox, so the new a acks nothing and serves from zero. Before the
+// outbox identity, that pull acked the envelope and served nothing: a silent loss.
+func TestPeerOutboxResetLab(t *testing.T) {
+	if os.Getenv("HARNESS_LAB") == "" {
+		t.Skip("lab test: set HARNESS_LAB=1")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp := "http://" + ln.Addr().String()
+	ln.Close()
+	a, b := peerLab(t), peerLab(t, "--extra-listen", tcp, "--allow-anonymous")
+	a.setPeer("a", "b", tcp)
+	b.setPeer("b", "a", a.l.server)
+	a.start()
+	b.start()
+	a.registered("peerfix")
+	b.registered("peerfix")
+	send := func(key, body string) {
+		t.Helper()
+		if out := a.plugin("fix.send", map[string]any{"hub": "b", "key": key, "body": body}); out["error"] != nil {
+			t.Fatalf("send %s: %v (%v)", key, out["error"], out["code"])
+		}
+	}
+	row := func() map[string]any {
+		return b.must("hub.peer.status", map[string]any{})["peers"].([]any)[0].(map[string]any)
+	}
+	send("k1", "before")
+	b.wait("b gets k1", func() bool { return len(b.got()) == 1 })
+	b.wait("b's cursor 1 with a's outbox", func() bool { r := row(); return r["after"] == float64(1) && r["outbox_id"] != "" })
+	old := row()["outbox_id"]
+
+	a.stop()
+	var cfg struct {
+		State string `json:"state"`
+	}
+	raw, _ := os.ReadFile(a.cfg)
+	json.Unmarshal(raw, &cfg)
+	for _, f := range []string{"hub.db", "hub.db-wal", "hub.db-shm"} {
+		if err := os.Rename(filepath.Join(cfg.State, f), filepath.Join(cfg.State, "old-"+f)); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	a.start()
+	a.registered("peerfix")
+	send("k2", "after") // seq 1 of the new outbox
+	// b's pull reaches a with `rex -C lazyrex-hub`, which is ambiguous while Rex keeps the old hub's
+	// lost client (about 61 s, docs/rex-protocol.md "Resume works"); then b's pull succeeds.
+	b.waitLong("b gets k2 from the new outbox", 120*time.Second, func() bool { return len(b.got()) == 2 })
+	if e := b.got()[1].(map[string]any); e["from_hub"] != "a" || e["key"] != "k2" || e["body"] != "after" {
+		t.Fatalf("b got %v", b.got())
+	}
+	b.wait("b's cursor 1 with the new outbox", func() bool {
+		r := row()
+		return r["after"] == float64(1) && r["outbox_id"] != old && r["outbox_id"] != ""
+	})
+	a.wait("a's outbox to b is acked", func() bool {
+		r := a.must("hub.peer.status", map[string]any{})["peers"].([]any)[0].(map[string]any)
+		return r["outbox"] == float64(0)
+	})
+	t.Logf("b's row: %v (old outbox_id %v)", row(), old)
+}

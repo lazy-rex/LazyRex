@@ -2382,7 +2382,7 @@ Each hub pulls from its peers. A hub never pushes data.
 | Action | Caller | Args | Result |
 |---|---|---|---|
 | `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB JSON-encoded) | `{seq, queued}` |
-| `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after` | `{envelopes: [{seq, plugin, key, body, created}], more}` |
+| `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after`, `outbox_id` (optional) | `{envelopes: [{seq, plugin, key, body, created}], more, outbox_id}` |
 | `hub.peer.nudge` | a peer hub | `hub` | `{}` |
 | `hub.peer.plugins` | a peer hub | `hub` | `{pins, managed: [{id, source}]}` ("Plugin sync") |
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
@@ -2406,10 +2406,27 @@ Each hub pulls from its peers. A hub never pushes data.
 - **Pull.** `after = N` acks every envelope up to `N`. The reply has the next envelopes: at most 100,
   and at most 1 MiB encoded (always at least one envelope). If the hub's Rex connection takes
   smaller reply frames ("Reply size"), that smaller limit applies.
+- **Outbox identity** (lead-fedreset). Each `hub.db` has an outbox identity: 32 lowercase hex,
+  made when the database is created (`peer_meta` row `outbox_id`). A new `hub.db` has a new
+  identity, and its `seq` starts again at 1. Every pull reply has `outbox_id`. The receiver saves
+  the identity with its cursor (`peer_inbox`, one write) and names it in the next pull.
+  - The sender applies `after` only when the pull names its own `outbox_id`. A pull with another
+    identity or none acks nothing and is served from `seq` 0. So the first pull after the sender's
+    `hub.db` was replaced cannot ack the new outbox's envelopes with the old, higher cursor.
+  - When a reply has another `outbox_id` than the saved one, the receiver sets its cursor to 0 with
+    the new identity, clears the blocked envelope's retry state (it is keyed by `seq`, which the new
+    outbox reuses), logs "its outbox is new", and delivers the reply's envelopes. The receiver gets
+    every envelope that the new outbox holds; the plugin's dedupe catches a repeat of a key (the
+    SDK keeps its seen rows, docs/plugin-sdk.md "Federation").
+  - A reply without a valid `outbox_id` is an error: nothing is delivered, the cursor does not
+    change, `last_error` has it, and the next pull tries again. Only the pull request may omit it
+    (the first pull, or a receiver whose own `hub.db` is new).
 - **Status.** Each peer row has `name`, `server`, `state` (`unknown`, `up`, `down`), `last_ok`,
-  `last_error`, `outbox` (envelopes not acked), `oldest_age_s`, `after` (this hub's cursor for that
-  peer), `more`, and `blocked_plugin` and `blocked_since` (null unless an envelope waits for a
-  plugin). The `plugins_from` row also has `plugin_sync` ("Plugin sync").
+  `last_error`, `outbox` (envelopes from this hub that the peer has not acked), `oldest_age_s`,
+  `after` (this hub's cursor for that peer), `outbox_id` (the identity of the peer's outbox that the
+  cursor belongs to; `""` before the first pull), `more`, and `blocked_plugin` and `blocked_since`
+  (null unless an envelope waits for a plugin). The `plugins_from` row also has `plugin_sync`
+  ("Plugin sync").
 
 ### Delivery
 
@@ -2433,7 +2450,8 @@ The receiver gives each envelope, in `seq` order, to its local plugin with the s
   peer's row.
 - A failed peer call stops the pull with no bound: nothing was delivered. A plugin must accept a
   repeat of a key.
-- The cursor moves past an envelope only after the plugin answered. The cursor never moves back.
+- The cursor moves past an envelope only after the plugin answered. The cursor never moves back,
+  except to 0 when the peer's outbox identity changes ("Outbox identity").
 
 The Messaging plugin uses its message ID as the key. B stores the sender as `<from>@A`. A message to
 an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.

@@ -25,13 +25,20 @@ import (
 
 // peerSchema is in openDB. peer_outbox keeps a row after its ack (acked 1, body NULL), so a send
 // with the same key keeps its answer: the first seq, or operation_conflict. AUTOINCREMENT never reuses a
-// seq, also after the outbox is empty. peer_inbox is the receiver's cursor for each peer.
+// seq, also after the outbox is empty. peer_meta's outbox_id is the identity of this hub.db's outbox:
+// a new hub.db makes a new one, and its seqs start again at 1. peer_inbox is the receiver's cursor
+// for each peer, with the identity of the peer's outbox that the cursor belongs to.
 const peerSchema = `
 CREATE TABLE IF NOT EXISTS peer_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, plugin TEXT NOT NULL,
   key TEXT NOT NULL, hash TEXT NOT NULL, body TEXT, created TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
   UNIQUE (peer, plugin, key));
-CREATE TABLE IF NOT EXISTS peer_inbox (peer TEXT PRIMARY KEY, after INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS peer_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT OR IGNORE INTO peer_meta (name, value) VALUES ('outbox_id', lower(hex(randomblob(16))));
+CREATE TABLE IF NOT EXISTS peer_inbox (peer TEXT PRIMARY KEY, after INTEGER NOT NULL, outbox_id TEXT NOT NULL DEFAULT '');
 `
+
+// outboxID is the form of an outbox identity: 16 random bytes in lowercase hex.
+var outboxID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // PeerConfig is one entry of the config field "peers".
 type PeerConfig struct {
@@ -248,7 +255,10 @@ func (h *Hub) peerPullBudget() int {
 }
 
 // peerPullServe is hub.peer.pull, called by a peer for its envelopes: after N acks every envelope
-// up to N, then the reply has the next envelopes (at most 100, or peerPullBudget encoded bytes).
+// up to N, then the reply has the next envelopes (at most 100, or peerPullBudget encoded bytes) and
+// this hub's outbox identity (outbox_id). The ack applies only when the caller names this outbox: a
+// cursor of another outbox (this hub's hub.db was replaced) or none acks nothing and reads from
+// zero, so a stale high cursor cannot ack the new outbox's envelopes.
 func (h *Hub) peerPullServe(ctx context.Context, args map[string]any) (any, error) {
 	peer, _ := args["hub"].(string)
 	after, ok := intArg(args["after"])
@@ -258,7 +268,13 @@ func (h *Hub) peerPullServe(ctx context.Context, args map[string]any) (any, erro
 	if !ok || after < 0 {
 		return nil, bad("invalid: after must be a whole number >= 0")
 	}
-	if _, err := h.db.ExecContext(ctx, `UPDATE peer_outbox SET acked = 1, body = NULL WHERE peer = ? AND seq <= ? AND acked = 0`, peer, after); err != nil {
+	id, err := h.peerOutboxID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if outbox, _ := args["outbox_id"].(string); outbox != id {
+		after = 0
+	} else if _, err := h.db.ExecContext(ctx, `UPDATE peer_outbox SET acked = 1, body = NULL WHERE peer = ? AND seq <= ? AND acked = 0`, peer, after); err != nil {
 		return nil, err
 	}
 	rows, err := h.db.QueryContext(ctx, `SELECT seq, plugin, key, body, created FROM peer_outbox WHERE peer = ? AND seq > ? AND acked = 0 ORDER BY seq LIMIT ?`,
@@ -285,7 +301,14 @@ func (h *Hub) peerPullServe(ctx context.Context, args map[string]any) (any, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return map[string]any{"envelopes": envs, "more": more}, nil
+	return map[string]any{"envelopes": envs, "more": more, "outbox_id": id}, nil
+}
+
+// peerOutboxID is this hub's outbox identity (peerSchema).
+func (h *Hub) peerOutboxID(ctx context.Context) (string, error) {
+	var id string
+	err := h.db.QueryRowContext(ctx, `SELECT value FROM peer_meta WHERE name = 'outbox_id'`).Scan(&id)
+	return id, err
 }
 
 // peerNudge is hub.peer.nudge: pull from that peer now. It carries no data.
@@ -313,13 +336,13 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 			if err := h.db.QueryRowContext(ctx, `SELECT count(*), min(created) FROM peer_outbox WHERE peer = ? AND acked = 0`, p.Name).Scan(&outbox, &oldest); err != nil {
 				return nil, err
 			}
-			after, err := h.peerAfter(ctx, p.Name)
+			after, outboxID, err := h.peerCursor(ctx, p.Name)
 			if err != nil {
 				return nil, err
 			}
 			l.mu.Lock()
 			row := map[string]any{"name": p.Name, "server": p.Server, "state": l.state, "last_error": l.lastErr, "outbox": outbox,
-				"after": after, "more": l.more, "last_ok": nil, "oldest_age_s": nil, "blocked_plugin": nil, "blocked_since": nil}
+				"after": after, "outbox_id": outboxID, "more": l.more, "last_ok": nil, "oldest_age_s": nil, "blocked_plugin": nil, "blocked_since": nil}
 			if !l.lastOK.IsZero() {
 				row["last_ok"] = l.lastOK.UTC().Format(time.RFC3339)
 			}
@@ -345,12 +368,18 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 }
 
 func (h *Hub) peerAfter(ctx context.Context, peer string) (int64, error) {
-	var after int64
-	err := h.db.QueryRowContext(ctx, `SELECT after FROM peer_inbox WHERE peer = ?`, peer).Scan(&after)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
+	after, _, err := h.peerCursor(ctx, peer)
 	return after, err
+}
+
+// peerCursor is this hub's cursor for a peer and the identity of the peer's outbox that it belongs
+// to ("" before the first pull).
+func (h *Hub) peerCursor(ctx context.Context, peer string) (after int64, outbox string, err error) {
+	err = h.db.QueryRowContext(ctx, `SELECT after, outbox_id FROM peer_inbox WHERE peer = ?`, peer).Scan(&after, &outbox)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", nil
+	}
+	return after, outbox, err
 }
 
 // peersRun runs one pull loop for each peer. One loop per peer: one pull at a time, also for nudges.
@@ -457,13 +486,15 @@ func (l *peerLink) peerBlocked(seq int64, plugin string) bool {
 // processed (peerReceive's error: the plugin does not run, an error reply, a lost reply) stops the
 // pull and comes again, for at most peerBlockMax per hub process; then it is logged and skipped.
 // Delivery is in seq order, so a retry blocks every later envelope from that peer. A failed peer
-// call stops the pull with no bound: nothing was delivered.
+// call stops the pull with no bound: nothing was delivered. A reply with another outbox identity
+// (the peer's hub.db is new, so its seqs start again) resets the cursor to 0 and clears the block
+// state, whose timer is keyed by seq; a reply without a valid identity is an error.
 func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) {
-	after, err := h.peerAfter(ctx, l.cfg.Name)
+	after, outbox, err := h.peerCursor(ctx, l.cfg.Name)
 	if err != nil {
 		return false, err
 	}
-	out, err := h.peerCall(ctx, l.cfg, "hub.peer.pull", map[string]any{"hub": h.cfg.HubName, "after": after})
+	out, err := h.peerCall(ctx, l.cfg, "hub.peer.pull", map[string]any{"hub": h.cfg.HubName, "after": after, "outbox_id": outbox})
 	if err != nil {
 		return false, err
 	}
@@ -474,10 +505,28 @@ func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) 
 			Key    string `json:"key"`
 			Body   string `json:"body"`
 		} `json:"envelopes"`
-		More bool `json:"more"`
+		More   bool   `json:"more"`
+		Outbox string `json:"outbox_id"`
 	}
 	if err := json.Unmarshal(out, &r); err != nil {
 		return false, fmt.Errorf("hub.peer.pull on %s: the reply is not JSON: %v", l.cfg.Name, err)
+	}
+	if !outboxID.MatchString(r.Outbox) {
+		return false, fmt.Errorf("hub.peer.pull on %s: the reply has no valid outbox identity (%q)", l.cfg.Name, r.Outbox)
+	}
+	if r.Outbox != outbox {
+		// The identity and the cursor are saved in one write. The sender served this reply from zero.
+		if _, err := h.db.ExecContext(ctx, `INSERT INTO peer_inbox (peer, after, outbox_id) VALUES (?, 0, ?)
+			ON CONFLICT (peer) DO UPDATE SET after = 0, outbox_id = excluded.outbox_id`, l.cfg.Name, r.Outbox); err != nil {
+			return false, err
+		}
+		if outbox != "" {
+			log.Printf("peer %s: its outbox is new (outbox_id %s -> %s); cursor reset to 0", l.cfg.Name, outbox, r.Outbox)
+		}
+		l.mu.Lock()
+		l.blockSeq, l.blockPlugin, l.blockSince = 0, "", time.Time{}
+		l.mu.Unlock()
+		after = 0
 	}
 	for _, e := range r.Envelopes {
 		if e.Seq <= after {

@@ -66,6 +66,19 @@ func peerSendAs(h *Hub, client, peer, key, body string) (map[string]any, error) 
 	return m, err
 }
 
+// testOutboxID is the outbox identity of a fake peer's pull replies.
+const testOutboxID = "0123456789abcdef0123456789abcdef"
+
+// ownOutbox is h's outbox identity, which a pull names to ack.
+func ownOutbox(t *testing.T, h *Hub) string {
+	t.Helper()
+	id, err := h.peerOutboxID(context.Background())
+	if err != nil || !outboxID.MatchString(id) {
+		t.Fatalf("outbox_id %q: %v", id, err)
+	}
+	return id
+}
+
 func errCode(err error) string {
 	var se *storeError
 	if errors.As(err, &se) {
@@ -209,10 +222,10 @@ func TestPeerCursorNeverBack(t *testing.T) {
 	var n atomic.Int32
 	b := peerHub(t, "b", "a", func(map[string]any) (any, string) { n.Add(1); return map[string]any{}, "" })
 	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
-		return []byte(`{"envelopes":[{"seq":2,"plugin":"messaging","key":"k2","body":"x"},{"seq":5,"plugin":"messaging","key":"k5","body":"y"}],"more":false}`), nil
+		return []byte(`{"envelopes":[{"seq":2,"plugin":"messaging","key":"k2","body":"x"},{"seq":5,"plugin":"messaging","key":"k5","body":"y"}],"more":false,"outbox_id":"` + testOutboxID + `"}`), nil
 	}
 	ctx := context.Background()
-	if _, err := b.db.Exec(`INSERT INTO peer_inbox (peer, after) VALUES ('a', 3)`); err != nil {
+	if _, err := b.db.Exec(`INSERT INTO peer_inbox (peer, after, outbox_id) VALUES ('a', 3, ?)`, testOutboxID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.peerPull(ctx, b.peers.links["a"]); err != nil {
@@ -229,9 +242,9 @@ func TestPeerCursorNeverBack(t *testing.T) {
 		if calls.Add(1) == 1 { // the old pull
 			close(old)
 			<-release
-			return []byte(`{"envelopes":[{"seq":6,"plugin":"messaging","key":"k6","body":"x"}],"more":false}`), nil
+			return []byte(`{"envelopes":[{"seq":6,"plugin":"messaging","key":"k6","body":"x"}],"more":false,"outbox_id":"` + testOutboxID + `"}`), nil
 		}
-		return []byte(`{"envelopes":[{"seq":6,"plugin":"messaging","key":"k6","body":"x"},{"seq":7,"plugin":"messaging","key":"k7","body":"y"}],"more":false}`), nil
+		return []byte(`{"envelopes":[{"seq":6,"plugin":"messaging","key":"k6","body":"x"},{"seq":7,"plugin":"messaging","key":"k7","body":"y"}],"more":false,"outbox_id":"` + testOutboxID + `"}`), nil
 	}
 	done := make(chan error)
 	go func() { _, err := b.peerPull(ctx, b.peers.links["a"]); done <- err }()
@@ -253,7 +266,7 @@ func TestPeerCursorNeverBack(t *testing.T) {
 func TestPeerPullLimits(t *testing.T) {
 	a := peerHub(t, "a", "b", nil)
 	pull := func(after int) ([]any, bool) {
-		res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(after)})
+		res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(after), "outbox_id": ownOutbox(t, a)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -281,7 +294,7 @@ func TestPeerPullLimits(t *testing.T) {
 	}
 	after, got := 101, 0
 	for {
-		res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(after)})
+		res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(after), "outbox_id": ownOutbox(t, a)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -622,5 +635,174 @@ func TestPeerStatusAgentFace(t *testing.T) {
 	st := res.(map[string]any)
 	if st["hub_name"] != "a" || len(st["peers"].([]any)) != 1 {
 		t.Fatalf("hub.peer.status through the agent face: %v", st)
+	}
+}
+
+// replaceSender is a new hub a on a fresh hub.db (its outbox seqs start again at 1), linked to b in
+// place of the old a.
+func replaceSender(t *testing.T, b *Hub) *Hub {
+	t.Helper()
+	a := peerHub(t, "a", "b", nil)
+	linkHubs(a, b, func() bool { return false })
+	return a
+}
+
+// TestPeerOutboxReset (lead-fedreset): b took 3 envelopes from a (cursor 3); then a's hub.db is
+// replaced and the new a queues 2 envelopes, seq 1 and 2. b's first pull still names the old outbox
+// and cursor 3: the new a acks nothing (both bodies stay), serves from zero, and b resets its cursor
+// to 0 with the new identity and delivers both. The next pull acks them. Before the identity, that
+// first pull acked seq 1 and 2 and served nothing: a silent loss.
+func TestPeerOutboxReset(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	a := peerHub(t, "a", "b", nil)
+	b := peerHub(t, "b", "a", func(args map[string]any) (any, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, args["key"].(string))
+		return map[string]any{}, ""
+	})
+	linkHubs(a, b, func() bool { return false })
+	ctx, l := context.Background(), b.peers.links["a"]
+	for _, k := range []string{"o1", "o2", "o3"} {
+		if _, err := peerSendAs(a, "c-a", "b", k, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	old := ownOutbox(t, a)
+	if after, id, _ := b.peerCursor(ctx, "a"); after != 3 || id != old {
+		t.Fatalf("cursor %d of outbox %q, want 3 of %q", after, id, old)
+	}
+	a2 := replaceSender(t, b)
+	if ownOutbox(t, a2) == old {
+		t.Fatal("a new hub.db has the old outbox identity")
+	}
+	for _, k := range []string{"n1", "n2"} {
+		if _, err := peerSendAs(a2, "c-a", "b", k, "y"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	var bodies int
+	if err := a2.db.QueryRow(`SELECT count(*) FROM peer_outbox WHERE peer = 'b' AND acked = 0 AND body IS NOT NULL`).Scan(&bodies); err != nil {
+		t.Fatal(err)
+	}
+	if bodies != 2 {
+		t.Fatalf("the stale first pull acked the new outbox: %d of 2 bodies left", bodies)
+	}
+	if after, id, _ := b.peerCursor(ctx, "a"); after != 2 || id != ownOutbox(t, a2) || strings.Join(got, ",") != "o1,o2,o3,n1,n2" {
+		t.Fatalf("cursor %d of outbox %q, delivered %v; want 2 of the new outbox and n1, n2", after, id, got)
+	}
+	st, _ := b.peerStatus(ctx)
+	if row := st.(map[string]any)["peers"].([]any)[0].(map[string]any); row["outbox_id"] != ownOutbox(t, a2) || row["after"] != int64(2) {
+		t.Fatalf("hub.peer.status row: %v", row)
+	}
+	if _, err := b.peerPull(ctx, l); err != nil || outboxOpen(t, a2, "b") != 0 || len(got) != 5 {
+		t.Fatalf("the ack pull: %v, %d open, %d delivered", err, outboxOpen(t, a2, "b"), len(got))
+	}
+}
+
+// TestPeerPullAckNeedsOutbox: a pull acks only when it names this hub's outbox; without it, or with
+// another identity, it acks nothing and serves from zero.
+func TestPeerPullAckNeedsOutbox(t *testing.T) {
+	a := peerHub(t, "a", "b", nil)
+	for _, k := range []string{"k1", "k2"} {
+		if _, err := peerSendAs(a, "c-a", "b", k, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []any{nil, "", testOutboxID} {
+		args := map[string]any{"hub": "b", "after": float64(2)}
+		if id != nil {
+			args["outbox_id"] = id
+		}
+		res, err := a.peerPullServe(context.Background(), args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := res.(map[string]any)
+		if n := len(m["envelopes"].([]any)); n != 2 || outboxOpen(t, a, "b") != 2 || m["outbox_id"] != ownOutbox(t, a) {
+			t.Fatalf("outbox_id %v: %d served, %d open, reply id %v; want 2, 2 and %s", id, n, outboxOpen(t, a, "b"), m["outbox_id"], ownOutbox(t, a))
+		}
+	}
+	if _, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(2), "outbox_id": ownOutbox(t, a)}); err != nil || outboxOpen(t, a, "b") != 0 {
+		t.Fatalf("with its own identity: %v, %d open", err, outboxOpen(t, a, "b"))
+	}
+}
+
+// TestPeerOutboxResetClearsBlock (lead-fedreset4 item 1): the retry bound of a blocked envelope is
+// keyed by seq. After a reset, the new outbox's envelope with the same seq and one transient error
+// is retried, not skipped by the old, expired bound.
+func TestPeerOutboxResetClearsBlock(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	fail := map[string]bool{"old": true, "new": true}
+	a := peerHub(t, "a", "b", nil)
+	b := peerHub(t, "b", "a", func(args map[string]any) (any, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		key := args["key"].(string)
+		got = append(got, key)
+		if fail[key] {
+			if key == "new" {
+				fail[key] = false // one transient error
+			}
+			return nil, "failed"
+		}
+		return map[string]any{}, ""
+	})
+	linkHubs(a, b, func() bool { return false })
+	ctx, l := context.Background(), b.peers.links["a"]
+	if _, err := peerSendAs(a, "c-a", "b", "old", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.peerPull(ctx, l); err == nil {
+		t.Fatal("the old envelope's error reply did not stop the pull")
+	}
+	l.mu.Lock()
+	l.blockSince = l.blockSince.Add(-peerBlockMax) // seq 1's bound ran out
+	l.mu.Unlock()
+	a2 := replaceSender(t, b)
+	if _, err := peerSendAs(a2, "c-a", "b", "new", "y"); err != nil { // seq 1 again
+		t.Fatal(err)
+	}
+	if _, err := b.peerPull(ctx, l); err == nil || !strings.Contains(err.Error(), "envelope 1") {
+		t.Fatalf("the new seq 1's first error: %v; want a retry (envelope 1)", err)
+	}
+	if after, _ := b.peerAfter(ctx, "a"); after != 0 {
+		t.Fatalf("cursor %d after the new envelope's error, want 0", after)
+	}
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := b.peerAfter(ctx, "a"); after != 1 || strings.Join(got, ",") != "old,new,new" {
+		t.Fatalf("cursor %d, delivered %v; want 1 and old,new,new", after, got)
+	}
+}
+
+// TestPeerPullReplyNeedsOutbox (lead-fedreset4 item 2): a reply without a valid outbox identity is
+// an error: no delivery, and the cursor and its identity do not change.
+func TestPeerPullReplyNeedsOutbox(t *testing.T) {
+	var n atomic.Int32
+	b := peerHub(t, "b", "a", func(map[string]any) (any, string) { n.Add(1); return map[string]any{}, "" })
+	ctx := context.Background()
+	if _, err := b.db.Exec(`INSERT INTO peer_inbox (peer, after, outbox_id) VALUES ('a', 3, ?)`, testOutboxID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{``, `,"outbox_id":""`, `,"outbox_id":"ABC"`, `,"outbox_id":"0123456789ABCDEF0123456789ABCDEF"`} {
+		b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
+			return []byte(`{"envelopes":[{"seq":4,"plugin":"messaging","key":"k4","body":"x"}],"more":false` + id + `}`), nil
+		}
+		if _, err := b.peerPull(ctx, b.peers.links["a"]); err == nil || !strings.Contains(err.Error(), "no valid outbox identity") {
+			t.Fatalf("reply %q: %v", id, err)
+		}
+		if after, got, _ := b.peerCursor(ctx, "a"); after != 3 || got != testOutboxID || n.Load() != 0 {
+			t.Fatalf("reply %q: cursor %d of %q, %d deliveries", id, after, got, n.Load())
+		}
 	}
 }

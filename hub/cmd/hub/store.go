@@ -50,6 +50,7 @@ func openDB(path string) (*DB, error) {
 		`ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 1`,         // the agent read since the last revision
 		`ALTER TABLE plugins ADD COLUMN entry_identity TEXT NOT NULL DEFAULT ''`, // entryIdentity of the entry that the record was last saved with; '' = unknown
 		`ALTER TABLE plugins ADD COLUMN selected_run TEXT NOT NULL DEFAULT ''`,   // Plugin.selected as JSON; '' = none (selectedrun.go)
+		`ALTER TABLE peer_inbox ADD COLUMN outbox_id TEXT NOT NULL DEFAULT ''`,   // the identity of the peer's outbox that the cursor belongs to (peers.go)
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return nil, err
