@@ -1,29 +1,44 @@
 #!/bin/sh
 # Hot reload for spike 3. Runs the hub, watches the sources, and reloads what changed:
-#   plugins/<dir>/*.lua -> hub.admin.stop + hub.admin.start <manifest name> (views render again)
-#   view/*.go           -> build, install the renderer atomically, hub.ui.reload for each plugin
+#   a local plugin dir  -> hub.admin.stop + hub.admin.start <manifest name> (views render again)
+#   view/*.go           -> build, install the renderer atomically, one hub.ui.reload {all: true}
 #   hub/**/*.go         -> build, restart the hub (renderers and plugins reattach)
 # Usage: dev.sh <hub config>. The config names the server, state dir, view path and plugins.
 # Lab by default: without DEV_REAL=1 the hub refuses the real server.
 # DEV_REAL=1 passes -real-server (approved by the maintainer, 2026-10-16, for the official hub only).
 # The hub then checks that the config names the real server and refuses lab faults.
 # It polls once a second (no dependency on fswatch). It stops only the hub process it started.
+# It parses no JSON: `lazyrex-hub config` reads the config with the hub's own code (docs/hub.md,
+# "Config records"), so dev.sh and the hub use the same server, state, view and plugins.
 set -u
 CFG=${1:?hub config}
+case $CFG in /*) ;; *) CFG=$PWD/$CFG ;; esac
 DIR=$(cd "$(dirname "$0")" && pwd)
 REX_BIN=${REX_BIN:-$(/usr/bin/which rex)}
-field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$CFG" "$1"; }
-SERVER=$(field server); STATE=$(field state); VIEW=$(field view)
+TAB=$(printf '\t')
+BOOT=$(mktemp -d) || exit 1
+(cd "$DIR/hub" && go build -o "$BOOT/hub" ./cmd/hub) || { rm -rf "$BOOT"; echo "dev: hub build failed" >&2; exit 1; }
+"$BOOT/hub" config "$CFG" > "$BOOT/records" || { rm -rf "$BOOT"; exit 1; }
+SERVER= STATE= VIEW= PLUGINS= # PLUGINS: one "<name><TAB><dir>" line for each local plugin
+while IFS=$TAB read -r key a b; do
+  case $key in
+    server) SERVER=$a ;;
+    state) STATE=$a ;;
+    view) VIEW=$a ;;
+    plugin) PLUGINS="$PLUGINS$a$TAB$b
+" ;;
+  esac
+done < "$BOOT/records"
+rm -rf "$BOOT"
+[ -n "$SERVER" ] && [ -n "$STATE" ] && [ -n "$VIEW" ] || { echo "dev: $CFG: server, state and view are required" >&2; exit 1; }
 DEV=$STATE/dev; mkdir -p "$DEV"
 L() { env -u REX_SESSION -u REX_BLOCK "$REX_BIN" -S "$SERVER" --autostart=false "$@"; }
 log() { echo "dev: $(date +%H:%M:%S) $*"; }
 
 hub_id() { grep -o '"client_id":"client:[^"]*","event":"hub_started"' "$STATE/events.jsonl" | tail -1 | cut -d'"' -f4; }
 hub_do() { L -C "$(hub_id)" do "$@"; }
-# The manifests own the plugin names (docs/plugin-sources.md). plugin_names asks the running hub;
-# manifest_name reads the manifest of a plugin directory under plugins/.
-plugin_names() { hub_do hub.plugins --json 2>/dev/null | python3 -c "import json,sys; print(' '.join(p['plugin'] for p in json.load(sys.stdin).get('plugins', [])))"; }
-manifest_name() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$1/lazyrex.json"; }
+# newer lists the source files under its arguments that changed since the last pass.
+newer() { find "$@" -newer "$MARK" -type f \( -name '*.lua' -o -name '*.go' -o -name go.mod \) 2>/dev/null; }
 
 HUB_PID=
 start_hub() {
@@ -46,7 +61,7 @@ build_view() {
 }
 install_view() {
   build_view || return 1
-  for p in $(plugin_names); do log "reload $p: $(hub_do hub.ui.reload --args "{\"plugin\":\"$p\"}" 2>&1)"; done
+  log "reload: $(hub_do hub.ui.reload --args '{"all":true}' 2>&1)"
 }
 restart_plugin() {
   log "restart plugin $1"
@@ -59,12 +74,13 @@ build_view && start_hub || exit 1
 while :; do
   /bin/sleep 1
   NEXT=$DEV/mark.next; touch "$NEXT"
-  changed=$(find "$DIR/plugins" "$DIR/view" "$DIR/hub" -newer "$MARK" -type f \( -name '*.lua' -o -name '*.go' -o -name go.mod \) 2>/dev/null)
+  # The manifests own the plugin names (docs/plugin-sources.md); the config records carry them.
+  changed=$(newer "$DIR/view" "$DIR/hub"; printf '%s' "$PLUGINS" | while IFS=$TAB read -r _ d; do newer "$d"; done)
   mv "$NEXT" "$MARK"
   [ -z "$changed" ] && continue
   case $changed in *"$DIR/hub/"*) start_hub ;; esac
   case $changed in *"$DIR/view/"*) install_view ;; esac
-  for d in "$DIR"/plugins/*/; do
-    case $changed in *"$d"*) restart_plugin "$(manifest_name "$d")" ;; esac
+  printf '%s' "$PLUGINS" | while IFS=$TAB read -r name d; do
+    case $changed in *"$d/"*) restart_plugin "$name" ;; esac
   done
 done

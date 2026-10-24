@@ -503,10 +503,10 @@ View services (`hub/cmd/hub/viewsvc.go`: snapshots, subscribe, durable operation
 - A transient render failure keeps the current tree (Loading on a fresh attach), and `plugin_registered` renders the plugin's views again. Only a definite plugin error renders Error.
 - The hub sets its `lazyrex-hub` label after `client.keymap`, so a renderer woken by the label does not get `not_supported` from `hub.view.attach`.
 
-Hot reload: run `./dev.sh <hub config>`. It runs the hub and polls the sources once a second.
+Hot reload: run `./dev.sh <hub config>`. It runs the hub and polls the sources once a second. It reads the config through `lazyrex-hub config` (see "Config records"), so it parses no JSON and uses the hub's state path.
 
-- `plugins/<name>.lua` changed: `hub.admin.stop` and `hub.admin.start`. Plugin registration renders the open views again.
-- `view/*.go` changed: `go build`, then `mv` over the configured renderer path, then `hub.ui.reload`. The hub sends `view.reload {view_id, attachment}` to each attached renderer. The renderer saves its drafts, waits for open operations, exits Bubble Tea, and calls `exec` on its startup path: same PID, same pane, new attach. The renderer refuses to reload with a draft conflict, a dirty form or removed controls with text, and says why. An old renderer without `view.reload` answers `not_supported` and keeps running.
+- A file in a local plugin directory of the config changed: `hub.admin.stop` and `hub.admin.start` with the manifest's name. Plugin registration renders the open views again.
+- `view/*.go` changed: `go build`, then `mv` over the configured renderer path, then one `hub.ui.reload {all: true}`. The hub sends `view.reload {view_id, attachment}` to each attached renderer. The renderer saves its drafts, waits for open operations, exits Bubble Tea, and calls `exec` on its startup path: same PID, same pane, new attach. The renderer refuses to reload with a draft conflict, a dirty form or removed controls with text, and says why. An old renderer without `view.reload` answers `not_supported` and keeps running.
 - `hub/**/*.go` changed: build, then restart the hub. Renderers and plugins attach again.
 - `hub.ui.reload` takes `{plugin}` (the renderers of one plugin) or `{all: true}` (the renderers of every plugin), not both and not neither (`invalid_input`). It reloads each open, attached view once, opens again the tabs that crashed too often, and returns `{status: "accepted", views: n}`. `all` reaches other plugins' views, so it has the admin guard of the operator actions: a call from an agent or plugin pane, or during a relaunch, is refused.
 - Rex has no action that restarts a pane's process (Rex 1203 API reference), so `exec` is the renderer's job.
