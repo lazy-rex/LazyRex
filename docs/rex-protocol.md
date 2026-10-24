@@ -267,7 +267,7 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
 
 - `rex do script.lua` runs gopher-lua (`_VERSION` "Lua 5.1") in the CLI process, as a Rex control client.
 - Available on Rex 0.0.1792088193-g7a93ec (lab): `io` (including `io.open`, `io.popen`), `os` (including `os.execute`, `os.getenv`), `require`, `package`, `load`, `loadstring`, `coroutine`, `debug`, and the gopher-lua `channel` global. On 0.0.1792158932-g88fd41, `io.popen` and `os.execute` raise (see "A script can replace the Rex API functions" below).
-- Missing: sockets, JSON, SQLite, `utf8`. Correction (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-19): `rex.json.encode` and `rex.json.decode` exist (Rex docs, "rex.json"). `rex.json.encode({a = "x\0\""})` gave `{"a":"x\u0000\""}`, and an empty table encodes as `{}`. `rex.json` has no other members (only `encode` and `decode`), and `rex.json.decode('[]')` gives a table with no metatable that encodes as `{}` again. So a `rex do` script cannot send an empty JSON array (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-19). The test harness sends one through its Go test agent (`call_raw`, docs/testing.md). A pure-Lua JSON library can be loaded with `require`. SQLite would need the `sqlite3` CLI through `io.popen`.
+- Missing: sockets, SQLite, `utf8`. `rex.json.encode` and `rex.json.decode` exist (observed on Rex 0.0.1792158932-g88fd41, lab) (Rex docs, "rex.json"). `rex.json.encode({a = "x\0\""})` gave `{"a":"x\u0000\""}`, and an empty table encodes as `{}`. `rex.json` has no other members (only `encode` and `decode`), and `rex.json.decode('[]')` gives a table with no metatable that encodes as `{}` again. So a `rex do` script cannot send an empty JSON array (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-19). The test harness sends one through its Go test agent (`call_raw`, docs/testing.md). A pure-Lua JSON library can be loaded with `require`. SQLite would need the `sqlite3` CLI through `io.popen`.
 - **Long argument lists and `table.concat` fail with "registry overflow"** (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-22, `rex do` scripts). The first report: Messaging, a 49 KB BLOB in a `db.query` row. Each value is the last count that passed at the top level of a script; the next count failed:
   - `table.concat(t)` of one-character items: 2559 (2560 failed). A separator does not change it (8000 items with `,` failed). `table.concat(t, sep, i, j)` of a range under the limit passes.
   - A call `f(unpack(t))`: 2583 arguments.
@@ -323,7 +323,6 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
 - **A `rex do` script sends at most 64 KiB in one control message** (observed on Rex 1203, `0.0.1792158932-g88fd41`, lab, 2026-10-18 and 2026-10-19). The CLI reports `control message too large: encoded request is 65541 bytes, limit is 65536`. This matches the Control v1 reference (`max_message_bytes: 65536`, for the whole decompressed envelope). It covers the script's requests (for example `hub.sql.exec`) and its `client.reply`. A `client.reply` that is too large never arrives: the caller sees only a timeout (a plugin reply with two 50 000-byte records: no answer within 10 s, 2026-10-19). A request that is too large fails at once (66 228 bytes, 2026-10-19). Effects in LazyRex:
   - A view tree from a Lua plugin must stay well under 64 KiB. Before 2026-10-18 the messaging plugin sent up to 200 messages. A thread whose newest 200 messages were larger than about 64 KiB did not render (the hub kept the old tree). Five live threads were 52 to 473 KB.
   - The messaging plugin now sends the newest messages within a 40 KB estimate, minus the draft. The renderer in thread mode gets older pages through `hub.view.history` (each page within 40 KB; view/README.md, "The history fetch").
-  - Correction (2026-10-19): an earlier line here said that `hub.store.get` replies are limited too, so the plugin read message records 8 at a time. That was an inference. The next item has the measurement.
   - A send to a group writes every member's mailbox in one batch. In the lab, Team sends failed after 287 messages: four mailboxes of 13 KB and the thread record passed 64 KiB. Live mailboxes stay small while agents read their mail. Not fixed (roadmap, Known defects).
 - **A `rex do` script receives more than 64 KiB in one reply** (observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-19, the harness fixture plugin; probe `lab/probes/plugin-message-limits.lua`, deleted with hub.store on 2026-10-23). The plugin called `hub.store.get` (since removed) through `client.perform` and measured the result with `rex.json.encode` (`lua_bytes`):
   - Two records of each content class arrived in full, with Go-encoded text of 65 592 to 65 600 and 99 996 to 100 000 bytes: ASCII, `<`, U+2028, `é`, U+0001, and `"\`. `lua_bytes` was 65 679 to 65 689 and 100 084 to 100 089.
@@ -335,10 +334,9 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
   - The hub's reply guard (`hub/cmd/hub/replyguard.go`) keeps every reply frame at or below `max_message_bytes` minus 1 KiB (1 047 552 bytes). Over that, the hub sends `reply_too_large` with the attempted size.
 - **`client.perform` into a `rex do` script works.** Declare the action with `client.keymap`. In `rex.on("client_perform_requested", function(ctx, ev) ... end)`, call `rex.call("client.reply", {call_id = ev.call_id, result = ...})`. The caller gets `result`. `ev` has `call_id` (a string), `action`, `args` and `requester {client_id, info, principal {kind, uid, gid, pid}}`. A handler return value alone does **not** reply. The script keeps state between calls. The CLI can call it: `rex -C <label> do <action> k=v --json`. Probe: `spikes/lab/perform-probe.lua`.
 - A normal control client (Node) also answers with `client.reply` on the connection that received the event (Codex's positive control, same build).
-- Correction: an earlier version of this section said the reply timed out. That was a probe bug: the handler read `call_id` from `ctx`, not from the event.
 - `rex.action {name, title, run}` in a `rex do` script did not make the action callable from another client: `rex -C <client> do <name>` failed with "no action named". Declaring it with `client.keymap` made the call reach the script (see above).
 
-### Plugin timers (reviewer lab, 2026-10-20)
+### Plugin timers (reviewer lab)
 
 Observed on Rex `0.0.1792158932-g88fd41`, in an isolated reviewer lab, with
 `lab/probes/timer-every.lua` and `lab/probes/timer-only.lua`:
@@ -416,9 +414,8 @@ Plugin events (observed on Rex 1203, lab `/tmp/rexlab-ev`, `spikes/lab/block-emi
 
 - After `block.create`, Rex sends the plugin `block.event` requests for its block: `session_attached`, `owner_changed` (reasons `create`, `disconnect`), `focus`, `session_view_changed`, `client_connected` and `client_disconnected`.
 - `--block-plugin-reload`: a change to the plugin executable restarts the plugin. The block stays in the session, and Rex sends `session_attached` again to the new process.
-- The first probe found no emission path. Its frames used the wrong envelope (see below). Superseded on 2026-10-16.
 
-### Plugin event emission (observed on Rex 1203, lab `/tmp/rexlab-bp`, 2026-10-16)
+### Plugin event emission (observed on Rex 1203, lab)
 
 Found by disassembly of `sdk/blockremote`, `sdk/blockserver/apiclient` and `sdk/blockserver/apitypes` (event.go), then proved in the lab with `spikes/lab/block-emit-probe.mjs`.
 
@@ -551,7 +548,7 @@ Every call path gives the plugin the same frame. Only `args` changes:
 
 All workarounds are attribution, not a security boundary: every process runs as the same uid.
 
-### Native `rex do` route to the hub (observed on Rex 1203, lab, 2026-10-17)
+### Native `rex do` route to the hub (observed on Rex 1203, lab)
 
 Lab: `/tmp/rexlab-route`, started with `LAB_CONFIG=$PWD/spikes/lab/route-init.lua spikes/lab/server.sh /tmp/rexlab-route`. Probes: `spikes/lab/route-init.lua` (config action `lazyrex_send`), `spikes/lab/route-hub.mjs` (hub client labeled `lazyrex-messaging`). The callers ran in a lab pane (`com.superlogical.terminal.shell` with a script command).
 
@@ -577,7 +574,7 @@ Client action descriptors:
 
 - A `client.keymap` action with `kind: "client"` can declare `description` and `args` (a JSON Schema). `rex client inspect lazyrex-messaging` shows `ARGS body, to`. `--json` shows the full `description` and `args` schema. `rex -C lazyrex-messaging actions` shows the same list.
 
-### Lost clients and reconnect tokens (observed on Rex 1203, lab, 2026-10-17)
+### Lost clients and reconnect tokens (observed on Rex 1203, lab)
 
 - A hello may carry a client: `{"type":"hello","client":{"label":"lazyrex-messaging","kind":"other","name":"lazyrex-hub"}}`. The welcome then has `client: {id, reconnect_token}`. The binary's hello type is `{reconnect_token, client}`.
 - **A client that is not attached to any session is forgotten at once.** After `kill -9`, the server logged `control connection lost, keeping client for reconnect`. But `client.list` and `target.resolve` no longer showed the client (checked at 0.06 s). A hello with its token (2.5 s and 17 s later) got a new client ID.
@@ -587,13 +584,13 @@ Client action descriptors:
 - During the grace period, a new client with the same label (no token) made the label ambiguous: `target.resolve` returned `ambiguous` with both clients, and `-C lazyrex-messaging` failed with `client target "lazyrex-messaging" is ambiguous`. After the old client expired, `-C` resolved to the new client.
 - So a hub keeps one stable client ID and one unambiguous label if it: attaches to a session, persists the latest `reconnect_token`, and reconnects with it within about 60 s. A hub that restarts later must wait for the old client to expire, or callers see an ambiguous label for up to about 60 s. Untested: whether a resumed client keeps its `client.keymap` actions and session attachment without sending them again (the probe sent them again), and whether a token works after a server restart (`instance_id` changes; probably not).
 
-### Window labels (observed on Rex 1203, 2026-10-17)
+### Window labels (observed on Rex 1203)
 
 - `window_label_changed` payload: `{window_id, label}` (lab probe). The event names one window.
 - A window that nobody named has the generated label `"Window " +` the last 8 characters of its window ID (for example `window:…cc5176a0a502` → `Window 76a0a502`). Seen on two windows of the real server (read-only `session.view`). `session.set_window_label` with an empty label restores it. No field marks a label as generated, so LazyRex compares against this form.
 - A session holds at most 64 windows. `session.new_window` then fails with `conflict: limit reached: the session already has its maximum of 64 windows; close one before opening another` (lab: a messaging app session with one tab per thread hit it).
 
-### Terminal block format (observed on Rex 0.0.1792158932-g88fd41, lab `/tmp/rexlab-plugins-claude50-c7`, 2026-10-22)
+### Terminal block format (observed on Rex 0.0.1792158932-g88fd41, lab)
 
 - The terminal block's `format` method takes only `format`, `trim`, `unwrap` and the `extra_*` flags (`rex block inspect`, `api.methods.format.input_schema`). It has no line bound, byte bound or offset. Its output is `{content}`.
 - Its description says "the current terminal screen", but it returns the whole scrollback. A block that printed 2000 lines gave 2001 lines with `--trim`, from `line 0` to `DONE`.
@@ -608,7 +605,7 @@ In Rex Lua, setting one large integer key in a new table costs time in proportio
 
 Give the terminal block's `format` method a bound: for example `max_bytes`, or the last N lines. Today it returns the whole scrollback, and a long pane gives no text at all (see "Terminal block format").
 
-## Command palette entries and forms (Rex 1203, 2026-10-17)
+## Command palette entries and forms (Rex 1203)
 
 Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `fake-block-plugin.mjs` as `probe`, `route-hub.mjs`); probes `spikes/lab/palette-probe.mjs` and `spikes/lab/palette-form-probe.mjs`; the Rex docs (`docs/reference/rex-docs-2026-10-16/llms-full.txt`); a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203)); one read-only `rex client ls` / `rex client inspect <app>` on the real server. The Rex app was not connected to a lab server. So every statement about what the app shows is **inferred**, not observed.
 
@@ -619,7 +616,7 @@ Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `f
 - Inferred: the app's palette is its own actions plus this keymap list. So another client's client actions do not appear. The app binary cannot confirm this either way: Swift stores strings of 15 bytes or fewer inline in code, so method names such as `client.keymap` or `client.perform` do not appear as strings. Check by hand: open the palette in the app and search for an action that the official hub declares.
 - Block plugin actions: a block action runs on the focused block and fails with `conflict` when that block is of another type (`client.action` reference). So a plugin action is useful only when the plugin's block has focus. It cannot be a global palette entry.
 
-### LazyRex palette file (observed on Rex 1203, lab `/tmp/rexlab-pal`, 2026-10-17)
+### LazyRex palette file (observed on Rex 1203, lab)
 
 - `init.lua` can load a file beside it with `require` (Rex docs, "Splitting Configuration"). `pcall(require, "lazyrex_palette")` loads the hub's generated file and does nothing when the file is missing.
 - `rex config reload` applies a changed file. The hub runs it after each content change. With an error in the file, reload prints `error <file>:<line>: …` and exits nonzero.
@@ -628,7 +625,7 @@ Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `f
 - `rex.client.queue("session.select", {session_id, window_id})` inside that action came back in the `client.action` response as `client_actions: [{action: "session.select", args: …}]`.
 - `session.new_layer` with a terminal block and `exit.on_completion: true`: a renderer exit (Ctrl+Q) closes the layer, and Rex emits `block_closed`.
 
-### Floating layers in the app (Rex app 1203, 2026-10-17)
+### Floating layers in the app (Rex app 1203)
 
 - Observed on the real app (the maintainer's screenshot): a floating layer that runs a terminal program shows the tab below through every cell that has the default background. Cells with an explicit dark background (SGR 48) looked opaque in that screenshot. The two observations below disprove the first inference (only the default background is transparent).
 - Observed on the real app (the maintainer, 2026-10-17): a form looked opaque in a fixed dark color, then turned transparent after it painted every cell with the exact theme background color (from the OSC 11 reply). The inference that only the exact theme color is transparent was disproved by the next observation. Probably the translucency is easier to see in a color near the theme background.
@@ -683,7 +680,7 @@ Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `f
 - It has a `session.open_on_web` action ("Open Session on Web…"). It probably opens the hosted Rex web client. See "Browser access".
 - Rex client Lua (`rex do`, `init.lua`) is gopher-lua (Lua 5.1, pure Go) running in the client. It has no database, sockets or MCP library built in. A `rex do` script can serve RPC through `client.perform` (see "Rex Lua runtime"). Whether it can host LazyRex plugins in practice is not yet tested.
 
-### Custom block types in the app (Rex 1203, 2026-10-17)
+### Custom block types in the app (Rex 1203)
 
 Sources: a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203), read-only); the Rex docs (`docs/reference/rex-docs-2026-10-16`); lab `/tmp/rexlab-block` with `spikes/lab/wrap-block-plugin.mjs` and `spikes/lab/block-render-probe.mjs`.
 
@@ -720,7 +717,7 @@ Safe in-app check (for the maintainer, if wanted; not run):
 4. Switch back: "Switch Host" to the local host. Remove the lab host: "Remove Host…" in the app, or `rex hosts remove lab`. Stop the lab server with Ctrl-C in step 1.
 5. Untested: whether the app accepts an `http://` anonymous endpoint as a host. If it refuses, the check is not possible without a tailnet.
 
-## Tab status: program status, glyphs and notices (Rex 1203, 2026-10-17)
+## Tab status: program status, glyphs and notices (Rex 1203)
 
 Sources: Rex docs "Program Status Protocol (OSC 7501)" (`docs/reference/rex-docs-2026-10-16/llms-full.txt`), labeled **documented**; lab `/tmp/rexlab-status` with `spikes/lab/status-emit.sh` and `spikes/lab/status-probe.sh`, labeled **observed (lab)**; read-only block methods on this agent's own Claude pane on the real server, labeled **observed (real, read-only)**; a read-only scan of the app bundle (`/Applications/Rex Beta.app`, 0.1.0 (1203)), labeled **inferred** where it explains app behavior. Nobody checked the app's hover card for these tests.
 
@@ -784,7 +781,7 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab, 2026-10-16. Rex documents session e
 - `block_closed` and `window_closed` carry no actor or cause (events page). A close by the user, by the hub, by any other client, or (untested) by a child exit without keep-open looks the same. To know that the user closed a pane, the hub must rule out its own closes (correlate its operations) and use keep-open for its panes. (Correction from Codex's review, 2026-10-16.)
 - Also seen, not in the events page: `block_owner_changed {block_id}` on block creation.
 
-### Lua helper availability (observed 2026-10-16)
+### Lua helper availability (Rex 1203)
 
 Observed on Rex `0.0.1792088193-g7a93ec` in an isolated server:
 `type(rex.json)`, `type(rex.exec)`, `type(rex.after)`, and `type(rex.every)` return `nil`.
@@ -794,11 +791,11 @@ The current online Lua reference lists the missing helpers and says the two stan
 Use the installed runtime as the compatibility boundary.
 Audit evidence: `/tmp/rexlab-codex-browser/reinvention-sources/`.
 
-### Focus reporting reaches panes (observed 2026-10-16, Rex 1203, real app)
+### Focus reporting reaches panes (Rex 1203, real app)
 
 A program in a pane that enables focus reporting (DECSET 1004) gets focus-in (`ESC [ I`) and focus-out (`ESC [ O`) from the Rex macOS app when the user moves between panes and tabs. Observed with the spike 3 renderer (Bubble Tea v2 focus messages): the maintainer's clicks into thread tabs produced 12 `hub.view.seen` calls, and only those threads were marked read. A background tab gets no focus-in. Not checked: whether enabling 1004 reports the current state at once (xterm does not).
 
-### Lua swap assignment is wrong (observed 2026-10-16, Rex 1203, lab)
+### Lua swap assignment is wrong (Rex 1203, lab)
 
 Observed on Rex `0.0.1792158932-g88fd41` with `rex do` in an isolated server:
 `a, b = b, a` gives both variables the old value of `b`. The result was the same for function parameters and for locals.
@@ -808,13 +805,13 @@ Impact found: the messaging plugin wrote some thread records under `thread/<x><x
 Probe: `spikes/lab/lua-swap-probe.lua`.
 Still wrong on Rex 0.0.1792158932-g88fd41 (lab, 2026-10-19). The rule: in a plain multiple assignment to existing variables, a later value that reads an earlier target sees the new value. `x, y = y, x + 10` with x = 1, y = 2 gives 2, 12 (Lua: 2, 11). A `local` declaration (`local a, b = b, a`) and table fields (`t[1], t[2] = t[2], t[1]`) are correct, and the values are evaluated left to right. A scan of the LazyRex plugin repositories (2026-10-19) found this pattern only in the probe and in two test helpers, which now use a temporary.
 
-### move_block stays inside one session (observed 2026-10-16, Rex 1203, lab)
+### move_block stays inside one session (Rex 1203, lab)
 
 - `session.move_block` moves a detached block only beside an anchor in the same session. Cross-session moves fail with `404 not_found` whichever session the call names: "block … not found in any window". The same move beside a block of its own session succeeds.
 - `session.new_split` with `anchor_block_id` = a side pane, then `block.close` of that pane, gives the new pane exactly the old pane's area (observed on Rex 0.0.1792158932-g88fd41, lab, `spikes/lab/slot-replace-probe.mjs`): a side pane resized to [0.3,0,0.7,1] was replaced by a pane at [0.3,0,0.7,1]. A side pane opened with `ratio: 0.55` gets 45% of the width (the ratio is the before side).
 - So a LazyRex view cannot mount a block from another session. A "hub frame" that swaps blocks can only swap blocks of its own session.
 
-### Detach and restore preserve view processes (observed 2026-10-16, Rex 1203, lab)
+### Detach and restore preserve view processes (Rex 1203, lab)
 
 Observed on Rex `0.0.1792158932-g88fd41` in an isolated server with five LazyRex messaging views:
 
@@ -831,7 +828,7 @@ The hub ran during detachment. Its tab ordering attempted to use the removed win
 
 No Rex app connected to this lab. The test proves server focus, not app selection.
 
-### A detached split layout can be rebuilt exactly (observed 2026-10-16, Rex 1203, lab)
+### A detached split layout can be rebuilt exactly (Rex 1203, lab)
 
 - `session.view` reports each window's tiled layout as a tree: `split {direction, ratio, before, after}` or a leaf `{block_id}`, each node with a normalized `rect`.
 - `session.new_window` takes the same tree as input, with `before` and `after` children (`first`/`second` is refused: "layout split before child is required").
@@ -839,7 +836,7 @@ No Rex app connected to this lab. The test proves server focus, not app selectio
 - Proof: a window with three blocks (horizontal 0.3, then vertical 0.5 on the right) was detached completely, and Rex removed the window. Rebuild: a new window with a placeholder block; `move_block` of the first leaf beside the placeholder; `block.close` of the placeholder; `move_block` of the second leaf beside the first (`horizontal`, `after`, ratio 0.3); `move_block` of the third leaf beside the second (`vertical`, `after`, ratio 0.5). `session.view` then showed the same tree, the same block IDs and the same ratios.
 - To rebuild a tree in general, place the first leaf of the tree, then add each `after` subtree beside the last leaf of its `before` subtree, outermost split first. Untested beyond this case: deeper trees, floating layers, and the window's focused block.
 
-### A whole session layout can be rebuilt exactly (observed 2026-10-16, Rex 1203, lab)
+### A whole session layout can be rebuilt exactly (Rex 1203, lab)
 
 Template create check (observed 2026-10-17 on Rex `0.0.1792158932-g88fd41`,
 `spikes/03-ui-framework/tests/templates-layout-lab.mjs`): one `session.new_window`
@@ -865,12 +862,12 @@ atomicity or the absence of transient processes during every failure.
 - A session with no windows has no `windows` field in `session.view`.
 - Error codes for a missing target (observed 2026-10-16, Rex 1203, lab): a missing session gives `session_not_found` (`session.attach`, `session.view`, `session.list_blocks`). A missing block (`block.close`, `session.detach_block`) or window (`session.focus_window`, `session.move_window`) gives `not_found`. Check both codes for a session.
 
-### A lost new_window answer leaves panes that the hub cannot prove (observed 2026-10-17, Rex 1203, lab)
+### A lost new_window answer leaves panes that the hub cannot prove (Rex 1203, lab)
 
 - `spikes/03-ui-framework/tests/templates-lab.mjs` with `TEMPLATES_RESTART=1`: the hub was killed (SIGKILL) right after a template start was admitted. Rex had created the whole tab. After the restart, each leaf had exactly one pane with its `lazyrex-spawn:<id>` label, and the hub kept each accessory leaf `sending` ("outcome unknown: 1 candidate pane(s)"). A label is only a hint, so this is by design (decision, 2026-10-17: v1 keeps it; see roadmap, "Idempotent create operations").
 - A process proof through the environment does not work on macOS for the main case. Observed on macOS 27.0.1 (26A434), own user: `ps eww -o command= -p <pid>` and `ps -E` showed `LAZYREX_SPAWN=…` for a Homebrew `node` process, and no environment for `/bin/sleep` and `/bin/zsh -c …`. Inferred: macOS hides the environment of Apple platform binaries. The built-in `shell` profile runs `$SHELL -l` (`/bin/zsh`).
 
-### A create can succeed when its client dies before the reply (observed 2026-10-22, Rex 0.0.1792158932-g88fd41, lab)
+### A create can succeed when its client dies before the reply (Rex 0.0.1792158932-g88fd41, lab)
 
 - Probe: `lab/probes/late-create.sh <lab socket URL>`. A rex CLI sends `session.new_block` with a unique label. The probe kills that CLI with SIGKILL D ms later. A second client then lists the session's blocks every 20 ms for 3 s. Three trials for each delay.
 - Kills at 0, 1, 2, 5 and 10 ms: the CLI died before it printed a reply, and the block never appeared.
@@ -882,7 +879,7 @@ atomicity or the absence of transient processes during every failure.
 - B8 rule (docs/hub.md, section "The work session", the `attempt` argument), from both facts: a lost reply and an absent block never prove that a start or replace attempt was not applied. Only the block with the attempt's intent marker proves it. An absence keeps the attempt unresolved, with no timer.
 - Not tested: the longest delay before a late create lands; other create calls (`session.new_window`, `session.create`). The probe cannot show a create that lands later than 3 s.
 
-### A detached pane still works for agents (observed 2026-10-16, Rex 1203, lab)
+### A detached pane still works for agents (Rex 1203, lab)
 
 - `com.superlogical.terminal.write` to a detached block reaches its program. A notice line arrived in a `read` loop.
 - The program keeps running: a counter loop advanced while detached.
@@ -890,14 +887,14 @@ atomicity or the absence of transient processes during every failure.
 - So hub notices to agents (`agents.go`) and agent readiness work while the agent's pane is detached. Probe: `spikes/lab/detached-pane.mjs`.
 - Shell block options go in `options` (`command`, `login`, `exit`). With the command in `args` instead, the command did not run (what ran instead is untested).
 
-### Text decoration in the app (observed 2026-10-16, Rex 1203)
+### Text decoration in the app (Rex 1203)
 
 - Overline (SGR 53): the server keeps it. `rex capture --format=vt` returns `ESC[53m` (lab). The macOS app does not draw it (the maintainer's screenshot of a `less -R` pane).
 - Underline (SGR 4): the app draws it at the font's underline position, above the cell bottom. A full-height glyph such as `▏` extends below the underline.
 - A 2-column x 1-row filled block is square in the app (default font).
 - Do not build outlines from overline or underline. Use full cells or block elements.
 
-### Label resolution includes lost clients (observed 2026-10-16)
+### Label resolution includes lost clients (Rex 1203)
 
 Observed on Rex `0.0.1792088193-g7a93ec` during an isolated hub recovery test:
 `target.resolve` returned an ambiguous label for the old hub and its replacement after the old hub exited.
@@ -925,20 +922,20 @@ Features that we found in Rex (binary, docs or API) that did not function or had
 | Kitty graphics Unicode placeholders (`U=1`) in the app | Server accepted the placement (`OK`) | The macOS app showed unknown-glyph boxes, not the image. The cause is unknown. PNG (`f=100`) uploads failed: `EINVAL: unsupported format`. See "Checkbox graphics probes". | 1203, lab server + real app |
 | Plugin block as a terminal (wrap, or serve the data protocol) | Question only: no Rex feature claims it | `block.create` returning a terminal's ID does not wrap it. A plugin block has no data provider. See "Custom block types in the app". | 1203, lab |
 
-## App update vs server (observed 2026-10-16, real machine, read-only checks)
+## App update vs server (real machine, read-only checks)
 
 - The Rex app updated from build 1173 to 1203 (Rex 0.0.1792088193-g7a93ec to 0.0.1792158932-g88fd41). The app relaunched (new PID). The server kept running: same PID 3514, old build, from a path the update deleted. The app then shows "Rex Server Restart Required". The app's text says: "Restarting the server may fix it, but you will lose your active sessions."
 - So the client updates separately from the server, and terminals live in the server. Every pane is a direct child of the server process (server -> `login` -> shell). There is no separate PTY host. The decision "The Rex server is the core, and terminals die with it" still holds.
 - Build 1203 moved the server bundle from `Helpers/Rex Server.app` to `Helpers/Rex Server.rex`. Panes started before the update keep a PATH entry for the deleted folder, so `rex` is not found in them until they get a new environment. The new CLI works against the old server.
 - Build 1203 Lua (lab): `rex.json.encode/decode`, `rex.exec`, `rex.exec.start`, `rex.after`, `rex.every` exist. `io.popen` raises "io.popen is not available in Rex: use rex.exec". An empty table still encodes as `{}`.
 
-## After the server restart on build 1203 (observed 2026-10-16, real machine, read-only)
+## After the server restart on build 1203 (real machine, read-only)
 
 - The 1203 server runs from a versioned folder outside the app bundle: `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/1203/Rex Server.app/Contents/MacOS/rex`. Panes get that folder on PATH. So a later app update should not delete the binary of the running server (untested until the next update).
 - New API method in 1203: `com.superlogical.terminal.tty_mode` returns the terminal's `echo`, `canonical` and `signals` flags. No other method was added or removed (reference diff).
 - Codex CLI 0.163.0 reports OSC 7501 itself (`codex_tui::terminal_program_status` in the binary). One real turn: root record `working`, then `idle`, `app: codex`, `owner` the Codex process, `reason: report`, with no clear between them. Queued turns are untested.
 
-## Driving the Rex app (observed 2026-10-16, Rex 1203, real machine, on the maintainer's request)
+## Driving the Rex app (Rex 1203, real machine, on the maintainer's request)
 
 Check first: the Rex agent guide (`rex __internal skill`, section "Control Rex apps") documents app control (`rex client ls`, `rex -C <app> actions`, `rex -C <app> do session.select ...`). The API reference documents `detach_block` and `move_block`. This section records only what those sources do not say.
 
@@ -958,7 +955,7 @@ Check first: the Rex agent guide (`rex __internal skill`, section "Control Rex a
 - **A timed-out request frees the queue.** Observed on Rex 0.0.1792158932 (lab, 2026-10-19, `tests/harness/tests/window_hold.lua`): the hub held one `client.perform` and did not reply. The next request to the hub came 10 s later, when the caller's `timeout_ms` (10000) ended the held request. The late reply of the held request had no receiver.
 - **No input activity signal.** Neither the API reference nor the documented events (`reference/events.md`) have an input event or a last-input time. So the hub cannot tell whether the user is typing in an agent pane. Observed: a notice written while the maintainer typed submitted their unfinished text. Request #8 in `roadmap.md`.
 
-## Checkbox graphics probes (Rex 1203, 2026-10-16)
+## Checkbox graphics probes (Rex 1203)
 
 - The maintainer confirmed that Ghostty is the only target. Do not assume that the UI must use portable text characters only.
 - The isolated server accepted Kitty raw RGBA (`f=32`) uploads. Query, ordinary placement, and virtual placement (`U=1`) each returned `OK`.
@@ -993,7 +990,7 @@ A separate lab probe used `rex.exec.start({'/bin/sleep', '5'}, {detach = true, t
 A timer read the result after 0.5 seconds. Rex returned `timed_out: true`, `signal: "SIGTERM"`, and `code: -1`.
 The command timeout therefore applies to detached commands on this build.
 
-## Themes, color scheme and event scope (observed on Rex 1203, lab, 2026-10-16)
+## Themes, color scheme and event scope (observed on Rex 1203, lab)
 
 - `set_theme` applies only the owner's theme (or any client's while the block has no owner). A CLI `set_theme` on a block owned by another client (for example the hub's view panes) changes nothing visible. To test, take the block first with `session.own_block {mode: "take"}` on the same connection.
 - `com.superlogical.terminal.resize` is the same: the client that created a block owns it, and a resize from another client is only remembered (`desired`). A lab test can take the hub's form pane and resize it to 90x80, so one `rex capture` shows the whole form (2026-10-17, `tests/profiles-lab.mjs`).
@@ -1014,18 +1011,18 @@ The worktree test uses this arrangement. It refreshes the view after a foreign d
 Calling `session.attach_all` during script initialization did not deliver the foreign directory event in the initial test.
 The cause of that difference is unverified. Use the documented `--all` option for server-wide Lua handlers.
 
-### Terminal titles (Rex 1203, 2026-10-17)
+### Terminal titles (Rex 1203)
 
 - Observed on the real server: block method `com.superlogical.terminal.title` returns `{title, owner: {pid, name}}`. Claude Code sets the title of its pane, with an animated status glyph in front (for example "✳ ").
 - Observed in the lab: a title change (OSC 2) reaches a session-attached control client as `block_event` with name `title_changed`. The hub renames an agent in a tab that has only Rex's generated label ("Window " + 8 characters of the window ID) after its terminal title, 1 s after the first change of a burst (`tests/harness/tests/pane_names.lua`).
 
-### A pane's working directory (Rex 0.0.1792158932-g88fd41, 2026-10-17)
+### A pane's working directory (Rex 0.0.1792158932-g88fd41)
 
 - Observed in the lab: a `com.superlogical.terminal.shell` pane with a plain login zsh answers `com.superlogical.terminal.pwd` with `{}`. The shell sends no OSC 7. Two OSC 7 sequences sent with `printf` from that shell (BEL and ST terminators, with `localhost` and with the host name) also left the answer `{}`. The cause is unknown.
 - Observed in the lab: `com.superlogical.terminal.process` on the same pane answers `foreground {name: "zsh", cwd: <the shell's directory>}`. `child` is `/usr/bin/login` with no `cwd`.
 - So a plugin that needs the source pane's directory reads `pwd` first, then `foreground.cwd`, then `child.cwd` (plugins/worktrees.lua, `repo_default`). The foreground can be an agent (Claude, Codex): its cwd is its project, which is the right default too (inferred).
 
-### Lua helper loading and directory lists (Rex 1203, 2026-10-17)
+### Lua helper loading and directory lists (Rex 1203)
 
 Observed on Rex `0.0.1792158932-g88fd41` in `/tmp/rexlab-profiles-codex`:
 
@@ -1048,7 +1045,7 @@ outside those pane trees is excluded. Detaching a pane keeps its listener in the
 result with no window ID. Closing a pane removes it from the result.
 This is a snapshot, not a guarantee against process exit or PID reuse.
 
-### Tunnel blocks (observed 2026-10-17, Rex 0.0.1792158932-g88fd41, lab)
+### Tunnel blocks (Rex 0.0.1792158932-g88fd41, lab)
 
 - In `rex do`, `debug.getinfo(1, 'S').source` is the absolute script path **without** the `@` prefix of standard Lua (`/tmp/rexlab-tunnels-claude/probe.lua`). Match it with `^@?(/.*)/[^/]*$`. The same is true for a chunk that the script loads with `loadfile` (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-20: the harness runner; its failure location compared with `@<path>` and never matched).
 - A plugin's `rex do` process inherits the lab server's environment. `os.getenv` reads variables that were set when `spikes/lab/server.sh` started. The hub config passes no plugin arguments, so the Tunnels lab uses this for its settings.
@@ -1060,11 +1057,11 @@ This is a snapshot, not a guarantee against process exit or PID reuse.
 - The `child.pid` of `com.superlogical.terminal.process` is the block command's own process. `ps -o etime=,command= -p <pid>` showed its full argv: `/bin/sh /tmp/rexlab-tunnels-claude/argv-probe.sh probe-key-123 x`, `etime` `00:03`. With `/bin/sh -c "sleep 20" arg0 key`, sh ran `sleep` in its place, and ps showed only `sleep 20`. So the Tunnels run script is a script file, and it keeps the shell as the parent of `serve` (no `exec`) to keep the op key visible.
 - Rex reports a failed command as `last_exit.error` `"exit status <n>"` (observed for 1 and 3).
 
-### App action "Go to Session" (Rex Beta 0.1.0 (1203), real app, 2026-10-18)
+### App action "Go to Session" (Rex Beta 0.1.0 (1203), real app)
 
 The app lists `session.select` ("Go to Session", args `session_id, window_id?`) among its client actions. Observed with the maintainer's approval: `rex -C <app client> do session.select --args '{"session_id":…,"window_id":…}'` returned no output and no error, and the app switched to that session and showed that tab (the maintainer confirmed). The hub uses it to switch the app to a template's new session.
 
-### App action "Insert Path…" (Rex Beta 0.1.0 (1203), real app, 2026-10-18)
+### App action "Insert Path…" (Rex Beta 0.1.0 (1203), real app)
 
 The Rex app lists `pane.insert_path` ("Insert Path…") and `pane.go_to_directory` ("Go to Directory…") among its client actions (`rex -C <app> actions`). Neither takes arguments, and the Rex docs do not describe them. Observed with the maintainer's approval, in a scratch pane:
 
@@ -1073,7 +1070,7 @@ The Rex app lists `pane.insert_path` ("Insert Path…") and `pane.go_to_director
 - So a form that wants the native browser must have its own pane focused in the app (the user pressed a key in it), with the target field focused, and must unescape the text and expand `~`.
 - Second probe (the maintainer ran it, same build): the probe pane enabled bracketed paste (mode 2004). A pick arrived as one bracketed paste: `ESC[200~~/Projects/ESC[201~`. Cancelling the browser with Esc sent no input to the pane. Typed keys arrived as plain bytes. So a renderer with bracketed paste on can take only a paste as a pick: typing after a cancelled browser is never mistaken for one.
 
-### A perform error in Lua and a fake app client (observed 2026-10-19, Rex 0.0.1792158932-g88fd41, lab)
+### A perform error in Lua and a fake app client (Rex 0.0.1792158932-g88fd41, lab)
 
 - In `rex do` Lua, `rex.call('client.perform', …)` returns no result and an error as text when the performer replies with `client.reply {error = {code, message}}`. Recorded: `stream response "control-159" failed: not_focused: refused by the mock (status=500 code=not_focused)`. The error is not a table, so `err.code` is nil. The code is the `code=` field at the end of the text. `plugins/templates.lua` reads it there. Inferred: the other plugins that test `type(err) == 'table'` lose the code in the same way.
 - A control client that sends `hello` with `client = {kind = "app", name, label}` over the Unix socket shows `info.kind: "app"` in `client.list`. After `session.attach`, `session_ids` contains that session. It can declare `session.select` with `client.keymap` and gets `client.perform` requests for it. `tests/templates-lab.mjs` uses such a client as the fake app. It does not show that the real app switches: that check needs the real app.
@@ -1086,7 +1083,7 @@ program is `view/testdata/teaprobe`; the lab driver is `view/teaprobe_lab_test.g
 (`TEAPROBE_LAB=1 go test -run TestTeaProbe` in `view/`). Each step keeps raw captures (text,
 text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-52 and codex-29). The iOS subsection is one user-driven session.
 
-### Rex on the Mac (observed 2026-10-22, Rex 0.0.1792158932-g88fd41, lab, Bubble Tea v2.1.0, Go 1.27.2, macOS 27.0.1)
+### Rex on the Mac (Rex 0.0.1792158932-g88fd41, lab, Bubble Tea v2.1.0, Go 1.27.2, macOS 27.0.1)
 
 - Inline mode after a delayed first tree (a thread). The program starts inline with a
   "Connecting…" row and chooses inline when the first tree arrives 2 s later. The live row
@@ -1136,7 +1133,7 @@ text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-
   - At program start, Rex answers Bubble Tea's terminal queries with two DECRQM replies
     (`CSI ? 2026 ; 2 $ y`, `CSI ? 2027 ; 2 $ y`) and `CSI ? 1 u` (kitty keyboard flags).
 
-### The iOS app (observed on iOS, 2026-10-22, Rex Dev 0.1.0 (1376) on an iPhone with iOS 26 over Tailscale, Rex server 0.0.1792158932-g88fd41 on the Mac, Bubble Tea v2.1.0)
+### The iOS app (observed on iOS, Rex Dev 0.1.0 (1376) on an iPhone with iOS 26 over Tailscale, Rex server 0.0.1792158932-g88fd41 on the Mac, Bubble Tea v2.1.0)
 
 One teaprobe pane on the user's real server, in its own session, under a one-time user exception
 (teaprobe built from hub main c6e3ff93). The user worked the phone; the Rex app for the Mac was
@@ -1166,7 +1163,7 @@ what Rex held, not what the phone drew.
   iOS are unknown. The user was asked to scroll with a finger; no capture shows
   the effect, and the user did not report on it. Selection and copy were not tested.
 
-### Hub client actions from a caller with no process (observed 2026-10-23, Rex 0.0.1792158932-g88fd41, lab, Mac)
+### Hub client actions from a caller with no process (Rex 0.0.1792158932-g88fd41, lab, Mac)
 
 Federation v1 (docs/hub.md "Peer hubs") calls a peer hub with the rex CLI. Lab: `TestPeerHubsLab`.
 
