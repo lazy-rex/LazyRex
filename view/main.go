@@ -14,7 +14,7 @@ import (
 
 func main() {
 	id := flag.String("view-id", "", "the durable view ID assigned by the hub")
-	server := flag.String("server", "", "the Rex server, which the hub passes (default: $REX_SERVER)")
+	server := flag.String("server", "", "the Rex server, which the hub passes (required)")
 	real := flag.Bool("real-server", false, "run on the user's real Rex server (the hub sets it on approved runs only)")
 	showVersion := flag.Bool("version", false, "print the release version and exit")
 	flag.Parse()

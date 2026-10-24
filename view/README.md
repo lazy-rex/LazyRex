@@ -13,10 +13,10 @@ GOMODCACHE=/tmp/lazyrex-view-mod GOCACHE=/tmp/lazyrex-view-build go build -o /tm
 The hub starts the binary with these arguments:
 
 ```text
-/tmp/lazyrex-view-spike3 -view-id <id> <plugin> <route>
+/tmp/lazyrex-view-spike3 -view-id <id> -server <endpoint> <plugin> <route>
 ```
 
-The renderer reads `REX_SERVER`, `REX_SESSION`, and `REX_BLOCK` from its pane.
+The hub passes its own Rex server as `-server`; without it the renderer refuses. A pane `REX_SERVER` that differs from `-server` also refuses. The renderer reads `REX_SESSION` and `REX_BLOCK` from its pane.
 It accepts only Unix sockets under `/tmp`, including the macOS `/private/tmp` alias.
 It refuses a symlink that resolves outside those directories.
 

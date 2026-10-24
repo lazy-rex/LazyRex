@@ -131,8 +131,8 @@ func TestLabSocketRefusesTheRealServer(t *testing.T) {
 	}
 }
 
-// The renderer's endpoint: -server from the hub, else REX_SERVER (an older renderer that reloads
-// into this binary has no -server). No endpoint, or two that differ, refuse. Equal spellings of
+// The renderer's endpoint: -server from the hub, never REX_SERVER alone. No -server (also with a
+// pane REX_SERVER), or a REX_SERVER that differs from it, refuse. Equal spellings of
 // one socket (escaped or plain, through a symbolic link) are one endpoint.
 func TestServerEndpoint(t *testing.T) {
 	// Under /tmp, so that labSocket accepts the lab endpoint.
@@ -162,7 +162,7 @@ func TestServerEndpoint(t *testing.T) {
 	}{
 		{"no endpoint", "", "", "", false},
 		{"-server only (a Linux pane)", lab, "", lab, true},
-		{"REX_SERVER only (an older renderer reloads)", "", lab, lab, true},
+		{"REX_SERVER only: no fallback", "", lab, "", false},
 		{"both, equal", lab, lab, lab, true},
 		{"escaped and plain", mac, macEscaped, mac, true},
 		{"through a symbolic link", linked, lab, linked, true},

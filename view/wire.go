@@ -49,21 +49,17 @@ type wire struct {
 	event   func(json.RawMessage)
 }
 
-// serverEndpoint is the renderer's Rex server: -server, which the hub passes (its own endpoint),
-// else REX_SERVER (a renderer that an older hub started, and that reloads into this binary). The
-// renderer never chooses a socket itself: a Linux pane has no REX_SERVER, so without -server there
-// is no endpoint, and the renderer refuses. A -server and a REX_SERVER that differ also refuse.
+// serverEndpoint is the renderer's Rex server: -server, which the hub passes (its own endpoint).
+// The renderer never chooses a socket itself: without -server it refuses, also when the pane has a
+// REX_SERVER. A -server and a pane REX_SERVER that differ also refuse (a second guard).
 func serverEndpoint(flagServer, env string) (string, error) {
 	if flagServer != "" && env != "" && !sameEndpoint(flagServer, env) {
 		return "", fmt.Errorf("-server %s and REX_SERVER %s are different Rex servers", flagServer, env)
 	}
-	if flagServer != "" {
-		return flagServer, nil
+	if flagServer == "" {
+		return "", fmt.Errorf("No Rex server: the hub must start the renderer with -server")
 	}
-	if env != "" {
-		return env, nil
-	}
-	return "", fmt.Errorf("No Rex server: the hub passes -server, and REX_SERVER is empty")
+	return flagServer, nil
 }
 
 // sameEndpoint compares two unix:// endpoints by their socket paths (unescaped, cleaned, with
