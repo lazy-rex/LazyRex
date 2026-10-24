@@ -213,33 +213,9 @@ State tests cover draft conflicts, local cursor and text preservation, removed c
 newer text during sends, stale snapshots after sends, and input actions.
 Schema tests reject unknown versions and oversized history pages.
 
-## Lab results
+## Behavior
 
-Observed on Rex `0.0.1792158932-g88fd41`, 2026-10-16, in `/tmp/rexlab-s3ui`.
-The tests used the real renderer, hub, and messaging plugin.
-
-- Back and inbox Open produced successful navigation results in `view_ops`.
-- Two fresh views edited one draft concurrently. One saved; the other retained its text and showed a conflict.
-- Keep my text saved the second draft against the current revision.
-- The hub replaced renderer PID 2875 after a verified crash. The replacement restored the acknowledged draft and showed Saved.
-- An idle renderer reattached after a hub restart without terminal input. Its view, block, and renderer client IDs stayed the same.
-- Kitty Shift+Enter input inserted a newline and saved the multiline draft.
-- An SGR mouse press and release on Send created one message and cleared the matching draft.
-
-The first complete idle recovery took 6.8 seconds after hub start.
-After the renderer added recovery on hub discovery events, attachment took 173 ms.
-That faster run exposed a hub race: the plugin had not registered, and the screen stayed on an error view.
-The hub fix keeps a loading state for transient failures and refreshes views when the plugin registers.
-A subsequent restart passed without terminal input: the same renderer showed the thread, history, and saved composer.
-In that run, hub generation 6 started at `20:51:45.653074Z`; the renderer reattached at `20:51:45.781217Z` (about 128 ms).
-The attachment time does not measure the time to the completed screen render.
-
-Evidence: `/tmp/rexlab-s3ui/int.log`, `/tmp/rexlab-s3ui/int/events.jsonl`, and the read-only inspection of `int/hub.db`.
-The 18 renderer tests pass with the race detector. Raw output: `/tmp/lazyrex-view-tests.json`.
-The protocol fixture verifies recovery of a committed operation after its reply is lost.
-It does not replace the full lab test of a hub restart during a send.
-
-Physical mouse behavior, iOS touch, and two real apps with different sizes remain unverified here.
+Physical mouse behavior, iOS touch, and two real apps with different sizes are not verified.
 
 ### No hub
 
@@ -263,7 +239,7 @@ than 150 KiB before its last reply part. The tree fits on one screen. During the
 the first and the last node of the old tree; after the release it shows those of the new tree. TestReplyPartsTimingLab: through the real SDK (`tests/sdk-parts`), the median
 `view.render` call of a 150 KiB panel in parts takes at most 50 ms more than a 40 KiB panel inline.
 It stops the hub, waits for "No hub: run LazyRex: Start Hub." on the screen with no row wider than 38 columns, starts the hub again, and waits for the attached form without the text.
-Observed on Rex `0.0.1792158932-g88fd41`, macOS, 2026-10-22: pass. Rex answers `not_found` with no candidates when no client has the label.
+Rex answers `not_found` with no candidates when no client has the label (Rex `0.0.1792158932-g88fd41`).
 
 ### Renderer reload
 
@@ -282,11 +258,6 @@ When these checks pass, Bubble Tea restores the terminal. The renderer then call
 and the same environment. This permits an atomic binary replacement at that path.
 A reload does not preserve cursor position, focus, or scroll position.
 
-Observed on Rex `0.0.1792158932-g88fd41`: `hub.ui.reload` admitted the request for
-`view-096218f1a922e7e5`. The renderer kept PID `46018` and the same pane. It attached
-with a new Rex client at `2026-10-16T20:57:38.516623Z`. The composer restored
-`reload preserved draft` and showed `Saved`. Two older renderers returned
-`not_supported`, as expected. They did not restart.
 
 Tests verify that reload waits for a save result, a generic action result, and
 connection recovery. Tests also verify that conflicts, removed controls, and dirty
@@ -322,12 +293,6 @@ focus, treated as not focused. Rex app forwarding of focus events, including
 initial focus after reload, remains unverified. Hub navigation handles its own
 visibility evidence.
 
-Observed on Rex `0.0.1792158932-g88fd41` in `/tmp/rexlab-codexui`: the renderer sent
-multiline Markdown through the messaging plugin and rendered the saved message.
-The renderer's New thread form created `Design lab` with Claude and Codex selected.
-The hub declared the new group tab and attached its renderer. These checks used
-an isolated copy of the hub and plugin. No app connected to this lab, so these
-checks do not prove app navigation or physical touch behavior.
 
 Tests pass with the Go race detector. They cover 38×24, 80×24, and 140×40 layouts
 in light and dark colors; fixed composer position; scroll anchors; Markdown;
