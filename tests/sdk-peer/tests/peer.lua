@@ -1,16 +1,20 @@
 -- app.peer through the real SDK, the real hub and real SQL (docs/plugin-sdk.md "Federation"). The
--- test pulls as the peer "away" (hub.peer.pull acks with after = seq): the peer check is a name
--- check (docs/hub.md "Trust limit").
+-- test pulls as the peer "away" (hub.peer.pull acks with after = seq when the pull names the hub's
+-- outbox_id): the peer check is a name check (docs/hub.md "Trust limit").
 
 local alice = agent('alice')
+
+-- outbox_id is the lab hub's outbox identity: a pull acks only when it names it (docs/hub.md
+-- "Outbox identity"). A pull without it acks nothing and reads from seq 0.
+local function outbox_id() return H.hub('hub.peer.pull', {hub = 'away', after = 0}).outbox_id end
 
 -- pull answers the unacked envelopes of plugin speer to "away" after seq after. A reply holds at
 -- most 100 envelopes or 1 MiB ('more'): the next page acks the earlier ones. ack acks up to seq.
 local function pull(after)
-  local out = {}
+  local out, id = {}, outbox_id()
   after = after or 0
   while true do
-    local r = H.hub('hub.peer.pull', {hub = 'away', after = after})
+    local r = H.hub('hub.peer.pull', {hub = 'away', after = after, outbox_id = id})
     for _, e in ipairs(r.envelopes or {}) do
       if e.plugin == 'speer' then out[#out + 1] = e end
       after = math.max(after, e.seq)
@@ -18,7 +22,7 @@ local function pull(after)
     if not r.more then return out end
   end
 end
-local function ack(seq) H.hub('hub.peer.pull', {hub = 'away', after = seq}) end
+local function ack(seq) H.hub('hub.peer.pull', {hub = 'away', after = seq, outbox_id = outbox_id()}) end
 local function outbox()
   for _, p in ipairs(H.peer_status().peers) do if p.name == 'away' then return p.outbox end end
 end
