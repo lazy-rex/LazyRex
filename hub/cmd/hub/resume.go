@@ -85,15 +85,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS agent_op_active ON agent_op_targets (identity)
 `
 
 const (
-	// resumePrompt is the first prompt of a resumed agent: a resumed Codex runs its hook (and so
-	// rebinds) only at its first prompt (S1, 2026-10-22). It is the text of a message notice.
-	resumePrompt = "New message. Call messaging_read."
 	// resumeInFlight bounds the targets between admitted and rebound: each launch makes the hub
 	// tell every plugin that agents changed. An implementation choice, not a measured limit.
 	resumeInFlight = 3
 	// resumeReadyWait bounds the wait for the new pane's program status (idle or done), and
-	// resumeRebindWait the wait for the hook after the prompt. Implementation choices: S1 saw about
-	// 4 s and 1 s.
+	// resumeRebindWait the wait for the hook: after the first prompt, or from the launch for a kind
+	// without one (harness.go resumePrompt). Implementation choices: S1 saw about 4 s and 1 s.
 	resumeReadyWait  = 120 * time.Second
 	resumeRebindWait = 120 * time.Second
 )
@@ -530,11 +527,22 @@ func (h *Hub) resumeAdvance(ctx context.Context, t *opTarget) error {
 			}
 			return nil
 		}
+		// The CLI's first prompt after a resume (harness.go). A kind without one reports at its start:
+		// no prompt, and the target waits for the report, from the launch (lead-harness2).
+		var kind string
+		h.db.QueryRowContext(ctx, `SELECT kind FROM identities WHERE identity = ?`, t.identity).Scan(&kind)
+		cli := harnessOf(kind)
+		if cli == nil || cli.resumePrompt == "" {
+			if time.Since(since) > resumeRebindWait {
+				h.setPhase(ctx, t, "launched", "unknown", fmt.Sprintf("no hook report from the new pane within %s", resumeRebindWait), nil)
+			}
+			return nil
+		}
 		// At most once: the phase is stored before the write, and prompt_sending is never written again.
 		if !h.setPhase(ctx, t, "launched", "prompt_sending", "", nil) {
 			return nil
 		}
-		if err := h.writeResumePrompt(ctx, s.Session, s.Block, t.identity); err != nil {
+		if err := h.writeResumePrompt(ctx, s.Session, s.Block, t.identity, cli.resumePrompt); err != nil {
 			h.setPhase(ctx, t, "prompt_sending", "unknown", "the first prompt write failed, its outcome is unknown: "+err.Error(), nil)
 			return nil
 		}
@@ -696,9 +704,9 @@ func (h *Hub) paneProgram(ctx context.Context, sess, block string) (paneState, e
 	return p, nil
 }
 
-// writeResumePrompt writes the first prompt. In test mode a resume-prompt fault holds before the
-// write (hold) or loses the answer after it (lose-answer).
-func (h *Hub) writeResumePrompt(ctx context.Context, sess, block, identity string) error {
+// writeResumePrompt writes the first prompt, text. In test mode a resume-prompt fault holds before
+// the write (hold) or loses the answer after it (lose-answer).
+func (h *Hub) writeResumePrompt(ctx context.Context, sess, block, identity, text string) error {
 	match := func(mode string) func(*testFault) bool {
 		return func(f *testFault) bool {
 			return f.Point == "resume-prompt" && f.Mode == mode && (f.Key == "" || f.Key == identity)
@@ -707,7 +715,7 @@ func (h *Hub) writeResumePrompt(ctx context.Context, sess, block, identity strin
 	if f := h.takeFault(match("hold")); f != nil {
 		h.waitRelease(f)
 	}
-	if err := h.writeNotice(ctx, sess, block, resumePrompt); err != nil {
+	if err := h.writeNotice(ctx, sess, block, text); err != nil {
 		return err
 	}
 	if h.takeFault(match("lose-answer")) != nil {
