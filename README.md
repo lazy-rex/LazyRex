@@ -183,8 +183,9 @@ are the sibling checkouts. (Setup writes a user's `hub.json` with released plugi
 
 `dev.sh` builds the hub and the renderer, watches the sources, and reloads what changed.
 
-Legacy developer tool: `dev.sh` needs only sh, awk and Go. It is being removed. It is not a requirement of
-LazyRex: install, setup and start need only Rex, git, an agent CLI and, while the repositories are
+`dev.sh` starts a hub from a source checkout (the live hubs use it). It needs a POSIX shell and
+awk. It is not a requirement of LazyRex: install, setup and start need only Rex, git, an agent CLI
+and, while the repositories are
 private, the GitHub CLI. A build from source also needs Go.
 
 ### Tests
