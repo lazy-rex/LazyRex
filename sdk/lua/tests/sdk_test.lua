@@ -20,7 +20,7 @@ local function plugin(source, opts) opts = opts or {}; opts.source = 'local app 
 
 test('the start migrates in one transaction, then registers the actions, the exports and the panel', function()
   local s = todo()
-  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
+  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
   expect(s.sql.state.user_version).to_be(1)
   expect(s.sql.state.tables.todos ~= nil, 'the table').to_be(true)
   expect(s.registered.plugin).to_be('todo')
@@ -74,14 +74,14 @@ local function tbl() return {columns = {'id'}, rows = {}, seq = 0} end
 test('base: a new database runs the base and the later steps, and sets the last version, in one transaction', function()
   local s = based()
   expect(s.exited, 'the plugin runs').to_be(nil)
-  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.exec hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
+  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.query hub.sql.exec hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
   expect(s.sql.state.user_version).to_be(6)
   expect(s.sql.state.tables.a ~= nil and s.sql.state.tables.b ~= nil, 'both tables').to_be(true)
 end)
 
 test('base: a database at the base or above runs only the steps above it', function()
   local s = based(function(db) db.user_version = 5; db.tables.a = tbl() end)
-  expect(action_names(s), 'no base check; step 6, then the sdk_ check').to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
+  expect(action_names(s), 'no base check; step 6, then the sdk_ check (a list of the sdk_ names before the steps and after them)').to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
   expect(s.sql.state.user_version).to_be(6)
   expect(s.sql.state.tables.b ~= nil, 'step 6').to_be(true)
   s = based(function(db) db.user_version = 6; db.tables.a = tbl(); db.tables.b = tbl() end)
@@ -1318,15 +1318,37 @@ test('peer.send: the call checks; a row is staged in the caller transaction and 
   expect(send({hub = 'mac', k = 'm1', body = {text = 'hi'}}).result.state).to_be('queued')
 end)
 
-test('peer.send: a failed commit sends nothing; a row of a commit with a lost reply goes at the next start', function()
+test('peer.send: a failed commit sends nothing; a commit that applied with a lost reply still drains', function()
   local s = peer_plugin(SEND)
-  s.sql.fail_next['hub.sql.commit'] = {code = 'unavailable', message = 'the reply was lost'}
+  s.sql.fail_next['hub.sql.commit'] = {code = 'unavailable', message = 'the commit failed'}
   local r = s:agent('p.send', {hub = 'linux', k = 'm1', body = {}})
-  expect(r.error and r.error.message).to_be('the reply was lost')
+  expect(r.error and r.error.message).to_be('the commit failed')
   s:tick()
   expect({#rows(s, 'sdk_peer_outbox'), #s.sent}, 'no row, no send').to_equal({0, 0})
-  -- The commit can apply while its reply is lost: then the row is in the database, and no drain was
-  -- armed for it. The next drain takes it (a later send, or the next start: "peer drain at start").
+  -- The commit applies, and its reply is lost: the row is in the database, and the plugin runs on.
+  s.sql.lose_reply['hub.sql.commit'] = {code = 'disconnected', message = 'the reply was lost'}
+  r = s:agent('p.send', {hub = 'linux', k = 'm2', body = {x = 1}})
+  expect(r.error and r.error.message).to_match('the reply was lost')
+  expect(rows(s, 'sdk_peer_outbox')[1].state, 'the row committed').to_be('queued')
+  s:tick()
+  expect(s.sent, 'the drain ran after the unclear commit').to_equal({{hub = 'linux', key = 'm2', body = '{"x":1}'}})
+  expect(rows(s, 'sdk_peer_outbox')[1].state).to_be('sent')
+end)
+
+test('peer drain and status: a backlog over one query reply drains in row order, and status counts it in SQL', function()
+  local s = peer_plugin(SEND, {answer = function(a, n) if n <= 3 then return {seq = n} end return nil, {code = 'timeout', message = 'slow'} end})
+  -- The hub stops a reply at about 1 MB (complete = false); here a reply holds 2 rows.
+  s.sql.max_rows = 2
+  for i = 1, 5 do expect(s:agent('p.send', {hub = 'linux', k = 'm' .. i, body = {i = i}}).result.state).to_be('queued') end
+  expect(s:agent('p.send', {hub = 'mac', k = 'x1', body = {}}).result.state).to_be('queued')
+  s:tick()
+  local keys = {}
+  for _, a in ipairs(s.sent) do keys[#keys + 1] = a.hub .. ' ' .. a.key end
+  -- m1..m3 go; m4 times out and stops linux; mac goes on (its own try).
+  expect(keys, table.concat(s.printed, '\n')).to_equal({'linux m1', 'linux m2', 'linux m3', 'linux m4', 'mac x1'})
+  for _, p in ipairs(s.printed) do expect(p:find('does not fit in one reply', 1, true), p).to_be(nil) end
+  local st = s:agent('p.status', {}).result.peers.linux
+  expect({st.queued, st.failed, type(st.oldest_queued_age_s), st.last_error.code}, 'm4 and m5 wait').to_equal({2, 0, 'number', 'timeout'})
 end)
 
 test('peer.send: the body text is canonical (sorted members), and its size is the hub measure', function()
@@ -1535,6 +1557,15 @@ peer = app.peer{}]])
   said = false
   for _, p in ipairs(own.printed) do if p:find("A plugin migration made sdk_mine: the names that start with sdk_ are the SDK's", 1, true) then said = true end end
   expect(said, table.concat(own.printed, '\n')).to_be(true)
+  -- The SDK's own names too, with app.peer or without it: only the SDK makes them.
+  for _, src in ipairs({'', '\npeer = app.peer{}'}) do
+    local named = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.db.migrate {"CREATE TABLE sdk_peer_seen (x TEXT)"}' .. src})
+    named:start()
+    expect(named.exited, 'sdk_peer_seen from a migration' .. src).to_be(1)
+    said = false
+    for _, p in ipairs(named.printed) do if p:find('A plugin migration made sdk_peer_seen', 1, true) or p:find('table sdk_peer_seen already exists', 1, true) then said = true end end
+    expect(said, table.concat(named.printed, '\n')).to_be(true)
+  end
   -- Pruning at start: sent and seen rows older than 30 days go; queued and failed rows stay.
   local old = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\npeer = app.peer{}', hub = {['hub.peer.send'] = function() return nil, {code = 'timeout', message = 'x'} end}})
   local T = 100 * 86400

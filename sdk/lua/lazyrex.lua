@@ -18,9 +18,6 @@ local MAX_REQUEST = 64 * 1024 -- Rex refuses a larger client.perform request (ob
 local TWO53 = 9007199254740992
 -- The SDK directory: peer.lua is loaded from it (app.peer).
 local SDK_DIR = debug.getinfo(1, 'S').source:match('^@?(.*)/[^/]*$')
--- The SDK's own tables (peer.lua). The names that start with sdk_ are the SDK's: a plugin migration
--- cannot make one (hub lead, lead-sdkfed3 a).
-local SDK_TABLES = {sdk_meta = true, sdk_peer_outbox = true, sdk_peer_seen = true}
 
 -- fail raises a structured error. The SDK replies with its code and message.
 function M.fail(code, message) error({code = code, message = message or code}, 0) end
@@ -452,6 +449,9 @@ local function run(spec, fn, ...)
     S.frame = outer
     if not cok then
       pcall(hub, 'hub.sql.rollback', {tx = f.token})
+      -- The commit may have applied with a lost reply: the drain runs anyway. It reads only
+      -- committed rows, so a row that rolled back is never sent.
+      if f.peer_queued and S.peer then S.peer.committed() end
       error(cerr, 0)
     end
     -- A committed peer.send row: the outbox drains after this call (peer.lua).
@@ -1229,11 +1229,16 @@ function M.plugin(name)
     end
     return false
   end
-  -- foreign_sdk_object answers the name of an sdk_ object that is not the SDK's, or nil.
-  local function foreign_sdk_object()
-    for _, n in ipairs(schema_names()) do
-      if n:lower():sub(1, 4) == 'sdk_' and not SDK_TABLES[n] then return n end
-    end
+  -- sdk_objects answers the set of sdk_ object names. foreign_sdk_object answers an sdk_ object
+  -- that is not in before (the set before the plugin steps ran), or nil: only the SDK makes them.
+  -- The names that start with sdk_ are the SDK's (hub lead, lead-sdkfed3 a).
+  local function sdk_objects()
+    local out = {}
+    for _, n in ipairs(schema_names()) do if n:lower():sub(1, 4) == 'sdk_' then out[n:lower()] = true end end
+    return out
+  end
+  local function foreign_sdk_object(before)
+    for n in pairs(sdk_objects()) do if not before[n] then return n end end
     return nil
   end
   local function migrate()
@@ -1251,11 +1256,12 @@ function M.plugin(name)
         M.fail('internal', 'The database has schema ' .. have .. (have == 0 and ' with tables' or '') .. '; this plugin starts at base '
           .. migrate_base .. '. Start the release that has steps ' .. (have + 1) .. ' to ' .. migrate_base .. ' first (docs/plugin-sdk.md, "Migrations")')
       end
+      local before = have < last and sdk_objects()
       for v = math.max(have, migrate_base - 1) + 1, last do
         local step = migrations[v - migrate_base + 1]
         if type(step) == 'function' then step(db) else db.exec(step) end
       end
-      local foreign = have < last and foreign_sdk_object()
+      local foreign = before and foreign_sdk_object(before)
       if foreign then M.fail('internal', 'A plugin migration made ' .. foreign .. ': the names that start with sdk_ are the SDK\'s (docs/plugin-sdk.md, "Federation")') end
       if have < last then db.exec('PRAGMA user_version = ' .. last) end
     end)

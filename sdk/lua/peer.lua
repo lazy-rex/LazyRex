@@ -27,6 +27,8 @@ return function(k)
     sdk_peer_seen = 'CREATE TABLE sdk_peer_seen (id TEXT PRIMARY KEY, from_hub TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, '
       .. 'refused TEXT, message TEXT, at INTEGER NOT NULL)',
   }
+  -- The drain and the status read the outbox per peer and state, in row order.
+  local QUEUE_INDEX = 'CREATE INDEX sdk_peer_outbox_queue ON sdk_peer_outbox (hub, state, n)'
   P.TABLES = TABLES
 
   local function now() return os.time() end
@@ -169,7 +171,7 @@ return function(k)
         fail('internal', 'The database has SDK peer schema ' .. v .. '; this SDK knows ' .. VERSION .. '. Update the plugin or delete its database.')
       end
       if v == 0 then
-        if not have.sdk_peer_outbox then db.exec(TABLES.sdk_peer_outbox) end
+        if not have.sdk_peer_outbox then db.exec(TABLES.sdk_peer_outbox); db.exec(QUEUE_INDEX) end
         if not have.sdk_peer_seen then db.exec(TABLES.sdk_peer_seen) end
         db.exec('INSERT INTO sdk_meta (part, version) VALUES (?, ?)', 'peer', VERSION)
       end
@@ -224,21 +226,21 @@ return function(k)
   end
 
   local function drain_once()
-    local rows = db.query('SELECT n, id, hub, key, body FROM sdk_peer_outbox WHERE state = ?', 'queued')
-    table.sort(rows, function(a, b) return tonumber(a.n) < tonumber(b.n) end)
-    local order, by = {}, {}
-    for _, r in ipairs(rows) do
-      if not by[r.hub] then by[r.hub] = {}; order[#order + 1] = r.hub end
-      table.insert(by[r.hub], r)
-    end
+    -- One row per peer, then one row at a time: a reply holds at most one body, so a backlog of any
+    -- size drains (one query of all queued bodies fails with too_large over one reply).
     local soonest
-    for _, h in ipairs(order) do
+    for _, p in ipairs(db.query('SELECT hub, MIN(n) AS first FROM sdk_peer_outbox WHERE state = ? GROUP BY hub ORDER BY first', 'queued')) do
+      local h = p.hub
       local st = D.peers[h] or {wait = 0, next = 0}
       D.peers[h] = st
       if st.next > now() then
         soonest = math.min(soonest or math.huge, st.next - now())
       else
-        for _, r in ipairs(by[h]) do
+        local last = 0
+        while true do
+          local r = db.first('SELECT n, id, hub, key, body FROM sdk_peer_outbox WHERE hub = ? AND state = ? AND n > ? ORDER BY n LIMIT 1', h, 'queued', last)
+          if not r then break end
+          last = tonumber(r.n)
           local ok, res = pcall(hub, 'hub.peer.send', {hub = r.hub, key = r.key, body = r.body})
           if ok then
             mark_sent(r, type(res) == 'table' and res.seq or nil)
@@ -409,16 +411,16 @@ return function(k)
     function api.status()
       local peers, t = {}, now()
       local function of(h) peers[h] = peers[h] or {queued = 0, failed = 0}; return peers[h] end
-      for _, r in ipairs(db.query('SELECT hub, created FROM sdk_peer_outbox WHERE state = ?', 'queued')) do
+      -- SQL counts (one row per peer): the status of a backlog of any size fits in one reply.
+      for _, r in ipairs(db.query('SELECT hub, COUNT(*) AS queued, MIN(created) AS oldest FROM sdk_peer_outbox WHERE state = ? GROUP BY hub', 'queued')) do
         local p = of(r.hub)
-        p.queued = p.queued + 1
-        local age = t - tonumber(r.created)
-        if not p.oldest_queued_age_s or age > p.oldest_queued_age_s then p.oldest_queued_age_s = age end
+        p.queued, p.oldest_queued_age_s = tonumber(r.queued), t - tonumber(r.oldest)
       end
-      for _, r in ipairs(db.query('SELECT hub, code, message, failed_at FROM sdk_peer_outbox WHERE state = ?', 'failed')) do
+      for _, r in ipairs(db.query('SELECT hub, COUNT(*) AS failed FROM sdk_peer_outbox WHERE state = ? GROUP BY hub', 'failed')) do
         local p = of(r.hub)
-        p.failed = p.failed + 1
-        if not p.last_failed or tonumber(r.failed_at) >= p.last_failed.at then p.last_failed = {code = r.code, message = r.message, at = tonumber(r.failed_at)} end
+        p.failed = tonumber(r.failed)
+        local l = db.first('SELECT code, message, failed_at FROM sdk_peer_outbox WHERE hub = ? AND state = ? ORDER BY failed_at DESC, n DESC LIMIT 1', r.hub, 'failed')
+        p.last_failed = {code = l.code, message = l.message, at = tonumber(l.failed_at)}
       end
       for h, st in pairs(D.peers) do
         if st.error and peers[h] then peers[h].last_error, peers[h].next_try_s = st.error, math.max(st.next - t, 0) end

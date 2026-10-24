@@ -1,14 +1,16 @@
 -- A fake hub.sql for the SDK tests (wire: hub.sql handoff v1 and the NULL tag {null = true}). It
 -- keeps tables in memory, and it knows only the statements that the tests use: CREATE TABLE,
--- PRAGMA user_version, and INSERT, SELECT, UPDATE and DELETE of the forms below. A handler
--- transaction buffers its changes on a copy; commit installs the copy, rollback drops it. Saved
--- replies commit with the transaction. Every call is logged in fake.calls.
+-- CREATE INDEX, PRAGMA user_version, and INSERT, SELECT, UPDATE and DELETE of the forms below. A
+-- handler transaction buffers its changes on a copy; commit installs the copy, rollback drops it.
+-- Saved replies commit with the transaction. Every call is logged in fake.calls.
 --   local fake = dofile('fake_sql.lua')()
 --   fake.handle(action, args) -> result | nil, {code, message}
 -- fake.fail_next[action] = {code, message} fails the next call of that action once.
 -- fake.on(action, fn(args)) runs fn before the call (for example to make a commit fail).
+-- fake.lose_reply[action] = {code, message}: the next call of that action runs, and its reply is this error.
+-- fake.max_rows = n: a query reply holds at most n rows (complete = false, as over the hub's reply limit).
 return function()
-  local fake = {calls = {}, ops = {}, state = {tables = {}, user_version = 0}, open = nil, next_token = 0, fail_next = {}, hooks = {}}
+  local fake = {calls = {}, ops = {}, state = {tables = {}, user_version = 0}, open = nil, next_token = 0, fail_next = {}, lose_reply = {}, hooks = {}}
   local function copy(v)
     if type(v) ~= 'table' then return v end
     local r = {}
@@ -44,6 +46,13 @@ return function()
       db.tables[cname] = t
       return {changes = 0, id = 0}
     end
+    local iname = sql:match('^CREATE INDEX ([%w_]+) ON ')
+    if iname then
+      db.indexes = db.indexes or {}
+      if db.indexes[iname] then return err('sql_error', 'SQLITE_ERROR: index ' .. iname .. ' already exists') end
+      db.indexes[iname] = true
+      return {changes = 0, id = 0}
+    end
     local tname, icols = sql:match('^INSERT INTO ([%w_]+) %(([^)]*)%) VALUES')
     if tname then
       local t = db.tables[tname]
@@ -61,27 +70,113 @@ return function()
     if sql:match('^SELECT name FROM sqlite_master ') then
       local rows = {}
       for tn in pairs(db.tables) do rows[#rows + 1] = {tn} end
+      for xn in pairs(db.indexes or {}) do rows[#rows + 1] = {xn} end
       table.sort(rows, function(a, b) return a[1] < b[1] end)
       return {columns = {'name'}, rows = rows, complete = true}
     end
-    local sel, from = sql:match('^SELECT (.-) FROM ([%w_]+)')
+    -- SELECT cols FROM t [WHERE c op ? AND ...] [GROUP BY c] [ORDER BY c [DESC], ...] [LIMIT n].
+    -- A column is a name, or COUNT(*), MIN(c) or MAX(c) with AS name. op is =, < or >.
+    local sel, from, rest = sql:match('^SELECT (.-) FROM ([%w_]+)%s*(.-)$')
     if sel then
       local t = db.tables[from]
+      rest = trim((rest:gsub('%-%-[^\n]*', ''):gsub(';%s*$', '')))
       if not t then return err('sql_error', 'SQLITE_ERROR: no such table: ' .. from) end
-      local names = {}
-      if sel == '*' then names = copy(t.columns) else for c in sel:gmatch('[^,%s]+') do names[#names + 1] = c end end
-      local where = sql:match('WHERE ([%w_]+) = %?')
-      local want = where and nextp()
-      local out = {}
-      for _, row in ipairs(t.rows) do
-        if not where or row[where] == want then
-          local r = {}
-          for k, c in ipairs(names) do r[k] = wire(row[c]) end
-          out[#out + 1] = r
+      local function clause(word)
+        local after = rest:match(word .. ' (.*)$')
+        if not after then return nil end
+        for _, stop in ipairs({' GROUP BY ', ' ORDER BY ', ' LIMIT '}) do
+          local i = after:find(stop, 1, true)
+          if i then after = after:sub(1, i - 1) end
         end
+        return trim(after)
+      end
+      local where, group, order, limit = clause('WHERE'), clause('GROUP BY'), clause('ORDER BY'), tonumber(clause('LIMIT'))
+      local conds = {}
+      if where then
+        for term in (where .. ' AND '):gmatch('(.-) AND ') do
+          local c, op = term:match('^([%w_]+) ([=<>]) %?$')
+          if c then conds[#conds + 1] = {col = c, op = op, want = nextp()} end
+        end
+      end
+      local function less(a, b) if a == nil then return b ~= nil end if b == nil then return false end return a < b end
+      local hits = {}
+      for _, row in ipairs(t.rows) do
+        local ok = true
+        for _, c in ipairs(conds) do
+          local v = row[c.col]
+          if c.op == '=' then ok = ok and v == c.want
+          elseif c.op == '<' then ok = ok and v ~= nil and less(v, c.want)
+          else ok = ok and v ~= nil and less(c.want, v) end
+        end
+        if ok then hits[#hits + 1] = row end
+      end
+      local cols = {}
+      if sel == '*' then for _, c in ipairs(t.columns) do cols[#cols + 1] = {name = c, col = c} end
+      else
+        for item in (sel .. ','):gmatch('%s*([^,]+),') do
+          item = trim(item)
+          local fn, arg, as = item:match('^(%a+)%(([%w_*]+)%) AS ([%w_]+)$')
+          if fn then cols[#cols + 1] = {name = as, fn = fn:upper(), col = arg} else cols[#cols + 1] = {name = item, col = item} end
+        end
+      end
+      local aggregate = false
+      for _, c in ipairs(cols) do if c.fn then aggregate = true end end
+      local recs = {}
+      if aggregate or group then
+        local groups, order_of = {}, {}
+        for _, row in ipairs(hits) do
+          local g = group and row[group] or ''
+          if not groups[g] then groups[g] = {}; order_of[#order_of + 1] = g end
+          table.insert(groups[g], row)
+        end
+        if not group and #order_of == 0 then order_of[1] = ''; groups[''] = {} end
+        for _, g in ipairs(order_of) do
+          local rec = {}
+          for _, c in ipairs(cols) do
+            if c.fn == 'COUNT' then rec[c.name] = #groups[g]
+            elseif c.fn == 'MIN' or c.fn == 'MAX' then
+              local best
+              for _, r in ipairs(groups[g]) do
+                local v = r[c.col]
+                if v ~= nil and (best == nil or (c.fn == 'MIN' and less(v, best)) or (c.fn == 'MAX' and less(best, v))) then best = v end
+              end
+              rec[c.name] = best
+            else rec[c.name] = groups[g][1] and groups[g][1][c.col] end
+          end
+          recs[#recs + 1] = rec
+        end
+      else
+        for _, row in ipairs(hits) do
+          local rec = {}
+          for k, v in pairs(row) do rec[k] = v end
+          recs[#recs + 1] = rec
+        end
+      end
+      if order then
+        local keys = {}
+        for term in (order .. ','):gmatch('%s*([^,]+),') do
+          local c, desc = trim(term):match('^([%w_]+)%s*(%a*)$')
+          keys[#keys + 1] = {col = c, desc = desc:upper() == 'DESC'}
+        end
+        table.sort(recs, function(a, b)
+          for _, k in ipairs(keys) do
+            local x, y = a[k.col], b[k.col]
+            if x ~= y then if k.desc then return less(y, x) end return less(x, y) end
+          end
+          return false
+        end)
+      end
+      local names, out = {}, {}
+      for i, c in ipairs(cols) do names[i] = c.name end
+      for i, rec in ipairs(recs) do
+        if limit and i > limit then break end
+        local r = {}
+        for k, c in ipairs(cols) do r[k] = wire(rec[c.name]) end
+        out[#out + 1] = r
       end
       return {columns = names, rows = out, complete = true}
     end
+
     local utab, set, ucol = sql:match('^UPDATE ([%w_]+) SET (.-) WHERE ([%w_]+) = %?$')
     if utab then
       local t = db.tables[utab]
@@ -145,7 +240,13 @@ return function()
   function handlers.exec(args) return statement(args, true) end
   function handlers.query(args)
     if not trim(args.sql):upper():match('^SELECT') and not trim(args.sql):upper():match('^PRAGMA USER_VERSION$') then return err('refused', 'A query cannot write') end
-    return statement(args, false)
+    local r, e = statement(args, false)
+    -- max_rows: a reply holds at most this many rows (the hub stops at about 1 MB: complete = false).
+    if r and fake.max_rows and r.rows and #r.rows > fake.max_rows then
+      for i = #r.rows, fake.max_rows + 1, -1 do r.rows[i] = nil end
+      r.complete = false
+    end
+    return r, e
   end
   function handlers.batch(args)
     local t = in_tx(args)
@@ -201,7 +302,10 @@ return function()
     local name = action:match('^hub%.sql%.(%w+)$')
     local h = name and handlers[name]
     if not h then return err('not_supported', 'fake_sql: ' .. action) end
-    return h(args or {})
+    local r, e = h(args or {})
+    local lost = fake.lose_reply[action]
+    if lost and r then fake.lose_reply[action] = nil; return nil, lost end
+    return r, e
   end
   -- count answers the number of logged calls of action.
   function fake.count(action)

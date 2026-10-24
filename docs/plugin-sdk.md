@@ -386,7 +386,8 @@ keeps the outbox, the retries and the dedupe, so a plugin does not build them ag
 `sdk/lua/peer.lua`.
 
 ```lua
-local peer = app.peer{
+local peer -- declared first: the listeners below use it
+peer = app.peer{
   receive = function(msg) -- {from_hub, key, body}: body is the sender's table
     if not known(msg.body.to) then return peer.refuse('unknown_recipient', 'no such agent here') end
     app.db.exec('INSERT INTO inbox (id, text) VALUES (?, ?)', peer.received_id(msg.from_hub, msg.key), msg.body.text)
@@ -427,7 +428,8 @@ or `failed` with `code` and `message`).
 - Size, checked at the call (`too_large`): the hub limit is 65536 bytes of Go's `json.Marshal` of
   the body text (docs/hub.md "Size"). The row insert must also fit one Rex request (64 KiB): the
   body text, the hub and the key as Rex encodes them (the hub and the key twice), plus 1024 bytes,
-  at most 65536. Rex encodes a string as Go does, so this second rule is the tighter one. The hub
+  at most 65536. Rex encodes a string as Go does, so this second rule is the tighter one: for a Lua
+  plugin, the SDK limit is the real limit (hub lead, lead-fedsize2). The hub
   can still answer `too_large` at the drain when the envelope does not fit one pull reply; that is
   final.
 
@@ -447,6 +449,9 @@ After the commit, and after the reply to the caller, the SDK drains the outbox:
   on. A retry sends the same key and the same text, and the hub answers the first seq, so nothing
   goes twice.
 - The drain also runs at start (rows of an earlier run), and on a timer only while a row waits.
+  It also runs after a commit that failed with a queued row: the commit can apply with a lost
+  reply. The drain reads only committed rows. It reads one row at a time, so a backlog of any
+  size drains.
 - `sent` means that this hub took the row: the hub ack is hub to hub. Nothing proves that the
   remote plugin ran. A receiver without the plugin, or with the plugin stopped, drops the envelope
   with a log line, and the sender sees no error. A plugin that needs proof sends its own reply.
