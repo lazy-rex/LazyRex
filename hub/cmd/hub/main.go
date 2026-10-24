@@ -931,7 +931,13 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		degraded = c.degraded
 		return result, err
 	case a != nil && a.caller == callerOperator:
-		if err := h.operatorGuard(pid); err != nil {
+		if p.Action == "hub.admin.resume" && args["for"] == "user" && h.pluginByClient(p.Requester.ClientID) != nil {
+			// A registered plugin resumes one agent for the user (lead-resume3, as hub.spawn "for"); the
+			// parser refuses "for" on every other form. A relaunch still refuses it.
+			if h.relaunching.Load() {
+				return nil, refuse("refused", "relaunch in progress")
+			}
+		} else if err := h.operatorGuard(pid); err != nil {
 			return nil, err
 		}
 		return a.run(h, ctx, c)

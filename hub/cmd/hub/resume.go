@@ -4,12 +4,14 @@ package main
 // a new pane, from its profile's resume template.
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -153,12 +155,36 @@ func (h *Hub) agentOp(ctx context.Context, action string, args map[string]any, f
 				return nil, err
 			}
 			req[name] = v
+		case "placement", "cwd", "for":
+			// One agent's resume in a given place (lead-resume, lead-resume3, lead-cwd). The caller of
+			// "for" is checked before the call (actions.go); its value here.
+			if action != "resume" {
+				return nil, refuse("invalid_input", "%s is not an argument of hub.admin.%s", name, action)
+			}
+			switch name {
+			case "placement":
+				if _, err := parseWorkerPlacement(v); err != nil {
+					return nil, err
+				}
+			case "cwd":
+				if s, ok := v.(string); !ok || !filepath.IsAbs(s) {
+					return nil, bad("cwd must be an absolute directory path")
+				}
+			case "for":
+				if v != "user" {
+					return nil, bad(`for must be "user"`)
+				}
+			}
+			req[name] = v
 		default:
 			return nil, bad("unknown argument %q", name)
 		}
 	}
 	if (req["binding"] != nil || req["revision"] != nil) && req["agent"] == nil {
 		return nil, refuse("invalid_input", "binding and revision need agent: the batch forms take no guard")
+	}
+	if (req["placement"] != nil || req["cwd"] != nil || req["for"] != nil) && req["agent"] == nil {
+		return nil, refuse("invalid_input", "placement, cwd and for need agent: they are for one agent's resume")
 	}
 	if req["release"] != nil && len(req) > 2 || req["agent"] != nil && (req["kind"] != nil || req["session_id"] != nil) {
 		return nil, bad("give agent, or kind and session_id, or release")
@@ -294,18 +320,39 @@ func (h *Hub) resumeTargets(ctx context.Context, req map[string]any) ([]opTarget
 	if err != nil {
 		return nil, err
 	}
+	// The placement is checked before an operation exists (the session and the anchor), and again at
+	// the launch.
+	if raw, ok := req["placement"]; ok {
+		p, _ := parseWorkerPlacement(raw)
+		if _, err := h.resolveWorkerPlacement(ctx, p); err != nil {
+			return nil, err
+		}
+	}
 	session, _ := req["session_id"].(string)
+	cwd, _ := req["cwd"].(string)
 	var out []opTarget
 	for _, id := range ids {
 		t := opTarget{identity: id, phase: "refused"}
-		var state, block string
-		h.db.QueryRowContext(ctx, `SELECT state, block_id, updated FROM identities WHERE identity = ?`, id).Scan(&state, &block, &t.admitted)
+		var state, block, kind string
+		h.db.QueryRowContext(ctx, `SELECT state, block_id, updated, kind FROM identities WHERE identity = ?`, id).Scan(&state, &block, &t.admitted, &kind)
 		src, err := h.sourceSpawn(ctx, id, block)
 		switch {
 		case state != "detached":
 			t.detail = "the agent is " + state + ", not detached"
+		case errors.Is(err, sql.ErrNoRows) && session != "":
+			continue // no spawn session: the batch selects another session
 		case errors.Is(err, sql.ErrNoRows):
-			t.detail = "no spawn record: an agent started by hand cannot be resumed yet"
+			// An agent started by hand (lead-resume): the setup profile of its kind (the profile ID is
+			// the kind, setup.go), in the given cwd. The spawn of this resume is its record afterwards.
+			if byID[kind].Resume == nil {
+				t.detail = "no resume profile for kind " + kind
+			} else if cwd == "" {
+				t.detail = "no spawn record and no cwd"
+			} else if _, err := h.effectiveCwd(byID[kind], cwd); err != nil {
+				t.detail = "cwd: " + err.Error()
+			} else {
+				t.phase = "admitted"
+			}
 		case err != nil:
 			return nil, err
 		case session != "" && src.Session != session:
@@ -390,10 +437,29 @@ func (h *Hub) opReply(ctx context.Context, opID string) (any, error) {
 		return nil, err
 	}
 	sort.Slice(ts, func(i, j int) bool { return ts[i].seq < ts[j].seq })
+	var action, reqRaw string
+	h.db.QueryRowContext(ctx, `SELECT action, request FROM agent_ops WHERE op_id = ?`, opID).Scan(&action, &reqRaw)
+	var req struct {
+		Cwd string `json:"cwd"`
+	}
+	json.Unmarshal([]byte(reqRaw), &req)
 	list := []any{}
 	done := true
 	for _, t := range ts {
 		e := map[string]any{"agent": t.identity, "phase": t.phase}
+		// The cwd that a resume uses (lead-cwd): the new spawn's, else the source spawn's, else the
+		// request's (an agent started by hand). A refused target has none.
+		if action == "resume" && t.phase != "refused" && t.phase != "released" {
+			var cwd string
+			if spawn := cmp.Or(t.spawn, t.sourceSpawn); spawn != "" {
+				h.db.QueryRowContext(ctx, `SELECT cwd FROM spawns WHERE spawn_id = ?`, spawn).Scan(&cwd)
+			} else if req.Cwd != "" {
+				cwd, _ = realDir(req.Cwd)
+			}
+			if cwd != "" {
+				e["cwd"] = cwd
+			}
+		}
 		for k, v := range map[string]string{"detail": t.detail, "block_id": t.block, "spawn_id": t.spawn, "stop": t.stopResult} {
 			if v != "" {
 				e[k] = v
@@ -604,16 +670,29 @@ func (h *Hub) resumeAdvance(ctx context.Context, t *opTarget) error {
 // resumeLaunch admits the target's spawn (a row of its own, no new agent: the identity is the
 // agent) and sends it through sendSpawn.
 func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
-	src, err := scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE spawn_id = ?`, t.sourceSpawn))
-	if err != nil {
-		return err
+	var kind, conv, name string
+	h.db.QueryRowContext(ctx, `SELECT kind, conversation_id, name FROM identities WHERE identity = ?`, t.identity).Scan(&kind, &conv, &name)
+	// The request's placement and cwd (one agent's resume; validated at admission).
+	var reqRaw string
+	h.db.QueryRowContext(ctx, `SELECT request FROM agent_ops WHERE op_id = ?`, t.op).Scan(&reqRaw)
+	var r struct {
+		Placement any    `json:"placement"`
+		Cwd       string `json:"cwd"`
 	}
-	var effRaw string
-	h.db.QueryRowContext(ctx, `SELECT effective_args FROM spawns WHERE spawn_id = ?`, src.ID).Scan(&effRaw)
+	json.Unmarshal([]byte(reqRaw), &r)
+	// The source spawn gives the profile, session, cwd, title and args. Without one (an agent started
+	// by hand), the setup profile of the kind, the request's cwd and the identity's name.
+	src := &spawnRow{Profile: kind, Title: cmp.Or(name, kind)}
 	eff := map[string]string{}
-	json.Unmarshal([]byte(effRaw), &eff)
-	var kind, conv string
-	h.db.QueryRowContext(ctx, `SELECT kind, conversation_id FROM identities WHERE identity = ?`, t.identity).Scan(&kind, &conv)
+	if t.sourceSpawn != "" {
+		var err error
+		if src, err = scanSpawn(h.db.QueryRowContext(ctx, `SELECT `+spawnCols+` FROM spawns WHERE spawn_id = ?`, t.sourceSpawn)); err != nil {
+			return err
+		}
+		var effRaw string
+		h.db.QueryRowContext(ctx, `SELECT effective_args FROM spawns WHERE spawn_id = ?`, src.ID).Scan(&effRaw)
+		json.Unmarshal([]byte(effRaw), &eff)
+	}
 	byID, _, err := h.loadProfiles()
 	if err != nil {
 		return err
@@ -622,6 +701,22 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 	if !ok || prof.Resume == nil || conv == "" {
 		h.setPhase(ctx, t, "admitted", "failed", fmt.Sprintf("the profile %q or its resume template is gone", src.Profile), nil)
 		return nil
+	}
+	if t.sourceSpawn == "" {
+		if src.Cwd, err = h.effectiveCwd(prof, r.Cwd); err != nil {
+			h.setPhase(ctx, t, "admitted", "failed", "cwd: "+err.Error(), nil)
+			return nil
+		}
+	}
+	placement := workerPlacement{}
+	if r.Placement != nil {
+		placement, _ = parseWorkerPlacement(r.Placement)
+	}
+	if r.Placement != nil || t.sourceSpawn == "" {
+		if src.Session, err = h.resolveWorkerPlacement(ctx, placement); err != nil {
+			h.setPhase(ctx, t, "admitted", "failed", "placement: "+err.Error(), nil)
+			return nil
+		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	s := &spawnRow{ID: randomID("spawn-"), Caller: "admin", Key: "agent-op:" + t.op + ":" + t.identity, Profile: prof.ID,
@@ -675,7 +770,7 @@ func (h *Hub) resumeLaunch(ctx context.Context, t *opTarget) error {
 	h.ev.emit("agent_op_phase", map[string]any{"op_id": t.op, "agent": t.identity, "phase": "launching", "spawn_id": s.ID})
 	h.kickRestartForms()
 	h.changed("workers") // hub.workers lists the starting worker; a resume spawn has no agent_id
-	if err := h.sendSpawn(ctx, s, workerPlacement{}, resumeArgv(s, prof, eff, conv)); err != nil {
+	if err := h.sendSpawn(ctx, s, placement, resumeArgv(s, prof, eff, conv)); err != nil {
 		return err
 	}
 	switch s.Status {

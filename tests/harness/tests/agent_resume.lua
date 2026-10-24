@@ -16,7 +16,7 @@ local function profile(id, resume_when, delay, kind)
 end
 
 write_profiles({profiles = {profile('codexlike', 'prompt'), profile('claudelike', 'start'),
-    profile('claude', 'start', '0', 'claude'),
+    profile('claude', 'start', '0', 'claude'), profile('codex', 'prompt'),
     profile('silent', 'never'), profile('late', 'prompt', '4'), profile('foreign', 'foreign'),
     {id = 'noresume', name = 'noresume', kind = 'agent', cwd = lab,
       command = {'/bin/sh', fake, 'codex', '${conv}', 'startup', 'start'}, args = {{name = 'conv', required = true}}}}})
@@ -247,6 +247,80 @@ test('a lost answer of the prompt write: unknown, never written again; the hook 
   expect(prompts('c7')).to_be(1)
   resume({key = 'r-c7', agent = id})
   expect(prompts('c7')).to_be(1)
+end)
+
+-- hand_started starts a fake Codex in a new tab of sess without hub.spawn, as a user starts an agent
+-- by hand: its identity has no spawn record. It returns the identity and its block.
+local function hand_started(sess, conv)
+  local r, err = rex.call('session.new_window', {session_id = sess, focus = false, window_label = 'hand ' .. conv,
+    layout = {block = {flavor = 'com.superlogical.terminal.shell', label = 'hand-' .. conv,
+      options = {command = {'/bin/sh', fake, 'codex', conv, 'startup', 'start'}, cwd = lab, exit = {on_completion = false}}}}})
+  if err ~= nil then error('new_window: ' .. tostring(err), 0) end
+  local block = r.block_ids[1]
+  local id = 'codex:' .. conv
+  H.wait('the identity of ' .. conv, function()
+    local i = identity(id)
+    return i and i.state == 'current' and i.block_id == block
+  end)
+  return id, block
+end
+
+-- window_of is the window of sess whose layout holds block, or nil.
+local function window_of(sess, block)
+  local function holds(x)
+    if type(x) ~= 'table' then return false end
+    if x.block_id == block then return true end
+    for _, v in pairs(x) do if holds(v) then return true end end
+    return false
+  end
+  local v, err = rex.call('session.view', {session_id = sess})
+  if err ~= nil then error('session.view: ' .. tostring(err), 0) end
+  for _, w in ipairs(v.windows or {}) do
+    if holds(w.layers) or holds(w.layout) then return w.window_id end
+  end
+end
+
+test('an agent started by hand resumes beside a pane in the given cwd; its next resume uses its spawn cwd', function()
+  local _, anchor, sess = started('codexlike', 'h0') -- a placed pane to resume beside
+  local id, block = hand_started(sess, 'h1')
+  detached(id, block, sess)
+  local t = target(finished('r-h1-nocwd', {agent = id}), id)
+  expect(t.phase).to_be('refused')
+  expect(t.detail).to_be('no spawn record and no cwd')
+  local r = finished('r-h1', {agent = id, cwd = lab, placement = {session = sess, beside = anchor, direction = 'right', ratio = 0.3}})
+  t = target(r, id)
+  expect(t.phase).to_be('rebound')
+  expect(t.cwd).to_be_truthy()
+  expect(identity(id).block_id).to_be(t.block_id)
+  expect(window_of(sess, t.block_id)).to_be(window_of(sess, anchor))
+  expect(prompts('h1')).to_be(1) -- the kind's first prompt (Codex)
+  -- Now it has a spawn record: a second resume uses that spawn's cwd, and another cwd is not used.
+  local first = t
+  detached(id, first.block_id, sess)
+  t = target(finished('r-h1-2', {agent = id, cwd = '/'}), id)
+  expect(t.phase).to_be('rebound')
+  expect(t.cwd).to_be(first.cwd)
+end)
+
+test('a registered plugin resumes one agent for the user; without for, the batch form and an agent are refused', function()
+  local _, _, sess = started('codexlike', 'h2a')
+  local id, block = hand_started(sess, 'h2')
+  detached(id, block, sess)
+  local function as_plugin(args) return alice:call('fix.hub', {action = 'hub.admin.resume', args = args}) end
+  local r = as_plugin({key = 'p-h2-nofor', agent = id, cwd = lab})
+  expect(r.error and r.error.message or '').to_contain('refused from agent and plugin panes')
+  r = as_plugin({key = 'p-h2-batch', kind = 'codex', ['for'] = 'user'})
+  expect(r.error and r.error.code or '').to_be('invalid_input')
+  H.expect_error(function() alice:hub('hub.admin.resume', {key = 'a-h2', agent = id, cwd = lab, ['for'] = 'user'}) end,
+    'refused from agent and plugin panes')
+  local args = {key = 'p-h2', agent = id, cwd = lab, ['for'] = 'user'}
+  r = H.wait('the plugin resume', function()
+    local x = as_plugin(args)
+    expect(x.error).to_be(nil)
+    return x.result.done and x.result
+  end, 30)
+  expect(target(r, id).phase).to_be('rebound')
+  expect(identity(id).state).to_be('current')
 end)
 
 test('a hub stop while the prompt is being written: unknown after the restart, no write, the reservation stays', function()

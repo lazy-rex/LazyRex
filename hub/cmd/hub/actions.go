@@ -88,6 +88,9 @@ func init() {
 			return h.adminRelaunch(c.args)
 		}},
 		{name: "hub.admin.resume", caller: callerOperator, plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
+			if _, ok := c.args["for"]; ok && h.pluginByClient(c.p.Requester.ClientID) == nil {
+				return nil, bad(`only a registered plugin may act for "user"`)
+			}
 			return h.adminResume(ctx, c.args)
 		}},
 		{name: "hub.admin.restart", caller: callerOperator, plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
