@@ -241,7 +241,7 @@ local function settings_id(render_id, a, w, f) return 'settings/' .. digest16(re
 local function fetch_field(value, peer)
   return {id = 'fetch', label = 'Take the plugin files from', kind = 'select', required = true, value = value, options = {
     {value = 'github', label = 'GitHub'},
-    {value = 'peer', label = 'The peer hub' .. (peer and (' ' .. peer) or '') .. ' (this hub needs no GitHub access)'}}}
+    {value = 'peer', label = 'The peer hub' .. (type(peer) == 'string' and (' ' .. peer) or '') .. ' (this hub needs no GitHub access)'}}}
 end
 local function fetch_value(values)
   local f = values.fetch
@@ -321,7 +321,7 @@ local function entry_tree(key, render_id, view_id)
         {id = 'args', label = 'Args: one key=value per line', kind = 'multiline', required = false, value = a},
         {id = 'watch_roots', label = 'Watch roots: one path per line', kind = 'multiline', required = false, value = w},
       }
-      if e.fetch then fields[#fields + 1] = fetch_field(e.fetch) end
+      if e.fetch then fields[#fields + 1] = fetch_field(e.fetch, list.plugins_from) end
       nodes[#nodes + 1] = {id = settings_id(render_id, a, w, e.fetch), type = 'form', label = 'Settings (they apply at the next start)', fields = fields,
         submit_action = action('settings', 'Save settings', op_tool)}
     else
@@ -353,7 +353,7 @@ local function offer_tree(source, render_id, view_id)
       nodes[1] = widget('id_used', 'This hub already has managed:' .. o.id .. ' (' .. used.source .. '), so the offer cannot be added with its id. Remove that entry first.')
     else
       nodes[1] = {id = offer_id(render_id, o), type = 'form', label = 'Add managed:' .. o.id .. ' from ' .. o.peer .. '? Source ' .. o.source .. ', pinned by the peer at ' .. offer_pin_text(o.pin) ..
-        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs code from GitHub on this computer.', fields = {fetch_field('github', o.peer)},
+        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs the plugin\'s code on this computer.', fields = {fetch_field('github', o.peer)},
         submit_action = action('add', 'Add', confirmation)}
     end
   end
