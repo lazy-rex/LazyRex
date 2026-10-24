@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Lab tests of @latest (docs/plugin-sources.md, sections 4 to 6). Lab only: HARNESS_LAB=1.
+// Lab tests of @latest (docs/plugin-sources.md, sections 4 to 6). Lab only: LAB=1.
 
 // latestRepo is a GitHub-shaped repository github:lab/<name> of the plugin <name>, with one commit.
 func latestRepo(t *testing.T, name string) (*testRepo, string) {

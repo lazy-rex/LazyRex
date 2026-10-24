@@ -99,9 +99,7 @@ func (s *startLab) got() []any {
 // b's lab server also listens on HTTP at 127.0.0.1, and a reaches b at that address: a's pulls and
 // nudges arrive at b's hub over TCP, from a caller with no process ID, as from a remote hub.
 func TestPeerHubsLab(t *testing.T) {
-	if os.Getenv("HARNESS_LAB") == "" {
-		t.Skip("lab test: set HARNESS_LAB=1")
-	}
+	needLab(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

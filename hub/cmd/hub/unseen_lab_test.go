@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// A renderer that exits before it attaches, against a real Rex lab (rexLab: HARNESS_LAB=1). The
+// A renderer that exits before it attaches, against a real Rex lab (rexLab: LAB=1). The
 // renderer script exits at once; its pane keeps open with no child. panelsLabHub drains Rex's
 // events and the test feeds none, so each pass finds the exit before the hub sees child_exited.
 // No UI worker runs: the test runs the passes.

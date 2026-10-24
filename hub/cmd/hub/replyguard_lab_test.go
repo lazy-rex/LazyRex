@@ -11,7 +11,7 @@ import (
 )
 
 // Lab tests of the reply limit through a real Rex server. Each test starts its own lab server
-// (rexLab, HARNESS_LAB=1).
+// (rexLab, LAB=1).
 
 // labResponder is a client that declares lab.big and answers each call with answer.
 type labResponder struct {

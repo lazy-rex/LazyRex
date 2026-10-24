@@ -12,7 +12,7 @@ import (
 )
 
 // The restart wrapper with the real hub binary and its own lab server (docs/hub.md, "Restart
-// wrapper"). Lab only: SHUTDOWN_LAB=1.
+// wrapper"). Lab only: LAB=1.
 //  1. A second wrapper on the same state starts no hub and exits 1; the Rex client list is unchanged.
 //  2. The lab server stops: the hub exits 1 and the wrapper goes to backoff. A new lab server in the
 //     same directory: the restarted hub reaches ready.
@@ -22,9 +22,7 @@ import (
 //  5. The palette launch: the wrapper in a labeled pane; its lines in the pane, the hub's output in
 //     <state>/hub.log only.
 func TestRestartWrapperLab(t *testing.T) {
-	if os.Getenv("SHUTDOWN_LAB") != "1" {
-		t.Skip("set SHUTDOWN_LAB=1 to run the restart lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	rexBin, err := exec.LookPath("rex")
 	if err != nil {
 		t.Fatal(err)

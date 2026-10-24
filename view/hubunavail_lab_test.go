@@ -17,11 +17,9 @@ import (
 // A real renderer pane in a 38-column pane on a lab server, through the hub's restart form (a view
 // that the hub owns, so no plugin is needed): the hub stops, the pane shows the no-hub text with
 // its first sentence whole; the hub starts again, the pane attaches and the text goes. Lab only:
-// HUBUNAVAIL_LAB=1 (the test starts its own lab server and hub).
+// LAB=1 (the test starts its own lab server and hub).
 func TestNoHubTextLab(t *testing.T) {
-	if os.Getenv("HUBUNAVAIL_LAB") != "1" {
-		t.Skip("set HUBUNAVAIL_LAB=1 to run the no-hub lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)

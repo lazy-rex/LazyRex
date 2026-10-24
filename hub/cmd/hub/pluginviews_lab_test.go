@@ -227,7 +227,7 @@ func (s *startLab) waitLong(what string, d time.Duration, ok func() bool) {
 // The real Plugins… panel of the home plugin, opened from a pane as the Rex palette does, follows a
 // lock change with no action (lead-c8-b2 item 4, positive tracking): a GitHub entry runs commit A;
 // plugin update pins B; after the reload the open list renders again by itself, with the running
-// commit A and "pinned B" (codex-27, plugins-c8b2-source-blockers item 2). Lab only: HARNESS_LAB=1.
+// commit A and "pinned B" (codex-27, plugins-c8b2-source-blockers item 2). Lab only: LAB=1.
 func TestPluginsPanelFollowsLockLab(t *testing.T) {
 	s := newStartLabHome(t, nil)
 	gitTestEnv(t)
@@ -274,11 +274,9 @@ func TestPluginsPanelFollowsLockLab(t *testing.T) {
 // (plugins_from). b's Plugins… panel is open when a gets a managed GitHub entry: the offer shows
 // in the open panel with no action. Review… opens the confirm form, which names the offer; Add
 // adds the entry at a's pinned commit, fetched by b. Then a changes the id of another offer from X
-// to Y at the same pin: a press of the form that showed X sends no op. Lab only: HARNESS_LAB=1.
+// to Y at the same pin: a press of the form that showed X sends no op. Lab only: LAB=1.
 func TestOfferConfirmLab(t *testing.T) {
-	if os.Getenv("HARNESS_LAB") == "" {
-		t.Skip("lab test: set HARNESS_LAB=1")
-	}
+	needLab(t)
 	gitTestEnv(t)
 	r := newTestRepo(t)
 	commit := r.commit(map[string]string{"lazyrex.json": `{"name":"gh","main":"main.lua"}`, "main.lua": fmt.Sprintf(startFixture, "gh")})

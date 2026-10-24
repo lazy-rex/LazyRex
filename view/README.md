@@ -255,9 +255,9 @@ The renderer maps control characters in the status text to "?" (`paneSafe`, a co
 It retries with the same backoff and jitter in every case.
 
 Tests: `TestNoHubSaysHowToStartOne`, `TestTwoHubsSayThePaneNeedsOne`, `TestDiscoveryFailuresAreNotACount`, `TestConnectionStatusHasNoControls`, `TestPaneSafe` and `TestNoHubNoticeInANarrowPane` (the protocol fixture and the model).
-Lab: `HUBUNAVAIL_LAB=1 go test -run TestNoHubTextLab .` starts its own lab server and hub, and opens the hub's restart form (a real renderer pane) at 38×14.
+Lab: `LAB=1 go test -run TestNoHubTextLab .` starts its own lab server and hub, and opens the hub's restart form (a real renderer pane) at 38×14.
 
-Lab: `CHUNK_LAB=1 go test -run 'TestReplyParts(Hold|Timing)Lab' .` starts its own lab server and hub
+Lab: `LAB=1 go test -run 'TestReplyParts(Hold|Timing)Lab' .` starts its own lab server and hub
 (`-test`) for each test. TestReplyPartsHoldLab: the plugin `testdata/holdparts` stops a render of more
 than 150 KiB before its last reply part. The tree fits on one screen. During the hold the pane shows
 the first and the last node of the old tree; after the release it shows those of the new tree. TestReplyPartsTimingLab: through the real SDK (`tests/sdk-parts`), the median

@@ -19,12 +19,10 @@ import (
 )
 
 // Lab tests of `lazyrex-hub test` itself. Each run starts its own isolated lab servers under /tmp.
-// Lab only: HARNESS_LAB=1 (they need the rex CLI and take a few minutes).
+// Lab only: LAB=1 (they need the rex CLI and take a few minutes).
 func harnessBinary(t *testing.T) (bin, root string) {
 	t.Helper()
-	if os.Getenv("HARNESS_LAB") != "1" {
-		t.Skip("set HARNESS_LAB=1 to run the harness lab tests")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

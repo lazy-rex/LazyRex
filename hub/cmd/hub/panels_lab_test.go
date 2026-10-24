@@ -14,7 +14,7 @@ import (
 )
 
 // Side-slot recovery against a real Rex lab, with the new_split answer lost on demand (slotSplit).
-// Lab only (rexLab: HARNESS_LAB=1). The "renderer" is a script that sleeps, so
+// Lab only (rexLab: LAB=1). The "renderer" is a script that sleeps, so
 // no plugin or view runs; the tests check the hub's rows and the panes that Rex reports.
 func panelsLabHub(t *testing.T) (*Hub, *rex.Rex, string, string) {
 	t.Helper()

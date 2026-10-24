@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Lab tests of hub.admin.replace (docs/plugin-sources.md, section 14). Lab only: HARNESS_LAB=1.
+// Lab tests of hub.admin.replace (docs/plugin-sources.md, section 14). Lab only: LAB=1.
 
 func (s *startLab) replace(name, expect string) (map[string]any, error) {
 	return s.call("hub.admin.replace", map[string]any{"plugin": name, "expect_instance": expect})

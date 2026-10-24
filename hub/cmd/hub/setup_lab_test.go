@@ -15,7 +15,7 @@ import (
 
 // Setup on a real terminal: a lab Rex pane runs lazyrex-hub setup, the test answers each prompt
 // with rex block send, and the lab server then loads the written Rex config and runs the boot
-// entry LazyRex: Set Up. Lab only: SETUP_LAB=1.
+// entry LazyRex: Set Up. Lab only: LAB=1.
 //
 // Isolation: the test builds the binary first. Then it clears the whole environment of this test
 // process and sets only the variables below (as env -i does), and restores the environment at the
@@ -25,9 +25,7 @@ import (
 // isolated, Rex's default server is a socket under the lab HOME (checked first: no server answers
 // there). Setup names the lab server with -server.
 func TestSetupLab(t *testing.T) {
-	if os.Getenv("SETUP_LAB") != "1" {
-		t.Skip("set SETUP_LAB=1 to run the setup lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

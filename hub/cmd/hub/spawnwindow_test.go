@@ -31,7 +31,7 @@ func TestSpawnWindowValidation(t *testing.T) {
 	}
 }
 
-// TestSpawnWindowLab runs hub.spawn_window against an isolated Rex server (rexLab: HARNESS_LAB=1).
+// TestSpawnWindowLab runs hub.spawn_window against an isolated Rex server (rexLab: LAB=1).
 func TestSpawnWindowLab(t *testing.T) {
 	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

@@ -14,15 +14,13 @@ import (
 
 // Stop and exit status of the hub process (docs/hub.md, "Stop and exit status"), with the real
 // binary. The test starts its own lab server (lab/server.sh in a new lab directory) and stops only
-// that server and the hubs it started. Lab only: SHUTDOWN_LAB=1.
+// that server and the hubs it started. Lab only: LAB=1.
 //   - An argument to hub.admin.shutdown is refused; the hub keeps running.
 //   - hub.admin.shutdown replies {"stopping": true}, then the hub exits 0.
 //   - SIGTERM: exit 0.
 //   - The Rex connection closes (the lab server stops): exit 1.
 func TestHubShutdownExitStatusLab(t *testing.T) {
-	if os.Getenv("SHUTDOWN_LAB") != "1" {
-		t.Skip("set SHUTDOWN_LAB=1 to run the shutdown lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	rexBin, err := exec.LookPath("rex")
 	if err != nil {
 		t.Fatal(err)
@@ -98,16 +96,14 @@ func TestHubShutdownExitStatusLab(t *testing.T) {
 
 // A signal while the hub starts is also a deliberate stop: exit 0. The test pauses its own lab
 // server (SIGSTOP), so the hub waits on Rex (the real-server check, then the connection), then
-// sends SIGTERM to the hub. Lab only: SHUTDOWN_LAB=1.
+// sends SIGTERM to the hub. Lab only: LAB=1.
 func TestHubSignalDuringStartLab(t *testing.T) { signalDuringStart(t) }
 
 // The same with -restart: the wrapper stops before its first child, exit 0.
 func TestHubRestartSignalDuringStartLab(t *testing.T) { signalDuringStart(t, "-restart") }
 
 func signalDuringStart(t *testing.T, args ...string) {
-	if os.Getenv("SHUTDOWN_LAB") != "1" {
-		t.Skip("set SHUTDOWN_LAB=1 to run the shutdown lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

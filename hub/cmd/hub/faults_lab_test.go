@@ -12,7 +12,7 @@ import (
 )
 
 // TestHubWithoutTestModeHasNoFaults starts a lab hub without -test. Its client lists no
-// hub.test.* action, and hub.test.fault fails as an unknown action. Lab only: HARNESS_LAB=1.
+// hub.test.* action, and hub.test.fault fails as an unknown action. Lab only: LAB=1.
 func TestHubWithoutTestModeHasNoFaults(t *testing.T) {
 	bin, root := harnessBinary(t)
 	rexBin, err := exec.LookPath("rex")

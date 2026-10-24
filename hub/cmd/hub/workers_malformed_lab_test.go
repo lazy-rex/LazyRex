@@ -9,7 +9,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// labRex starts a lab Rex server (rexLab: HARNESS_LAB=1) and dials it. It returns the connection,
+// labRex starts a lab Rex server (rexLab: LAB=1) and dials it. It returns the connection,
 // a 45 s context, and the server address for the Hub's cfg.Server.
 func labRex(t *testing.T) (*rex.Rex, context.Context, string) {
 	l := rexLab(t)

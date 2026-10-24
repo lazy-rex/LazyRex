@@ -16,7 +16,7 @@ import (
 // Lab tests of the waiting state and the wake rule (docs/plugin-sources.md, section 7): a plugin
 // whose dependency has no accepted hub.register waits, and a register, a hub.admin.start or
 // hub.admin.stop, or a refusal checks it again. A gated fixture (gate=1) registers only on
-// fix.register, so a test decides when the register comes. Lab only: HARNESS_LAB=1.
+// fix.register, so a test decides when the register comes. Lab only: LAB=1.
 
 // setArgs sets the args of the config entry src/<dir>.
 func (s *startLab) setArgs(dir string, args map[string]string) {
