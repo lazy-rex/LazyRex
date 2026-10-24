@@ -353,7 +353,7 @@ local function offer_tree(source, render_id, view_id)
       nodes[1] = widget('id_used', 'This hub already has managed:' .. o.id .. ' (' .. used.source .. '), so the offer cannot be added with its id. Remove that entry first.')
     else
       nodes[1] = {id = offer_id(render_id, o), type = 'form', label = 'Add managed:' .. o.id .. ' from ' .. o.peer .. '? Source ' .. o.source .. ', pinned by the peer at ' .. offer_pin_text(o.pin) ..
-        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs code from GitHub on this computer.', fields = {fetch_field('github', o.peer)},
+        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs the plugin\'s code on this computer.', fields = {fetch_field('github', o.peer)},
         submit_action = action('add', 'Add', confirmation)}
     end
   end
