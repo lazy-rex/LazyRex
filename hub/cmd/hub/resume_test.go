@@ -83,7 +83,7 @@ func TestResumeLaunchRechecksTheIdentity(t *testing.T) {
 	h := resumeTestHub(t)
 	ctx := context.Background()
 	for _, id := range []string{"a", "b"} {
-		if _, err := h.db.Exec(`INSERT INTO identities VALUES (?, 'codex', ?, 'detached', 'block:old', '', '', 't0', 't0')`, "codex:"+id, id); err != nil {
+		if _, err := h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES (?, 'codex', ?, 'detached', 'block:old', '', '', 't0', 't0')`, "codex:"+id, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -125,7 +125,7 @@ func TestResumeLaunchRechecksTheIdentity(t *testing.T) {
 func TestResumeLaunchInsertIsAWorkersChange(t *testing.T) {
 	h := resumeTestHub(t)
 	ctx := context.Background()
-	if _, err := h.db.Exec(`INSERT INTO identities VALUES ('codex:a', 'codex', 'a', 'detached', 'block:old', '', '', 't0', 't0')`); err != nil {
+	if _, err := h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('codex:a', 'codex', 'a', 'detached', 'block:old', '', '', 't0', 't0')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.adminResume(ctx, map[string]any{"key": "k", "kind": "codex"}); err != nil {

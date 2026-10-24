@@ -67,6 +67,7 @@ type identityPane struct {
 	block, session, childStart, kind, current, reporterStart string
 	childPath, childInvoked, cliStart                        string
 	childPID, cliPID                                         int
+	binding                                                  int64 // binding.go
 }
 
 func (h *Hub) identityLog(ctx context.Context, q execer, id, block, event string, detail map[string]any) error {
@@ -141,8 +142,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	}
 	defer tx.Rollback()
 	var row identityPane
-	err = tx.QueryRowContext(ctx, `SELECT block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked, cli_pid, cli_start FROM identity_panes WHERE block_id = ?`, block).
-		Scan(&row.block, &row.session, &row.childPID, &row.childStart, &row.kind, &row.current, &row.reporterStart, &row.childPath, &row.childInvoked, &row.cliPID, &row.cliStart)
+	err = tx.QueryRowContext(ctx, `SELECT block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked, cli_pid, cli_start, binding FROM identity_panes WHERE block_id = ?`, block).
+		Scan(&row.block, &row.session, &row.childPID, &row.childStart, &row.kind, &row.current, &row.reporterStart, &row.childPath, &row.childInvoked, &row.cliPID, &row.cliStart, &row.binding)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		row = identityPane{block: block}
@@ -151,7 +152,7 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	case row.childPID != 0 && (row.childPID != child || row.childStart != cstart):
 		// The pane runs a new process: the previous conversation left with the old one.
 		if row.current != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE identities SET state = 'detached', updated = ? WHERE identity = ? AND state = 'current' AND block_id = ?`,
+			if _, err := tx.ExecContext(ctx, `UPDATE identities SET state = 'detached', revision = revision + 1, updated = ? WHERE identity = ? AND state = 'current' AND block_id = ?`,
 				time.Now().UTC().Format(time.RFC3339Nano), row.current, block); err != nil {
 				return nil, err
 			}
@@ -180,11 +181,18 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	if (path == "" || invoked == "") && cstart != "" && proc.path != "" && proc.invoked != "" {
 		path, invoked = proc.path, proc.invoked
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked, cli_pid, cli_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	// The same generation keeps its binding; any change of it makes a new one (binding.go).
+	binding := row.binding
+	if binding == 0 || row.current != id || row.childPID != child || row.childStart != cstart || row.cliPID != cli || row.cliStart != cliStart {
+		if binding, err = newBinding(ctx, tx); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, reporter_start, child_path, child_invoked, cli_pid, cli_start, binding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (block_id) DO UPDATE SET session_id = excluded.session_id, child_pid = excluded.child_pid, child_start = excluded.child_start,
 		kind = excluded.kind, current = excluded.current, reporter_start = excluded.reporter_start, child_path = excluded.child_path, child_invoked = excluded.child_invoked,
-		cli_pid = excluded.cli_pid, cli_start = excluded.cli_start`,
-		block, sess, child, cstart, kind, id, rs, path, invoked, cli, cliStart); err != nil {
+		cli_pid = excluded.cli_pid, cli_start = excluded.cli_start, binding = excluded.binding`,
+		block, sess, child, cstart, kind, id, rs, path, invoked, cli, cliStart, binding); err != nil {
 		return nil, err
 	}
 	var state, pred, oldName string
@@ -219,21 +227,21 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 			return nil, err
 		}
 		// A new CLI process for the same conversation (a resume in the same shell) changes what the
-		// conversation follows.
-		if bound || known && oldName != name || row.cliPID != cli || row.cliStart != cliStart {
+		// conversation follows, and its binding.
+		if bound || known && oldName != name || row.cliPID != cli || row.cliStart != cliStart || binding != row.binding {
 			h.identityChanged(ctx)
 		}
 		return result("unchanged", pred), nil
 	}
 	// A transition: id becomes the pane's current conversation.
 	if row.current != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE identities SET state = 'superseded', updated = ? WHERE identity = ?`, now, row.current); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE identities SET state = 'superseded', revision = revision + 1, updated = ? WHERE identity = ?`, now, row.current); err != nil {
 			return nil, err
 		}
 	}
 	if known && state == "current" {
 		// Resumed in another pane: the old pane no longer runs it.
-		if _, err := tx.ExecContext(ctx, `UPDATE identity_panes SET current = '' WHERE current = ? AND block_id <> ?`, id, block); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE identity_panes SET current = '', binding = 0 WHERE current = ? AND block_id <> ?`, id, block); err != nil {
 			return nil, err
 		}
 	}
@@ -245,8 +253,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 			event = "started"
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO identities VALUES (?, ?, ?, 'current', ?, ?, ?, ?, ?)
-		ON CONFLICT (identity) DO UPDATE SET state = 'current', block_id = excluded.block_id, name = excluded.name, updated = excluded.updated`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES (?, ?, ?, 'current', ?, ?, ?, ?, ?)
+		ON CONFLICT (identity) DO UPDATE SET state = 'current', revision = identities.revision + 1, block_id = excluded.block_id, name = excluded.name, updated = excluded.updated`,
 		id, kind, conv, block, pred, name, now, now); err != nil {
 		return nil, err
 	}
@@ -502,9 +510,9 @@ func (h *Hub) identityChildExited(ctx context.Context, block string) {
 // process ended.
 func (h *Hub) identityEndLocked(ctx context.Context, block, cur, reason string) {
 	h.db.ExecContext(ctx, `UPDATE identity_panes SET current = '', child_pid = 0, child_start = '', reporter_start = '', child_path = '', child_invoked = '',
-		cli_pid = 0, cli_start = '' WHERE block_id = ?`, block)
+		cli_pid = 0, cli_start = '', binding = 0 WHERE block_id = ?`, block)
 	if cur != "" {
-		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', updated = ? WHERE identity = ? AND block_id = ?`,
+		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', revision = revision + 1, updated = ? WHERE identity = ? AND block_id = ?`,
 			time.Now().UTC().Format(time.RFC3339Nano), cur, block)
 		h.identityLog(ctx, h.db, cur, block, "exited", map[string]any{"reason": reason})
 	}
@@ -620,7 +628,7 @@ func (h *Hub) identityPaneClosed(ctx context.Context, block string) {
 	}
 	h.db.ExecContext(ctx, `DELETE FROM identity_panes WHERE block_id = ?`, block)
 	if cur != "" {
-		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', updated = ? WHERE identity = ? AND block_id = ?`,
+		h.db.ExecContext(ctx, `UPDATE identities SET state = 'detached', revision = revision + 1, updated = ? WHERE identity = ? AND block_id = ?`,
 			time.Now().UTC().Format(time.RFC3339Nano), cur, block)
 		h.identityLog(ctx, h.db, cur, block, "pane_closed", map[string]any{})
 	}
@@ -708,7 +716,7 @@ var identitySyncGap = func() {}
 // its pane's process generation; its program status is read once when its pane changes.
 func (h *Hub) identitySync(ctx context.Context) error {
 	rows, err := h.db.QueryContext(ctx, `SELECT i.identity, i.kind, i.state, i.name, COALESCE(p.block_id, ''), COALESCE(p.session_id, ''),
-		CASE WHEN p.cli_pid > 0 THEN p.cli_pid ELSE COALESCE(p.child_pid, 0) END, CASE WHEN p.cli_pid > 0 THEN p.cli_start ELSE COALESCE(p.child_start, '') END
+		CASE WHEN p.cli_pid > 0 THEN p.cli_pid ELSE COALESCE(p.child_pid, 0) END, CASE WHEN p.cli_pid > 0 THEN p.cli_start ELSE COALESCE(p.child_start, '') END, COALESCE(p.binding, 0), i.revision
 		FROM identities i LEFT JOIN identity_panes p ON p.current = i.identity`)
 	if err != nil {
 		return err
@@ -716,7 +724,7 @@ func (h *Hub) identitySync(ctx context.Context) error {
 	next := map[string]*Agent{}
 	for rows.Next() {
 		a := &Agent{delivered: map[string]int64{}}
-		if err := rows.Scan(&a.ID, &a.Kind, &a.IdState, &a.Name, &a.BlockID, &a.Session, &a.ChildPID, &a.ChildStart); err != nil {
+		if err := rows.Scan(&a.ID, &a.Kind, &a.IdState, &a.Name, &a.BlockID, &a.Session, &a.ChildPID, &a.ChildStart, &a.Binding, &a.Revision); err != nil {
 			rows.Close()
 			return err
 		}
@@ -897,6 +905,12 @@ func (h *Hub) agentsList(args map[string]any) any {
 		if a.IdState == "current" && a.live() {
 			e["activity"] = a.State // the agent's program status: idle, working, done, …; "" when unknown
 			e["block_id"] = a.BlockID
+			if a.Binding != 0 {
+				e["binding"] = bindingName(a.Binding) // binding.go: an effect can name this generation
+			}
+		}
+		if a.IdState == "detached" {
+			e["revision"] = a.Revision // binding.go: hub.admin.resume can name it
 		}
 		list = append(list, e)
 	}

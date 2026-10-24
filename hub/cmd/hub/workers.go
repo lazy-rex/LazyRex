@@ -193,7 +193,7 @@ func validProfile(p Profile) error {
 }
 
 func (h *Hub) workersSchemaStart(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+spawnWindowSchema+grantsSchema+agentOpsSchema); err != nil {
+	if _, err := h.db.ExecContext(ctx, workersSchema+identitySchema+bindingSchema+spawnWindowSchema+grantsSchema+agentOpsSchema); err != nil {
 		return err
 	}
 	for _, m := range []string{
@@ -220,6 +220,12 @@ func (h *Hub) workersSchemaStart(ctx context.Context) error {
 		// interactive shell started it, identity.go agentProcess); 0 and '': the pane child.
 		`ALTER TABLE identity_panes ADD COLUMN cli_pid INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE identity_panes ADD COLUMN cli_start TEXT NOT NULL DEFAULT ''`,
+		// The binding of the pane's current generation (binding.go); 0: none.
+		`ALTER TABLE identity_panes ADD COLUMN binding INTEGER NOT NULL DEFAULT 0`,
+		// The lifecycle revision of an identity (binding.go).
+		`ALTER TABLE identities ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
+		// The binding that a restart's stop checks (binding.go); 0: none given.
+		`ALTER TABLE agent_op_targets ADD COLUMN binding INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := h.db.ExecContext(ctx, m); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return err

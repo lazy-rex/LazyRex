@@ -104,6 +104,7 @@ type opTarget struct {
 	seq, childPID                                                             int
 	childStart                                                                string
 	stopBlock, stopSession, program, stopResult                               string // a restart: the pane to stop, its configured program, the stop's outcome
+	binding                                                                   int64  // a restart: the binding that its stop checks, 0: none (binding.go)
 }
 
 // adminResume is hub.admin.resume {key, agent} | {key, kind?, session_id?} | {key, release}. The
@@ -139,9 +140,25 @@ func (h *Hub) agentOp(ctx context.Context, action string, args map[string]any, f
 				return nil, bad("%s must be a non-empty string", name)
 			}
 			req[name] = s
+		case "binding", "revision":
+			// A generation guard (binding.go): restart takes binding, resume takes revision.
+			if want := map[string]string{"restart": "binding", "resume": "revision"}[action]; name != want {
+				return nil, refuse("invalid_input", "%s is not an argument of hub.admin.%s", name, action)
+			}
+			if name == "binding" {
+				if _, err := parseBinding(v); err != nil {
+					return nil, err
+				}
+			} else if _, err := parseRevision(v); err != nil {
+				return nil, err
+			}
+			req[name] = v
 		default:
 			return nil, bad("unknown argument %q", name)
 		}
+	}
+	if (req["binding"] != nil || req["revision"] != nil) && req["agent"] == nil {
+		return nil, refuse("invalid_input", "binding and revision need agent: the batch forms take no guard")
 	}
 	if req["release"] != nil && len(req) > 2 || req["agent"] != nil && (req["kind"] != nil || req["session_id"] != nil) {
 		return nil, bad("give agent, or kind and session_id, or release")
@@ -186,7 +203,27 @@ func (h *Hub) agentOp(ctx context.Context, action string, args map[string]any, f
 	if _, err := tx.ExecContext(ctx, `INSERT INTO agent_ops VALUES (?, 'admin', ?, ?, ?, ?)`, opID, key, action, string(fp), now); err != nil {
 		return nil, err
 	}
+	binding, _ := parseBinding(req["binding"])
+	revision, _ := parseRevision(req["revision"])
 	for i, t := range targets {
+		// The guards (binding.go) are checked in this transaction: a stale one refuses the whole
+		// call, and nothing is stored, so a retry of the key checks again.
+		if binding != 0 {
+			if err := bindingCurrent(ctx, tx, t.identity, binding); err != nil {
+				return nil, err
+			}
+			t.binding = binding
+		}
+		if revision >= 0 {
+			var cur int64
+			err := tx.QueryRowContext(ctx, `SELECT revision FROM identities WHERE identity = ?`, t.identity).Scan(&cur)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("revision check: %w", err)
+			}
+			if err != nil || cur != revision {
+				return nil, revisionNotCurrent(revision)
+			}
+		}
 		if t.phase == "admitted" || t.phase == "restart_admitted" {
 			var other string
 			// The store has one connection, so this check and the insert see no other admission.
@@ -195,13 +232,22 @@ func (h *Hub) agentOp(ctx context.Context, action string, args map[string]any, f
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO agent_op_targets (op_id, identity, seq, phase, source_spawn, detail, updated, admitted,
-			child_pid, child_start, stop_block, stop_session, program) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			opID, t.identity, i, t.phase, t.sourceSpawn, t.detail, now, t.admitted, t.childPID, t.childStart, t.stopBlock, t.stopSession, t.program); err != nil {
+			child_pid, child_start, stop_block, stop_session, program, binding) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			opID, t.identity, i, t.phase, t.sourceSpawn, t.detail, now, t.admitted, t.childPID, t.childStart, t.stopBlock, t.stopSession, t.program, t.binding); err != nil {
 			return nil, err
+		}
+		// An admitted resume is a lifecycle change of the identity: its revision moves on.
+		if t.phase == "admitted" {
+			if _, err := tx.ExecContext(ctx, `UPDATE identities SET revision = revision + 1 WHERE identity = ?`, t.identity); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	if action == "resume" {
+		h.identityChanged(ctx) // the admitted targets' revisions moved on (hub.agents)
 	}
 	h.ev.emit("agent_op_admitted", map[string]any{"op_id": opID, "action": action, "targets": len(targets)})
 	h.kickRestartForms()
@@ -320,7 +366,7 @@ func (h *Hub) releaseTarget(ctx context.Context, key, request, identity string) 
 
 func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTarget, error) {
 	rows, err := h.db.QueryContext(ctx, `SELECT op_id, identity, seq, phase, source_spawn, spawn_id, block_id, detail, updated, admitted, child_pid, child_start,
-		stop_block, stop_session, program, stop_result
+		stop_block, stop_session, program, stop_result, binding
 		FROM agent_op_targets WHERE `+where+` ORDER BY updated, seq`, args...)
 	if err != nil {
 		return nil, err
@@ -330,7 +376,7 @@ func (h *Hub) opTargets(ctx context.Context, where string, args ...any) ([]opTar
 	for rows.Next() {
 		var t opTarget
 		if err := rows.Scan(&t.op, &t.identity, &t.seq, &t.phase, &t.sourceSpawn, &t.spawn, &t.block, &t.detail, &t.updated, &t.admitted, &t.childPID, &t.childStart,
-			&t.stopBlock, &t.stopSession, &t.program, &t.stopResult); err != nil {
+			&t.stopBlock, &t.stopSession, &t.program, &t.stopResult, &t.binding); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

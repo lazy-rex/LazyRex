@@ -95,6 +95,8 @@ type Agent struct {
 	stateGen               int              // counts record writes (setRecord): a status read applies only if none happened during it
 	ClientID               string           // the agent face connection of this conversation
 	Kind, IdState          string           // the identity's kind and state (identity.go)
+	Binding                int64            // the binding of the current generation, 0: none (binding.go)
+	Revision               int64            // the identity's lifecycle revision (binding.go)
 	delivered              map[string]int64 // namespace -> highest intent revision written for this connection (notice_deliveries keeps it across restarts)
 }
 
@@ -602,6 +604,9 @@ func start(ctx context.Context, cfg Config, fs *faults) (*Hub, error) {
 		return nil, err
 	}
 	if err := h.workersLoad(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.bindingsStart(ctx); err != nil {
 		return nil, err
 	}
 	if err := h.identitySync(ctx); err != nil {

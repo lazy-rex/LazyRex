@@ -3,7 +3,7 @@ package main
 // hub.prompt.answer (docs/hub.md "Prompt answers"): a plugin with the prompts grant writes the
 // user's answer to the pane of an open prompt. Each answer has a durable row in prompt_answers,
 // keyed by (plugin, op_key). The key check comes first, so a repeat returns the recorded result
-// and writes nothing, also after a hub restart. The hub checks the prompt binding before each
+// and writes nothing, also after a hub restart. The hub checks that the prompt is open before each
 // write and never repeats a write by itself.
 
 import (
@@ -161,7 +161,7 @@ func (h *Hub) promptAnswer(ctx context.Context, pl *Plugin, args map[string]any)
 		return nil, bad("invalid: prompt_id and key (at most %d bytes) are required", promptKeyMax)
 	}
 	for k := range args {
-		if k != "prompt_id" && k != "key" && k != "input" {
+		if k != "prompt_id" && k != "key" && k != "input" && k != "binding" {
 			return nil, bad("invalid: unknown field %s", k)
 		}
 	}
@@ -169,10 +169,21 @@ func (h *Hub) promptAnswer(ctx context.Context, pl *Plugin, args map[string]any)
 	if err != nil {
 		return nil, err
 	}
+	binding, err := parseBinding(args["binding"])
+	if err != nil {
+		return nil, err
+	}
+	// The binding is part of the request: the same key with another binding is a conflict. An
+	// answer without one has no binding field in its fingerprint.
+	var bname string
+	if binding != 0 {
+		bname = bindingName(binding)
+	}
 	canon, _ := json.Marshal(struct {
 		PromptID string            `json:"prompt_id"`
 		Input    promptAnswerInput `json:"input"`
-	}{id, in})
+		Binding  string            `json:"binding,omitempty"`
+	}{id, in, bname})
 	sum := sha256.Sum256(canon)
 	fp := hex.EncodeToString(sum[:])
 
@@ -180,7 +191,7 @@ func (h *Hub) promptAnswer(ctx context.Context, pl *Plugin, args map[string]any)
 	if out, done, err := h.promptAnswerRecorded(ctx, pl.Name, key, fp); done || err != nil {
 		return out, err
 	}
-	// 2. The binding check. The agent's answers run one at a time.
+	// 2. The open check. The agent's answers run one at a time.
 	h.mu.Lock()
 	p := h.promptOpen(id)
 	h.mu.Unlock()
@@ -209,7 +220,7 @@ func (h *Hub) promptAnswer(ctx context.Context, pl *Plugin, args map[string]any)
 		return out, err
 	}
 	h.ev.emit("prompt_answer", map[string]any{"plugin": pl.Name, "key": key, "prompt_id": id, "agent": p.Agent, "phase": "writing"})
-	return h.promptAnswerWrite(ctx, pl.Name, key, p, in)
+	return h.promptAnswerWrite(ctx, pl.Name, key, p, in, binding)
 }
 
 func parsePromptInput(v any) (promptAnswerInput, error) {
@@ -291,7 +302,7 @@ func writeOutcome(data string, n int, err error) (string, map[string]any) {
 }
 
 // promptAnswerWrite runs the checks and writes of one answer, and records each phase.
-func (h *Hub) promptAnswerWrite(ctx context.Context, plugin, key string, p *prompt, in promptAnswerInput) (any, error) {
+func (h *Hub) promptAnswerWrite(ctx context.Context, plugin, key string, p *prompt, in promptAnswerInput, binding int64) (any, error) {
 	finish := func(phase string, result map[string]any) (any, error) {
 		if result == nil {
 			result = map[string]any{}
@@ -304,12 +315,25 @@ func (h *Hub) promptAnswerWrite(ctx context.Context, plugin, key string, p *prom
 		h.ev.emit("prompt_answer", map[string]any{"plugin": plugin, "key": key, "prompt_id": p.ID, "agent": p.Agent, "phase": phase})
 		return answerReply(phase, r), nil
 	}
-	// still reports whether p is still open (h.mu held only for the check).
-	still := func(when string) bool {
+	// still gives "" while p is still open and, with a binding, the binding is still current
+	// (binding.go, under identMu as the identity changes are); else the reason not to write.
+	still := func(when string) string {
 		h.promptAnswerFault(when, p)
 		h.mu.Lock()
-		defer h.mu.Unlock()
-		return h.promptOpen(p.ID) == p
+		open := h.promptOpen(p.ID) == p
+		h.mu.Unlock()
+		if !open {
+			return "prompt_closed"
+		}
+		if binding != 0 {
+			h.identMu.Lock()
+			err := bindingCurrent(ctx, h.db, p.Agent, binding)
+			h.identMu.Unlock()
+			if err != nil {
+				return "not_current"
+			}
+		}
+		return ""
 	}
 	write := func(when, data string) (string, map[string]any) {
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -318,9 +342,9 @@ func (h *Hub) promptAnswerWrite(ctx context.Context, plugin, key string, p *prom
 		return writeOutcome(data, n, err)
 	}
 
-	// 4. The binding check right before the write.
-	if !still("before-write") {
-		return finish("refused", map[string]any{"reason": "prompt_closed"})
+	// 4. The open check (and the binding) right before the write.
+	if why := still("before-write"); why != "" {
+		return finish("refused", map[string]any{"reason": why})
 	}
 	if in.Keys != nil {
 		switch o, info := write("write", *in.Keys); o {
@@ -344,8 +368,8 @@ func (h *Hub) promptAnswerWrite(ctx context.Context, plugin, key string, p *prom
 		return nil, err
 	}
 	// The paste can change the agent's state: check again before Enter.
-	if !still("before-enter") {
-		return finish("partial", map[string]any{"text_written": true, "enter": "not_sent", "reason": "prompt_closed"})
+	if why := still("before-enter"); why != "" {
+		return finish("partial", map[string]any{"text_written": true, "enter": "not_sent", "reason": why})
 	}
 	switch o, info := write("enter", "\r"); o {
 	case "ok":

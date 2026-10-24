@@ -41,7 +41,7 @@ func TestIdentityChangeIsAWorkersChange(t *testing.T) {
 	}
 	h.db.Exec(`UPDATE spawns SET status = 'open', block_id = 'block:1', session_id = 'session:1' WHERE spawn_id = 'spawn-test'`)
 	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:1', 'session:1', 0, '', 'claude', 'claude:c1')`)
-	h.db.Exec(`INSERT INTO identities VALUES ('claude:c1', 'claude', 'c1', 'current', 'block:1', '', '', 'x', 'x')`)
+	h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:c1', 'claude', 'c1', 'current', 'block:1', '', '', 'x', 'x')`)
 	h.idents = map[string]*Agent{}
 	wait := changedNames(t, h)
 	h.identityChildExited(ctx, "block:1")
@@ -59,8 +59,8 @@ func TestIdentityRecoverEndsGoneProcesses(t *testing.T) {
 	self := os.Getpid()
 	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:1', 'session:1', ?, 'not-its-start', 'claude', 'claude:gone')`, self)
 	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:2', 'session:1', ?, ?, 'claude', 'claude:live')`, self, startTime(self))
-	h.db.Exec(`INSERT INTO identities VALUES ('claude:gone', 'claude', 'gone', 'current', 'block:1', '', '', 'x', 'x')`)
-	h.db.Exec(`INSERT INTO identities VALUES ('claude:live', 'claude', 'live', 'current', 'block:2', '', '', 'x', 'x')`)
+	h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:gone', 'claude', 'gone', 'current', 'block:1', '', '', 'x', 'x')`)
+	h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:live', 'claude', 'live', 'current', 'block:2', '', '', 'x', 'x')`)
 	// The live identity is already in memory (a kept binding): the sync reads no program status.
 	h.idents = map[string]*Agent{"claude:live": {ID: "claude:live", BlockID: "block:2", ChildPID: self, delivered: map[string]int64{}}}
 	if err := h.identityRecover(ctx); err != nil {
@@ -110,7 +110,7 @@ func TestIdentityRecoverReadOutcomes(t *testing.T) {
 			st = "" // no recorded start
 		}
 		h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES (?, 'session:1', ?, ?, 'claude', ?)`, block, pid, st, id)
-		h.db.Exec(`INSERT INTO identities VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, fmt.Sprint(pid), block)
+		h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, fmt.Sprint(pid), block)
 		// A kept identity is already in memory: the sync reads no program status.
 		h.idents[id] = &Agent{ID: id, BlockID: block, ChildPID: pid, delivered: map[string]int64{}}
 	}
@@ -138,7 +138,7 @@ func TestIdentitySyncKeepsAStatusWrittenDuringTheSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:1', 'session:1', 0, '', 'claude', 'claude:c1')`)
-	h.db.Exec(`INSERT INTO identities VALUES ('claude:c1', 'claude', 'c1', 'current', 'block:1', '', '', 'x', 'x')`)
+	h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:c1', 'claude', 'c1', 'current', 'block:1', '', '', 'x', 'x')`)
 	old := &Agent{ID: "claude:c1", BlockID: "block:1", State: "working", Record: statusRecord{State: "working"}, delivered: map[string]int64{}}
 	h.idents = map[string]*Agent{"claude:c1": old}
 	real := identitySyncGap

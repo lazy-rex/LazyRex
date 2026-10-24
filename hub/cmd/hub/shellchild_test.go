@@ -94,7 +94,7 @@ func TestIdentityCheckFollowsTheCLI(t *testing.T) {
 		}
 		h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, cli_pid, cli_start) VALUES (?, 'session:1', ?, ?, 'claude', ?, ?, ?)`,
 			block, child, start, id, cli, cs)
-		h.db.Exec(`INSERT INTO identities VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, name, block)
+		h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, name, block)
 		h.idents[id] = &Agent{ID: id, BlockID: block, ChildPID: cli, delivered: map[string]int64{}}
 	}
 	h.procRead = procTable(table, fail)
@@ -142,7 +142,7 @@ func TestIdentitySyncLoadsTheCLI(t *testing.T) {
 		id, block := fmt.Sprintf("claude:s%d", i), fmt.Sprintf("block:s%d", i)
 		h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current, cli_pid, cli_start) VALUES (?, 'session:1', 66, '1.000066', 'claude', ?, ?, ?)`,
 			block, id, cli, map[int]string{0: "", 77: "1.000077"}[cli])
-		h.db.Exec(`INSERT INTO identities VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, fmt.Sprint(i), block)
+		h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES (?, 'claude', ?, 'current', ?, '', '', 'x', 'x')`, id, fmt.Sprint(i), block)
 		h.idents[id] = &Agent{ID: id, BlockID: block, ChildPID: map[int]int{0: 66, 77: 77}[cli], delivered: map[string]int64{}}
 	}
 	if err := h.identitySync(ctx); err != nil {

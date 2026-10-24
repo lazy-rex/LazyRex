@@ -302,14 +302,14 @@ func TestPromptOwnerTransitionStore(t *testing.T) {
 	if _, err := h.db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES (?, ?, ?, ?, 'claude', 'claude:c1')`, a.BlockID, a.Session, a.ChildPID, a.ChildStart); err != nil {
 		t.Fatal(err)
 	}
-	h.db.Exec(`INSERT INTO identities VALUES ('claude:c1', 'claude', 'c1', 'current', ?, '', 'Alice', 'x', 'x')`, a.BlockID)
+	h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:c1', 'claude', 'c1', 'current', ?, '', 'Alice', 'x', 'x')`, a.BlockID)
 	sync()
 	p1 := one("claude:c1")
 
 	// /clear: claude:c2 in the same pane; claude:c1 is superseded.
 	h.db.Exec(`UPDATE identity_panes SET current = 'claude:c2'`)
 	h.db.Exec(`UPDATE identities SET state = 'superseded' WHERE identity = 'claude:c1'`)
-	h.db.Exec(`INSERT INTO identities VALUES ('claude:c2', 'claude', 'c2', 'current', ?, 'claude:c1', 'Alice', 'x', 'x')`, a.BlockID)
+	h.db.Exec(`INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:c2', 'claude', 'c2', 'current', ?, 'claude:c1', 'Alice', 'x', 'x')`, a.BlockID)
 	sync()
 	p2 := one("claude:c2")
 

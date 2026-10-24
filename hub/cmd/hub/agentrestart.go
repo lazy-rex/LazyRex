@@ -118,6 +118,11 @@ func (h *Hub) restartLook(ctx context.Context, t *opTarget) (p paneState, why st
 	if rec.pid != t.childPID || rec.start != t.childStart {
 		return p, "the pane's recorded program changed", nil
 	}
+	if t.binding != 0 {
+		if err := bindingCurrent(ctx, h.db, t.identity, t.binding); err != nil {
+			return p, "not_current: " + bindingName(t.binding) + " is not current", nil
+		}
+	}
 	var kind string
 	h.db.QueryRowContext(ctx, `SELECT kind FROM identities WHERE identity = ?`, t.identity).Scan(&kind)
 	if p, err = h.paneProgram(ctx, t.stopSession, t.stopBlock); err != nil {

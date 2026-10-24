@@ -988,9 +988,38 @@ Test: `LAZYREX_LAB=1 go test ./cmd/hub -run TestStopStatusLab` (its own lab serv
 
 Tests: `TestRestartChecksBeforeTheSend` (no send), `TestRestartRefusedExitsAtOnce` (`refused` and `invalid_input`: one send, exit 1 at once), `TestRestartConfirmsTheNewHub` (a success, `timeout`, `client_unavailable`, `failed` or a dropped connection, then the old hub, the exec phase, a wrapper not yet ready, and the new hub: exit 0, one send), `TestRestartReportsAFailedExec`, `TestRestartNotConfirmed` (the old hub with a `last_exec` of an earlier failed attempt, another wrapper pid or start time, no hub, no wrapper, no Rex server: exit 4 at the bound, one send). Lab, the real binary under a real wrapper started through a link, with its own lab server: `LAZYREX_LAB=1 go test ./cmd/hub -run TestRestartCommandLab` (another exec count sends nothing; the link moves to another copy and `restart -expect-exec 0` gives exit 0, exec 1, a new hub process of the new copy and the same wrapper pid; the same command again is refused before any send; a link to a file that cannot run gives the exec error and the old version again at exec 1; then `stop`).
 
+## Bindings
+
+A plugin reads an agent from `hub.agents`, and acts on it later. Between the read and the effect, the pane can change: a resume moved the conversation, a `/clear` superseded it, or the CLI exited under a shell that stays. A binding lets the effect refuse an older generation (`hub/cmd/hub/binding.go`). It is a generation check, not a permission: it gives no right to any caller.
+
+- A binding `b-<n>` names one generation of "identity X runs in block B under process P". P is the process that the conversation follows: the CLI under a shell, else the pane child (see "Profiles and workers", "An agent CLI under a shell that stays").
+- The report gives a pane a new binding when the current identity, the pane child or the CLI changes (each pid with its start time). A repeat report of the same generation keeps the binding.
+- A binding ends when the identity is superseded, detached or resumed elsewhere, when the pane closes, and when its process changes or exits. The hub never gives an ended binding again: n comes from a counter in `hub.db` (`binding_ids`).
+- A hub restart keeps a binding while its process runs. At the start, the hub gives a binding to a current pane row that has none (a row from before the binding column) when its process still runs. There is no time expiry.
+- A check of a binding reads the identity's pane row, and tests that the recorded process still runs with its start time. So a process that changed while the hub was down is refused before any loop sees it.
+- A detached identity has a `revision` instead: an integer that each lifecycle change of the identity increments (a state change, an admitted resume).
+
+`hub.agents` gives `binding` for each current entry with a live process, and `revision` for each detached entry. Three effects take an optional guard. Without it, a call works as before:
+
+| Action | Argument | Checked |
+|---|---|---|
+| `hub.admin.restart` | `binding` | at admission, and again by the stop before each key write and each signal |
+| `hub.admin.resume` | `revision` | at admission, in the admission transaction |
+| `hub.prompt.answer` | `binding` | before the first write, and again before Enter |
+
+- A guard needs `agent`: the batch forms (`kind`, `session_id`) take none (`invalid_input`). `binding` on a resume and `revision` on a restart are `invalid_input`. A malformed value is `invalid_input`.
+- A binding that is not current, also the binding of another identity, is refused with code `not_current` (`binding b-<n> is not current: read hub.agents again`). The refusal is final: read `hub.agents` again. A stale revision gives the same code with the revision in the text.
+- At admission, a refused guard refuses the whole call, and the hub stores nothing. During a restart stop, a binding that is not current ends the target as `failed` (`not stopped: not_current: ...`), as any failed check does. A prompt answer refused before the first write is `refused` with `reason: "not_current"`, with zero bytes. Before Enter it is `partial` (`enter: "not_sent"`, `reason: "not_current"`).
+- The guard is part of the request: a repeat with the same key and the same guard replays the stored result before any fresh check. The same key with another guard is a conflict.
+- The guard is never written to a replacement: a resumed agent gets a new binding.
+
+Limits: a pid reused with the same start time passes the check. A `hub.db` that is replaced while agents run ends every binding: callers read `hub.agents` again.
+
+Tests: `binding_test.go` (the report rules, the hub start, each guard after a `/clear` and a resume, a CLI that exited under a shell, a changed process, the arguments, the fingerprints). Lab: `LAZYREX_LAB=1 go test ./cmd/hub -run TestBindingGuardsLab` (a row from before the column gets a binding at the start; a restart of the hub keeps it; a stale binding, a malformed one and a stale revision are refused over Rex; a process that exited while the hub was down ends the binding).
+
 ## Agent resume
 
-`hub.admin.resume` continues detached agents in new panes (`hub/cmd/hub/resume.go`). It is an admin action: the guard of `hub.admin.*` applies, so an agent or plugin pane is refused. Arguments: `key` (required, at most 128 characters), and one of `agent` (an identity, or an agent spawn address for its bound identity), `kind` and/or `session_id` (every detached identity of that kind, whose spawn ran in that session), or `release` (an identity).
+`hub.admin.resume` continues detached agents in new panes (`hub/cmd/hub/resume.go`). It is an admin action: the guard of `hub.admin.*` applies, so an agent or plugin pane is refused. Arguments: `key` (required, at most 128 characters), and one of `agent` (an identity, or an agent spawn address for its bound identity), `kind` and/or `session_id` (every detached identity of that kind, whose spawn ran in that session), or `release` (an identity). With `agent`, an optional `revision` (from `hub.agents`) refuses the call when the identity changed since the read (see "Bindings").
 
 What it does, for each target identity:
 
@@ -1030,7 +1059,7 @@ Test: `lazyrex-hub test -file agent_resume.lua tests/harness`. A fake agent CLI 
 
 ## Agent restart
 
-`hub.admin.restart` stops current agents and resumes each one in a new pane (`hub/cmd/hub/agentrestart.go`). It is an admin action (the guard of `hub.admin.*` applies). Arguments: `key` (required, at most 128 characters), and `agent` (an identity, or an agent spawn address for its bound identity), or `kind` and/or `session_id` (every current identity of that kind, whose pane is in that session). The operation is stored as for a resume (`agent_ops`), with the same reply, replay and `busy` rules; a key used for a resume is another request. `hub.admin.resume {key, release}` releases a restart target too.
+`hub.admin.restart` stops current agents and resumes each one in a new pane (`hub/cmd/hub/agentrestart.go`). It is an admin action (the guard of `hub.admin.*` applies). Arguments: `key` (required, at most 128 characters), and `agent` (an identity, or an agent spawn address for its bound identity), or `kind` and/or `session_id` (every current identity of that kind, whose pane is in that session). With `agent`, an optional `binding` (from `hub.agents`) refuses the call, or stops the stop, when the generation changed since the read (see "Bindings"). The operation is stored as for a resume (`agent_ops`), with the same reply, replay and `busy` rules; a key used for a resume is another request. `hub.admin.resume {key, release}` releases a restart target too.
 
 Admission refuses a target when the identity is not current, its pane has no spawn record (an agent started by hand), the profile has no `resume` template, or the check below fails. The hub stops only the agent process that the check names:
 
@@ -2118,7 +2147,7 @@ added to an entry applies when the instance starts again (the instance's run car
 ### Prompts
 
 An open prompt is an agent's configured program status record (the same record that notices use)
-in state `blocked`, for a live binding. The hub keeps prompts in memory (`hub/cmd/hub/prompts.go`).
+in state `blocked`, of a current identity. The hub keeps prompts in memory (`hub/cmd/hub/prompts.go`).
 
 - A prompt opens when the record becomes `blocked`. A blocked record without `kind` and `msg`
   (Codex 0.163.0) is a prompt too.
@@ -2126,7 +2155,7 @@ in state `blocked`, for a live binding. The hub keeps prompts in memory (`hub/cm
   change of any of them closes it (reason `replaced`) and opens a new one. The hub compares the full
   `msg` (by its SHA-256), so a change after the 8 KiB cut also replaces the prompt.
 - A prompt closes when the state is not `blocked` (reason `state`), when the record is removed or
-  its state is unknown (`removed`), or when the binding changes or the process exits (`gone`).
+  its state is unknown (`removed`), or when the binding ends (`gone`; see "Bindings").
 - A pane has at most one open prompt: the prompt of its current identity. A superseded or
   detached identity has none: after a `/clear`, the old
   conversation's prompt closes (`gone`) and the new one opens. Each close comes before the open,
@@ -2205,22 +2234,24 @@ answer to the pane of an open prompt (`hub/cmd/hub/promptanswer.go`). `input` is
 - `{text: "<text>", submit: true}`: a bracketed paste of the text (newlines become spaces, as in
   notices), then Enter (`\r`). 1 to 4096 bytes.
 
-The plugin chooses the form. The hub never infers it from `kind`.
+The plugin chooses the form. The hub never infers it from `kind`. An optional `binding` (from
+`hub.agents`) refuses the write when the agent's generation changed since the read (see
+"Bindings").
 
 Each answer has a durable row in `prompt_answers`, keyed by `(plugin, key)`, with a fingerprint
-(SHA-256 of `{prompt_id, input}`). The steps:
+(SHA-256 of `{prompt_id, input, binding}`). The steps:
 
 1. **Key check.** A row with the same key and fingerprint returns its recorded `{phase, result}`
    and writes nothing. A row still writing returns `{phase: "in_progress"}`, which is not final:
    repeat later. The same key with another fingerprint is `operation_conflict`. The key check comes
    first, so after a hub restart a repeat with the old `prompt_id` returns the recorded result
    (H1d), not `prompt_closed`.
-2. **Binding check.** The prompt must be the open prompt of its agent, for the same binding.
+2. **Open check.** The prompt must be the open prompt of its agent.
    Otherwise the row is `refused` with `{reason: "prompt_closed"}`, and no byte is written.
 3. The row is inserted in phase `writing` before any byte. Answers for one agent run one at a
    time.
-4. The binding is checked again right before the write.
-5. `keys`: one write. `text`: the paste, then phase `text_written`, then the binding is checked
+4. Right before the write, the open check runs again, and a `binding` argument is checked.
+5. `keys`: one write. `text`: the paste, then phase `text_written`, then both checks run
    again (the paste can change the agent's state), then Enter.
 
 Results:
@@ -2228,9 +2259,9 @@ Results:
 | Phase | Meaning |
 |---|---|
 | `done` | Rex answered every write with every byte written. |
-| `refused` | The prompt is not open. This call wrote zero bytes. |
+| `refused` | The prompt is not open, or the binding is not current. This call wrote zero bytes. |
 | `failed` | Rex refused the first write with `not_found` or `session_not_found`. Zero bytes. |
-| `partial` | The text was written; Enter was not sent (`enter: "not_sent"`, the prompt closed) or Rex refused it (`enter: "failed"`, with `code`). |
+| `partial` | The text was written; Enter was not sent (`enter: "not_sent"`: the prompt closed, or the binding is not current) or Rex refused it (`enter: "failed"`, with `code`). |
 | `unknown` | The first write had another error, a timeout, a lost reply or a short `bytes_written`. Some bytes may be written. |
 | `unknown_after_text` | The text was written; the Enter write's outcome is unknown. |
 
@@ -2252,7 +2283,7 @@ its prompt closed. A prompt id never opens again, so a closed prompt stays close
 restart closes every prompt). The Telegram plugin repeats a key at most 6 days after its intake, so
 its repeats always find the row.
 
-**Race.** The hub checks the binding against the last status event it processed. It cannot prove
+**Race.** The hub checks the prompt against the last status event it processed. It cannot prove
 that the agent is still at the prompt at the write: a change can be on its way. Rex has no atomic
 write-if-state.
 

@@ -50,7 +50,7 @@ func TestStopRefusedFromAnAgentPaneLab(t *testing.T) {
 	}
 	pid := agent.Process.Pid
 	_, err = db.Exec(`INSERT INTO identity_panes (block_id, session_id, child_pid, child_start, kind, current) VALUES ('block:guard-lab', '', ?, ?, 'claude', 'claude:guard');
-		INSERT INTO identities VALUES ('claude:guard', 'claude', 'guard', 'current', 'block:guard-lab', '', 'Guard', 'x', 'x')`, pid, startTime(pid))
+		INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('claude:guard', 'claude', 'guard', 'current', 'block:guard-lab', '', 'Guard', 'x', 'x')`, pid, startTime(pid))
 	db.Close()
 	if err != nil {
 		t.Fatal(err)

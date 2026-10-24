@@ -205,7 +205,7 @@ func TestHarnessFakeResumePrompt(t *testing.T) {
 			}
 			return map[string]any{}, ""
 		})
-		mustExec(t, h, `INSERT INTO identities VALUES ('fake:a', 'fake', 'a', 'detached', 'block:old', '', '', 't0', 't0')`)
+		mustExec(t, h, `INSERT INTO identities (identity, kind, conversation_id, state, block_id, predecessor, name, created, updated) VALUES ('fake:a', 'fake', 'a', 'detached', 'block:old', '', '', 't0', 't0')`)
 		if _, err := h.adminResume(ctx, map[string]any{"key": "k", "agent": "fake:a"}); err != nil {
 			t.Fatal(err)
 		}
