@@ -2261,7 +2261,8 @@ Each hub pulls from its peers. A hub never pushes data.
   interval doubles up to 30 s. A `more` reply pulls again at once. One exception: while the peer's
   `lazyrex-hub` label is ambiguous (Rex keeps the lost client of a restarted hub for about a
   minute, docs/rex-protocol.md "Lost clients and reconnect tokens"), the pull tries again every
-  2 s, so it reaches the new hub within 2 s after Rex drops the old one. The error is logged once.
+  2 s: after Rex drops the old one, the next pull comes at most 2 s later (plus the time to
+  connect). The error is logged once.
 - After a send, the hub sends `hub.peer.nudge` to the peer. The peer pulls at once. A nudge
   carries no data, so a lost nudge only adds delay.
 
