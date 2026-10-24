@@ -37,9 +37,10 @@ func unverifiedCaller(err error) error {
 	return bad("cannot check the caller's process ancestry: %v; admin actions need a verified caller", err)
 }
 
-// sameManaged reports whether a managed entry is unchanged: the same source, args and watch roots.
+// sameManaged reports whether a managed entry is unchanged: the same source, args, watch roots and
+// fetch.
 func sameManaged(a, b *configEntry) bool {
-	return a.Source == b.Source && maps.Equal(a.Args, b.Args) && slices.Equal(a.WatchRoots, b.WatchRoots)
+	return a.Source == b.Source && maps.Equal(a.Args, b.Args) && slices.Equal(a.WatchRoots, b.WatchRoots) && a.fetch == b.fetch
 }
 
 // updateManaged gives the entry o of a changed managed id every parsed field of m, and keeps its

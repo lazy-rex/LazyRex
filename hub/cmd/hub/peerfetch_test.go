@@ -475,3 +475,38 @@ func TestPeerFetchInstallTarget(t *testing.T) {
 		t.Fatalf("no pin: %v", err)
 	}
 }
+
+// A reload takes a change of fetch alone, in both directions (codex-21, c21-plugsrc-fetch-reload):
+// the entry has the file's fetch, and hub.plugins shows it.
+func TestReloadFetch(t *testing.T) {
+	h, _, _ := opsTestHub(t, `{"plugins":[{"id":"tools","source":"github:acme/tools@v1.0.0"}]}`)
+	h.cfg.HubName, h.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	h.peers = newPeerSet(h.cfg)
+	for _, want := range []string{"peer", "github", "peer"} {
+		fetch := ""
+		if want == "peer" {
+			fetch = `,"fetch":"peer"`
+		}
+		writeManaged(t, h.cfg.State, `{"plugins":[{"id":"tools","source":"github:acme/tools@v1.0.0"`+fetch+`}]}`)
+		if _, err := h.reload(context.Background(), nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		h.entriesMu.Lock()
+		got := fetchName(h.entries[0].fetch)
+		h.entriesMu.Unlock()
+		if got != want {
+			t.Fatalf("after a reload to %s: the entry has fetch %s", want, got)
+		}
+		v, err := h.pluginsList(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var list struct {
+			Entries []map[string]any `json:"entries"`
+		}
+		json.Unmarshal(rawJSON(v), &list)
+		if f := list.Entries[0]["fetch"]; f != want {
+			t.Fatalf("after a reload to %s: hub.plugins shows fetch %v", want, f)
+		}
+	}
+}
