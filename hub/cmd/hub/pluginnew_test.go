@@ -25,7 +25,9 @@ func dirFiles(t *testing.T, dir string) []string {
 	return out
 }
 
-// plugin new writes the four files; the manifest passes the hub's manifest rules.
+// plugin new writes the four files; the manifest passes the hub's manifest rules and the parser of
+// lazyrex-hub test, with "sdk": "0" (claude-52, 2026-10-24: a "test.agents" field and no "sdk" made the
+// first test run fail).
 func TestPluginNew(t *testing.T) {
 	parent := t.TempDir()
 	dest := filepath.Join(parent, "notes")
@@ -38,8 +40,11 @@ func TestPluginNew(t *testing.T) {
 		t.Fatalf("files %v, want %v", got, want)
 	}
 	m, _, err := readPluginManifest(dest)
-	if err != nil || m.Name != "notes" || m.Main != "main.lua" {
+	if err != nil || m.Name != "notes" || m.Main != "main.lua" || m.SDK != "0" {
 		t.Fatalf("manifest %+v: %v", m, err)
+	}
+	if tm, err := loadManifest(dest); err != nil || tm.Name != "notes" {
+		t.Fatalf("lazyrex-hub test manifest %+v: %v", tm, err)
 	}
 	main, _ := os.ReadFile(filepath.Join(dest, "main.lua"))
 	test, _ := os.ReadFile(filepath.Join(dest, "tests", "notes.lua"))
