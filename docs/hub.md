@@ -916,6 +916,17 @@ Tests (`restartexec_test.go`, a wrapper from the test binary that execs itself):
 
 Tests: `TestRestart*` in `restart_test.go` (a fake hub from the test binary: the first failure, a deliberate stop, the backoff sequence and gave up, the 10-minute window, signals while starting, while ready and during backoff, a child that ignores SIGTERM, exit 3, a ready line for another state, a second wrapper that another process owns, also through a symlink; the last output lines of a hub that fails before its first ready, before the wrapper's line; the last lines of the last run only, and a cut tail, no control character in a pane line). `restartlog_test.go`: the size bound with output without a newline and with long lines, a stalled disk (the queue drops, the hub is not blocked, a 10 MiB write of the hub finishes), a failed rotation and a failed open (drop mode, then the retry), a full `hub.log` at open, a pane that nobody reads, the order of the last output and the exit line, five runs whose descendant keeps the output pipe (no reader or descriptor left), and SIGPIPE ignored under the wrapper. The lab test also starts the wrapper the way the palette will: in a labeled pane (`rex run`). `restartenv_test.go`: the variables, the state check, the ready line, `hub.info`, and a real hub binary that exits 3 with no `hub.lock`, `hub.db` or `events.jsonl` in either state.
 
+## Config records
+
+`lazyrex-hub config <hub.json>` (`hub/cmd/hub/configcmd.go`) reads the config with `loadConfig`, the code of the hub start, and prints its records for scripts such as `dev.sh`. It starts nothing and changes no file. One record is one line: the key, then the fields, each separated by one TAB.
+
+- `server<TAB><value>`
+- `state<TAB><absolute path>`: a relative state resolves against the working directory, as at the hub start. Run the command where the hub runs.
+- `view<TAB><absolute path>`: only when the config sets `view`.
+- `plugin<TAB><name><TAB><absolute dir>`: one for each local entry, config entries and then managed entries, in load order. The name is the manifest's, read as the hub reads it. A GitHub entry has no line. A local entry whose manifest the hub refuses has no line, and stderr gets `warning: <entry>: <error>`; the exit stays 0, because the hub starts with that entry refused. A malformed managed file is a warning too, as at the hub start.
+
+The output has no escaping. A value with a TAB or a line break exits 1 with one stderr line that names the key, and nothing on stdout. A config that `loadConfig` refuses exits 1 with its error. A wrong argument count exits 2 with the usage. Tests: `TestConfigCmdRecords`, `TestConfigCmdEscapes` (a `\u` escape in a value and in a key), `TestConfigCmdRefusals`.
+
 ## Stop and status
 
 `lazyrex-hub status -config <cfg> [-real-server]` and `lazyrex-hub stop -config <cfg> [-real-server]` (`hub/cmd/hub/restartctl.go`). Both read the config and apply the real-server check (`checkServer`), so the real Rex server needs `-real-server`, as for the hub. Then they look at two things:

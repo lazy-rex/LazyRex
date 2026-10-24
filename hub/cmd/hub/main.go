@@ -354,6 +354,8 @@ func main() {
 			os.Exit(hookMain(os.Args[2:]))
 		case "setup":
 			os.Exit(setupMain(os.Args[2:]))
+		case "config":
+			os.Exit(configCmdMain(os.Args[2:], os.Stdout, os.Stderr))
 		case "stop", "status", "restart":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:], os.Stdout, os.Stderr))
 		case "version":
