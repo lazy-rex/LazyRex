@@ -900,7 +900,8 @@ func TestPeerSendTarget(t *testing.T) {
 // the cursor moves on, and hub.peer.status counts it (dropped: count and the last one): a target
 // that is not installed, one that is desired stopped, and one that does not offer peer.receive (Rex
 // refuses the perform with not_supported). A desired-running target with no client now (starting,
-// restarting) is not dropped: it holds the cursor, for at most peerBlockMax (TestPeerPullPluginWait).
+// restarting) is not dropped: it holds the cursor, for at most peerBlockMax; then it is skipped and
+// counted as a drop with the reason blocked (lead-fedxp7).
 func TestPeerPullDrops(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
@@ -953,5 +954,18 @@ func TestPeerPullDrops(t *testing.T) {
 	}
 	if r := row(); r["blocked_plugin"] != "later" || r["dropped"].(map[string]any)["count"] != 3 {
 		t.Fatalf("a target that does not run now: %v", r)
+	}
+	l.mu.Lock()
+	l.blockSince = l.blockSince.Add(-peerBlockMax) // the hold ran out
+	l.mu.Unlock()
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	r := row()
+	d = r["dropped"].(map[string]any)
+	last = d["last"].(*peerDrop)
+	if after, _ := b.peerAfter(ctx, "a"); after != 5 || r["blocked_plugin"] != nil || d["count"] != 4 ||
+		last.Plugin != "later" || last.FromPlugin != "messaging" || last.Key != "k5" || last.Reason != "blocked" || last.At == "" {
+		t.Fatalf("after the hold: cursor %d, status %v, last %+v; want 5, no block, 4 drops, the last k5 blocked", after, r, last)
 	}
 }
