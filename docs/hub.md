@@ -457,7 +457,6 @@ It never creates a new send key merely because a reply was lost.
 
 ### Review gate and verification
 
-Claude approved the contract on 2026-10-16 after five changes. Those changes are included above.
 The main review point is the deferred operation protocol, which prevents hub-plugin call cycles.
 The hub owns admission, caller checks, snapshots, and durable operation results.
 The plugin owns domain validation, draft revisions, and the atomic send transaction.
@@ -473,75 +472,55 @@ Verification must cover the real entry points, not only schema decoding:
 - Close a renderer; restore its acknowledged draft in a replacement renderer.
 - Exercise Enter, Shift+Enter, mouse controls, narrow layouts, and text selection in a lab terminal.
 
-The full first proof remains below. Touch behavior requires a real supporting Rex client.
+Touch behavior requires a real supporting Rex client.
 
-## First proof
+## Reconciler and view behavior
 
-The messaging home and two thread tabs. Checks: duplicate open, native close, renderer crash, hub restart during a spawn and during a send, draft restore, continuous layout drift, two apps with different sizes.
-
-## Results
-
-### Hub reconciler, step 1 (Claude, lab, Rex 1203, 2026-10-16)
-
-`hub/cmd/hub/ui.go`, test plugin `tests/uitest.lua`, stub renderer `hub/cmd/stubview`, test `tests/reconcile.sh`. All 10 checks pass:
+Reconciler (`hub/cmd/hub/ui.go`):
 
 - A plugin declares tabs (`hub.ui.tabs`). No session exists before the first navigation.
-- `hub.ui.navigate` creates the plugin session (`lazyrex:<plugin>`), opens every declared tab in order without focus, and each stub renderer checks in (`hub.view.attach`) from its pane.
+- `hub.ui.navigate` creates the plugin session (`lazyrex:<plugin>`), opens every declared tab in order without focus, and each renderer checks in (`hub.view.attach`) from its pane.
 - Tab order drift (a `move_window`) snaps back.
 - A native tab close closes the view only. The tab stays closed until a navigation to it, which reopens it in its declared place.
 - A tab the plugin stops declaring closes.
 - A renderer that exits gets a new view in the same place, and the new renderer checks in.
-
-Found while testing:
-
-- A renderer can start before the hub records its pane. `hub.view.attach` returns `not_ready`, and the renderer retries (added to the contract).
-- Event handlers closed tabs while the worker reordered them (`move_window: not_found`). Now handlers only record state, and one worker per plugin makes every Rex change.
+- A renderer can start before the hub records its pane. `hub.view.attach` returns `not_ready`, and the renderer retries.
+- Event handlers only record state. One worker per plugin makes every Rex change.
 - A stopped hub or plugin stays listed as lost under its label during Rex's grace period, so a label lookup returns `ambiguous`. Renderers count only connected candidates. Tests address clients by full ID.
 - After 3 renderer exits, a tab stays closed until a navigation (bounded respawn). An exit counts once, from Rex's child_exited or from a reconcile pass that finds the renderer of a view that this hub process opened gone. A dead renderer of an earlier hub process closes with no count. The exit, its count and the suppression commit together, and the insert of a new view reads the suppression: a pass with an older tabs list opens no view for a suppressed tab. Every close of a view row deletes it from the set of views that this process opened (`rendererExited`, `countExit`, `spawnView`, `unseenExit`, `forgetOwn`; tests `TestUnseenExit*`, `TestUnseenOwnForgotten`, `TestUnseenEventWinsAtLimit`, `TestUnseenRendererExitLab`).
+- A renderer that exited while no hub ran leaves its view `open`, because nobody got `child_exited`. The reconciler checks each open view that is not attached: a pane with no child closes the view, and a new view opens.
 
-### View services and messaging views, first integration (Claude, lab, Rex 1203, 2026-10-16)
-
-`hub/cmd/hub/viewsvc.go` (snapshots, subscribe, durable operations, view.changed), messaging plugin views (`view.render`, `view.action`, `view.draft.save`, `view.send`), with Codex's renderer `/tmp/lazyrex-view-spike3`. Observed by screen capture and the hub event log:
+View services (`hub/cmd/hub/viewsvc.go`: snapshots, subscribe, durable operations, view.changed) and messaging plugin views (`view.render`, `view.action`, `view.draft.save`, `view.send`):
 
 - The inbox tab renders the plugin's conversations. A thread tab renders Back, history, the composer and Send.
-- Typing in the composer saved drafts through the hub (store revisions 1, 2) and showed "Saved".
-- Enter sent the message. One store transaction wrote the message, the recipient's mailbox and notice, the thread index, and the cleared draft. The history showed the message, and the composer cleared.
+- Typing in the composer saves drafts through the hub and shows "Saved".
+- Enter sends the message. One store transaction writes the message, the recipient's mailbox and notice, the thread index, and the cleared draft. The history shows the message, and the composer clears.
 - Rex Lua encodes empty lists as `{}`. The hub turns empty objects in list fields into `[]`, and adds `back` and `before` as `null` when Lua drops them.
+- Back and inbox Open: the hub records `{navigate: home}` and `{navigate: thread/<peer>}`.
+- A hub restart keeps every open view's view ID, pane and renderer. A plugin restart declares its default tabs again, so a tab added only by a test hook closes.
+- After a restart, the hub clears all attachments, and renderers attach again without input.
+- Two views editing one draft: view A saves; view B keeps its own text, shows `draft_conflict` with A's saved text, and its "Keep my text" action saves against the current revision.
+- A killed renderer: the hub opens a replacement view, which shows the saved draft.
+- An idle hub restart: the same renderer attaches again with no terminal input and shows its saved draft. The renderer wakes on the hub's client events, with a 2 s backoff cap.
+- After a restart, the hub's first snapshot is "Loading" (snapshots are in memory only). The renderer keeps its controls during a loading-only snapshot, so unsaved composer text does not go into recovery.
+- A replay after a lost reply returns the draft revision that the original save or send produced, not the current one.
+- A transient render failure keeps the current tree (Loading on a fresh attach), and `plugin_registered` renders the plugin's views again. Only a definite plugin error renders Error.
+- The hub sets its `lazyrex-hub` label after `client.keymap`, so a renderer woken by the label does not get `not_supported` from `hub.view.attach`.
 
-- Back and inbox Open, through real renderer input (Codex): the hub recorded `{navigate: home}` and `{navigate: thread/codex}`.
-- Hub restart with open views (twice): every open view kept its view ID, pane and renderer. A plugin restart declares its default tabs again, so a tab added only by a test hook closes.
-- After a restart, the hub clears all attachments. Two of three renderers attached again without input. One, running Codex's earlier build, did not.
-- Codex's current renderer (lab, 2026-10-16):
-  - Two views editing one draft: view A saved; view B kept its own text, showed `draft_conflict` with A's saved text, and its "Keep my text" action saved against the current revision.
-  - Renderer killed: the hub opened a replacement view, which showed the saved draft.
-  - Idle hub restart: the same renderer attached again with no terminal input and showed its saved draft. The first run took 6.8 s (exponential backoff, 250 ms doubling to 8 s). Codex's renderer now wakes on the hub's client events, with a 2 s backoff cap: the second run attached again 173 ms after hub start.
-  - Codex also fixed a renderer bug: after a restart, the hub's first snapshot is "Loading" (snapshots are in memory only), and that snapshot pushed unsaved composer text into recovery. The renderer now keeps its controls during a loading-only snapshot. Proposed hub improvement: keep snapshots across restarts.
+Hot reload: run `./dev.sh <hub config>`. It runs the hub and polls the sources once a second.
 
-Fixed after Codex's review:
-
-- A replay after a lost reply returned the current draft revision, not the one the original save or send produced. A renderer could then overwrite a newer draft without a conflict. Now `hub.store.batch` takes `op.result_revs {field: record key}`: the store writes the committed revision into the saved operation result in the same transaction, and a replay returns that result exactly.
-- Startup race (found by Codex with the faster renderer recovery): a renderer attached 19 ms before the plugin registered. `view.render` failed with `client_unavailable`, and the hub cached a permanent Error tree. Now a transient render failure keeps the current tree (Loading on a fresh attach), and `plugin_registered` renders the plugin's views again. Only a definite plugin error renders Error. Codex verified it in the lab: same renderer, correct screen, no input.
-- Startup race (found by Codex in the source, not reproduced): the hub set its `lazyrex-hub` label before it declared its actions. A renderer woken by the label could get `not_supported` from `hub.view.attach`, which the contract treats as final. Now the hub sets the label after `client.keymap`.
-
-Hot reload (lab, Rex 1203, 2026-10-16): run `./dev.sh <hub config>`. It runs the hub and polls the sources once a second.
-
-- `plugins/<name>.lua` changed: `hub.admin.stop` and `hub.admin.start`. Plugin registration renders the open views again. Observed: the thread view showed the new plugin's render.
-- `view/*.go` changed: `go build`, then `mv` over the configured renderer path, then `hub.ui.reload`. The hub sends `view.reload {view_id, attachment}` to each attached renderer. The renderer saves its drafts, waits for open operations, exits Bubble Tea, and calls `exec` on its startup path. Same PID, same pane, new attach. Observed: 3 renderers, PIDs unchanged, 3 new attaches within 12 ms, Codex's unsaved draft kept. The renderer refuses to reload with a draft conflict, a dirty form or removed controls with text, and says why. An old renderer without `view.reload` answers `not_supported` and keeps running.
-- `hub/**/*.go` changed: build, then restart the hub. Renderers and plugins attach again. Observed: all views attached again.
+- `plugins/<name>.lua` changed: `hub.admin.stop` and `hub.admin.start`. Plugin registration renders the open views again.
+- `view/*.go` changed: `go build`, then `mv` over the configured renderer path, then `hub.ui.reload`. The hub sends `view.reload {view_id, attachment}` to each attached renderer. The renderer saves its drafts, waits for open operations, exits Bubble Tea, and calls `exec` on its startup path: same PID, same pane, new attach. The renderer refuses to reload with a draft conflict, a dirty form or removed controls with text, and says why. An old renderer without `view.reload` answers `not_supported` and keeps running.
+- `hub/**/*.go` changed: build, then restart the hub. Renderers and plugins attach again.
 - Rex has no action that restarts a pane's process (Rex 1203 API reference), so `exec` is the renderer's job.
 
-Group thread (the maintainer's request, 2026-10-16; lab, then live on the real hub): `messaging.lua` has groups. The group `team` (title "Team") has the whole roster as members. It is a pseudo-peer, so the thread route, the tab and the inbox entry work unchanged. A message to `team` goes into every other member's mailbox in one transaction, and into one group thread record. `read` and `ack` accept a message addressed to the agent or to its group. A reply with `reply_to` in the group acknowledges the original. Observed in the lab: Claude to team reached Codex and the user, not Claude; Codex's reply reached Claude and the user and cleared Codex's mailbox entry; a send from the user's Team composer reached Claude and Codex. The inbox counts group messages under Team.
+Group thread: `messaging.lua` has groups. The group `team` (title "Team") has the whole roster as members. It is a pseudo-peer, so the thread route, the tab and the inbox entry work unchanged. A message to `team` goes into every other member's mailbox in one transaction, and into one group thread record. `read` and `ack` accept a message addressed to the agent or to its group. A reply with `reply_to` in the group acknowledges the original. The inbox counts group messages under Team.
 
-Created threads (the maintainer's request; lab, then live): Messages has a "New thread" form, an optional title and a checkbox per participant (a v1 `form` node). Submit makes a group of the user and the chosen participants. The group lives in the record `groups`, and its ID comes from the operation key (`g-...`), so a replay finds the group instead of making a second. The plugin declares the new tab and returns `{navigate}`. One participant and no title opens the existing direct thread. Agents send to a group ID; only members can. Observed in the lab: "Design" was created, its tab opened and attached, and Claude's message reached Codex and the user, not Claude. Threads have no Back control: the Rex sidebar lists them.
+Created threads: Messages has a "New thread" form, an optional title and a checkbox per participant (a v1 `form` node). Submit makes a group of the user and the chosen participants. The group lives in the record `groups`, and its ID comes from the operation key (`g-...`), so a replay finds the group instead of making a second. The plugin declares the new tab and returns `{navigate}`. One participant and no title opens the existing direct thread. Agents send to a group ID; only members can. Threads have no Back control: the Rex sidebar lists them.
 
-Read state (proposed; hub and plugin done, renderer in progress by Codex): the renderer turns on focus reporting (DECSET 1004). On focus-in, and on each new snapshot while it has focus, it calls `hub.view.seen {view_id, attachment, reason}`. The hub forwards `view.seen {route, user, reason}` to the plugin in the view worker. `reason` is `focus` (the pane got focus, or a navigation showed it), `content` (new messages while focused), `connect`, or empty (an older renderer). Queued reports coalesce and `focus` wins. A plugin can refresh its data on `focus` without a refresh/render loop. A registered plugin calls `hub.ui.invalidate {}` when its own data changed outside the store (for example a scan finished): the hub renders its open views again. Messaging then acknowledges the user's unread messages in that thread. A background tab gets no focus-in, so it marks nothing read. Not verified: that Rex forwards focus-in and focus-out to a pane.
+Read state: the renderer turns on focus reporting (DECSET 1004). On focus-in, and on each new snapshot while it has focus, it calls `hub.view.seen {view_id, attachment, reason}`. The hub forwards `view.seen {route, user, reason}` to the plugin in the view worker. `reason` is `focus` (the pane got focus, or a navigation showed it), `content` (new messages while focused), `connect`, or empty (an older renderer). Queued reports coalesce and `focus` wins. A plugin can refresh its data on `focus` without a refresh/render loop. A registered plugin calls `hub.ui.invalidate {}` when its own data changed outside the store (for example a scan finished): the hub renders its open views again. Messaging then acknowledges the user's unread messages in that thread. A background tab gets no focus-in, so it marks nothing read.
 
-
-Fixed while testing hot reload: renderers that exited while no hub ran left their views `open` forever, because nobody got `child_exited`. Now the reconciler checks each open view that is not attached: a pane with no child closes the view, and a new view opens. Observed: two such views were replaced after a hub restart.
-
-Not tested yet: a spawn whose outcome is unknown, navigation on a real app (the lab has no app), agent replies arriving in the user's thread.
-
-Gallery (Claude, lab then real hub, Rex 1203, 2026-10-16): the messaging plugin adds a `Gallery` tab at route `/gallery`. The gallery shows every renderer control live: a widget, a list with a disabled item, a form (text, multiline, two booleans, select), sample Markdown messages and a composer. Gallery state, history and draft are in the records `gallery/state`, `gallery/history` and `gallery/draft`. Gallery actions do not create messages or threads. Observed in the lab: a mouse click on Apply stored `submitted form: name=Ada, notes=, opt_a=false, opt_b=true, size=medium`; a composer send appended to `gallery/history` only. Observed on the real hub: the Gallery view attached after the hot reload.
+Gallery: the messaging plugin adds a `Gallery` tab at route `/gallery`. The gallery shows every renderer control live: a widget, a list with a disabled item, a form (text, multiline, two booleans, select), sample Markdown messages and a composer. Gallery state, history and draft are in the records `gallery/state`, `gallery/history` and `gallery/draft`. Gallery actions do not create messages or threads.
 
 ## Profiles and workers
 
@@ -622,19 +601,16 @@ Verification: `workers_session_test.go` calls the worker entry points against an
 Run the lab cases with `LAZYREX_LAB=1 go test ./cmd/hub -run TestWorkerSessionLab -v` from the hub directory. Each lab case starts its own lab Rex server (rexLab). Without LAZYREX_LAB=1, the lab cases skip. Integration with the plugin recovery changes remains the integration owner's next step.
 
 
-### Lab results (Claude, real hub path, Rex 1203, 2026-10-16)
+### Worker behavior
 
-Observed:
 - Home launch: one tab and one process. The launch result opens the tab.
 - Mouse clicks open a plugin, an agent's thread and a worker. Each click makes the target window active.
 - States `running` and `exited`. A missing `cwd` does not fail in Rex: Rex accepts the cwd, and the process exits.
 - Same key retry returns the same spawn. Stop retry returns `closed`.
-- Named args: a `task` with quotes, `;` and `$(...)` arrived as one unchanged argument (`$#` = 1), and nothing ran. Without the arg, the argument was left out (`$#` = 0). An undeclared arg was refused.
-- Hub restart with a `sending` agent spawn: the worker list shows "outcome unknown: no pane found". A pane with the spawn's label appeared later, and its agent joined (the join is removed since 2026-10-23: an agent reports its identity). The spawn opened with that block.
+- Named args: a `task` with quotes, `;` and `$(...)` arrives as one unchanged argument (`$#` = 1), and nothing runs. Without the arg, the argument is left out (`$#` = 0). An undeclared arg is refused.
+- Hub restart with a `sending` agent spawn: the worker list shows "outcome unknown: no pane found". The spawn opens when its pane reports an identity (see "Worker session recovery").
 
-Defects found by integration and fixed: the home returned a bare tree instead of `{tree}`; a `changed` call inside `hub.register` deadlocked on `h.mu`; worker exits did not refresh the home.
-
-Untested: the `failed` state on a real hub (no harmless way to make Rex refuse `new_window`; the controlled-hub test covers the view); app selection (no Rex app is attached to the lab server); a real Claude or Codex profile.
+Not verified on a real hub: the `failed` state (no harmless way to make Rex refuse `new_window`; the controlled-hub test covers the view), app selection, and a real Claude or Codex profile.
 
 ## The work session
 
