@@ -1038,6 +1038,13 @@ func (h *Hub) runOp(ctx context.Context, op *pluginOp) error {
 		}
 	}
 	delete(h.pops.busy, op.ID)
+	// The op ended, and its phases released the plugin command flocks: a peer's sync can read the
+	// pin document now. An op that wrote the lock (write:lock or write:lock-old; any ending; also a
+	// rename observed after a hub restart: every applied proof) nudges the peers (lead-nudge).
+	var wrote int
+	if err := h.db.QueryRowContext(ctx, `SELECT count(*) FROM plugin_op_attempts WHERE op_id = ? AND call LIKE 'write:lock%' AND proof LIKE 'applied:%'`, op.ID).Scan(&wrote); err == nil && wrote > 0 {
+		h.peerNudgePlugins()
+	}
 	return nil
 }
 
@@ -1271,9 +1278,6 @@ func (h *Hub) renameAttempt(ctx context.Context, op *pluginOp, call, path string
 			return err
 		}
 		log.Printf("plugin op %s: %v (the new file is in place)", op.ID, err)
-	}
-	if strings.HasPrefix(call, "write:lock") {
-		h.peerNudgePlugins() // a pin changed: the peers that sync from this hub sync now
 	}
 	if h.opFault("plugin-op-after-" + fault) {
 		return errOpCrash

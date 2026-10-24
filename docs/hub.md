@@ -2308,8 +2308,10 @@ Each hub pulls from its peers. A hub never pushes data.
   connect). The error is logged once.
 - After a send, the hub sends `hub.peer.nudge` to the peer. The peer pulls at once. A nudge
   carries no data, so a lost nudge only adds delay.
-- After the plugin manager writes the lock file (a pin changed), the hub sends `hub.peer.nudge
-  {hub, what: "plugins"}` to each peer (lead-nudge). A peer whose `plugins_from` peer is this hub
+- When a plugin manager op that wrote the lock file ends (a pin changed; any ending, also after a
+  hub restart), the hub sends `hub.peer.nudge {hub, what: "plugins"}` to each peer (lead-nudge).
+  The op has then released the plugin command flocks, so the peer's sync can read the pin
+  document; a nudge at the lock write would meet the flocks of the op's next phase. A peer whose `plugins_from` peer is this hub
   syncs its plugins at once ("Plugin sync"); another peer does nothing. A lost nudge only adds
   delay: the sync's minute timer stays. Limit: during a deploy window, a peer that runs an older
   hub ignores `what` and takes the nudge as a pull kick; it does not start its plugin sync from

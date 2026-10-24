@@ -203,8 +203,10 @@ func TestPeerNudgePlugins(t *testing.T) {
 	}
 }
 
-// A lock write of the plugin manager nudges each peer with what "plugins"; the receiver's plugins
-// loop syncs at once on it, not after its minute.
+// An op that wrote the lock nudges each peer with what "plugins" when it ends, after its phases
+// released the plugin command flocks (not at the lock write: the next phases take the flocks again,
+// and the peer's sync would be refused; claude-22's lab, nudge-blocker-5168). An op that wrote no
+// lock does not nudge. The receiver's plugins loop syncs at once on the nudge, not after its minute.
 func TestLockWriteNudgesPeers(t *testing.T) {
 	r, _ := fetchTestRepo(t)
 	a := fetchTestHub(t, r)
@@ -225,8 +227,20 @@ func TestLockWriteNudgesPeers(t *testing.T) {
 		t.Fatalf("a nudge before the lock write: %v", m)
 	default:
 	}
-	if err := a.opLock(context.Background(), add); err != nil || add.Phase != "writing" {
+	ctx0 := context.Background()
+	if err := a.opLock(ctx0, add); err != nil || add.Phase != "writing" {
 		t.Fatalf("the lock write: %+v %v", add, err)
+	}
+	select {
+	case m := <-nudged:
+		t.Fatalf("a nudge at the lock write, before the op ended: %v", m)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := a.setOpPhase(ctx0, add, "done", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runOp(ctx0, add); err != nil {
+		t.Fatal(err)
 	}
 	select {
 	case m := <-nudged:
@@ -234,7 +248,38 @@ func TestLockWriteNudgesPeers(t *testing.T) {
 			t.Fatalf("the nudge %v", m)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("no nudge after the lock write")
+		t.Fatal("no nudge after the op that wrote the lock ended")
+	}
+	// An op that ended conflict after a write:lock-old rename that a restart observed nudges too.
+	old := resolvedAdd(t, a, "nudge-old", "github:acme/notes@v1.0.0")
+	mustExec(t, a, `INSERT INTO plugin_op_attempts (attempt, op_id, call, at, outcome, proof) VALUES ('x-old', ?, 'write:lock-old', 1, 'written (observed after the hub restarted)', 'applied: the file is the intended output')`, old.ID)
+	if err := a.setOpPhase(ctx0, old, "conflict", "", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runOp(ctx0, old); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-nudged:
+		if m["what"] != "plugins" {
+			t.Fatalf("the nudge %v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no nudge after a conflict op with a recovered write:lock-old")
+	}
+	// An op whose lock rename was not applied does not nudge.
+	other := resolvedAdd(t, a, "nudge-none", "github:acme/notes@v1.0.0")
+	mustExec(t, a, `INSERT INTO plugin_op_attempts (attempt, op_id, call, at, outcome, proof) VALUES ('x-none', ?, 'write:lock', 1, 'not written: the hub stopped before the rename', 'not_applied: no rename was sent')`, other.ID)
+	if err := a.setOpPhase(ctx0, other, "failed", "", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.runOp(ctx0, other); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-nudged:
+		t.Fatalf("a nudge after an op that wrote no lock: %v", m)
+	case <-time.After(300 * time.Millisecond):
 	}
 
 	// The receiver: its plugins loop syncs at the start, then at once on the nudge.
