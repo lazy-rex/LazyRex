@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const faultExitCode = 86
-
 type eventLog struct {
 	mu         sync.Mutex
 	f          *os.File
@@ -73,7 +71,7 @@ func (fs *faults) Set(spec string) error {
 			return fmt.Errorf("unknown fault key %q", k)
 		}
 	}
-	valid := map[string][]string{"block-create": {"exit-before", "exit-after"}, "notice-written": {"gate"}, "palette-start": {"fail"}}
+	valid := map[string][]string{"palette-start": {"fail"}}
 	modes, ok := valid[f.point]
 	if !ok || !contains(modes, f.mode) {
 		return fmt.Errorf("unsupported fault %q", spec)

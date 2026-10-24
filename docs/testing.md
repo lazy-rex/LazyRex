@@ -509,19 +509,11 @@ fired. A fault that has not fired at the end of the file fails the file. An unkn
 
 #### Lab faults (-lab-fault)
 
-`-lab-fault point=<p>,mode=<m>[,op=<key>]` is a hub start flag, not a `hub.test.fault` spec: a test
+`-lab-fault point=<p>,mode=<m>` is a hub start flag, not a `hub.test.fault` spec: a test
 file cannot arm these points with `fault(spec)`. The flag is repeatable, and each fault fires once.
 It is for labs only: the hub refuses it with `-real-server`. The valid points are in `events.go`
 (`faults.Set`). A fired fault emits the event `fault` with its point and mode.
 
-- `point=block-create,mode=exit-before`: a plugin spawn records its spawn intent, then the hub exits
-  with status 86 before it sends the block create request. Test: none in this repository.
-- `point=block-create,mode=exit-after`: the hub tries to send the block create request and does not
-  wait for an answer. If the send fails, the hub logs the error. In both cases the hub emits the
-  event and exits with status 86. Test: none in this repository.
-- `point=notice-written,mode=gate`: after the terminal write of a notice and before the hub records
-  it as delivered, the notice loop waits until the test creates `<state>/gate.release` (the hub
-  removes the file). Test: none in this repository.
 - `point=palette-start,mode=fail`: the hub start waits for the first palette write attempt (a
   failed write also counts), then runs the palette stop. The stop write follows the ownership and
   failure rules in docs/hub.md, "Stop and exit status". The start then fails, and the hub exits 1.

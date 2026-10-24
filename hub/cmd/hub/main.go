@@ -1090,7 +1090,7 @@ type hubFlagSet struct {
 func hubFlags(set *flag.FlagSet) *hubFlagSet {
 	v := &hubFlagSet{faults: &faults{}}
 	v.config = set.String("config", "", "hub configuration JSON (required)")
-	set.Var(v.faults, "lab-fault", "lab-only fault, for example point=block-create,mode=exit-before (repeatable)")
+	set.Var(v.faults, "lab-fault", "lab-only fault, for example point=palette-start,mode=fail (repeatable)")
 	v.real = set.Bool("real-server", false, "run on the user's real Rex server (approved runs only; no lab faults)")
 	v.test = set.Bool("test", false, "test mode for the Lua test harness: hub.test.* actions (lab only, docs/testing.md)")
 	v.restart = set.Bool("restart", false, "run the hub as a child and start it again after a failure (restart.go)")

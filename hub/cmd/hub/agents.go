@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -327,19 +325,6 @@ func (h *Hub) noticeLoop(ctx context.Context) {
 				log.Printf("notice to %s: %v", n.agent, err) // not marked delivered
 				arm(time.Second)
 				continue
-			}
-			if f := h.faults.take("notice-written", "gate"); f != nil {
-				// Lab gate: hold between the terminal write and the suppression update, until the test
-				// creates <state>/gate.release. A test can commit a newer send meanwhile.
-				h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "agent": n.agent, "intent_rev": revString(n.intentRev)})
-				release := filepath.Join(h.cfg.State, "gate.release")
-				for {
-					if _, err := os.Stat(release); err == nil {
-						os.Remove(release)
-						break
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
 			}
 			h.mu.Lock()
 			// Only the revision captured before the write counts, and only for the same connection.

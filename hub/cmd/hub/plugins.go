@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1043,10 +1042,6 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 	}
 	h.mu.Unlock()
 	h.ev.emit("plugin_spawn_intent", map[string]any{"plugin": pl.Name, "instance_id": instance})
-	if f := h.faults.take("block-create", "exit-before"); f != nil {
-		h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "instance_id": instance})
-		exitNow()
-	}
 	if _, err := h.db.ExecContext(ctx, `UPDATE spawn_intents SET status = 'sending' WHERE instance_id = ?`, instance); err != nil {
 		return h.knownFailure(ctx, "sending", instance, "prepared", err) // nothing was sent
 	}
@@ -1082,9 +1077,6 @@ func (h *Hub) spawn(ctx context.Context, pl *Plugin, cand *pluginRun) error {
 			"login":   false,
 			"exit":    map[string]any{"on_completion": false}, // keep the log after exit
 		},
-	}
-	if h.exitAfterSendFault(ctx, req, instance) {
-		exitNow()
 	}
 	var out struct {
 		BlockID string `json:"block_id"`
@@ -1143,24 +1135,6 @@ func (h *Hub) checkMapped(ctx context.Context, pl *Plugin, sess, block string) {
 	}
 	h.recordLogf(pl, "the child exited before the block was recorded")
 	go h.pluginExited(ctx, pl, block, c.lastExit)
-}
-
-// exitAfterSendFault writes the block-create request frame, then reports the fault, if configured.
-func (h *Hub) exitAfterSendFault(ctx context.Context, req map[string]any, instance string) bool {
-	f := h.faults.take("block-create", "exit-after")
-	if f == nil {
-		return false
-	}
-	if err := h.rex.SendOnly(ctx, "session.new_block", req); err != nil {
-		log.Printf("fault send: %v", err)
-	}
-	h.ev.emit("fault", map[string]any{"point": f.point, "mode": f.mode, "instance_id": instance})
-	return true
-}
-
-func exitNow() {
-	log.Printf("lab fault: exit %d", faultExitCode)
-	os.Exit(faultExitCode)
 }
 
 // pluginExited handles child_exited for a plugin block: replace it while desired state is running,
