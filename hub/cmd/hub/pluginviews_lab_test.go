@@ -22,8 +22,16 @@ type labView struct {
 }
 
 type labViewNode struct {
-	ID    string `json:"id"`
-	Text  string `json:"text"`
+	ID     string `json:"id"`
+	Text   string `json:"text"`
+	Label  string `json:"label"`
+	Fields []struct {
+		ID      string `json:"id"`
+		Value   string `json:"value"`
+		Options []struct {
+			Value string `json:"value"`
+		} `json:"options"`
+	} `json:"fields"`
 	Items []struct {
 		ID     string `json:"id"`
 		Label  string `json:"label"`
@@ -336,17 +344,21 @@ func TestOfferConfirmLab(t *testing.T) {
 		t.Fatalf("render attempts %d -> %d: the panel did not render again", before, after)
 	}
 
-	// Review… opens the confirm form. It names the id, the peer, the full commit and the digest.
+	// Review… opens the confirm form. It names the id, the peer, the full commit and the digest, and
+	// asks where the files come from (default GitHub). Add with the peer: b takes the files from a.
 	if st := p.action("offered", "review", map[string]any{"item_id": src}, "offer-review"); st["status"] != "succeeded" {
 		t.Fatalf("review: %v", st)
 	}
 	f := b.viewAt(ctx, "/forms/plugins/confirm/offer/"+fmt.Sprintf("%x", src))
 	var confirm *labViewNode
 	f.waitNode("the confirm node", func() bool { confirm = f.node("offer/"); return confirm != nil })
-	if !strings.Contains(confirm.Text, "managed:gh from a") || !strings.Contains(confirm.Text, commit) {
-		t.Fatalf("the confirm text: %q", confirm.Text)
+	if !strings.Contains(confirm.Label, "managed:gh from a") || !strings.Contains(confirm.Label, commit) {
+		t.Fatalf("the confirm text: %q", confirm.Label)
 	}
-	if st := f.action(confirm.ID, "add", map[string]any{}, "offer-add"); st["status"] != "succeeded" || st["effects_error"] != nil {
+	if len(confirm.Fields) != 1 || confirm.Fields[0].ID != "fetch" || confirm.Fields[0].Value != "github" || len(confirm.Fields[0].Options) != 2 {
+		t.Fatalf("the confirm fields: %+v", confirm.Fields)
+	}
+	if st := f.action(confirm.ID, "add", map[string]any{"values": map[string]any{"fetch": "peer"}}, "offer-add"); st["status"] != "succeeded" || st["effects_error"] != nil {
 		t.Fatalf("add: %v", st)
 	}
 	var entry map[string]any
@@ -363,7 +375,7 @@ func TestOfferConfirmLab(t *testing.T) {
 		}
 		return entry != nil && entry["pinned_commit"] == commit
 	})
-	if entry["source"] != src {
+	if entry["source"] != src || entry["fetch"] != "peer" {
 		t.Fatalf("the added entry: %v", entry)
 	}
 
@@ -381,7 +393,7 @@ func TestOfferConfirmLab(t *testing.T) {
 	var shown *labViewNode
 	fx.waitNode("the confirm node of x", func() bool {
 		shown = fx.node("offer/")
-		return shown != nil && strings.Contains(shown.Text, "managed:x")
+		return shown != nil && strings.Contains(shown.Label, "managed:x")
 	})
 	writeA(`{"id":"gh","source":"`+src+`"},{"id":"y","source":"`+src2+`"}`, src, src2)
 	b.waitLong("the offer is y", 90*time.Second, func() bool {

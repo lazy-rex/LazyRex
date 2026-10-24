@@ -236,7 +236,19 @@ local function settings_text(e)
   if #a + #w + 1 > 65536 then return nil end
   return a, w
 end
-local function settings_id(render_id, a, w) return 'settings/' .. digest16(render_id, a .. '\0' .. w) end
+local function settings_id(render_id, a, w, f) return 'settings/' .. digest16(render_id, a .. '\0' .. w .. '\0' .. (f or '')) end
+-- fetch_field is the choice of where a GitHub entry's files come from (docs/hub.md "Plugin sync").
+local function fetch_field(value, peer)
+  return {id = 'fetch', label = 'Take the plugin files from', kind = 'select', required = true, value = value, options = {
+    {value = 'github', label = 'GitHub'},
+    {value = 'peer', label = 'The peer hub' .. (peer and (' ' .. peer) or '') .. ' (this hub needs no GitHub access)'}}}
+end
+local function fetch_value(values)
+  local f = values.fetch
+  if f == nil or f == '' then return 'github' end
+  if f ~= 'github' and f ~= 'peer' then fail('invalid_input', 'Select where the files come from') end
+  return f
+end
 local function start_id(render_id, x) return 'start/' .. digest16(render_id, x.source .. '\0' .. (x.commit or '') .. '\0' .. (x.digest or '')) end
 -- An offer (hub.plugins "offered"): a GitHub source that the plugins_from peer pins and this hub
 -- does not have. offer_id binds the complete offer, a fixed field list (docs/hub.md "Plugin sync").
@@ -297,14 +309,21 @@ local function entry_tree(key, render_id, view_id)
   if e.state ~= 'running' and not trying then nodes[#nodes + 1] = button('enable', 'enable', 'Enable (start)', github and navigation or op_tool) end
   if e.name ~= 'lazyrex' and e.desired == 'running' then nodes[#nodes + 1] = button('disable', 'disable', 'Disable (stop)', op_tool) end
   if e.state == 'running' then nodes[#nodes + 1] = button('restart', 'restart', 'Restart', op_tool) end
-  if e.managed and github then nodes[#nodes + 1] = button('update', 'update', 'Update…', navigation) end
+  if e.managed and github and e.fetch == 'peer' then
+    nodes[#nodes + 1] = widget('update', 'Its files come from the peer hub: the plugin sync updates it. To update it from GitHub, set GitHub in the settings first.')
+  elseif e.managed and github then
+    nodes[#nodes + 1] = button('update', 'update', 'Update…', navigation)
+  end
   if e.managed then
     local a, w = settings_text(e)
     if a then
-      nodes[#nodes + 1] = {id = settings_id(render_id, a, w), type = 'form', label = 'Settings (they apply at the next start)', fields = {
+      local fields = {
         {id = 'args', label = 'Args: one key=value per line', kind = 'multiline', required = false, value = a},
         {id = 'watch_roots', label = 'Watch roots: one path per line', kind = 'multiline', required = false, value = w},
-      }, submit_action = action('settings', 'Save settings', op_tool)}
+      }
+      if e.fetch then fields[#fields + 1] = fetch_field(e.fetch) end
+      nodes[#nodes + 1] = {id = settings_id(render_id, a, w, e.fetch), type = 'form', label = 'Settings (they apply at the next start)', fields = fields,
+        submit_action = action('settings', 'Save settings', op_tool)}
     else
       nodes[#nodes + 1] = widget('settings', 'These settings cannot be edited here (a line break, "=" in a key, or over 64 KiB). Change them with the agent tool hub.plugins.op.')
     end
@@ -333,8 +352,9 @@ local function offer_tree(source, render_id, view_id)
     if used then
       nodes[1] = widget('id_used', 'This hub already has managed:' .. o.id .. ' (' .. used.source .. '), so the offer cannot be added with its id. Remove that entry first.')
     else
-      nodes[1] = widget(offer_id(render_id, o), 'Add managed:' .. o.id .. ' from ' .. o.peer .. '? Source ' .. o.source .. ', pinned by the peer at ' .. offer_pin_text(o.pin) ..
-        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs code from GitHub on this computer.', action('add', 'Add', confirmation))
+      nodes[1] = {id = offer_id(render_id, o), type = 'form', label = 'Add managed:' .. o.id .. ' from ' .. o.peer .. '? Source ' .. o.source .. ', pinned by the peer at ' .. offer_pin_text(o.pin) ..
+        ', commit ' .. o.pin.commit .. ' (' .. o.pin.digest .. '). This runs code from GitHub on this computer.', fields = {fetch_field('github', o.peer)},
+        submit_action = action('add', 'Add', confirmation)}
     end
   end
   nodes[#nodes + 1] = progress_node(render_id, view_id)
@@ -458,7 +478,7 @@ local function manager_action(args, input)
     -- the complete offer again at admission (target).
     local o = offer_of(hub('hub.plugins'), key)
     if not o or o.id == '' or offer_id(nil, o) ~= args.node_id then fail('conflict', 'The offered code changed since it was shown. Read the new text, then add again.') end
-    return {plugins = {op = 'add', input = {source = o.source, id = o.id}, target = o}}
+    return {plugins = {op = 'add', input = {source = o.source, id = o.id, fetch = fetch_value(values)}, target = o}}
   end
   local list = hub('hub.plugins')
   local e = entry_of(list, key)
@@ -490,7 +510,7 @@ local function manager_action(args, input)
   end
   if a == 'settings' then
     local cur_a, cur_w = settings_text(e)
-    if not cur_a or settings_id(nil, cur_a, cur_w) ~= args.node_id then fail('conflict', 'The settings changed since they were shown. Read the new values, then save again.') end
+    if not cur_a or settings_id(nil, cur_a, cur_w, e.fetch) ~= args.node_id then fail('conflict', 'The settings changed since they were shown. Read the new values, then save again.') end
     local new_args, roots = {}, lines_of(type(values.watch_roots) == 'string' and values.watch_roots or '')
     for n, line in ipairs(lines_of(type(values.args) == 'string' and values.args or '')) do
       local k, v = line:match('^([^=]+)=(.*)$')
@@ -501,8 +521,10 @@ local function manager_action(args, input)
     -- An empty list is left out: Rex Lua encodes an empty table as {}, and the hub takes a missing
     -- watch_roots as an empty one.
     local cur_roots = #(e.watch_roots or {}) > 0 and e.watch_roots or nil
-    return {plugins = {op = 'settings', entry = key, input = {args = new_args, watch_roots = #roots > 0 and roots or nil},
-      expect = {args = e.args or {}, watch_roots = cur_roots}}}
+    -- fetch: only a GitHub entry has it (hub.plugins); nil keeps the value at the hub.
+    local fetch = e.fetch and fetch_value(values) or nil
+    return {plugins = {op = 'settings', entry = key, input = {args = new_args, watch_roots = #roots > 0 and roots or nil, fetch = fetch},
+      expect = {args = e.args or {}, watch_roots = cur_roots, fetch = e.fetch}}}
   end
   fail('invalid_input', 'Unknown plugin manager action')
 end
