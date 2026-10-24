@@ -124,13 +124,43 @@ func TestPaletteTwoAppsOwnTabLab(t *testing.T) {
 	}
 	s.viewAt(ctx, "/panels/plugins") // the renderer attached
 
+	// palette_ctx keeps what the run carried apart from the server's focus: no block_id came in.
+	lastCtx := func() map[string]any {
+		evs := s.events("palette_ctx", "")
+		if len(evs) == 0 {
+			t.Fatal("no palette_ctx event")
+		}
+		return evs[len(evs)-1]
+	}
+	e := lastCtx()
+	if e["kind"] != "command" || e["in_client_id"] != pid || e["in_session_id"] != sess || e["in_block_id"] != nil ||
+		e["server_apps"] != float64(2) || e["server_active_window_id"] != v0.ActiveWindowID || e["server_focused_block_id"] != pane {
+		t.Fatalf("two apps: palette_ctx %v", e)
+	}
+	if _, ok := e["in_window_id"]; ok {
+		t.Fatalf("two apps: in_window_id without a ctx.window_id: %v", e)
+	}
+
 	s.must("hub.test.app.close", map[string]any{"name": "phone"})
-	one := run(map[string]any{"client_id": pid, "session_id": sess, "block_id": pane}).Result
+	one := run(map[string]any{"client_id": pid, "session_id": sess, "block_id": pane, "window_id": paneWindow}).Result
 	if one.Select.WindowID != paneWindow {
 		t.Fatalf("one app: select %+v, want the pane's window %s", one.Select, paneWindow)
 	}
 	if n := len(read().Windows); n != 2 {
 		t.Fatalf("one app: %d windows, want no new tab", n)
+	}
+	if e := lastCtx(); e["in_block_id"] != pane || e["in_window_id"] != paneWindow || e["server_apps"] != float64(1) {
+		t.Fatalf("one app: palette_ctx %v", e)
+	}
+
+	// The restart form's palette entry records the same event.
+	var rs runOut
+	if err := pc.Call(ctx, "client.perform", map[string]any{"client_id": s.hub, "action": "hub.admin.restart.form", "timeout_ms": 10000,
+		"args": map[string]any{"kind": "claude", "ctx": map[string]any{"client_id": pid, "session_id": sess, "block_id": pane}}}, &rs); err != nil {
+		t.Fatalf("hub.admin.restart.form: %v", err)
+	}
+	if e := lastCtx(); e["kind"] != "restart" || e["in_block_id"] != pane || e["in_client_id"] != pid {
+		t.Fatalf("restart: palette_ctx %v", e)
 	}
 }
 

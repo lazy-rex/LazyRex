@@ -85,6 +85,7 @@ func (h *Hub) adminRestartForm(ctx context.Context, p perform, args map[string]a
 	if cid, _ := rc["client_id"].(string); cid == "" || cid != p.Requester.ClientID {
 		return nil, bad("ctx.client_id is not the calling client")
 	}
+	h.paletteCtxEvent(ctx, "restart", p, rc)
 	sess, _ := rc["session_id"].(string)
 	block, _ := rc["block_id"].(string)
 	if sess == "" {

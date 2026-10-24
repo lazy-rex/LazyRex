@@ -497,12 +497,57 @@ func (h *Hub) paletteRun(ctx context.Context, p perform, args map[string]any) (a
 	if cid, _ := rc["client_id"].(string); cid == "" || cid != p.Requester.ClientID {
 		return nil, bad("ctx.client_id is not the calling client")
 	}
+	h.paletteCtxEvent(ctx, "command", p, rc)
 	sess, _ := rc["session_id"].(string)
 	block, _ := rc["block_id"].(string)
 	if sess == "" {
 		return nil, bad("run this command from the Rex palette or a key binding: it needs a session")
 	}
 	return h.paletteOpen(ctx, plugin, route, title, formContext{SessionID: sess, Panel: panel, SourceBlock: block}, true)
+}
+
+// paletteCtxEvent records what a palette run carried, to learn what the real app sends (user
+// decision 2026-10-23): the event palette_ctx has the incoming ctx fields (in_*, and in_keys for
+// any field the hub does not read), the calling client's info, and, apart from them, the session's
+// server focus read now (server_*). It changes nothing.
+func (h *Hub) paletteCtxEvent(ctx context.Context, kind string, p perform, rc map[string]any) {
+	keys := make([]string, 0, len(rc))
+	for k := range rc {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fields := map[string]any{"kind": kind, "in_keys": keys, "in_client_id": rc["client_id"], "in_session_id": rc["session_id"],
+		"in_block_id": rc["block_id"], "in_origin": rc["origin"], "requester_info": p.Requester.Info}
+	if w, ok := rc["window_id"]; ok {
+		fields["in_window_id"] = w
+	}
+	if sess, _ := rc["session_id"].(string); sess != "" {
+		var sv struct {
+			ActiveWindowID string `json:"active_window_id"`
+			Windows        []struct {
+				WindowID       string `json:"window_id"`
+				FocusedBlockID string `json:"focused_block_id"`
+			} `json:"windows"`
+		}
+		err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil)
+		if err == nil {
+			err = h.rex.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv)
+		}
+		if err != nil {
+			fields["server_error"] = err.Error()
+		} else {
+			fields["server_active_window_id"] = sv.ActiveWindowID
+			for _, w := range sv.Windows {
+				if w.WindowID == sv.ActiveWindowID {
+					fields["server_focused_block_id"] = w.FocusedBlockID
+				}
+			}
+		}
+		if apps, err := h.sessionApps(ctx, sess); err == nil {
+			fields["server_apps"] = len(apps)
+		}
+	}
+	h.ev.emit("palette_ctx", fields)
 }
 
 // paletteOpen opens the form or panel of a palette run, and names in select the tab that the

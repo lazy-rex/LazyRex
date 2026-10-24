@@ -656,7 +656,8 @@ type perform struct {
 	Action    string          `json:"action"`
 	Args      json.RawMessage `json:"args"`
 	Requester struct {
-		ClientID  string `json:"client_id"`
+		ClientID  string          `json:"client_id"`
+		Info      json.RawMessage `json:"info"`
 		Principal struct {
 			Kind string `json:"kind"`
 			PID  int    `json:"pid"`

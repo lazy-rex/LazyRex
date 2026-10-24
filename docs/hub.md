@@ -1403,6 +1403,13 @@ Limits: a form that a view opens goes to the side slot of the source view's tab,
 tapping device shows, with focus. No Rex signal tells which device tapped, so `hub.view.app_action`
 still refuses with `ambiguous_app`. A lost answer to the new tab's `session.new_window` leaves the
 form `sending` until the next hub start (`formsSweep` finds it by its label).
+To learn what the real app sends (the user, 2026-10-23: the side panel belongs in the pane that the
+calling device views), each palette run (a plugin command or a restart form) records the debug
+event `palette_ctx`. Its `in_*` fields are the run's incoming ctx (`in_client_id`, `in_session_id`,
+`in_block_id`, `in_window_id` only when ctx has one, `in_origin`, and `in_keys`, every key that came
+in) with `requester_info`, the calling client's info. Apart from them, `server_active_window_id`,
+`server_focused_block_id` and `server_apps` are the session's state read at the run (or
+`server_error`). The event changes no placement.
 
 The return of a closed form in layer mode (contract v2.1, 2026-10-22). When a form closes without
 an action (Esc, its exit, the user's close of its pane, a hub close), the hub opens the panel that
