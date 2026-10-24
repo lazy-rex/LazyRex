@@ -1520,6 +1520,21 @@ app.action('p.x', {}, function() return {} end)]])
   expect(load_error('app.on("peer.receive", function() end)')).to_match('app.on%("peer.receive"%) is gone: use app.peer{receive = fn}')
 end)
 
+-- codex-15's reviewer test (c15-sdkpeer-prune-premise; lead-sdkfed8): the receiver committed, its
+-- reply was lost, it stayed away over 30 days; the original envelope must not commit again.
+test('peer receive: a seen row is never pruned; a delayed original envelope commits once', function()
+  local s = peer_plugin([[app.db.migrate {'CREATE TABLE notes (text TEXT)'}
+peer = app.peer{receive = function(msg) app.db.exec('INSERT INTO notes (text) VALUES (?)', msg.body.text) end}]])
+  local a = {from_hub = 'linux', key = 'delayed-original', body = '{"text":"first"}'}
+  expect(s:call('peer.receive', a).error).to_be(nil)
+  expect(#rows(s, 'notes')).to_be(1)
+  for _, r in ipairs(s.sql.state.tables.sdk_peer_seen.rows) do r.at = os.time() - 31 * 86400 end
+  s.sdk._state.peer.setup()
+  expect(#s.sql.state.tables.sdk_peer_seen.rows, 'the seen row stays').to_be(1)
+  expect(s:call('peer.receive', a).error).to_be(nil)
+  expect(#rows(s, 'notes'), 'the same original envelope after the start prune commits once').to_be(1)
+end)
+
 test('peer addresses: split, join, sender, received_id and origin_id', function()
   local s = peer_plugin([[peer = app.peer{}]])
   local env_peer = s.env.peer -- the global of the main file
@@ -1536,7 +1551,7 @@ test('peer addresses: split, join, sender, received_id and origin_id', function(
   expect(env_peer.origin_id('send/1', 'mac'), 'a local ID').to_be(nil)
 end)
 
-test('peer schema: the SDK tables come first, a newer peer schema fails the start, sdk_ is the SDK\'s, old rows are pruned', function()
+test('peer schema: the SDK tables come first, a newer peer schema fails the start, sdk_ is the SDK\'s, old sent rows are pruned', function()
   local s = peer_plugin([[app.db.migrate {base = 2, 'CREATE TABLE notes (text TEXT)'}
 peer = app.peer{}]])
   expect(s.sql.state.user_version, 'the base ran: the sdk_ tables are not plugin tables').to_be(2)
@@ -1566,7 +1581,8 @@ peer = app.peer{}]])
     for _, p in ipairs(named.printed) do if p:find('A plugin migration made sdk_peer_seen', 1, true) or p:find('table sdk_peer_seen already exists', 1, true) then said = true end end
     expect(said, table.concat(named.printed, '\n')).to_be(true)
   end
-  -- Pruning at start: sent and seen rows older than 30 days go; queued and failed rows stay.
+  -- Pruning at start: sent rows older than 30 days go; queued and failed rows stay. Seen rows stay
+  -- for ever (lead-sdkfed8): a delayed original envelope must not commit again.
   local old = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\npeer = app.peer{}', hub = {['hub.peer.send'] = function() return nil, {code = 'timeout', message = 'x'} end}})
   local T = 100 * 86400
   old.env.os.time = function() return T end
@@ -1587,7 +1603,7 @@ peer = app.peer{}]])
   expect(table.concat(ids, ' ')).to_be('new-sent old-failed old-queued')
   ids = {}
   for _, r in ipairs(old.sql.state.tables.sdk_peer_seen.rows) do ids[#ids + 1] = r.id end
-  expect(table.concat(ids, ' ')).to_be('new-seen')
+  expect(table.concat(ids, ' ')).to_be('old-seen new-seen')
 end)
 
 test('peer drain at start: queued rows of an earlier run go after the start functions', function()

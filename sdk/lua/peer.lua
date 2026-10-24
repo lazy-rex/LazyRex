@@ -14,7 +14,7 @@ return function(k)
 
   local VERSION = 1 -- sdk_meta part "peer"
   local MAX_BODY = 65536 -- the hub's limit, measured as Go's json.Marshal of the body text
-  local PRUNE_S = 30 * 86400 -- sent and seen rows older than this go at start (lead-sdkfed3 d)
+  local PRUNE_S = 30 * 86400 -- sent rows older than this go at start; seen rows stay (lead-sdkfed8)
   local SLOW_S = 2 -- a receive listener that runs longer is logged
   -- The final answers of hub.peer.send (claude-43, peers.go on main): an untyped bad() (a bad key,
   -- a body that is not a string) answers refused. Any other error, also a timeout, is passing.
@@ -159,7 +159,8 @@ return function(k)
   -- Schema --------------------------------------------------------------------------------------
 
   -- setup makes the SDK tables (before the plugin migrations, in its own transaction) and deletes
-  -- old sent and seen rows. A database with a newer peer schema fails the start.
+  -- old sent rows, never a seen row (lead-sdkfed8). A database with a newer peer schema fails the
+  -- start.
   function P.setup()
     run({tx = true}, function()
       local have = {}
@@ -176,7 +177,6 @@ return function(k)
         db.exec('INSERT INTO sdk_meta (part, version) VALUES (?, ?)', 'peer', VERSION)
       end
       db.exec('DELETE FROM sdk_peer_outbox WHERE sent_at < ?', now() - PRUNE_S)
-      db.exec('DELETE FROM sdk_peer_seen WHERE at < ?', now() - PRUNE_S)
     end)
   end
 

@@ -495,16 +495,23 @@ After the commit, and after the reply to the caller, the SDK drains the outbox:
 
 ### Storage
 
-The SDK tables are `sdk_meta`, `sdk_peer_outbox` and `sdk_peer_seen` in the plugin database. The
-names that start with `sdk_` are the SDK's: a plugin migration that makes one fails the start. The
-SDK makes its tables before the plugin migrations, and the base-step check does not count them.
+The SDK tables are `sdk_meta`, `sdk_peer_outbox` and `sdk_peer_seen` in the plugin database, with
+the index `sdk_peer_outbox_queue`. The names that start with `sdk_` are the SDK's: a plugin
+migration that makes one fails the start, also with the name of an SDK table. The SDK makes its
+tables before the plugin migrations, and the base-step check does not count them.
 `sdk_meta` part `peer` has the version (1); a newer version fails the start ("The database has SDK
 peer schema N; this SDK knows M. Update the plugin or delete its database.").
 
-At start, the SDK deletes sent rows and seen rows older than 30 days; queued and failed rows stay.
-After that, the same key and body to the same peer is a success at the hub (the hub keeps every
-key while its hub.db lives), and another body is `operation_conflict`. If the hub.db is deleted,
-the hub forgets its keys.
+The SDK keeps every seen row: a seen row is the proof that the listener committed, and the hub
+can give the original envelope again after any delay (a receiver that committed, lost its reply
+and stayed away). So the once-only rule has no time window (hub lead, lead-sdkfed8). Known limit:
+`sdk_peer_seen` grows by one small row per received message, as the hub's peer outbox does
+(docs/hub.md "Peer hubs").
+
+At start, the SDK deletes sent rows older than 30 days; queued and failed rows stay. After that,
+the same key and body to the same peer is a success at the hub (the hub keeps every key while its
+hub.db lives), and another body is `operation_conflict`. If the hub.db is deleted, the hub forgets
+its keys.
 
 ## More
 
