@@ -2346,6 +2346,20 @@ The receiver gives each envelope, in `seq` order, to its target plugin here. It 
   logs the envelope and moves on (lead-fed-r2, lead-fed-sdk3). So a transient error comes again,
   and a plugin defect cannot block the peer for ever. A plugin refuses on purpose only with the
   refusal result, never with an error.
+- **Drop or hold: the rule.** The hub decides by the target's record here, not by whether the
+  plugin runs at this moment:
+  - Drop at once: no record or no config entry (`not_installed`), desired `stopped` (`stopped`),
+    or a running plugin that does not offer `peer.receive` (`no_listener`). These states end only
+    by a person's action (an install, a start, a new plugin version), so a wait could last for
+    ever and would block every later envelope from that peer.
+  - Hold the cursor: desired `running` with no client now (starting, restarting after a crash,
+    a crash loop), an error reply, or a lost reply. These states can end by themselves (a start
+    or a respawn takes seconds); a crash loop may not. The hold is bounded: 5 minutes per hub
+    process (`peerBlockMax`), then the hub skips the envelope with a log line. A skip after the bound is not counted in
+    `dropped`; `blocked_plugin` and `blocked_since` show the hold while it lasts.
+  - Limit: the bound is in memory. A hub that restarts more often than every 5 minutes starts it
+    again each time, so a desired-running plugin that never starts can hold that peer's envelopes
+    for as long as the restarts go on. `blocked_since` then shows a recent time after each restart.
 - Delivery is in `seq` order, so while an envelope waits, every later envelope from that peer waits
   too, also for other plugins. `hub.peer.status` shows `blocked_plugin` and `blocked_since` on that
   peer's row.
