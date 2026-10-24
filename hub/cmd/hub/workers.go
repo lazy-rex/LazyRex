@@ -962,11 +962,6 @@ func (h *Hub) kickSpawns() {
 	}
 }
 
-func (h *Hub) resolveOnce(ctx context.Context) error {
-	_, err := h.resolveNext(ctx)
-	return err
-}
-
 // resolveNext runs one pass. It returns when a pending spawn leaves its first-request window
 // (zero: no such spawn), so the caller can wake for it without polling.
 func (h *Hub) resolveNext(ctx context.Context) (next time.Time, err error) {
@@ -1996,14 +1991,6 @@ func (h *Hub) cwdUnlock(ctx context.Context, owner string, admin bool, args map[
 		}
 	}
 	return map[string]any{"locked": false, "path": path}, nil
-}
-
-// workerIdentity is the identity field of a worker: for an open spawn with an agent_id (the spawn
-// row, not the current profile, which can change or go), its pane's identity; "" (no field) for
-// every other worker.
-func (h *Hub) workerIdentity(ctx context.Context, s *spawnRow) (string, error) {
-	state, _, err := h.workerPane(ctx, s)
-	return state, err
 }
 
 // workerPane reads the pane's current identity once and gives both fields from that one read:

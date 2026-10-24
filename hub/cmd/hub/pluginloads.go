@@ -98,11 +98,6 @@ func (h *Hub) loadRequest(c *loadCache, key string, refresh bool, stamp any) (lo
 	return h.loads.requestNotify(c, key, refresh, stamp, func() { h.changed("plugins") })
 }
 
-// request is loadRequest with no notice (the tests of the cache).
-func (l *pluginLoads) request(c *loadCache, key string, refresh bool) (loadReply, error) {
-	return l.requestNotify(c, key, refresh, nil, func() {})
-}
-
 func (l *pluginLoads) requestNotify(c *loadCache, key string, refresh bool, stamp any, notify func()) (loadReply, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -171,10 +166,6 @@ func (l *pluginLoads) runLoad(c *loadCache, key string, gen uint64, stamp any, n
 	l.mu.Unlock()
 	notify()
 }
-
-// wait returns when every load goroutine has ended, its notice included. Tests call it after they
-// cancel the run context, so no notice outlives the test.
-func (l *pluginLoads) wait() { l.goroutines.Wait() }
 
 // loadsStart starts the load service with the hub's run context and makes its caches.
 func (h *Hub) loadsStart(ctx context.Context) {

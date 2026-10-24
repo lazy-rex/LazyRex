@@ -367,11 +367,6 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 	return map[string]any{"hub_name": h.cfg.HubName, "peers": list}, nil
 }
 
-func (h *Hub) peerAfter(ctx context.Context, peer string) (int64, error) {
-	after, _, err := h.peerCursor(ctx, peer)
-	return after, err
-}
-
 // peerCursor is this hub's cursor for a peer and the identity of the peer's outbox that it belongs
 // to ("" before the first pull).
 func (h *Hub) peerCursor(ctx context.Context, peer string) (after int64, outbox string, err error) {
