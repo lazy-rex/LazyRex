@@ -381,18 +381,19 @@ SDK tests: `rex -S unix:///tmp/rexlab-<team>-<you>/rex.sock --autostart=false do
 
 ## Federation
 
-A plugin on one hub sends to the same plugin on a peer hub (docs/hub.md "Peer hubs"). The SDK
-keeps the outbox, the retries and the dedupe, so a plugin does not build them again. The code is
-`sdk/lua/peer.lua`.
+A plugin on one hub sends to a plugin on a peer hub (docs/hub.md "Peer hubs"): by default to the
+same plugin, or to another plugin with `opts.plugin`. The SDK keeps the outbox, the retries and
+the dedupe, so a plugin does not build them again. The code is `sdk/lua/peer.lua`.
 
 ```lua
 local peer -- declared first: the listeners below use it
 peer = app.peer{
-  receive = function(msg) -- {from_hub, key, body}: body is the sender's table
+  from = {'notes', 'messaging'}, -- the senders that it takes (default: its own name)
+  receive = function(msg) -- {from_hub, from_plugin, key, body}: body is the sender's table
     if not known(msg.body.to) then return peer.refuse('unknown_recipient', 'no such agent here') end
     app.db.exec('INSERT INTO inbox (id, text) VALUES (?, ?)', peer.received_id(msg.from_hub, msg.key), msg.body.text)
   end,
-  failed = function(row) -- {hub, key, code, message, at}: a row that can never go
+  failed = function(row) -- {hub, key, plugin, code, message, at}: a row that can never go
     app.db.exec('UPDATE sent SET failed = ? WHERE id = ?', row.code, row.key)
   end,
 }
@@ -404,12 +405,14 @@ app.action('notes.send', {to = 'string', text = 'string'}, function(ctx, a)
 end)
 ```
 
-Call `app.peer` once, at load. Both fields are optional. A plugin without `app.peer` gets no SDK
-tables and no `peer.receive`.
+Call `app.peer` once, at load. All fields are optional. `from` is `"*"` (any plugin) or a list of
+plugin names (`[a-z0-9_-]`); a list replaces the default, so name this plugin in it to take its own
+envelopes too. Any other `from` fails at load. A plugin without `app.peer` gets no SDK tables and
+no `peer.receive`.
 
 ### Send
 
-`peer.send(hub, key, body)` stages a row in the caller's transaction. The commit of that
+`peer.send(hub, key, body, opts)` stages a row in the caller's transaction. The commit of that
 transaction makes it durable; a rollback leaves no row and sends nothing. It answers
 `{key, state}`: `queued` for a new row, or the state of the existing row (`sent` with `hub_seq`,
 or `failed` with `code` and `message`).
@@ -418,20 +421,26 @@ or `failed` with `code` and `message`).
   `app.db.transaction`.
 - `hub` is a peer name (`[a-z0-9][a-z0-9-]`, at most 63 bytes). The SDK does not check the hub
   config: an unknown peer fails the row later (`unknown_hub`).
-- `key` is 1 to 512 bytes. Use the sender's own ID of the message. One key is for one body for
-  ever: the same hub, key and body is the same row (a no-op); another body is
-  `operation_conflict` at the call. The same key to another hub is another row.
+- `opts.plugin` is the target plugin on the peer (a plugin name, `[a-z0-9_-]`). Without it, or
+  with this plugin's own name, the target is the same plugin, and the request names no plugin. The
+  receiver takes the envelope only if its `from` names this plugin; otherwise it refuses it
+  `not_allowed`: the receiving hub logs the refusal and moves on (docs/hub.md "Peer hubs"), and the
+  sender sees no error, as below.
+- `key` is 1 to 512 bytes. Use the sender's own ID of the message. One key is for one body and one
+  target plugin for ever: the same hub, key, target and body is the same row (a no-op); another
+  body or another target is `operation_conflict` at the call. The same key to another hub is
+  another row.
 - `body` is a Lua table (a JSON object). The SDK encodes it once, with the object members sorted,
   so two equal tables give the same text, and each retry sends the same bytes. `false` stays
   `false`; a nil field is absent. A table with the keys 1 to n is an array; an empty table is an
   object. Strings must be valid UTF-8.
 - Size, checked at the call (`too_large`): the hub limit is 65536 bytes of Go's `json.Marshal` of
   the body text (docs/hub.md "Size"). The row insert must also fit one Rex request (64 KiB): the
-  body text, the hub and the key as Rex encodes them (the hub and the key twice), plus 1024 bytes,
-  at most 65536. Rex encodes a string as Go does, so this second rule is the tighter one: for a Lua
-  plugin, the SDK limit is the real limit (hub lead, lead-fedsize2). The hub
-  can still answer `too_large` at the drain when the envelope does not fit one pull reply; that is
-  final.
+  body text, the hub and the key as Rex encodes them (the hub and the key twice), the target
+  plugin twice when `opts.plugin` names another plugin, plus 1024 bytes, at most 65536. Rex
+  encodes a string as Go does, so this second rule is the tighter one: for a Lua plugin, the SDK
+  limit is the real limit (hub lead, lead-fedsize2). The hub can still answer `too_large` at the
+  drain when the envelope does not fit one pull reply; that is final.
 
 After the commit, and after the reply to the caller, the SDK drains the outbox:
 
@@ -458,12 +467,13 @@ After the commit, and after the reply to the caller, the SDK drains the outbox:
 
 ### Receive
 
-`receive(msg)` gets `{from_hub, key, body}`; `body` is the decoded table.
+`receive(msg)` gets `{from_hub, from_plugin, key, body}`; `body` is the decoded table, and
+`from_plugin` is the sending plugin (a hub that sends none: this plugin).
 
 - The listener and the SDK's dedupe row commit in one transaction. So the listener's database
-  effects happen once for each `(from_hub, key)`. A repeat (the hub gives an envelope again after
-  a lost reply or a restart) gets the stored answer, and the listener does not run. The same key
-  with another body is refused `operation_conflict`.
+  effects happen once for each `(from_hub, from_plugin, key)`. A repeat (the hub gives an envelope
+  again after a lost reply or a restart) gets the stored answer, and the listener does not run. The
+  same key with another body is refused `operation_conflict`.
 - Once means committed database effects. A listener that raises can run again; a hub call or a
   Rex call in it is not rolled back.
 - Return nil or a table to accept. Return `peer.refuse(code, message)` for a permanent problem: the
@@ -475,10 +485,15 @@ After the commit, and after the reply to the caller, the SDK drains the outbox:
   error and each listener run over 2 s.
 - A hub call in the listener is allowed (for example `hub.agents.resolve`). Refuse only on a
   definite answer; raise on a passing one.
-- A body that is not a JSON object is refused `invalid_envelope` before the listener.
+- A body that is not a JSON object, or a `from_plugin` that is not a plugin name, is refused
+  `invalid_envelope` before the listener.
+- A sending plugin that `from` does not name is refused `not_allowed`, after the dedupe and before
+  the listener. The refusal is stored as a listener refusal is: a repeat of that key gets it again,
+  also after a change of `from`. A new `from` applies to new keys only.
 - `from_hub` is this hub's own config name of the peer that it pulled from. The peer check is a
   name check, not authentication (docs/hub.md "Trust limit"): it is not proof of the sender. A
-  hub name inside the body is data, not a sender.
+  hub name inside the body is data, not a sender. `from_plugin` is the name that the sending hub
+  gives, with the same limit.
 
 ### Addresses and status
 
@@ -486,7 +501,9 @@ After the commit, and after the reply to the caller, the SDK drains the outbox:
   `peer.join(id, hub)` answers `<id>@<hub>`. `peer.sender(msg, id)` answers `<id>@<msg.from_hub>`.
   The hub resolves `<id>@<this hub>` to the local ID, so a stored ID with `@` is always remote.
 - `peer.received_id(from_hub, id)` answers `peer/<len:hub><len:id>` (each part is
-  `<byte length>:<value>`): a local ID for a received message that never matches a local one.
+  `<byte length>:<value>`): a local ID for a received message that never matches a local one. It
+  has no plugin part: a plugin whose `from` names more than one sender keeps keys apart itself
+  (for example a key prefix per sending plugin).
   `peer.origin_id(local_id, hub)` answers the origin ID back, or nil (for a `reply_to`).
 - `peer.status()` answers `{peers = {[hub] = {queued, failed, oldest_queued_age_s, last_error,
   next_try_s, last_failed}}}` for the rows that this hub has not taken (`queued`) and the failed
@@ -499,8 +516,12 @@ The SDK tables are `sdk_meta`, `sdk_peer_outbox` and `sdk_peer_seen` in the plug
 the index `sdk_peer_outbox_queue`. The names that start with `sdk_` are the SDK's: a plugin
 migration that makes one fails the start, also with the name of an SDK table. The SDK makes its
 tables before the plugin migrations, and the base-step check does not count them.
-`sdk_meta` part `peer` has the version (1); a newer version fails the start ("The database has SDK
-peer schema N; this SDK knows M. Update the plugin or delete its database.").
+`sdk_meta` part `peer` has the version (2); a newer version fails the start ("The database has SDK
+peer schema N; this SDK knows M. Update the plugin or delete its database."). Version 2 adds the
+target plugin of a sent row (`target`, NULL for this plugin) and the sending plugin of a seen row
+(`from_plugin`). The start takes a version 1 database to version 2 in one transaction and keeps
+every row: a seen row gets this plugin as its sender, the only one before version 2, so a repeat
+of an old envelope stays a no-op; a queued row goes to this plugin.
 
 The SDK keeps every seen row: a seen row is the proof that the listener committed, and the hub
 can give the original envelope again after any delay (a receiver that committed, lost its reply

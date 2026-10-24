@@ -13,14 +13,37 @@ import (
 )
 
 // sdkPeerLab is one lab hub of TestPeerSDKLab: a copy of the fixture plugin tests/sdk-peer (an
-// app.peer plugin of the real SDK) and the SDK of this checkout.
-func sdkPeerLab(t *testing.T, root string, serverArgs ...string) *startLab {
-	s := newServerLab(t, serverArgs, "speer")
+// app.peer plugin of the real SDK) and the SDK of this checkout. receivers adds one receiver plugin
+// per name, with that app.peer "from" (a Lua expression): its table got keeps each envelope.
+func sdkPeerLab(t *testing.T, root string, serverArgs []string, receivers map[string]string) *startLab {
+	sources := []string{"speer"}
+	for name := range receivers {
+		sources = append(sources, name)
+	}
+	s := newServerLab(t, serverArgs, sources...)
 	if err := os.MkdirAll(s.src, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.CopyFS(filepath.Join(s.src, "speer"), os.DirFS(filepath.Join(root, "tests", "sdk-peer"))); err != nil {
 		t.Fatal(err)
+	}
+	for name, from := range receivers {
+		dir := filepath.Join(s.src, name)
+		main := "local app = require('lazyrex').plugin('" + name + "')\n" +
+			"app.db.migrate {'CREATE TABLE got (from_plugin TEXT, key TEXT, text TEXT)'}\n" +
+			"app.peer{from = " + from + ", receive = function(msg)\n" +
+			"  app.db.exec('INSERT INTO got (from_plugin, key, text) VALUES (?, ?, ?)', msg.from_plugin, msg.key, msg.body.t)\n" +
+			"end}\n"
+		manifest := `{"name": "` + name + `", "main": "main.lua", "sdk": "0"}`
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.lua"), []byte(main), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "lazyrex.json"), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	s.args = append(s.args, "-sdk", filepath.Join(root, "sdk", "lua"))
 	return s
@@ -40,10 +63,16 @@ func (s *startLab) kill() {
 // speerSQL runs a read on the speer database and returns the first column of each row as text.
 func (s *startLab) speerSQL(sql string, params ...any) []string {
 	s.t.Helper()
+	return s.pluginSQL("speer", sql, params...)
+}
+
+// pluginSQL runs a read on the database of plugin and returns the first column of each row as text.
+func (s *startLab) pluginSQL(plugin, sql string, params ...any) []string {
+	s.t.Helper()
 	if params == nil {
 		params = []any{}
 	}
-	r := s.must("hub.test.sql", map[string]any{"plugin": "speer", "sql": sql, "params": params})
+	r := s.must("hub.test.sql", map[string]any{"plugin": plugin, "sql": sql, "params": params})
 	var out []string
 	rows, _ := r["rows"].([]any)
 	for _, row := range rows {
@@ -99,6 +128,9 @@ func sdkFit(t *testing.T, unit, hub, k string) string {
 // plugin -> hub a -> hub b -> b's listener), with the real SDK and SQL:
 //   - A body at the SDK size limit (quotes, <>&, newlines, U+2028) reaches b's listener whole; one
 //     byte more is too_large at the call.
+//   - A send to another plugin (lead-fedxp): b's sfrom (from = {"speer"}) commits it once, with
+//     from_plugin speer; b's sother (the default from: only itself) refuses it not_allowed, and
+//     stores the refusal.
 //   - Hub a dies while a row is queued (between the send and the drain): after a's restart the row
 //     goes, and b's listener commits it once.
 //   - Hub a dies after it took a row and before b pulled it: after both start, b's listener commits
@@ -114,13 +146,16 @@ func TestPeerSDKLab(t *testing.T) {
 	}
 	tcp := "http://" + ln.Addr().String()
 	ln.Close()
-	a, b := sdkPeerLab(t, root), sdkPeerLab(t, root, "--extra-listen", tcp, "--allow-anonymous")
+	a := sdkPeerLab(t, root, nil, nil)
+	b := sdkPeerLab(t, root, []string{"--extra-listen", tcp, "--allow-anonymous"}, map[string]string{"sfrom": `{'speer'}`, "sother": "nil"})
 	a.setPeer("a", "b", tcp)
 	b.setPeer("b", "a", a.l.server)
 	a.start()
 	b.start()
 	a.registered("speer")
 	b.registered("speer")
+	b.registered("sfrom")
+	b.registered("sother")
 	x := a.opsAgent("x")
 	send := func(k, text string) (map[string]any, error) {
 		return a.agentDo(x, "speer.send", map[string]any{"hub": "b", "k": k, "text": text})
@@ -150,6 +185,32 @@ func TestPeerSDKLab(t *testing.T) {
 		}
 		once(k, s)
 		t.Logf("%s: %d bytes of text at the SDK limit reached b's listener", k, len(s))
+	}
+
+	// To another plugin: one commit where "from" names speer; a stored not_allowed where it does not.
+	for _, to := range []string{"sfrom", "sother"} {
+		if r, err := a.agentDo(x, "speer.send", map[string]any{"hub": "b", "k": "xp-" + to, "text": "to " + to, "plugin": to}); err != nil || r["state"] != "queued" {
+			t.Fatalf("send xp-%s: %v, %v", to, r, err)
+		}
+	}
+	b.waitLong("sfrom got xp-sfrom", 120*time.Second, func() bool {
+		return len(b.pluginSQL("sfrom", "SELECT key FROM got WHERE key = ?", "xp-sfrom")) > 0
+	})
+	b.waitLong("sother stored its refusal", 120*time.Second, func() bool {
+		return len(b.pluginSQL("sother", "SELECT refused FROM sdk_peer_seen WHERE key = ?", "xp-sother")) > 0
+	})
+	time.Sleep(3 * time.Second) // more than one pull interval: a second delivery would show
+	if g := b.pluginSQL("sfrom", "SELECT from_plugin || ' ' || text FROM got WHERE key = ?", "xp-sfrom"); len(g) != 1 || g[0] != "speer to sfrom" {
+		t.Fatalf("sfrom rows for xp-sfrom: %v, want one row \"speer to sfrom\"", g)
+	}
+	if g := b.pluginSQL("sother", "SELECT refused || ' ' || from_plugin FROM sdk_peer_seen WHERE key = ?", "xp-sother"); len(g) != 1 || g[0] != "not_allowed speer" {
+		t.Fatalf("sother seen rows for xp-sother: %v, want one not_allowed row from speer", g)
+	}
+	if g := b.pluginSQL("sother", "SELECT count(*) FROM got"); len(g) != 1 || g[0] != "0" {
+		t.Fatalf("sother listener rows: %v, want none", g)
+	}
+	if g := b.speerSQL("SELECT count(*) FROM got WHERE key LIKE ?", "xp-%"); len(g) != 1 || g[0] != "0" {
+		t.Fatalf("b's speer got an envelope of another target: %v", g)
 	}
 
 	// Between the send and the drain: a gate keeps the row queued (a passing error), then hub a dies.

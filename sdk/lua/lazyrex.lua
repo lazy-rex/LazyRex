@@ -856,13 +856,13 @@ function M.plugin(name)
     end
     rex.on(event, function(ctx, ev) callback(event, fn, opts, ev, ctx) end)
   end
-  -- app.peer{receive = fn, failed = fn}: federation (peer.lua; docs/plugin-sdk.md, "Federation").
+  -- app.peer{receive = fn, failed = fn, from = list}: federation (peer.lua; docs/plugin-sdk.md, "Federation").
   -- Once, at load. It answers the peer API: send, retry, refuse, status and the address helpers.
   function app.peer(spec)
     if S.peer then error('app.peer is called once', 2) end
     local chunk = assert(loadfile(SDK_DIR .. '/peer.lua'))
     setfenv(chunk, getfenv(1))
-    S.peer = chunk()({db = db, run = run, frame = frame, hub = hub, fail = fail, part = part, digest = digest, normalize = normalize, concat = concat, MAX_REQUEST = MAX_REQUEST})
+    S.peer = chunk()({db = db, run = run, frame = frame, hub = hub, fail = fail, part = part, digest = digest, normalize = normalize, concat = concat, MAX_REQUEST = MAX_REQUEST, name = name})
     return S.peer.declare(spec)
   end
   function app.after(seconds, fn, opts) rex.after(seconds, function() callback('timer', fn, opts) end) end

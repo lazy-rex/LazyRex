@@ -1,8 +1,8 @@
 -- A fake hub.sql for the SDK tests (wire: hub.sql handoff v1 and the NULL tag {null = true}). It
 -- keeps tables in memory, and it knows only the statements that the tests use: CREATE TABLE,
--- CREATE INDEX, PRAGMA user_version, and INSERT, SELECT, UPDATE and DELETE of the forms below. A
--- handler transaction buffers its changes on a copy; commit installs the copy, rollback drops it.
--- Saved replies commit with the transaction. Every call is logged in fake.calls.
+-- CREATE INDEX, ALTER TABLE ADD COLUMN, PRAGMA user_version, and INSERT, SELECT, UPDATE and DELETE
+-- of the forms below. A handler transaction buffers its changes on a copy; commit installs the copy,
+-- rollback drops it. Saved replies commit with the transaction. Every call is logged in fake.calls.
 --   local fake = dofile('fake_sql.lua')()
 --   fake.handle(action, args) -> result | nil, {code, message}
 -- fake.fail_next[action] = {code, message} fails the next call of that action once.
@@ -51,6 +51,16 @@ return function()
       db.indexes = db.indexes or {}
       if db.indexes[iname] then return err('sql_error', 'SQLITE_ERROR: index ' .. iname .. ' already exists') end
       db.indexes[iname] = true
+      return {changes = 0, id = 0}
+    end
+    -- ALTER TABLE t ADD COLUMN c ... [DEFAULT '']: the existing rows get the default (or NULL).
+    local atab, acol, adef = sql:match("^ALTER TABLE ([%w_]+) ADD COLUMN ([%w_]+)(.*)$")
+    if atab then
+      local t = db.tables[atab]
+      if not t then return err('sql_error', 'SQLITE_ERROR: no such table: ' .. atab) end
+      for _, c in ipairs(t.columns) do if c == acol then return err('sql_error', 'SQLITE_ERROR: duplicate column name: ' .. acol) end end
+      t.columns[#t.columns + 1] = acol
+      if adef:match("DEFAULT ''") then for _, row in ipairs(t.rows) do row[acol] = '' end end
       return {changes = 0, id = 0}
     end
     local tname, icols = sql:match('^INSERT INTO ([%w_]+) %(([^)]*)%) VALUES')
