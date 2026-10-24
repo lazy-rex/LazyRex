@@ -2487,7 +2487,10 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
     check that the offer it sends is the offer that it showed.
   - An entry of the receiver that the document does not list is not changed.
 - **Ops.** The op key is `<sha256 of the pin>#<n>`; `n` counts the ops of that pin from that peer.
-  While a peer op of the entry runs, the sync makes no op. After a peer op of the same pin ended
+  While any op of the entry runs (an install, a peer, user or agent update), the sync makes no op,
+  and `updating` lists that op. The check reads the stored ops; it does not lock out a second
+  admission at the same moment, and the manager runs both in admission order (the lock base check
+  makes the later one `conflict` when the first changed the key). After a peer op of the same pin ended
   (also `failed`, `conflict` or `unknown`), the next op of that pin waits 5 minutes. Another pin
   makes an op at once. The rule reads `plugin_ops`, so it stays over a hub restart.
 - **Status.** The `plugins_from` row of `hub.peer.status` has `plugin_sync`: null before the first
