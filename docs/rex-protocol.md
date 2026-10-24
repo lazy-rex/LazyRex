@@ -781,7 +781,7 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab, 2026-10-16. Rex documents session e
 - `block_closed` and `window_closed` carry no actor or cause (events page). A close by the user, by the hub, by any other client, or (untested) by a child exit without keep-open looks the same. To know that the user closed a pane, the hub must rule out its own closes (correlate its operations) and use keep-open for its panes. (Correction from Codex's review, 2026-10-16.)
 - Also seen, not in the events page: `block_owner_changed {block_id}` on block creation.
 
-### Lua helper availability (Rex 1203)
+### Lua helper availability (Rex 0.0.1792088193-g7a93ec)
 
 Observed on Rex `0.0.1792088193-g7a93ec` in an isolated server:
 `type(rex.json)`, `type(rex.exec)`, `type(rex.after)`, and `type(rex.every)` return `nil`.
@@ -894,7 +894,7 @@ atomicity or the absence of transient processes during every failure.
 - A 2-column x 1-row filled block is square in the app (default font).
 - Do not build outlines from overline or underline. Use full cells or block elements.
 
-### Label resolution includes lost clients (Rex 1203)
+### Label resolution includes lost clients (Rex 0.0.1792088193-g7a93ec)
 
 Observed on Rex `0.0.1792088193-g7a93ec` during an isolated hub recovery test:
 `target.resolve` returned an ambiguous label for the old hub and its replacement after the old hub exited.

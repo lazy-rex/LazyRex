@@ -476,12 +476,10 @@ Touch behavior requires a real supporting Rex client.
 
 Reconciler (`hub/cmd/hub/ui.go`):
 
-- A plugin declares tabs (`hub.ui.tabs`). No session exists before the first navigation.
-- `hub.ui.navigate` creates the plugin session (`lazyrex:<plugin>`), opens every declared tab in order without focus, and each renderer checks in (`hub.view.attach`) from its pane.
-- Tab order drift (a `move_window`) snaps back.
-- A native tab close closes the view only. The tab stays closed until a navigation to it, which reopens it in its declared place.
+- A plugin declares tabs (`hub.ui.tabs`). The reconciler opens each declared tab as a new window in the LazyRex session, without focus, and each renderer checks in (`hub.view.attach`) from its pane.
+- A native tab close closes the view only. The tab stays closed until a navigation to it, which reopens it.
 - A tab the plugin stops declaring closes.
-- A renderer that exits gets a new view in the same place, and the new renderer checks in.
+- A renderer that exits gets a new view, and the new renderer checks in.
 - A renderer can start before the hub records its pane. `hub.view.attach` returns `not_ready`, and the renderer retries.
 - Event handlers only record state. One worker per plugin makes every Rex change.
 - A stopped hub or plugin stays listed as lost under its label during Rex's grace period, so a label lookup returns `ambiguous`. Renderers count only connected candidates. Tests address clients by full ID.
@@ -516,7 +514,7 @@ Group thread: `messaging.lua` has groups. The group `team` (title "Team") has th
 
 Created threads: Messages has a "New thread" form, an optional title and a checkbox per participant (a v1 `form` node). Submit makes a group of the user and the chosen participants. The group lives in the record `groups`, and its ID comes from the operation key (`g-...`), so a replay finds the group instead of making a second. The plugin declares the new tab and returns `{navigate}`. One participant and no title opens the existing direct thread. Agents send to a group ID; only members can. Threads have no Back control: the Rex sidebar lists them.
 
-Read state: the renderer turns on focus reporting (DECSET 1004). On focus-in, and on each new snapshot while it has focus, it calls `hub.view.seen {view_id, attachment, reason}`. The hub forwards `view.seen {route, user, reason}` to the plugin in the view worker. `reason` is `focus` (the pane got focus, or a navigation showed it), `content` (new messages while focused), `connect`, or empty (an older renderer). Queued reports coalesce and `focus` wins. A plugin can refresh its data on `focus` without a refresh/render loop. A registered plugin calls `hub.ui.invalidate {}` when its own data changed outside the store (for example a scan finished): the hub renders its open views again. Messaging then acknowledges the user's unread messages in that thread. A background tab gets no focus-in, so it marks nothing read.
+Read state: the renderer turns on focus reporting (DECSET 1004). On focus-in, and on each new snapshot while it has focus, it calls `hub.view.seen {view_id, attachment, reason}`. The hub forwards `view.seen {route, user, reason}` to the plugin in the view worker. `reason` is `focus` (the pane got focus, or a navigation showed it), `content` (new messages while focused), `connect`, or empty (an older renderer). Queued reports coalesce and `focus` wins. A plugin can refresh its data on `focus` without a refresh/render loop. A registered plugin calls `hub.ui.invalidate {}` when its own data changed outside the store (for example a scan finished): the hub renders its open views again. Messaging then acknowledges the user's unread messages in that thread. A background tab gets no focus-in, so it marks nothing read. Not verified: that Rex forwards focus-in and focus-out to a pane.
 
 Gallery: the messaging plugin adds a `Gallery` tab at route `/gallery`. The gallery shows every renderer control live: a widget, a list with a disabled item, a form (text, multiline, two booleans, select), sample Markdown messages and a composer. Gallery state, history and draft are in the records `gallery/state`, `gallery/history` and `gallery/draft`. Gallery actions do not create messages or threads.
 

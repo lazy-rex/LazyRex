@@ -106,9 +106,9 @@ In both options:
 - `session.open_on_web` apparently targets Rex's hosted client (`rex.superlogical.com`). Its exact behavior and transport are not observed (the site is behind SSO).
 - Fallback: a protocol-aware relay, as first proposed. A ticket works only for the principal that requested it, so a relay on a different principal must open its own data channel.
 
-## UI framework
+## UI framework (design)
 
-The maintainer's direction. See the proposed decision "the LazyRex UI is TUIs in Rex, and the hub drives the app's view" and `rex-protocol.md`, "Driving the Rex app". Check the Rex agent guide (`rex __internal skill`) for documented layout and app features.
+The maintainer's direction, as designed. The built hub differs: per-plugin sessions and the home tab are removed (`docs/hub.md`, "Removed: app mode" and "No LazyRex tab"). See the proposed decision "the LazyRex UI is TUIs in Rex, and the hub drives the app's view" and `rex-protocol.md`, "Driving the Rex app". Check the Rex agent guide (`rex __internal skill`) for documented layout and app features.
 
 ### Model: Rex is the navigation, TUIs are the interaction
 
