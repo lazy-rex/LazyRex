@@ -151,3 +151,57 @@ test('a hub crash after the take: the envelope stays; a repeat delivery commits 
   ack(env.seq)
   expect(outbox()).to_be(0)
 end)
+
+-- part is the SDK's ID part: "<byte length>:<value>".
+local function part(s) return #s .. ':' .. s end
+
+test('real SQLite: the step from peer schema 1 keeps every decision, also with 600 keys of 512 escaped bytes', function()
+  -- The digest of {"t":"a"} as this SDK stores it: a version 1 row has the same digest.
+  expect(H.peer_deliver({plugin = 'speer', from_hub = 'away', key = 'probe', body = '{"t":"a"}'}).reply).to_equal({})
+  local d = sql('SELECT digest FROM sdk_peer_seen WHERE key = ?', {'probe'})[1].digest
+  local got0 = #sql('SELECT key FROM got', {})
+  -- Stop the plugin, and make the database a version 1 database (the schema of 24e35b0d) with:
+  -- an accepted row, a refused row, a queued row, and 600 accepted rows whose keys are 505 bytes of
+  -- U+0001 (6 bytes each as JSON) and a 7-digit number: 512 bytes (codex-15).
+  H.hub('hub.admin.stop', {plugin = 'speer'})
+  for _, s in ipairs({'DROP TABLE sdk_peer_seen', 'DROP TABLE sdk_peer_outbox',
+    'CREATE TABLE sdk_peer_outbox (n INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, hub TEXT NOT NULL, key TEXT NOT NULL, '
+      .. 'digest TEXT NOT NULL, body TEXT, state TEXT NOT NULL, hub_seq INTEGER, code TEXT, message TEXT, created INTEGER NOT NULL, '
+      .. 'sent_at INTEGER, failed_at INTEGER)',
+    'CREATE INDEX sdk_peer_outbox_queue ON sdk_peer_outbox (hub, state, n)',
+    'CREATE TABLE sdk_peer_seen (id TEXT PRIMARY KEY, from_hub TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, '
+      .. 'refused TEXT, message TEXT, at INTEGER NOT NULL)',
+    "UPDATE sdk_meta SET version = 1 WHERE part = 'peer'"}) do
+    H.sql_write(s, {}, 'speer')
+  end
+  local seen = 'INSERT INTO sdk_peer_seen (id, from_hub, key, digest, refused, message, at) VALUES (?, ?, ?, ?, ?, ?, 1)'
+  H.sql_write(seen, {part('away') .. part('v1-ok'), 'away', 'v1-ok', d, {null = true}, {null = true}}, 'speer')
+  H.sql_write(seen, {part('away') .. part('v1-no'), 'away', 'v1-no', d, 'unknown_recipient', 'no such agent'}, 'speer')
+  local pad = string.rep('\1', 505)
+  H.sql_write("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 600) "
+    .. "INSERT INTO sdk_peer_seen (id, from_hub, key, digest, at) SELECT '4:away512:' || ?1 || printf('%07d', i), 'away', "
+    .. "?1 || printf('%07d', i), ?2, 1 FROM n", {pad, d}, 'speer')
+  H.sql_write('INSERT INTO sdk_peer_outbox (id, hub, key, digest, body, state, created) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    {part('away') .. part('v1-queued'), 'away', 'v1-queued', 'x', '{"t":"q"}', 'queued', os.time()}, 'speer')
+  expect(sql('SELECT count(*) AS n FROM sdk_peer_seen', {})[1].n, 'the version 1 rows (a count: their IDs are over one SQL reply)').to_be(602)
+  H.hub('hub.admin.start', {plugin = 'speer'})
+  wait('speer answers again', function() return pcall(alice.call, alice, 'speer.status', {}) end, 30)
+  expect(sql("SELECT version FROM sdk_meta WHERE part = 'peer'", {})[1].version, 'the step ran').to_be(2)
+  expect(sql("SELECT count(*) AS n FROM sdk_peer_seen WHERE from_plugin = 'speer'", {})[1].n, 'every seen row has a sender').to_be(602)
+  -- The rewritten IDs are the IDs that receive builds: a repeat of each kind is the stored decision.
+  local function again(key) return H.peer_deliver({plugin = 'speer', from_hub = 'away', key = key, body = '{"t":"a"}'}).reply end
+  expect(again('v1-ok'), 'an accepted key').to_equal({})
+  expect(again('v1-no'), 'a refused key').to_equal({refused = 'unknown_recipient', message = 'no such agent'})
+  expect(again(pad .. '0000001'), 'a long key').to_equal({})
+  expect(again(pad .. '0000600'), 'the last long key').to_equal({})
+  expect(#sql('SELECT key FROM got', {}), 'no listener run').to_be(got0)
+  local id = sql('SELECT id FROM sdk_peer_seen WHERE key = ?', {'v1-ok'})[1].id
+  expect(id).to_be(part('away') .. part('speer') .. part('v1-ok'))
+  -- The queued row goes to this plugin: target NULL, and the envelope names speer.
+  H.peer_wait('speer', 'away', 'taken', 30)
+  expect(sql('SELECT target FROM sdk_peer_outbox WHERE key = ?', {'v1-queued'})[1].target).to_be(nil)
+  local env
+  for _, e in ipairs(pull(0)) do if e.key == 'v1-queued' then env = e end end
+  expect({env and env.key, env and env.body}).to_equal({'v1-queued', '{"t":"q"}'})
+  ack(env.seq)
+end)

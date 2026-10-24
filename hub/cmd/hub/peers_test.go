@@ -16,6 +16,15 @@ import (
 // receive(args of the perform).
 func peerHub(t *testing.T, name, peer string, receive func(args map[string]any) (any, string)) *Hub {
 	t.Helper()
+	if receive == nil {
+		return peerHubTo(t, name, peer, nil)
+	}
+	return peerHubTo(t, name, peer, func(_ string, args map[string]any) (any, string) { return receive(args) })
+}
+
+// peerHubTo is peerHub with a receive that also gets the client of the perform.
+func peerHubTo(t *testing.T, name, peer string, receive func(client string, args map[string]any) (any, string)) *Hub {
+	t.Helper()
 	db, err := openDB(t.TempDir() + "/hub.db")
 	if err != nil {
 		t.Fatal(err)
@@ -26,13 +35,14 @@ func peerHub(t *testing.T, name, peer string, receive func(args map[string]any) 
 	h.peers = newPeerSet(cfg)
 	h.rex = limitRex(t, 1<<20, func(method string, payload json.RawMessage) (any, string) {
 		var p struct {
-			Args map[string]any `json:"args"`
+			ClientID string         `json:"client_id"`
+			Args     map[string]any `json:"args"`
 		}
 		json.Unmarshal(payload, &p)
 		if method != "client.perform" || receive == nil {
 			return map[string]any{}, ""
 		}
-		res, code := receive(p.Args)
+		res, code := receive(p.ClientID, p.Args)
 		return map[string]any{"result": res}, code
 	})
 	return h
@@ -58,7 +68,11 @@ func linkHubs(a, b *Hub, down func() bool) {
 }
 
 func peerSendAs(h *Hub, client, peer, key, body string) (map[string]any, error) {
-	raw, _ := json.Marshal(map[string]any{"hub": peer, "key": key, "body": body})
+	return peerSendArgs(h, client, map[string]any{"hub": peer, "key": key, "body": body})
+}
+
+func peerSendArgs(h *Hub, client string, args map[string]any) (map[string]any, error) {
+	raw, _ := json.Marshal(args)
 	p := perform{Action: "hub.peer.send", Args: raw}
 	p.Requester.ClientID = client
 	res, err := h.dispatch(context.Background(), p)
@@ -804,5 +818,154 @@ func TestPeerPullReplyNeedsOutbox(t *testing.T) {
 		if after, got, _ := b.peerCursor(ctx, "a"); after != 3 || got != testOutboxID || n.Load() != 0 {
 			t.Fatalf("reply %q: cursor %d of %q, %d deliveries", id, after, got, n.Load())
 		}
+	}
+}
+
+// TestPeerSendTarget (lead-fedxp): a send names a target plugin on the peer ("plugin"), and the
+// receiver gives the envelope to that plugin's peer.receive with the sender's name (from_plugin).
+// Absent or the sender's own name is the same plugin: the envelope has no "target", and it goes to
+// the plugin of the sender's name. The key scope is (peer, sender, key): the same key with another
+// target is operation_conflict; two senders may use one key for one target, and both arrive. A
+// target that is not a plugin name is refused at the call.
+func TestPeerSendTarget(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	a := peerHub(t, "a", "b", nil)
+	b := peerHubTo(t, "b", "a", func(client string, args map[string]any) (any, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, fmt.Sprintf("%s<-%v/%v:%v", client, args["from_plugin"], args["from_hub"], args["key"]))
+		return map[string]any{}, ""
+	})
+	for _, h := range []*Hub{a, b} {
+		h.mu.Lock()
+		h.plugins["other"] = &Plugin{Name: "other", ClientID: "o-" + h.cfg.HubName, entry: &configEntry{}}
+		h.mu.Unlock()
+	}
+	linkHubs(a, b, func() bool { return false })
+	send := func(client string, args map[string]any) (map[string]any, error) {
+		args["hub"], args["body"] = "b", "x"
+		return peerSendArgs(a, client, args)
+	}
+	s1, err := send("c-a", map[string]any{"key": "k1", "plugin": "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, err := send("c-a", map[string]any{"key": "k1", "plugin": "other"}); err != nil || s["seq"] != s1["seq"] {
+		t.Fatalf("a repeat: %v, %v; want seq %v", s, err, s1["seq"])
+	}
+	for _, other := range []map[string]any{{"key": "k1"}, {"key": "k1", "plugin": "messaging"}} {
+		if _, err := send("c-a", other); errCode(err) != "operation_conflict" || !strings.Contains(err.Error(), "for another plugin") {
+			t.Fatalf("k1 for %v: %v, want operation_conflict for another plugin", other["plugin"], err)
+		}
+	}
+	s2, err := send("c-a", map[string]any{"key": "k2", "plugin": "messaging"}) // the own name
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, err := send("c-a", map[string]any{"key": "k2"}); err != nil || s["seq"] != s2["seq"] {
+		t.Fatalf("k2 without plugin: %v, %v; want seq %v (the own name is the default)", s, err, s2["seq"])
+	}
+	if _, err := send("o-a", map[string]any{"key": "k1", "plugin": "other"}); err != nil {
+		t.Fatalf("k1 from another sender: %v", err)
+	}
+	for _, bad := range []any{"", "Other", "a/b", 7} {
+		if _, err := send("c-a", map[string]any{"key": "k9", "plugin": bad}); errCode(err) != "refused" || !strings.Contains(err.Error(), "invalid: plugin must be a plugin name") {
+			t.Fatalf("plugin %v: %v, want invalid: plugin must be a plugin name", bad, err)
+		}
+	}
+	// The wire: "target" only for another plugin.
+	res, err := a.peerPullServe(context.Background(), map[string]any{"hub": "b", "after": float64(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targets []string
+	for _, e := range res.(map[string]any)["envelopes"].([]any) {
+		e := e.(map[string]any)
+		target, has := e["target"]
+		targets = append(targets, fmt.Sprintf("%v>%v(%v)", e["plugin"], target, has))
+	}
+	if want := "messaging>other(true),messaging><nil>(false),other><nil>(false)"; strings.Join(targets, ",") != want {
+		t.Fatalf("envelopes %v, want %s", targets, want)
+	}
+	if _, err := b.peerPull(context.Background(), b.peers.links["a"]); err != nil {
+		t.Fatal(err)
+	}
+	if want := "o-b<-messaging/a:k1,c-b<-messaging/a:k2,o-b<-other/a:k1"; strings.Join(got, ",") != want {
+		t.Fatalf("delivered %v, want %s", got, want)
+	}
+}
+
+// TestPeerPullDrops (lead-fedxp item 5): an envelope whose target cannot take it is dropped at once,
+// the cursor moves on, and hub.peer.status counts it (dropped: count and the last one): a target
+// that is not installed, one that is desired stopped, and one that does not offer peer.receive (Rex
+// refuses the perform with not_supported). A desired-running target with no client now (starting,
+// restarting) is not dropped: it holds the cursor, for at most peerBlockMax; then it is skipped and
+// counted as a drop with the reason blocked (lead-fedxp7).
+func TestPeerPullDrops(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	a := peerHub(t, "a", "b", nil)
+	b := peerHubTo(t, "b", "a", func(client string, args map[string]any) (any, string) {
+		if client == "n-b" {
+			return nil, "not_supported"
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, args["key"].(string))
+		return map[string]any{}, ""
+	})
+	b.mu.Lock()
+	b.plugins["stopped"] = &Plugin{Name: "stopped", ClientID: "", Desired: "stopped", entry: &configEntry{}}
+	b.plugins["nolisten"] = &Plugin{Name: "nolisten", ClientID: "n-b", entry: &configEntry{}}
+	b.plugins["later"] = &Plugin{Name: "later", ClientID: "", entry: &configEntry{}}
+	b.mu.Unlock()
+	linkHubs(a, b, func() bool { return false })
+	ctx, l := context.Background(), b.peers.links["a"]
+	for _, s := range [][2]string{{"k1", "absent"}, {"k2", "stopped"}, {"k3", "nolisten"}, {"k4", "messaging"}} {
+		if _, err := peerSendArgs(a, "c-a", map[string]any{"hub": "b", "key": s[0], "body": "x", "plugin": s[1]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	row := func() map[string]any {
+		st, err := b.peerStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.(map[string]any)["peers"].([]any)[0].(map[string]any)
+	}
+	if d := row()["dropped"].(map[string]any); d["count"] != 0 || d["last"] != (*peerDrop)(nil) {
+		t.Fatalf("dropped before a pull: %v", d)
+	}
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	d := row()["dropped"].(map[string]any)
+	last := d["last"].(*peerDrop)
+	if after, _ := b.peerAfter(ctx, "a"); after != 4 || strings.Join(got, ",") != "k4" || d["count"] != 3 ||
+		last.Plugin != "nolisten" || last.FromPlugin != "messaging" || last.Key != "k3" || last.Reason != "no_listener" || last.At == "" {
+		t.Fatalf("cursor %d, delivered %v, dropped %v %+v; want 4, k4, 3 drops, the last k3 no_listener", after, got, d, last)
+	}
+	if _, err := peerSendArgs(a, "c-a", map[string]any{"hub": "b", "key": "k5", "body": "x", "plugin": "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.peerPull(ctx, l); err == nil || !strings.Contains(err.Error(), "does not run here") {
+		t.Fatalf("a target that does not run now: %v, want a block", err)
+	}
+	if r := row(); r["blocked_plugin"] != "later" || r["dropped"].(map[string]any)["count"] != 3 {
+		t.Fatalf("a target that does not run now: %v", r)
+	}
+	l.mu.Lock()
+	l.blockSince = l.blockSince.Add(-peerBlockMax) // the hold ran out
+	l.mu.Unlock()
+	if _, err := b.peerPull(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	r := row()
+	d = r["dropped"].(map[string]any)
+	last = d["last"].(*peerDrop)
+	if after, _ := b.peerAfter(ctx, "a"); after != 5 || r["blocked_plugin"] != nil || d["count"] != 4 ||
+		last.Plugin != "later" || last.FromPlugin != "messaging" || last.Key != "k5" || last.Reason != "blocked" || last.At == "" {
+		t.Fatalf("after the hold: cursor %d, status %v, last %+v; want 5, no block, 4 drops, the last k5 blocked", after, r, last)
 	}
 }

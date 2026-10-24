@@ -3,8 +3,9 @@ package main
 // Peer hubs, v1 (docs/hub.md, "Peer hubs"). Each hub has a name and a list of peers in its own
 // config. Data moves only when the receiver pulls from a peer that its own config names, at the
 // address that its own config gives: a hub never trusts a caller's identity from Rex. A plugin
-// queues an envelope for a peer with hub.peer.send; the peer pulls it with hub.peer.pull and gives
-// it to its own plugin of the same name ("peer.receive"). A nudge only makes the receiver pull now.
+// queues an envelope for a plugin on a peer with hub.peer.send (by default the plugin of its own
+// name); the peer pulls it with hub.peer.pull and gives it to that plugin's "peer.receive", with the
+// sender's name. A nudge only makes the receiver pull now.
 
 import (
 	"context"
@@ -21,17 +22,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
 // peerSchema is in openDB. peer_outbox keeps a row after its ack (acked 1, body NULL), so a send
-// with the same key keeps its answer: the first seq, or operation_conflict. AUTOINCREMENT never reuses a
+// with the same key keeps its answer: the first seq, or operation_conflict. target is the plugin on
+// the peer that gets the envelope; empty is the sender's own name. AUTOINCREMENT never reuses a
 // seq, also after the outbox is empty. peer_meta's outbox_id is the identity of this hub.db's outbox:
 // a new hub.db makes a new one, and its seqs start again at 1. peer_inbox is the receiver's cursor
 // for each peer, with the identity of the peer's outbox that the cursor belongs to.
 const peerSchema = `
 CREATE TABLE IF NOT EXISTS peer_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, plugin TEXT NOT NULL,
   key TEXT NOT NULL, hash TEXT NOT NULL, body TEXT, created TEXT NOT NULL, acked INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (peer, plugin, key));
+  target TEXT NOT NULL DEFAULT '', UNIQUE (peer, plugin, key));
 CREATE TABLE IF NOT EXISTS peer_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO peer_meta (name, value) VALUES ('outbox_id', lower(hex(randomblob(16))));
 CREATE TABLE IF NOT EXISTS peer_inbox (peer TEXT PRIMARY KEY, after INTEGER NOT NULL, outbox_id TEXT NOT NULL DEFAULT '');
@@ -107,6 +111,10 @@ type peerLink struct {
 	blockSeq    int64
 	blockPlugin string
 	blockSince  time.Time
+	// dropped: the envelopes from this peer that no plugin here could take (peerReceive), since the
+	// hub started, and the last one.
+	dropped  int
+	lastDrop *peerDrop
 	// sync: the plugin sync with a plugins_from peer (peersync.go); nil before its first try.
 	sync *peerSync
 }
@@ -176,8 +184,10 @@ func (h *Hub) resolveQualified(to string) (local string, result map[string]any, 
 	return "", nil, true, refuse("unknown_hub", "%s is not a configured peer", hub)
 }
 
-// peerSend is hub.peer.send: a plugin queues an envelope for a peer. The same (peer, plugin, key)
-// with the same body returns the first seq, also after the ack; another body is operation_conflict.
+// peerSend is hub.peer.send: a plugin queues an envelope for a peer, for the plugin "plugin" there
+// (absent: the sender's own name). The sender is the calling plugin; a caller cannot name another.
+// The same (peer, plugin, key) with the same body and target returns the first seq, also after the
+// ack; another body or another target is operation_conflict.
 func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any, error) {
 	pl := h.pluginByClient(p.Requester.ClientID)
 	if pl == nil {
@@ -186,6 +196,7 @@ func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any
 	peer, _ := args["hub"].(string)
 	key, _ := args["key"].(string)
 	body, ok := args["body"].(string)
+	target, _ := args["plugin"].(string)
 	switch {
 	case h.peerLink(peer) == nil:
 		return nil, refuse("unknown_hub", "%q is not a configured peer", peer)
@@ -193,13 +204,18 @@ func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any
 		return nil, bad("invalid: key must be 1-512 bytes")
 	case !ok:
 		return nil, bad("invalid: body must be a string")
+	case args["plugin"] != nil && !pluginName.MatchString(target):
+		return nil, bad("invalid: plugin must be a plugin name (%s)", pluginName)
+	}
+	if target == pl.Name {
+		target = "" // the stored and sent form of the sender's own name
 	}
 	created := time.Now().UTC().Format(time.RFC3339Nano)
 	// Each envelope must fit alone in one pull reply; else it would stop delivery to the peer.
 	if enc, _ := json.Marshal(body); len(enc) > peerBodyMax {
 		return nil, refuse("too_large", "body is %d bytes encoded; at most %d", len(enc), peerBodyMax)
 	}
-	if n, budget := peerEnvelopeBytes(math.MaxInt64, pl.Name, key, body, created), h.peerPullBudget(); n > budget {
+	if n, budget := peerEnvelopeBytes(math.MaxInt64, pl.Name, target, key, body, created), h.peerPullBudget(); n > budget {
 		return nil, refuse("too_large", "the envelope is %d bytes encoded; one pull reply holds at most %d", n, budget)
 	}
 	sum := sha256.Sum256([]byte(body))
@@ -209,9 +225,11 @@ func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any
 	// an AUTOINCREMENT value, so a repeat reads first.)
 	for range 2 {
 		var seq int64
-		var old string
-		err := h.db.QueryRowContext(ctx, `SELECT seq, hash FROM peer_outbox WHERE peer = ? AND plugin = ? AND key = ?`, peer, pl.Name, key).Scan(&seq, &old)
+		var old, oldTarget string
+		err := h.db.QueryRowContext(ctx, `SELECT seq, hash, target FROM peer_outbox WHERE peer = ? AND plugin = ? AND key = ?`, peer, pl.Name, key).Scan(&seq, &old, &oldTarget)
 		switch {
+		case err == nil && oldTarget != target:
+			return nil, refuse("operation_conflict", "key %q was sent to %s for another plugin", key, peer)
 		case err == nil && old == hash:
 			return map[string]any{"seq": seq, "queued": true}, nil
 		case err == nil:
@@ -219,8 +237,8 @@ func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any
 		case !errors.Is(err, sql.ErrNoRows):
 			return nil, err
 		}
-		res, err := h.db.ExecContext(ctx, `INSERT INTO peer_outbox (peer, plugin, key, hash, body, created) VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT (peer, plugin, key) DO NOTHING`, peer, pl.Name, key, hash, body, created)
+		res, err := h.db.ExecContext(ctx, `INSERT INTO peer_outbox (peer, plugin, target, key, hash, body, created) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (peer, plugin, key) DO NOTHING`, peer, pl.Name, target, key, hash, body, created)
 		if err != nil {
 			return nil, err
 		}
@@ -233,14 +251,19 @@ func (h *Hub) peerSend(ctx context.Context, p perform, args map[string]any) (any
 	return nil, fmt.Errorf("hub.peer.send: key %q: the row is gone after a conflict", key)
 }
 
-// peerEnvelope is one envelope of a hub.peer.pull reply.
-func peerEnvelope(seq int64, plugin, key, body, created string) map[string]any {
-	return map[string]any{"seq": seq, "plugin": plugin, "key": key, "body": body, "created": created}
+// peerEnvelope is one envelope of a hub.peer.pull reply. plugin is the sender; target, only when it
+// is another plugin, is the plugin that gets it.
+func peerEnvelope(seq int64, plugin, target, key, body, created string) map[string]any {
+	e := map[string]any{"seq": seq, "plugin": plugin, "key": key, "body": body, "created": created}
+	if target != "" {
+		e["target"] = target
+	}
+	return e
 }
 
 // peerEnvelopeBytes is the encoded size of an envelope in a pull reply, with its comma.
-func peerEnvelopeBytes(seq int64, plugin, key, body, created string) int {
-	b, _ := json.Marshal(peerEnvelope(seq, plugin, key, body, created))
+func peerEnvelopeBytes(seq int64, plugin, target, key, body, created string) int {
+	b, _ := json.Marshal(peerEnvelope(seq, plugin, target, key, body, created))
 	return len(b) + 1
 }
 
@@ -277,7 +300,7 @@ func (h *Hub) peerPullServe(ctx context.Context, args map[string]any) (any, erro
 	} else if _, err := h.db.ExecContext(ctx, `UPDATE peer_outbox SET acked = 1, body = NULL WHERE peer = ? AND seq <= ? AND acked = 0`, peer, after); err != nil {
 		return nil, err
 	}
-	rows, err := h.db.QueryContext(ctx, `SELECT seq, plugin, key, body, created FROM peer_outbox WHERE peer = ? AND seq > ? AND acked = 0 ORDER BY seq LIMIT ?`,
+	rows, err := h.db.QueryContext(ctx, `SELECT seq, plugin, target, key, body, created FROM peer_outbox WHERE peer = ? AND seq > ? AND acked = 0 ORDER BY seq LIMIT ?`,
 		peer, after, peerPullMax+1)
 	if err != nil {
 		return nil, err
@@ -286,17 +309,17 @@ func (h *Hub) peerPullServe(ctx context.Context, args map[string]any) (any, erro
 	envs, size, more, budget := []any{}, 0, false, h.peerPullBudget()
 	for rows.Next() {
 		var seq int64
-		var plugin, key, body, created string
-		if err := rows.Scan(&seq, &plugin, &key, &body, &created); err != nil {
+		var plugin, target, key, body, created string
+		if err := rows.Scan(&seq, &plugin, &target, &key, &body, &created); err != nil {
 			return nil, err
 		}
-		n := peerEnvelopeBytes(seq, plugin, key, body, created)
+		n := peerEnvelopeBytes(seq, plugin, target, key, body, created)
 		if len(envs) == peerPullMax || (len(envs) > 0 && size+n > budget) {
 			more = true
 			break
 		}
 		size += n
-		envs = append(envs, peerEnvelope(seq, plugin, key, body, created))
+		envs = append(envs, peerEnvelope(seq, plugin, target, key, body, created))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -342,7 +365,8 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 			}
 			l.mu.Lock()
 			row := map[string]any{"name": p.Name, "server": p.Server, "state": l.state, "last_error": l.lastErr, "outbox": outbox,
-				"after": after, "outbox_id": outboxID, "more": l.more, "last_ok": nil, "oldest_age_s": nil, "blocked_plugin": nil, "blocked_since": nil}
+				"after": after, "outbox_id": outboxID, "more": l.more, "last_ok": nil, "oldest_age_s": nil, "blocked_plugin": nil, "blocked_since": nil,
+				"dropped": map[string]any{"count": l.dropped, "last": l.lastDrop}}
 			if !l.lastOK.IsZero() {
 				row["last_ok"] = l.lastOK.UTC().Format(time.RFC3339)
 			}
@@ -421,35 +445,72 @@ func (h *Hub) peerLoop(ctx context.Context, l *peerLink) {
 
 // peerPluginClient returns the client of the plugin name, or "" and wait: true when the plugin is
 // installed here (a config entry binds it) and desired running, but does not run now (starting,
-// restarting, crashing). A plugin that is not installed (no record, or a kept record without an
-// entry) or is desired stopped gives "" and false.
-func (h *Hub) peerPluginClient(name string) (client string, wait bool) {
+// restarting, crashing). A plugin that cannot take an envelope gives "" and the drop reason:
+// not_installed (no record, or a kept record without an entry) or stopped (desired stopped).
+func (h *Hub) peerPluginClient(name string) (client string, wait bool, drop string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pl := h.plugins[name]
-	if pl == nil || pl.entry == nil || pl.Desired == "stopped" {
-		return "", false
+	switch {
+	case pl == nil || pl.entry == nil:
+		return "", false, "not_installed"
+	case pl.Desired == "stopped":
+		return "", false, "stopped"
 	}
-	return pl.ClientID, pl.ClientID == ""
+	return pl.ClientID, pl.ClientID == "", ""
 }
 
-// peerReceive gives one envelope from peer fromHub to the local plugin's peer.receive, and returns the
-// plugin's reply. It is the one delivery path: the peer pull and the test call hub.test.peer.deliver
-// use it. A plugin that is not installed here or is desired stopped gets nothing: the reply is nil and
-// the hub logs the skip. A refusal (the result {"refused": "<code>", "message"}) is a reply, logged
-// here; it is final. An error means "not processed": an installed, desired-running plugin that does
-// not run now, or an error reply (the plugin's transaction rolled back), or a lost reply. The pull
-// retries an error for at most peerBlockMax (lead-fed-sdk2).
-func (h *Hub) peerReceive(ctx context.Context, fromHub, plugin, key, body string) (json.RawMessage, error) {
-	client, wait := h.peerPluginClient(plugin)
+// peerDrop is an envelope from a peer that no plugin here could take (hub.peer.status "dropped").
+type peerDrop struct {
+	Plugin     string `json:"plugin"` // the target
+	FromPlugin string `json:"from_plugin"`
+	Key        string `json:"key"`
+	Reason     string `json:"reason"` // not_installed, stopped, no_listener or blocked (skipped after peerBlockMax)
+	At         string `json:"at"`
+}
+
+// peerDropped logs a drop and counts it on the link of peer fromHub (if fromHub is a configured
+// peer: hub.test.peer.deliver may name another hub).
+func (h *Hub) peerDropped(fromHub string, d peerDrop) {
+	log.Printf("peer %s: %s key %q from %s dropped: %s", fromHub, d.Plugin, d.Key, d.FromPlugin, d.Reason)
+	if l := h.peerLink(fromHub); l != nil {
+		l.countDrop(d)
+	}
+}
+
+// countDrop counts a drop in hub.peer.status "dropped".
+func (l *peerLink) countDrop(d peerDrop) {
+	d.At = time.Now().UTC().Format(time.RFC3339)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dropped++
+	l.lastDrop = &d
+}
+
+// peerReceive gives one envelope from plugin fromPlugin on peer fromHub to the local plugin's
+// peer.receive, and returns the plugin's reply. It is the one delivery path: the peer pull and the
+// test call hub.test.peer.deliver use it. A plugin that cannot take it gets nothing, and the hub
+// counts the drop (peerDropped); the reply is nil. It cannot take it when it is not installed here,
+// is desired stopped, or does not offer peer.receive (no_listener: the error not_supported, from Rex
+// for an action that the plugin's keymap lacks, or from the plugin). A refusal (the result
+// {"refused": "<code>", "message"}) is a reply, logged here; it is final. An error means "not
+// processed": an installed, desired-running plugin that does not run now, or an error reply (the
+// plugin's transaction rolled back), or a lost reply. The pull retries an error for at most
+// peerBlockMax (lead-fed-sdk2).
+func (h *Hub) peerReceive(ctx context.Context, fromHub, fromPlugin, plugin, key, body string) (json.RawMessage, error) {
+	client, wait, drop := h.peerPluginClient(plugin)
 	switch {
 	case wait:
 		return nil, fmt.Errorf("the plugin %q does not run here", plugin)
-	case client == "":
-		log.Printf("peer %s: %s key %q skipped: the plugin is not installed or is stopped here", fromHub, plugin, key)
+	case drop != "":
+		h.peerDropped(fromHub, peerDrop{Plugin: plugin, FromPlugin: fromPlugin, Key: key, Reason: drop})
 		return nil, nil
 	}
-	res, err := h.performPlugin(ctx, client, "peer.receive", map[string]any{"from_hub": fromHub, "key": key, "body": body}, 10000)
+	res, err := h.performPlugin(ctx, client, "peer.receive", map[string]any{"from_hub": fromHub, "from_plugin": fromPlugin, "key": key, "body": body}, 10000)
+	if re := (*rex.RexError)(nil); errors.As(err, &re) && re.Code == "not_supported" {
+		h.peerDropped(fromHub, peerDrop{Plugin: plugin, FromPlugin: fromPlugin, Key: key, Reason: "no_listener"})
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s peer.receive: %v", plugin, err)
 	}
@@ -474,12 +535,13 @@ func (l *peerLink) peerBlocked(seq int64, plugin string) bool {
 	return time.Since(l.blockSince) < peerBlockMax
 }
 
-// peerPull pulls the envelopes that the peer holds for this hub and gives each, in seq order, to the
-// local plugin of the same name. The cursor moves past an envelope only after the plugin answered:
-// accepted, or refused with a result {"refused": code}. An envelope for a plugin that is not
-// installed here or is desired stopped is logged and skipped (peerReceive). An envelope that was not
+// peerPull pulls the envelopes that the peer holds for this hub and gives each, in seq order, to its
+// target plugin here (an envelope without "target" is for the plugin of the sender's name). The
+// cursor moves past an envelope only after the plugin answered: accepted, or refused with a result
+// {"refused": code}. An envelope that no plugin here can take is dropped (peerReceive). An envelope that was not
 // processed (peerReceive's error: the plugin does not run, an error reply, a lost reply) stops the
-// pull and comes again, for at most peerBlockMax per hub process; then it is logged and skipped.
+// pull and comes again, for at most peerBlockMax per hub process; then it is logged, skipped and
+// counted as a drop (reason blocked).
 // Delivery is in seq order, so a retry blocks every later envelope from that peer. A failed peer
 // call stops the pull with no bound: nothing was delivered. A reply with another outbox identity
 // (the peer's hub.db is new, so its seqs start again) resets the cursor to 0 and clears the block
@@ -497,6 +559,7 @@ func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) 
 		Envelopes []struct {
 			Seq    int64  `json:"seq"`
 			Plugin string `json:"plugin"`
+			Target string `json:"target"`
 			Key    string `json:"key"`
 			Body   string `json:"body"`
 		} `json:"envelopes"`
@@ -527,12 +590,17 @@ func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) 
 		if e.Seq <= after {
 			continue // a reply to an older cursor
 		}
-		_, err := h.peerReceive(ctx, l.cfg.Name, e.Plugin, e.Key, e.Body)
+		target := e.Target
+		if target == "" {
+			target = e.Plugin
+		}
+		_, err := h.peerReceive(ctx, l.cfg.Name, e.Plugin, target, e.Key, e.Body)
 		switch {
-		case err != nil && l.peerBlocked(e.Seq, e.Plugin):
+		case err != nil && l.peerBlocked(e.Seq, target):
 			return false, fmt.Errorf("envelope %d: %v", e.Seq, err)
 		case err != nil:
-			log.Printf("peer %s: envelope %d (%s, key %q) skipped after %s: %v", l.cfg.Name, e.Seq, e.Plugin, e.Key, peerBlockMax, err)
+			log.Printf("peer %s: envelope %d (%s from %s, key %q) skipped after %s: %v", l.cfg.Name, e.Seq, target, e.Plugin, e.Key, peerBlockMax, err)
+			l.countDrop(peerDrop{Plugin: target, FromPlugin: e.Plugin, Key: e.Key, Reason: "blocked"})
 		}
 		// The cursor never moves back: a late reply to an older pull cannot lower it.
 		if _, err := h.db.ExecContext(ctx, `INSERT INTO peer_inbox (peer, after) VALUES (?, ?)

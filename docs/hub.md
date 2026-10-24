@@ -2228,7 +2228,8 @@ its writes, as `hub.spawn`'s create does. No answer waits for a plugin.
 ## Peer hubs (federation v1, 2026-10-23)
 
 Two or more hubs, each on its own Rex server, exchange envelopes. A plugin on hub A sends an
-envelope to hub B. The same plugin on B receives it. The code is in `hub/cmd/hub/peers.go`.
+envelope to hub B. A plugin on B receives it: the plugin that the send names (the target), or by
+default the plugin with the sender's name (lead-fedxp). The code is in `hub/cmd/hub/peers.go`.
 
 ### Config
 
@@ -2265,14 +2266,23 @@ Each hub pulls from its peers. A hub never pushes data.
 
 | Action | Caller | Args | Result |
 |---|---|---|---|
-| `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB JSON-encoded) | `{seq, queued}` |
-| `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after`, `outbox_id` (optional) | `{envelopes: [{seq, plugin, key, body, created}], more, outbox_id}` |
+| `hub.peer.send` | a plugin | `hub`, `key` (1-512 bytes), `body` (a string, at most 64 KiB JSON-encoded), `plugin` (optional: the target plugin on the peer) | `{seq, queued}` |
+| `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after`, `outbox_id` (optional) | `{envelopes: [{seq, plugin, target, key, body, created}], more, outbox_id}` |
 | `hub.peer.nudge` | a peer hub | `hub` | `{}` |
 | `hub.peer.plugins` | a peer hub | `hub` | `{pins, managed: [{id, source}]}` ("Plugin sync") |
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
 
-- **Send.** The body is opaque to the hub. The same `(peer, plugin, key)` with the same body returns
-  the first `seq`. Another body is `operation_conflict`. Both rules stay after the peer acked the envelope:
+- **Target.** `plugin` names the plugin on the peer that gets the envelope. It must match the
+  plugin name rule `[a-z0-9_-]+`; another value is refused at the call (`invalid: plugin must be a
+  plugin name`). Absent, or the sender's own name, is the same plugin. The hub sets the sender: the
+  calling plugin, which a caller cannot name. In a pull reply, `plugin` is the sender, and `target`
+  is present only for another plugin; an envelope without `target` is for the plugin with the
+  sender's name. The hub has no allow rule: any plugin on a peer can address any plugin here. The
+  receiving plugin decides; the SDK refuses another sender by default (docs/plugin-sdk.md,
+  "Federation").
+- **Send.** The body is opaque to the hub. The key scope is `(peer, sending plugin, key)`. The same
+  key with the same body and target returns the first `seq`. Another body is `operation_conflict`,
+  and another target is `operation_conflict` ("for another plugin"). Both rules stay after the peer acked the envelope:
   the ack keeps the row and clears only the body. Two sends of one key at the same time get one
   row. Other errors: `unknown_hub`, `too_large`, `not_plugin`.
 - **Known limit: the outbox keeps every key.** The hub never deletes a `peer_outbox` row, so the
@@ -2309,26 +2319,52 @@ Each hub pulls from its peers. A hub never pushes data.
   `last_error`, `outbox` (envelopes from this hub that the peer has not acked), `oldest_age_s`,
   `after` (this hub's cursor for that peer), `outbox_id` (the identity of the peer's outbox that the
   cursor belongs to; `""` before the first pull), `more`, and `blocked_plugin` and `blocked_since`
-  (null unless an envelope waits for a plugin). The `plugins_from` row also has `plugin_sync`
+  (null unless an envelope waits for a plugin), and `dropped`: `{count, last}`, the envelopes from
+  that peer that no plugin here could take since the hub started (in memory; a restart sets 0),
+  with the last one as `{plugin, from_plugin, key, reason, at}` (`plugin` is the target; null
+  before the first drop). The `plugins_from` row also has `plugin_sync`
   ("Plugin sync").
 
 ### Delivery
 
-The receiver gives each envelope, in `seq` order, to its local plugin with the same name. It uses
-`client.perform` of the action `peer.receive` with `{from_hub, key, body}`.
+The receiver gives each envelope, in `seq` order, to its target plugin here. It uses
+`client.perform` of the action `peer.receive` with `{from_hub, from_plugin, key, body}`;
+`from_plugin` is the sending plugin.
 
 - The plugin accepts with any result.
 - The plugin refuses with the result `{"refused": "<code>", "message": "..."}`. The hub logs the
   refusal and moves on. A refusal is a result, not an error.
-- A plugin that is not installed on the receiver (not in its config), or is desired stopped, gets
-  no envelope. The hub logs the envelope and moves on.
+- A target that cannot take the envelope gets none. The hub drops the envelope at once, logs it,
+  counts it in `dropped`, and moves on. The reasons: `not_installed` (not in the receiver's
+  config), `stopped` (desired stopped), and `no_listener` (the plugin does not offer `peer.receive`:
+  Rex refuses the perform with `not_supported`, docs/rex-protocol.md; a plugin's own
+  `not_supported` error counts the same). A fourth reason, `blocked`, counts an envelope that the
+  hub skipped after the 5-minute hold (below). The sender gets no bounce: the ack is from hub to
+  hub.
 - An envelope that the plugin did not process stops the pull: an installed, desired-running plugin
   that does not run now (starting, restarting, crashing), an error reply of `peer.receive` (a raised
   Lua error: the plugin's transaction rolls back), or a lost reply. The hub tries that envelope
   again for at most 5 minutes per hub process: a hub restart starts the bound again. Then the hub
-  logs the envelope and moves on (lead-fed-r2, lead-fed-sdk3). So a transient error comes again,
+  logs the envelope, counts it in `dropped` (reason `blocked`), and moves on (lead-fed-r2,
+  lead-fed-sdk3, lead-fedxp7). So a transient error comes again,
   and a plugin defect cannot block the peer for ever. A plugin refuses on purpose only with the
   refusal result, never with an error.
+- **Drop or hold: the rule.** The hub decides by the target's record here, not by whether the
+  plugin runs at this moment:
+  - Drop at once: no record or no config entry (`not_installed`), desired `stopped` (`stopped`),
+    or a running plugin that does not offer `peer.receive` (`no_listener`). These states end only
+    by an explicit configuration or lifecycle change (an install, a start, a new plugin version,
+    by a person, an agent or plugin sync), with no automatic recovery, so a wait could last for
+    ever and would block every later envelope from that peer.
+  - Hold the cursor: desired `running` with no client now (starting, restarting after a crash,
+    a crash loop), an error reply, or a lost reply. These states can end by themselves (a start
+    or a respawn takes seconds); a crash loop may not. The hold is bounded: 5 minutes per hub
+    process (`peerBlockMax`). Then the hub skips the envelope with a log line and counts it in
+    `dropped` with the reason `blocked`: the target loses it, as with a drop (lead-fedxp7).
+    `blocked_plugin` and `blocked_since` show the hold while it lasts.
+  - Limit: the bound is in memory. A hub that restarts more often than every 5 minutes starts it
+    again each time, so a desired-running plugin that never starts can hold that peer's envelopes
+    for as long as the restarts go on. `blocked_since` then shows a recent time after each restart.
 - Delivery is in `seq` order, so while an envelope waits, every later envelope from that peer waits
   too, also for other plugins. `hub.peer.status` shows `blocked_plugin` and `blocked_since` on that
   peer's row.
@@ -2343,12 +2379,13 @@ an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
 ### Tests
 
 - Unit tests: `hub/cmd/hub/peers_test.go`. Two-hub lab: `TestPeerHubsLab` (LAZYREX_LAB=1).
-- Plugin tests: `hub.test.peer.deliver {plugin, from_hub, key, body}` (test mode only; harness
+- Plugin tests: `hub.test.peer.deliver {plugin, from_hub, from_plugin, key, body}` (test mode
+  only; `plugin` is the target; `from_plugin` is optional, default the target; harness
   `H.peer_deliver`) gives one envelope to the plugin through the same function as a pulled
   envelope (`peerReceive`). The hub delivers in a goroutine and replies `{id}` without waiting for
   the delivery, as the pull loop runs outside any request: Rex gives the hub one request at a time, so a hub call of the plugin in
   `peer.receive` would wait behind the test request. `hub.test.peer.delivery {id}` returns
-  `{done}`, then `{reply}`, `{skipped: true}` for a stopped plugin, or `{error}` with code
+  `{done}`, then `{reply}`, `{skipped: true}` for a dropped envelope, or `{error}` with code
   `not_processed` for an envelope that the plugin did not process. `H.peer_deliver` waits for it. The test manifest keys
   `test.hub_name` and `test.peers` set the lab hub's config; a peer whose server does not exist
   shows the send side in `hub.peer.status` (harness `H.peer_status`). Example: `tests/peers`.

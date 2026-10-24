@@ -230,8 +230,12 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		from, _ := args["from_hub"].(string)
 		key, _ := args["key"].(string)
 		body, ok := args["body"].(string)
-		if !hubName.MatchString(from) || key == "" || !ok {
-			return nil, bad("invalid: peer.deliver needs from_hub (a hub name), key and a string body")
+		fromPlugin, _ := args["from_plugin"].(string)
+		if args["from_plugin"] == nil {
+			fromPlugin = plugin
+		}
+		if !hubName.MatchString(from) || key == "" || !ok || !pluginName.MatchString(fromPlugin) {
+			return nil, bad("invalid: peer.deliver needs from_hub (a hub name), key, a string body and from_plugin (a plugin name) if given")
 		}
 		d := &testDelivery{}
 		h.test.mu.Lock()
@@ -239,7 +243,7 @@ func (h *Hub) testDispatch(ctx context.Context, p perform, args map[string]any) 
 		id := len(h.test.deliveries)
 		h.test.mu.Unlock()
 		go func() {
-			res, err := h.peerReceive(context.Background(), from, plugin, key, body)
+			res, err := h.peerReceive(context.Background(), from, fromPlugin, plugin, key, body)
 			h.test.mu.Lock()
 			defer h.test.mu.Unlock()
 			d.done, d.reply, d.skipped = true, res, err == nil && res == nil

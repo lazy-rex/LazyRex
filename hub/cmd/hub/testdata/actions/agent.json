@@ -5,7 +5,7 @@
    "properties": {},
    "type": "object"
   },
-  "description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes from this hub that it has not acked (outbox, oldest_age_s), the cursor of what this hub took from it (after), the identity of its outbox that the cursor belongs to (outbox_id; a new one resets the cursor) and whether it holds more. A remote agent's address is \"\u003cagent\u003e@\u003chub\u003e\".",
+  "description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes from this hub that it has not acked (outbox, oldest_age_s), the cursor of what this hub took from it (after), the identity of its outbox that the cursor belongs to (outbox_id; a new one resets the cursor), whether it holds more, and the envelopes from it that no plugin here could take since the hub started (dropped). A remote agent's address is \"\u003cagent\u003e@\u003chub\u003e\".",
   "kind": "client",
   "name": "hub.peer.status",
   "title": "Peer hubs"

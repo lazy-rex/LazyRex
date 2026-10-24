@@ -7,12 +7,15 @@
 -- peer, in row order, with the key and the body text of the row. So the hub assigns its seq in
 -- row order, and the receiver delivers in that order.
 -- Receive: the hub calls peer.receive. The listener and its dedupe row in sdk_peer_seen commit in
--- one transaction, so its database effects happen once for each (origin hub, key).
+-- one transaction, so its database effects happen once for each (origin hub, sending plugin, key).
+-- A plugin can send to another plugin (lead-fedxp): the receiver accepts only the sending plugins
+-- of its "from" list (default: its own name).
 return function(k)
   local db, run, frame, hub, fail, part, digest, normalize = k.db, k.run, k.frame, k.hub, k.fail, k.part, k.digest, k.normalize
+  local OWN = k.name -- this plugin's manifest name
   local P = {}
 
-  local VERSION = 1 -- sdk_meta part "peer"
+  local VERSION = 2 -- sdk_meta part "peer"; 2: the target of a sent row, the sending plugin of a seen row
   local MAX_BODY = 65536 -- the hub's limit, measured as Go's json.Marshal of the body text
   local PRUNE_S = 30 * 86400 -- sent rows older than this go at start; seen rows stay (lead-sdkfed8)
   local SLOW_S = 2 -- a receive listener that runs longer is logged
@@ -23,16 +26,22 @@ return function(k)
     sdk_meta = 'CREATE TABLE sdk_meta (part TEXT PRIMARY KEY, version INTEGER NOT NULL)',
     sdk_peer_outbox = 'CREATE TABLE sdk_peer_outbox (n INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, hub TEXT NOT NULL, key TEXT NOT NULL, '
       .. 'digest TEXT NOT NULL, body TEXT, state TEXT NOT NULL, hub_seq INTEGER, code TEXT, message TEXT, created INTEGER NOT NULL, '
-      .. 'sent_at INTEGER, failed_at INTEGER)',
+      .. 'sent_at INTEGER, failed_at INTEGER, target TEXT)',
     sdk_peer_seen = 'CREATE TABLE sdk_peer_seen (id TEXT PRIMARY KEY, from_hub TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, '
-      .. 'refused TEXT, message TEXT, at INTEGER NOT NULL)',
+      .. "refused TEXT, message TEXT, at INTEGER NOT NULL, from_plugin TEXT NOT NULL DEFAULT '')",
   }
+  -- target: NULL is this plugin (the only target before version 2). from_plugin: the sending
+  -- plugin; '' only during the step from version 1.
   -- The drain and the status read the outbox per peer and state, in row order.
   local QUEUE_INDEX = 'CREATE INDEX sdk_peer_outbox_queue ON sdk_peer_outbox (hub, state, n)'
   P.TABLES = TABLES
 
   local function now() return os.time() end
   local function hub_name(s) return type(s) == 'string' and #s <= 63 and s:match('^[a-z0-9][a-z0-9%-]*$') ~= nil end
+  -- plugin_name is the manifest name rule (the hub's pluginName).
+  local function plugin_name(s) return type(s) == 'string' and s:match('^[a-z0-9_%-]+$') ~= nil end
+  -- seen_id is the dedupe ID of an envelope: the origin hub, the sending plugin and the key.
+  local function seen_id(from_hub, from_plugin, key) return part(from_hub) .. part(from_plugin) .. part(key) end
 
   -- JSON ----------------------------------------------------------------------------------------
 
@@ -158,9 +167,24 @@ return function(k)
 
   -- Schema --------------------------------------------------------------------------------------
 
-  -- setup makes the SDK tables (before the plugin migrations, in its own transaction) and deletes
-  -- old sent rows, never a seen row (lead-sdkfed8). A database with a newer peer schema fails the
-  -- start.
+  -- upgrade_1 is the step from version 1 (lead-fedxp3, lead-fedxp4 3). Every row stays: a queued
+  -- row gets target NULL (this plugin), and a seen row gets from_plugin = this plugin, the only
+  -- sender before version 2, with its ID in the 3-part form. A seen row is the proof that a
+  -- listener committed: a lost one would let a repeat commit twice (lead-sdkfed8).
+  local function upgrade_1()
+    db.exec('ALTER TABLE sdk_peer_outbox ADD COLUMN target TEXT')
+    db.exec("ALTER TABLE sdk_peer_seen ADD COLUMN from_plugin TEXT NOT NULL DEFAULT ''")
+    -- One statement builds each ID from the row's own columns: no row comes back to Lua, so no SQL
+    -- reply budget applies (codex-15: one page of 512-byte keys of control characters can be over
+    -- it). This is seen_id in SQL: part() counts bytes, and length() of a BLOB counts bytes.
+    db.exec('UPDATE sdk_peer_seen SET id = length(CAST(from_hub AS BLOB)) || \':\' || from_hub || ? '
+      .. '|| length(CAST(key AS BLOB)) || \':\' || key, from_plugin = ? WHERE from_plugin = ?', part(OWN), OWN, '')
+    db.exec('UPDATE sdk_meta SET version = ? WHERE part = ?', VERSION, 'peer')
+  end
+
+  -- setup makes the SDK tables (before the plugin migrations, in its own transaction), or takes an
+  -- older peer schema to this version, and deletes old sent rows, never a seen row (lead-sdkfed8).
+  -- A database with a newer peer schema fails the start.
   function P.setup()
     run({tx = true}, function()
       local have = {}
@@ -175,6 +199,8 @@ return function(k)
         if not have.sdk_peer_outbox then db.exec(TABLES.sdk_peer_outbox); db.exec(QUEUE_INDEX) end
         if not have.sdk_peer_seen then db.exec(TABLES.sdk_peer_seen) end
         db.exec('INSERT INTO sdk_meta (part, version) VALUES (?, ?)', 'peer', VERSION)
+      elseif v == 1 then
+        upgrade_1()
       end
       db.exec('DELETE FROM sdk_peer_outbox WHERE sent_at < ?', now() - PRUNE_S)
     end)
@@ -217,7 +243,7 @@ return function(k)
     if spec.failed then
       local ok, err = pcall(run, {tx = true}, function()
         mark()
-        spec.failed({hub = row.hub, key = row.key, code = e.code, message = e.message, at = at})
+        spec.failed({hub = row.hub, key = row.key, plugin = row.target, code = e.code, message = e.message, at = at})
       end)
       if ok then return end
       print('lazyrex: peer: the failed listener of ' .. row.key .. ' to ' .. row.hub .. ' failed: ' .. normalize(err).message)
@@ -238,10 +264,11 @@ return function(k)
       else
         local last = 0
         while true do
-          local r = db.first('SELECT n, id, hub, key, body FROM sdk_peer_outbox WHERE hub = ? AND state = ? AND n > ? ORDER BY n LIMIT 1', h, 'queued', last)
+          local r = db.first('SELECT n, id, hub, key, body, target FROM sdk_peer_outbox WHERE hub = ? AND state = ? AND n > ? ORDER BY n LIMIT 1', h, 'queued', last)
           if not r then break end
           last = tonumber(r.n)
-          local ok, res = pcall(hub, 'hub.peer.send', {hub = r.hub, key = r.key, body = r.body})
+          -- No plugin field for this plugin: the request of a same-plugin row is the same as before.
+          local ok, res = pcall(hub, 'hub.peer.send', {hub = r.hub, key = r.key, body = r.body, plugin = r.target})
           if ok then
             mark_sent(r, type(res) == 'table' and res.seq or nil)
             st.wait, st.error = 0, nil
@@ -291,31 +318,47 @@ return function(k)
     return {refused = code, message = message}
   end
 
-  -- receive answers peer.receive {from_hub, key, body}. A malformed envelope is refused before the
-  -- listener: the same envelope gives the same refusal, so it is not stored.
+  -- allowed answers whether this plugin takes envelopes from plugin from_plugin (app.peer "from").
+  local function allowed(from_plugin)
+    local from = spec.from
+    if from == nil then return from_plugin == OWN end
+    if from == '*' then return true end
+    for _, n in ipairs(from) do if n == from_plugin then return true end end
+    return false
+  end
+
+  -- receive answers peer.receive {from_hub, from_plugin, key, body}. A malformed envelope is refused
+  -- before the listener: the same envelope gives the same refusal, so it is not stored. A hub
+  -- before lead-fedxp sends no from_plugin: then the sender is this plugin.
   function P.receive(a)
     local from_hub, key, text = a.from_hub, a.key, a.body
+    local from_plugin = a.from_plugin == nil and OWN or a.from_plugin
     if not hub_name(from_hub) then return refusal('invalid_envelope', 'from_hub is not a hub name') end
+    if not plugin_name(from_plugin) then return refusal('invalid_envelope', 'from_plugin is not a plugin name') end
     if type(key) ~= 'string' or key == '' then return refusal('invalid_envelope', 'The key is not a nonempty string') end
     if type(text) ~= 'string' or not text:match('^%s*{') then return refusal('invalid_envelope', 'The body is not a JSON object') end
     local value, err = rex.json.decode(text)
     if err ~= nil or type(value) ~= 'table' then return refusal('invalid_envelope', 'The body is not a JSON object') end
-    local id, d = part(from_hub) .. part(key), digest(text)
+    local id, d = seen_id(from_hub, from_plugin, key), digest(text)
     local started = now()
     local ok, res = pcall(run, {tx = true}, function()
       local seen = db.first('SELECT digest, refused, message FROM sdk_peer_seen WHERE id = ?', id)
       if seen then
-        if seen.digest ~= d then return refusal('operation_conflict', 'The key ' .. key .. ' from ' .. from_hub .. ' came with another body') end
+        if seen.digest ~= d then return refusal('operation_conflict', 'The key ' .. key .. ' from ' .. from_plugin .. ' on ' .. from_hub .. ' came with another body') end
         if seen.refused then return {refused = seen.refused, message = seen.message} end
         return {}
       end
-      local r = spec.receive({from_hub = from_hub, key = key, body = value})
+      -- After the dedupe: a decision on a key stays, also when "from" changes later (lead-fedxp4 4).
+      if not allowed(from_plugin) then
+        error({[REFUSAL] = true, refused = 'not_allowed', message = 'This plugin takes no envelopes from the plugin ' .. from_plugin .. ' (app.peer "from")'}, 0)
+      end
+      local r = spec.receive({from_hub = from_hub, from_plugin = from_plugin, key = key, body = value})
       if r ~= nil and type(r) ~= 'table' then fail('internal', 'The peer receive listener must return nil, a table or peer.refuse(...), not a ' .. type(r)) end
       if r and r.refused ~= nil then
         local checked = refusal(r.refused, r.message)
         error({[REFUSAL] = true, refused = checked.refused, message = checked.message}, 0)
       end
-      db.exec('INSERT INTO sdk_peer_seen (id, from_hub, key, digest, at) VALUES (?, ?, ?, ?, ?)', id, from_hub, key, d, now())
+      db.exec('INSERT INTO sdk_peer_seen (id, from_hub, from_plugin, key, digest, at) VALUES (?, ?, ?, ?, ?, ?)', id, from_hub, from_plugin, key, d, now())
       return {}
     end)
     local took = now() - started
@@ -325,7 +368,7 @@ return function(k)
       -- A refusal rolls back the listener's writes; the dedupe row keeps the refusal.
       run({tx = true}, function()
         if not db.first('SELECT digest FROM sdk_peer_seen WHERE id = ?', id) then
-          db.exec('INSERT INTO sdk_peer_seen (id, from_hub, key, digest, refused, message, at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, from_hub, key, d, res.refused, res.message, now())
+          db.exec('INSERT INTO sdk_peer_seen (id, from_hub, from_plugin, key, digest, refused, message, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, from_hub, from_plugin, key, d, res.refused, res.message, now())
         end
       end)
       return {refused = res.refused, message = res.message}
@@ -337,15 +380,27 @@ return function(k)
 
   -- API -----------------------------------------------------------------------------------------
 
-  -- declare is app.peer{receive = fn, failed = fn}: once, at load.
+  -- declare is app.peer{receive = fn, failed = fn, from = {names} or '*'}: once, at load.
   function P.declare(s)
     s = s or {}
     if type(s) ~= 'table' then error('app.peer takes a table', 3) end
     for name in pairs(s) do
-      if name ~= 'receive' and name ~= 'failed' then error('app.peer: unknown field ' .. tostring(name), 3) end
+      if name ~= 'receive' and name ~= 'failed' and name ~= 'from' then error('app.peer: unknown field ' .. tostring(name), 3) end
     end
     for _, name in ipairs({'receive', 'failed'}) do
       if s[name] ~= nil and type(s[name]) ~= 'function' then error('app.peer: ' .. name .. ' must be a function', 3) end
+    end
+    if s.from ~= nil and s.from ~= '*' then
+      local list = type(s.from) == 'table' and #s.from > 0
+      if list then
+        local n = 0
+        for key, v in pairs(s.from) do
+          n = n + 1
+          if type(key) ~= 'number' or not plugin_name(v) then list = false end
+        end
+        list = list and n == #s.from
+      end
+      if not list then error('app.peer: from must be "*" or a list of plugin names ([a-z0-9_-])', 3) end
     end
     spec = s
     local api = {}
@@ -364,30 +419,42 @@ return function(k)
       return out
     end
 
-    -- send(hub, key, body): stages a row in the caller's transaction. The row is durable when that
-    -- transaction commits; a rollback leaves no row and sends nothing.
-    function api.send(to_hub, key, body)
+    -- send(hub, key, body, opts): stages a row in the caller's transaction. The row is durable when
+    -- that transaction commits; a rollback leaves no row and sends nothing. opts.plugin: the target
+    -- plugin on the peer (default: this plugin).
+    function api.send(to_hub, key, body, opts)
       local f = in_tx('peer.send')
+      if opts ~= nil and type(opts) ~= 'table' then fail('invalid_input', 'peer.send: opts must be a table, not a ' .. type(opts)) end
+      for name in pairs(opts or {}) do
+        if name ~= 'plugin' then fail('invalid_input', 'peer.send: unknown option ' .. tostring(name)) end
+      end
+      local target = opts and opts.plugin
+      if target ~= nil and not plugin_name(target) then fail('invalid_input', 'peer.send: the plugin must be a plugin name ([a-z0-9_-])') end
+      if target == OWN then target = nil end -- this plugin is the default, stored and sent as absent
       if not hub_name(to_hub) then fail('invalid_input', 'peer.send: the hub must be a hub name ([a-z0-9][a-z0-9-], at most 63 bytes)') end
       if type(key) ~= 'string' or #key < 1 or #key > 512 then fail('invalid_input', 'peer.send: the key must be a string of 1 to 512 bytes') end
       local text = encode_body(body)
       local size = measure(text)
       if size > MAX_BODY then fail('too_large', 'peer.send: the body is ' .. size .. ' bytes as the hub measures it; the limit is ' .. MAX_BODY) end
-      -- The row insert must fit one Rex request (k.MAX_REQUEST): the body, the hub and the key as Rex
-      -- encodes them (the hub and the key twice: the row ID has them too), and 1024 bytes for the
-      -- SQL text and the framing. The hub.peer.send request of the row is smaller than its insert.
+      -- The row insert must fit one Rex request (k.MAX_REQUEST): the body, the hub, the key and the
+      -- target as Rex encodes them (the hub and the key twice: the row ID has them too; the target
+      -- twice, as a margin), and 1024 bytes for the SQL text and the framing. The hub.peer.send
+      -- request of the row is smaller than its insert.
       local wire = #rex.json.encode(text)
-      if wire + 2 * #rex.json.encode(to_hub) + 2 * #rex.json.encode(key) + 1024 > k.MAX_REQUEST then
+      local extra = target and 2 * #rex.json.encode(target) or 0
+      if wire + 2 * #rex.json.encode(to_hub) + 2 * #rex.json.encode(key) + extra + 1024 > k.MAX_REQUEST then
         fail('too_large', 'peer.send: the body is ' .. wire .. ' bytes as Rex sends it; with the key and the row it does not fit one Rex request ('
           .. k.MAX_REQUEST .. ' bytes)')
       end
-      local id, d = part(to_hub) .. part(key), digest(text)
+      -- The digest covers the target: the same key to another plugin is another row content. A row
+      -- to this plugin has the digest of the text alone (version 1 rows keep theirs).
+      local id, d = part(to_hub) .. part(key), digest(target and (part(target) .. text) or text)
       local row = db.first('SELECT state, digest, hub_seq, code, message FROM sdk_peer_outbox WHERE id = ?', id)
       if row then
-        if row.digest ~= d then fail('operation_conflict', 'peer.send: the key ' .. key .. ' to ' .. to_hub .. ' has another body') end
+        if row.digest ~= d then fail('operation_conflict', 'peer.send: the key ' .. key .. ' to ' .. to_hub .. ' has another body or another target plugin') end
         return state_of(row, key)
       end
-      db.exec('INSERT INTO sdk_peer_outbox (id, hub, key, digest, body, state, created) VALUES (?, ?, ?, ?, ?, ?, ?)', id, to_hub, key, d, text, 'queued', now())
+      db.exec('INSERT INTO sdk_peer_outbox (id, hub, key, digest, body, state, created, target) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, to_hub, key, d, text, 'queued', now(), target)
       f.peer_queued = true
       return {key = key, state = 'queued'}
     end

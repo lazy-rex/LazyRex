@@ -1,8 +1,8 @@
 -- A fake hub.sql for the SDK tests (wire: hub.sql handoff v1 and the NULL tag {null = true}). It
 -- keeps tables in memory, and it knows only the statements that the tests use: CREATE TABLE,
--- CREATE INDEX, PRAGMA user_version, and INSERT, SELECT, UPDATE and DELETE of the forms below. A
--- handler transaction buffers its changes on a copy; commit installs the copy, rollback drops it.
--- Saved replies commit with the transaction. Every call is logged in fake.calls.
+-- CREATE INDEX, ALTER TABLE ADD COLUMN, PRAGMA user_version, and INSERT, SELECT, UPDATE and DELETE
+-- of the forms below. A handler transaction buffers its changes on a copy; commit installs the copy,
+-- rollback drops it. Saved replies commit with the transaction. Every call is logged in fake.calls.
 --   local fake = dofile('fake_sql.lua')()
 --   fake.handle(action, args) -> result | nil, {code, message}
 -- fake.fail_next[action] = {code, message} fails the next call of that action once.
@@ -51,6 +51,16 @@ return function()
       db.indexes = db.indexes or {}
       if db.indexes[iname] then return err('sql_error', 'SQLITE_ERROR: index ' .. iname .. ' already exists') end
       db.indexes[iname] = true
+      return {changes = 0, id = 0}
+    end
+    -- ALTER TABLE t ADD COLUMN c ... [DEFAULT '']: the existing rows get the default (or NULL).
+    local atab, acol, adef = sql:match("^ALTER TABLE ([%w_]+) ADD COLUMN ([%w_]+)(.*)$")
+    if atab then
+      local t = db.tables[atab]
+      if not t then return err('sql_error', 'SQLITE_ERROR: no such table: ' .. atab) end
+      for _, c in ipairs(t.columns) do if c == acol then return err('sql_error', 'SQLITE_ERROR: duplicate column name: ' .. acol) end end
+      t.columns[#t.columns + 1] = acol
+      if adef:match("DEFAULT ''") then for _, row in ipairs(t.rows) do row[acol] = '' end end
       return {changes = 0, id = 0}
     end
     local tname, icols = sql:match('^INSERT INTO ([%w_]+) %(([^)]*)%) VALUES')
@@ -184,16 +194,37 @@ return function()
       -- SET col = expr, or a list of col = ? (the SDK's own tables).
       local sets = {}
       for col, expr in (set .. ','):gmatch('%s*([%w_]+) = ([^,]+),') do sets[#sets + 1] = {col = col, expr = trim(expr)} end
-      for _, s in ipairs(sets) do if s.expr == '?' then s.p = nextp() end end
+      -- An expr can also be a || list of ?, 'text', a column and length(CAST(col AS BLOB)).
+      for _, s in ipairs(sets) do
+        if s.expr == '?' then s.p = nextp()
+        elseif s.expr:find('||', 1, true) then
+          s.cat = {}
+          for item in (s.expr .. ' || '):gmatch('(.-) || ') do
+            item = trim(item)
+            local lit, len = item:match("^'(.*)'$"), item:match('^length%(CAST%(([%w_]+) AS BLOB%)%)$')
+            if item == '?' then s.cat[#s.cat + 1] = {v = nextp()}
+            elseif lit then s.cat[#s.cat + 1] = {v = lit}
+            elseif len then s.cat[#s.cat + 1] = {len = len}
+            else s.cat[#s.cat + 1] = {col = item} end
+          end
+        end
+      end
       local want = nextp()
       local changes = 0
       for _, row in ipairs(t.rows) do
         if row[ucol] == want then
           changes = changes + 1
-          for _, s in ipairs(sets) do
+          -- Every expr reads the row before the update, as in SQL.
+          local new = {}
+          for i, s in ipairs(sets) do
             local col, expr = s.col, s.expr
-            if expr == '1 - ' .. col then row[col] = 1 - row[col] elseif expr == '?' then row[col] = s.p else row[col] = tonumber(expr) or expr end
+            if s.cat then
+              local out = {}
+              for _, c in ipairs(s.cat) do out[#out + 1] = c.v or (c.len and #row[c.len]) or row[c.col] end
+              new[i] = table.concat(out)
+            elseif expr == '1 - ' .. col then new[i] = 1 - row[col] elseif expr == '?' then new[i] = s.p else new[i] = tonumber(expr) or expr end
           end
+          for i, s in ipairs(sets) do row[s.col] = new[i] end
         end
       end
       return {changes = changes, id = 0}

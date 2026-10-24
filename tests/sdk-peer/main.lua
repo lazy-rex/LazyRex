@@ -12,8 +12,8 @@ end}
 
 local ANY = {type = 'object', additionalProperties = true}
 
--- speer.send queues {t = text} to hub with key k.
-app.action('speer.send', ANY, function(ctx, a) return peer.send(a.hub, a.k, {t = a.text}) end,
+-- speer.send queues {t = text} to hub with key k, to the plugin named plugin (default: speer).
+app.action('speer.send', ANY, function(ctx, a) return peer.send(a.hub, a.k, {t = a.text}, a.plugin and {plugin = a.plugin}) end,
   {description = 'Queue one envelope.'})
 
 -- speer.send_wait commits the send in its own transaction, then waits s seconds in the handler and

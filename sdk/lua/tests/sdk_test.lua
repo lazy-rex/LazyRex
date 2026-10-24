@@ -1279,7 +1279,7 @@ local ANY = {type = 'object', additionalProperties = true}
 app.db.migrate {'CREATE TABLE notes (text TEXT)'}
 peer = app.peer{failed = function(r) app.db.exec('INSERT INTO notes (text) VALUES (?)', 'failed ' .. r.hub .. ' ' .. r.key .. ' ' .. r.code .. ' ' .. tostring(r.message) .. ' ' .. type(r.at)) end}
 app.action('p.send', ANY, function(ctx, a)
-  local r = peer.send(a.hub, a.k, a.body)
+  local r = peer.send(a.hub, a.k, a.body, a.opts)
   if a.boom then error('after the send') end
   return r
 end)
@@ -1313,7 +1313,7 @@ test('peer.send: the call checks; a row is staged in the caller transaction and 
   expect({r.state, r.hub_seq, r.body, type(r.sent_at)}, 'sent: the seq, no body').to_equal({'sent', 1, nil, 'number'})
   -- The same key and body: the row's state; another body: operation_conflict at the call.
   expect(send({hub = 'linux', k = 'm1', body = {fyi = false, text = 'hi'}}).result).to_equal({key = 'm1', state = 'sent', hub_seq = 1})
-  expect(err({hub = 'linux', k = 'm1', body = {text = 'other'}})).to_be('operation_conflict: peer.send: the key m1 to linux has another body')
+  expect(err({hub = 'linux', k = 'm1', body = {text = 'other'}})).to_be('operation_conflict: peer.send: the key m1 to linux has another body or another target plugin')
   -- The same key to another hub is another row.
   expect(send({hub = 'mac', k = 'm1', body = {text = 'hi'}}).result.state).to_be('queued')
 end)
@@ -1482,7 +1482,7 @@ test('peer receive: one commit of the listener and its dedupe row; repeats, refu
   expect(inbox()).to_be(1)
   expect(deliver('m1', '{"text":"hi"}').result, 'a repeat').to_equal({})
   expect(inbox(), 'a repeat does not run the listener').to_be(1)
-  expect(deliver('m1', '{"text":"other"}').result).to_equal({refused = 'operation_conflict', message = 'The key m1 from linux came with another body'})
+  expect(deliver('m1', '{"text":"other"}').result).to_equal({refused = 'operation_conflict', message = 'The key m1 from p on linux came with another body'})
   -- A refusal rolls back the listener's writes and is stored: a repeat gets the same refusal.
   expect(deliver('m2', '{"text":"nobody"}').result).to_equal({refused = 'unknown_recipient', message = 'no agent bob here'})
   expect(inbox(), 'the refusal rolled back the write').to_be(1)
@@ -1503,6 +1503,144 @@ test('peer receive: one commit of the listener and its dedupe row; repeats, refu
   expect(s:call('peer.receive', {from_hub = 'Bad Hub', key = 'm7', body = '{}'}).result.refused).to_be('invalid_envelope')
   expect({inbox(), #rows(s, 'sdk_peer_seen')}).to_equal({1, 2})
   expect(deliver('m8', '{}', 7).error.code, 'only the hub calls it').to_be('refused')
+end)
+
+-- A receiver with app.peer "from" (lead-fedxp): from_src(from) is its main file; inbox keeps the
+-- key and msg.from_plugin of each committed envelope.
+local function from_src(from)
+  return [[app.db.migrate {'CREATE TABLE inbox (key TEXT, from_plugin TEXT)'}
+peer = app.peer{from = ]] .. from .. [[, receive = function(msg) app.db.exec('INSERT INTO inbox (key, from_plugin) VALUES (?, ?)', msg.key, msg.from_plugin) end}]]
+end
+local function from_deliver(s, from_plugin, key, body)
+  return s:call('peer.receive', {from_hub = 'linux', from_plugin = from_plugin, key = key, body = body or '{}'}).result
+end
+local function no_from(name) return {refused = 'not_allowed', message = 'This plugin takes no envelopes from the plugin ' .. name .. ' (app.peer "from")'} end
+
+test('peer from: the default takes only this plugin; not_allowed is stored; a change of "from" does not reopen a key', function()
+  local s = peer_plugin(from_src('nil'))
+  expect(from_deliver(s, nil, 'k1'), 'no from_plugin: this plugin').to_equal({})
+  expect(rows(s, 'inbox')[1].from_plugin, 'msg.from_plugin').to_be('p')
+  expect(from_deliver(s, 'p', 'k1'), 'the own name is the same envelope: a repeat').to_equal({})
+  expect(from_deliver(s, 'p', 'k1', '{"x":1}').refused, 'and the same dedupe row').to_be('operation_conflict')
+  -- Another plugin with the same key is another envelope: refused after the dedupe, and stored.
+  expect(from_deliver(s, 'messaging', 'k1')).to_equal(no_from('messaging'))
+  expect(from_deliver(s, 'messaging', 'k1'), 'the stored refusal').to_equal(no_from('messaging'))
+  expect(#rows(s, 'inbox'), 'the listener ran once').to_be(1)
+  local seen = {}
+  for _, r in ipairs(rows(s, 'sdk_peer_seen')) do seen[r.id] = (r.refused or 'ok') .. ' ' .. r.from_plugin end
+  expect(seen, 'one row per (hub, plugin, key)').to_equal({['5:linux1:p2:k1'] = 'ok p', ['5:linux9:messaging2:k1'] = 'not_allowed messaging'})
+  expect(from_deliver(s, 'Bad', 'k2')).to_equal({refused = 'invalid_envelope', message = 'from_plugin is not a plugin name'})
+  expect(from_deliver(s, 7, 'k2').refused).to_be('invalid_envelope')
+  expect(#rows(s, 'sdk_peer_seen'), 'an invalid envelope stores nothing').to_be(2)
+  -- The same database, started with from = '*': the refused key stays refused; a new key commits.
+  local w = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. from_src("'*'"), hub = {}})
+  w.sql.state.tables, w.sql.state.user_version = s.sql.state.tables, s.sql.state.user_version
+  w:start()
+  expect(from_deliver(w, 'messaging', 'k1'), 'a decision on a key stays').to_equal(no_from('messaging'))
+  expect(from_deliver(w, 'messaging', 'k3')).to_equal({})
+  expect(from_deliver(w, 'anything-else', 'k4')).to_equal({})
+  local got = {}
+  for _, r in ipairs(rows(w, 'inbox')) do got[#got + 1] = r.key .. ' ' .. r.from_plugin end
+  table.sort(got)
+  expect(got).to_equal({'k1 p', 'k3 messaging', 'k4 anything-else'})
+end)
+
+test('peer from: a list takes only its names (this plugin too only when listed); a bad "from" fails at load', function()
+  local s = peer_plugin(from_src("{'messaging', 'tunnels'}"))
+  expect(from_deliver(s, 'messaging', 'k1')).to_equal({})
+  expect(from_deliver(s, 'tunnels', 'k1')).to_equal({})
+  expect(from_deliver(s, nil, 'k1'), 'this plugin is not listed').to_equal(no_from('p'))
+  expect(from_deliver(s, 'telegram', 'k1')).to_equal(no_from('telegram'))
+  expect(#rows(s, 'inbox')).to_be(2)
+  for _, bad in ipairs({'{}', "'messaging'", "{'Messaging'}", "{x = 'messaging'}", "{'a', 7}", '1'}) do
+    local x = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.peer{from = ' .. bad .. '}'})
+    expect(x.loaded, bad).to_be(false)
+    expect(tostring(x.load_error), bad).to_match('app.peer: from must be "%*" or a list of plugin names')
+  end
+end)
+
+test('peer.send to another plugin: opts.plugin goes in the request; the key is one row per hub; the size counts it', function()
+  local s = peer_plugin(SEND)
+  local function send(a) return s:agent('p.send', a) end
+  local function err(a) local r = send(a); return r.error and (r.error.code .. ': ' .. r.error.message) end
+  expect(send({hub = 'linux', k = 't1', body = {x = 1}, opts = {plugin = 'messaging'}}).result).to_equal({key = 't1', state = 'queued'})
+  expect(rows(s, 'sdk_peer_outbox')[1].target).to_be('messaging')
+  s:tick()
+  expect(s.sent[1]).to_equal({hub = 'linux', key = 't1', body = '{"x":1}', plugin = 'messaging'})
+  expect(send({hub = 'linux', k = 't1', body = {x = 1}, opts = {plugin = 'messaging'}}).result, 'the same send').to_equal({key = 't1', state = 'sent', hub_seq = 1})
+  local conflict = 'operation_conflict: peer.send: the key t1 to linux has another body or another target plugin'
+  expect(err({hub = 'linux', k = 't1', body = {x = 1}}), 'the key to this plugin').to_be(conflict)
+  expect(err({hub = 'linux', k = 't1', body = {x = 1}, opts = {plugin = 'tunnels'}}), 'to a third plugin').to_be(conflict)
+  -- This plugin's own name is the default: no plugin in the request, target NULL.
+  expect(send({hub = 'linux', k = 't2', body = {}, opts = {plugin = 'p'}}).result.state).to_be('queued')
+  expect(send({hub = 'linux', k = 't2', body = {}}).result.state, 'the same row').to_be('queued')
+  s:tick()
+  expect(s.sent[2]).to_equal({hub = 'linux', key = 't2', body = '{}'})
+  expect(rows(s, 'sdk_peer_outbox')[2].target).to_be(nil)
+  expect(err({hub = 'linux', k = 't3', body = {}, opts = {plugin = 'Bad'}})).to_match('^invalid_input: peer.send: the plugin must be a plugin name')
+  expect(err({hub = 'linux', k = 't3', body = {}, opts = {plugni = 'messaging'}})).to_be('invalid_input: peer.send: unknown option plugni')
+  expect(err({hub = 'linux', k = 't3', body = {}, opts = 'messaging'})).to_be('invalid_input: peer.send: opts must be a table, not a string')
+  -- The size rule adds the target twice: "messaging" is 11 bytes, so the pad of the size test
+  -- (64474 with key fit) is 22 bytes less.
+  local function body(n) return {s = string.rep('x', n)} end
+  local fit = send({hub = 'linux', k = 'fit', body = body(64452), opts = {plugin = 'messaging'}})
+  expect(fit.result and fit.result.state, show(fit.error)).to_be('queued')
+  local big = send({hub = 'linux', k = 'fiu', body = body(64453), opts = {plugin = 'messaging'}})
+  expect(big.error and big.error.code).to_be('too_large')
+end)
+
+test('peer drain: the failed listener gets the target plugin of the row (nil: this plugin)', function()
+  local s = peer_plugin([[app.db.migrate {'CREATE TABLE notes (text TEXT)'}
+local ANY = {type = 'object', additionalProperties = true}
+peer = app.peer{failed = function(r) app.db.exec('INSERT INTO notes (text) VALUES (?)', r.key .. ' ' .. tostring(r.plugin)) end}
+app.action('p.send', ANY, function(ctx, a) return peer.send('mac', a.k, {}, a.opts) end)]], {answer = function() return nil, {code = 'unknown_hub', message = 'no mac'} end})
+  s:agent('p.send', {k = 'a', opts = {plugin = 'messaging'}})
+  s:agent('p.send', {k = 'b'})
+  s:tick()
+  local notes = {}
+  for _, r in ipairs(rows(s, 'notes')) do notes[#notes + 1] = r.text end
+  table.sort(notes)
+  expect(notes).to_equal({'a messaging', 'b nil'})
+end)
+
+test('peer schema 1 to 2: every seen row gets this plugin and the 3-part ID; a repeat stays a no-op; a queued row goes to this plugin', function()
+  -- The digest of a version 1 seen row is the digest of the text, as in version 2.
+  local first = peer_plugin(from_src('nil'))
+  from_deliver(first, nil, 'k0', '{"t":"hi"}')
+  local d = rows(first, 'sdk_peer_seen')[1].digest
+  local x_sent
+  local x = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. from_src('nil'), hub = {['hub.peer.send'] = function(a)
+    x_sent = a; return {seq = 4}
+  end}})
+  x.sql.state.tables.sdk_meta = {columns = {'part', 'version'}, rows = {{part = 'peer', version = 1}}, seq = 1}
+  local P = 'n, id, hub, key, digest, body, state, hub_seq, code, message, created, sent_at, failed_at'
+  local cols = {}
+  for c in P:gmatch('[%w_]+') do cols[#cols + 1] = c end
+  x.sql.state.tables.sdk_peer_outbox = {columns = cols, seq = 1, rows = {
+    {n = 1, id = '5:linux1:q', hub = 'linux', key = 'q', digest = 'x', body = '{}', state = 'queued', created = os.time()}}}
+  -- 1201 seen rows: more than two pages of the step.
+  local seen = {}
+  for i = 1, 1201 do
+    local key = 'k' .. i
+    seen[i] = {id = '5:linux' .. #key .. ':' .. key, from_hub = 'linux', key = key, digest = d, at = os.time()}
+  end
+  x.sql.state.tables.sdk_peer_seen = {columns = {'id', 'from_hub', 'key', 'digest', 'refused', 'message', 'at'}, seq = 1201, rows = seen}
+  x:start()
+  expect(x.exited, table.concat(x.printed, '\n')).to_be(nil)
+  expect(rows(x, 'sdk_meta')[1].version).to_be(2)
+  local n, wrong = 0, {}
+  for _, r in ipairs(x.sql.state.tables.sdk_peer_seen.rows) do
+    n = n + 1
+    if r.from_plugin ~= 'p' or r.id ~= '5:linux1:p' .. #r.key .. ':' .. r.key then wrong[#wrong + 1] = r.id end
+  end
+  expect({n, #wrong}, table.concat(wrong, ' ')).to_equal({1201, 0})
+  expect(from_deliver(x, nil, 'k7', '{"t":"hi"}'), 'a repeat of a version 1 envelope').to_equal({})
+  expect(from_deliver(x, 'p', 'k7', '{"t":"hi"}'), 'with the own name').to_equal({})
+  expect(#rows(x, 'inbox'), 'no listener run').to_be(0)
+  expect(from_deliver(x, nil, 'k7', '{"t":"other"}').refused, 'the digest stays').to_be('operation_conflict')
+  x:tick()
+  expect(x_sent, 'the queued row goes to this plugin').to_equal({hub = 'linux', key = 'q', body = '{}'})
+  expect(rows(x, 'sdk_peer_outbox')[1].target).to_be(nil)
 end)
 
 test('app.peer: one declaration; no receive, no keymap entry; app.on("peer.receive") is gone', function()
@@ -1556,14 +1694,14 @@ test('peer schema: the SDK tables come first, a newer peer schema fails the star
 peer = app.peer{}]])
   expect(s.sql.state.user_version, 'the base ran: the sdk_ tables are not plugin tables').to_be(2)
   local meta = rows(s, 'sdk_meta')
-  expect({meta[1].part, meta[1].version}).to_equal({'peer', 1})
+  expect({meta[1].part, meta[1].version}).to_equal({'peer', 2})
   -- A newer peer schema: the start fails.
   local newer = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\npeer = app.peer{}', hub = {}})
-  newer.sql.state.tables.sdk_meta = {columns = {'part', 'version'}, rows = {{part = 'peer', version = 2}}, seq = 1}
+  newer.sql.state.tables.sdk_meta = {columns = {'part', 'version'}, rows = {{part = 'peer', version = 3}}, seq = 1}
   newer:start()
   expect(newer.exited, 'the start fails').to_be(1)
   local said = false
-  for _, p in ipairs(newer.printed) do if p:find('The database has SDK peer schema 2; this SDK knows 1. Update the plugin or delete its database.', 1, true) then said = true end end
+  for _, p in ipairs(newer.printed) do if p:find('The database has SDK peer schema 3; this SDK knows 2. Update the plugin or delete its database.', 1, true) then said = true end end
   expect(said, table.concat(newer.printed, '\n')).to_be(true)
   -- A plugin migration that makes an sdk_ table fails the start.
   local own = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.db.migrate {"CREATE TABLE sdk_mine (x TEXT)"}'})
@@ -1596,14 +1734,14 @@ peer = app.peer{}]])
     {n = 3, id = 'old-failed', state = 'failed', created = 0, failed_at = T - 40 * 86400},
     {n = 4, id = 'old-queued', hub = 'mac', key = 'q', body = '{}', state = 'queued', created = T - 40 * 86400}}}
   old.sql.state.tables.sdk_peer_seen = {columns = {'id', 'from_hub', 'key', 'digest', 'refused', 'message', 'at'}, seq = 2, rows = {
-    {id = 'old-seen', at = T - 31 * 86400}, {id = 'new-seen', at = T - 1}}}
+    {id = '3:mac3:old', from_hub = 'mac', key = 'old', at = T - 31 * 86400}, {id = '3:mac3:new', from_hub = 'mac', key = 'new', at = T - 1}}}
   old:start()
   local ids = {}
   for _, r in ipairs(rows(old, 'sdk_peer_outbox')) do ids[#ids + 1] = r.id end
   expect(table.concat(ids, ' ')).to_be('new-sent old-failed old-queued')
   ids = {}
   for _, r in ipairs(old.sql.state.tables.sdk_peer_seen.rows) do ids[#ids + 1] = r.id end
-  expect(table.concat(ids, ' ')).to_be('old-seen new-seen')
+  expect(table.concat(ids, ' ')).to_be('3:mac1:p3:old 3:mac1:p3:new')
 end)
 
 test('peer drain at start: queued rows of an earlier run go after the start functions', function()
