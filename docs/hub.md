@@ -2390,9 +2390,17 @@ Each hub pulls from its peers. A hub never pushes data.
   the first `seq`. Another body is `operation_conflict`. Both rules stay after the peer acked the envelope:
   the ack keeps the row and clears only the body. Two sends of one key at the same time get one
   row. Other errors: `unknown_hub`, `too_large`, `not_plugin`.
-- **Size.** The hub measures the body JSON-encoded: a control character encodes to 6 bytes. The
-  send is also `too_large` when the envelope cannot fit alone in one pull reply. So each accepted
-  envelope can be delivered.
+- **Known limit: the outbox keeps every key.** The hub never deletes a `peer_outbox` row, so the
+  key rules above hold for ever. The table grows by one small row (key, body hash, `seq`) for each sent
+  envelope, with no bound (the hub lead, lead-sdkfed4). A bound must keep "a reused key is never
+  delivered twice", so it needs the receivers' dedupe to live as long; it is a later interface
+  choice. A deleted `hub.db` forgets every key: a key sent again after that is a new envelope.
+- **Size.** The hub measures the body as Go's `json.Marshal` of the string, quotes included; more
+  than 65536 bytes is `too_large`. Each character counts its UTF-8 bytes, except: `"` and `\` are
+  2; `\n`, `\r`, `\t`, `\b` and `\f` are 2; any other control character (below U+0020) is 6;
+  `<`, `>` and `&` are 6 (HTML escaping); U+2028 and U+2029 are 6; an invalid UTF-8 byte is 3 (it
+  becomes U+FFFD). The send is also `too_large` when the envelope cannot fit alone in one pull
+  reply. So each accepted envelope can be delivered.
 - **Seq.** `seq` is an AUTOINCREMENT key, so the hub never reuses a `seq`, also after a delete.
 - **Pull.** `after = N` acks every envelope up to `N`. The reply has the next envelopes: at most 100,
   and at most 1 MiB encoded (always at least one envelope). If the hub's Rex connection takes

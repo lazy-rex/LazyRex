@@ -480,6 +480,31 @@ func TestPeerSendSizes(t *testing.T) {
 	}
 }
 
+// TestPeerSendSizeMeasure: the body limit is Go's json.Marshal of the string, quotes included, at
+// most 65536 bytes (docs/hub.md, "Peer hubs", Size): & is 6 bytes, " and \ are 2, \n, \r and \t are 2,
+// another control character is 6, DEL is 1, U+2028 is 6.
+func TestPeerSendSizeMeasure(t *testing.T) {
+	a := peerHub(t, "a", "b", nil)
+	base := strings.Repeat("&", 10921) // 2 quotes + 65526
+	for i, c := range []struct {
+		body string
+		ok   bool
+	}{
+		{base + "\"\\" + "\n\r", true},            // 65536
+		{base + "\"\\" + "\n\r" + "a", false},     // 65537
+		{base + "\"\\" + "\x01", false},           // 65538
+		{base + "\u2028", true},                   // 65534
+		{base + "\u2028" + "\t", true},            // 65536
+		{base + "\u2028" + "\x7f\x7f", true},      // 65536: DEL is 1
+		{base + "\u2028" + "\x7f\x7f\x7f", false}, // 65537
+	} {
+		_, err := peerSendAs(a, "c-a", "b", fmt.Sprintf("m%d", i), c.body)
+		if c.ok && err != nil || !c.ok && errCode(err) != "too_large" {
+			t.Errorf("case %d (ok %v): %v", i, c.ok, err)
+		}
+	}
+}
+
 // TestPeerSendConcurrent: 32 sends of one key at the same time all get the first seq; with another
 // body, each send that does not insert gets operation_conflict.
 func TestPeerSendConcurrent(t *testing.T) {
