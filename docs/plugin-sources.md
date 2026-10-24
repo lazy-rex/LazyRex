@@ -739,7 +739,8 @@ managed file. The hub reads the managed file with the config.
 `<state>/plugins.json`.
 
 ```json
-{"plugins": [{"id": "<id>", "source": "<abs dir or github:...>", "args": {}, "watch_roots": [], "fetch": "peer"}]}
+{"plugins": [{"id": "<id>", "source": "<abs dir or github:...>", "args": {}, "watch_roots": []},
+             {"id": "<id>", "source": "github:...", "fetch": "peer"}]}
 ```
 
 - `id`: `[a-z0-9_-]{1,64}`, required. It is the manager's handle for the entry. It is not the
@@ -751,11 +752,13 @@ managed file. The hub reads the managed file with the config.
 - `fetch`: `"peer"`, `"github"` or absent (GitHub). `"peer"` takes the files of the entry's pin
   from the hub's `plugins_from` peer, not from GitHub (docs/hub.md, "Plugin sync", "Fetch from the
   peer"). Only a `github:` entry can have `"peer"` (`managed:<id>: fetch peer needs a GitHub
-  source`); another value is refused. `settings` sets `"peer"` only on a hub with a `plugins_from`
+  source`); a value other than these three is refused. `settings` sets `"peer"` only on a hub with a `plugins_from`
   peer. The manager writes the field only when it is `"peer"`, so a file with no peer entry is the
   same as before the field. Limits: a hand-written `"fetch": "github"` is valid, but the next
   write of the file drops it. A hub binary from before the field refuses a file with `fetch`
-  (unknown field), so before a rollback below it, set every entry to `"github"`.
+  (unknown field). So before a rollback below it, set every peer entry to `"github"` with
+  `settings` (the write drops the field), or delete the field from the file by hand. A hand edit
+  to `"fetch": "github"` keeps the field.
 - Unknown fields are refused. This rule also keeps the fields `user_messaging` and `prompts` out of
   the managed file: only the user's config can set them. They are hub config fields (docs/hub.md,
   "Agent prompts and acting as the user").
