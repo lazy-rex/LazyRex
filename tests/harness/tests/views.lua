@@ -297,3 +297,42 @@ test('a palette run is refused: unknown command, another or no client, no sessio
   expect(open_ids(), 'no view opened').to_equal(before)
   close_session(s)
 end)
+
+-- hub.ui.blocks (lead-uiblocks): the panes that the hub owns as views, of every plugin, through
+-- real Rex: a tab, a panel of the home plugin and a form are listed with their kind; a closed form
+-- is not.
+test('hub.ui.blocks lists the tab, panel and form panes, and no closed view', function()
+  local alice = agent('alice')
+  local function blocks()
+    local r = alice:call('fix.hub', {action = 'hub.ui.blocks'})
+    if r.error then error(r.error.code .. ': ' .. r.error.message, 0) end
+    local by = {}
+    for _, b in ipairs(r.result.blocks) do by[b.block_id] = b end
+    return by
+  end
+  local home = user:open('home')
+  home:render()
+  local panel = user:panel('agents', {plugin = 'lazyrex'})
+  expect(home:action('open_form', 'open', {}).effects).to_be('done')
+  local form = user:view('/forms/fix')
+  form:render()
+  local by = blocks()
+  for _, c in ipairs({{home, 'tab', 'harnessfix'}, {panel, 'panel', 'lazyrex'}, {form, 'form', 'harnessfix'}}) do
+    local v, kind, plugin = c[1], c[2], c[3]
+    local b = by[v.block]
+    expect(b ~= nil, kind .. ' pane ' .. tostring(v.block) .. ' is listed').to_be(true)
+    expect(b.kind, kind .. ' kind').to_be(kind)
+    expect(b.plugin, kind .. ' plugin').to_be(plugin)
+    expect(b.route, kind .. ' route').to_be(v.route)
+    expect(b.session_id, kind .. ' session').to_be(v.session)
+    expect(b.window_id:match('^window:') ~= nil, kind .. ' window ' .. tostring(b.window_id)).to_be(true)
+  end
+  expect(form:action('form', 'submit', {values = {value = 'blocks'}}).status).to_be('succeeded')
+  wait('the form view to close', function()
+    for _, w in ipairs(views()) do if w.view_id == form.id and w.status ~= 'closed' then return false end end
+    return true
+  end)
+  by = blocks()
+  expect(by[form.block] == nil, 'the closed form is not listed').to_be(true)
+  expect(by[home.block] ~= nil and by[panel.block] ~= nil, 'the tab and the panel stay listed').to_be(true)
+end)

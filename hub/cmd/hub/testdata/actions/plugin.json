@@ -99,6 +99,17 @@
   "title": "hub.ui.describe"
  },
  {
+  "args": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "description": "List the panes that the hub owns as views, of every plugin: each view that is not closed and has a block, as {block_id, session_id, window_id, plugin, route, kind}, where kind is tab, panel or form.",
+  "kind": "client",
+  "name": "hub.ui.blocks",
+  "title": "Hub view panes"
+ },
+ {
   "kind": "client",
   "name": "hub.view.attach",
   "title": "hub.view.attach"

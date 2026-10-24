@@ -57,6 +57,7 @@
  "hub.sql.replay",
  "hub.sql.rollback",
  "hub.stop",
+ "hub.ui.blocks",
  "hub.ui.describe",
  "hub.ui.invalidate",
  "hub.ui.navigate",

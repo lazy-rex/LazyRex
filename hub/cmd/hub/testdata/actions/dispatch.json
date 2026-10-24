@@ -728,6 +728,14 @@
   "plugin": "error: unknown action hub.test.views",
   "plugin/test": "ok"
  },
+ "hub.ui.blocks": {
+  "pane": "error: only a registered plugin instance may call hub.ui.blocks",
+  "pane/test": "error: only a registered plugin instance may call hub.ui.blocks",
+  "plain": "error: only a registered plugin instance may call hub.ui.blocks",
+  "plain/test": "error: only a registered plugin instance may call hub.ui.blocks",
+  "plugin": "ok",
+  "plugin/test": "ok"
+ },
  "hub.ui.describe": {
   "pane": "ok",
   "pane/test": "ok",

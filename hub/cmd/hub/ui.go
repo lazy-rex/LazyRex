@@ -1703,6 +1703,46 @@ func (h *Hub) uiDescribe(ctx context.Context, args map[string]any) (any, error) 
 	return out, nil
 }
 
+// uiBlocks is hub.ui.blocks (lead-uiblocks): every view of every plugin that is not closed and has
+// a block, with its kind: a form view whose context has panel: true is a panel, another form view
+// is a form, and every other view is a tab. A form keeps its window in its context. Sessions
+// leaves these panes out of a snapshot.
+func (h *Hub) uiBlocks(ctx context.Context) (any, error) {
+	rows, err := h.db.QueryContext(ctx, `SELECT block_id, session_id, window_id, plugin, route, tab, context FROM views
+		WHERE status != 'closed' AND block_id != '' ORDER BY plugin, view_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	blocks := []any{}
+	for rows.Next() {
+		var block, sess, win, plugin, route, tab, raw string
+		if err := rows.Scan(&block, &sess, &win, &plugin, &route, &tab, &raw); err != nil {
+			return nil, err
+		}
+		kind := "tab"
+		if tab == formTab {
+			var fc struct {
+				Window string `json:"window_id"`
+				Panel  bool   `json:"panel"`
+			}
+			json.Unmarshal([]byte(raw), &fc)
+			kind = "form"
+			if fc.Panel {
+				kind = "panel"
+			}
+			if win == "" {
+				win = fc.Window
+			}
+		}
+		blocks = append(blocks, map[string]any{"block_id": block, "session_id": sess, "window_id": win, "plugin": plugin, "route": route, "kind": kind})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return map[string]any{"blocks": blocks}, nil
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""

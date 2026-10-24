@@ -122,6 +122,11 @@ func init() {
 		{name: "hub.ui.describe", plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
 			return h.uiDescribe(ctx, c.args)
 		}},
+		{name: "hub.ui.blocks", caller: callerPlugin, plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
+			return h.uiBlocks(ctx)
+		}, desc: map[string]any{"name": "hub.ui.blocks", "kind": "client", "title": "Hub view panes",
+			"description": "List the panes that the hub owns as views, of every plugin: each view that is not closed and has a block, as {block_id, session_id, window_id, plugin, route, kind}, where kind is tab, panel or form.",
+			"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}},
 		{name: "hub.view.attach", plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
 			return h.viewAttach(ctx, c.p, c.args)
 		}},
