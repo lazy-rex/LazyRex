@@ -102,7 +102,7 @@ only up to 2^53 (observed on Rex 0.0.1792158932-g88fd41: Lua 5.1, doubles). So:
   `DATETIME` or `TIMESTAMP`. The driver turns the TEXT of such a column into a Go time and loses the
   text (modernc.org/sqlite v1.61.0, rows.go). Declare a time as TEXT or INTEGER.
 
-Facts from the policy prototype (modernc.org/sqlite v1.61.0): DDL reports SQLite's own
+Facts (modernc.org/sqlite v1.61.0): DDL reports SQLite's own
 `sqlite_master` actions to the authorizer, some before the CREATE action, so the policy cannot
 refuse them; defensive mode refuses a direct write to `sqlite_master`. A view body is not
 authorized at CREATE.
