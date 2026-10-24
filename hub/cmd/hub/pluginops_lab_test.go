@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Lab tests of the plugin manager's ops (pluginops.go). Lab only: HARNESS_LAB=1.
+// Lab tests of the plugin manager's ops (pluginops.go). Lab only: LAZYREX_LAB=1.
 
 // opsAgent opens a test agent pane (lazyrex-hub testagent) that reports the identity "claude:<id>",
 // and returns its helper client. The hub sees the pane's real ancestry for its calls.

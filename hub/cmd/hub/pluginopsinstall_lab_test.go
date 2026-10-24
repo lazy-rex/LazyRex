@@ -13,9 +13,7 @@ import (
 // url.insteadOf in the lab's own git config: no network. An offline name points to no repository.
 func installLab(t *testing.T, repos map[string]*testRepo, offline ...string) *startLab {
 	t.Helper()
-	if os.Getenv("HARNESS_LAB") == "" {
-		t.Skip("lab test: set HARNESS_LAB=1")
-	}
+	needLab(t)
 	s := startLabWith(t, nil, false, map[string]string{"GIT_CONFIG_GLOBAL": "${LAB}/gitconfig", "GIT_CONFIG_NOSYSTEM": "1"})
 	text := ""
 	for name, r := range repos {
@@ -67,7 +65,7 @@ func labEntry(s *startLab, id string) map[string]any {
 
 // A fresh hub (lead-c2i3 b): the managed file lists a, which depends on b, before b, and neither
 // has a lock entry or a cache. ONE hub start installs both (origin hub start, each at its ref)
-// and runs both, with no reload. Lab only: HARNESS_LAB=1.
+// and runs both, with no reload. Lab only: LAZYREX_LAB=1.
 func TestPluginInstallFreshLab(t *testing.T) {
 	gitTestEnv(t)
 	ra, ca := labPluginRepo(t, "a", "b")
@@ -94,7 +92,7 @@ func TestPluginInstallFreshLab(t *testing.T) {
 }
 
 // b's install fails (its repository is offline): b's row reports "install failed: <op error>",
-// and a, which depends on b, does not run (lead-c2i3 c). Lab only: HARNESS_LAB=1.
+// and a, which depends on b, does not run (lead-c2i3 c). Lab only: LAZYREX_LAB=1.
 func TestPluginInstallOfflineLab(t *testing.T) {
 	gitTestEnv(t)
 	ra, _ := labPluginRepo(t, "a", "b")
@@ -131,7 +129,7 @@ func TestPluginInstallOfflineLab(t *testing.T) {
 
 // A lock entry with a cleared cache (lead-c2inst; lead-c2i3 a): the hub restarts after main moved
 // ahead in the repository. The install fetches the LOCKED commit, not the tip; a disabled entry
-// gets its cache back and stays desired stopped and not running. Lab only: HARNESS_LAB=1.
+// gets its cache back and stays desired stopped and not running. Lab only: LAZYREX_LAB=1.
 func TestPluginInstallCacheLab(t *testing.T) {
 	gitTestEnv(t)
 	rn, cn := labPluginRepo(t, "n")

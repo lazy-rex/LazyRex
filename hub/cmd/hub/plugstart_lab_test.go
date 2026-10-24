@@ -15,7 +15,7 @@ import (
 // Lab tests of the one start path (docs/plugin-sources.md, section 7): the start check at each
 // attempt, the refused and retained states, the repair entry point and unresolved spawn intents.
 // Each test starts its own lab server and a -test hub with plugins from temporary source
-// directories. Lab only: HARNESS_LAB=1.
+// directories. Lab only: LAZYREX_LAB=1.
 
 // startFixture is a plugin that registers, and ends its process with status 1 on fix.exit. With
 // the entry arg gate=1 it sets its label first and registers only on fix.register: a test decides

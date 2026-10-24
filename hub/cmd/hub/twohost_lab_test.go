@@ -24,9 +24,9 @@ func longWait(t *testing.T, what string, d time.Duration, ok func() bool) {
 
 // TestTwoHostLab is the two-host federation check (lead-2host): one lab hub on each of two hosts,
 // each the other's peer, with the real Messaging plugin. Not part of the main lab: it skips unless
-// HARNESS_LAB=1 and the four variables below are set. Run one side on each host, b first:
+// LAZYREX_LAB=1 and the four variables below are set. Run one side on each host, b first:
 //
-//	HARNESS_LAB=1 TWOHOST_ROLE=b TWOHOST_LISTEN=http://<this host's tailnet IP>:<port> \
+//	LAZYREX_LAB=1 TWOHOST_ROLE=b TWOHOST_LISTEN=http://<this host's tailnet IP>:<port> \
 //	  TWOHOST_PEER=http://<the other host's tailnet IP>:<port> MESSAGING_DIR=<Messaging checkout> \
 //	  go test -count=1 -v -run '^TestTwoHostLab$' ./cmd/hub
 //

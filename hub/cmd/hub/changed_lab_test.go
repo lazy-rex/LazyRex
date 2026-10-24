@@ -10,7 +10,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// A lab test of hub.changed coalescing through a real Rex server (rexLab: HARNESS_LAB=1).
+// A lab test of hub.changed coalescing through a real Rex server (rexLab: LAZYREX_LAB=1).
 
 // A slow plugin client and a burst of 50 changes of one kind: the plugin gets the first delivery
 // and one more, not 50 (which filled Rex's 16-request queue of the client before the fix).

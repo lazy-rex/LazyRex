@@ -15,7 +15,7 @@ import (
 )
 
 // lazyrex-hub restart with the real binary, a real wrapper and its own lab server (docs/hub.md,
-// "Restart"). Lab only: SHUTDOWN_LAB=1. The wrapper starts through a link, as a release does:
+// "Restart"). Lab only: LAZYREX_LAB=1. The wrapper starts through a link, as a release does:
 //  1. -expect-exec 1 at exec 0: exit 1, nothing sent; the same hub runs.
 //  2. The link moves to another copy; restart -expect-exec 0: exit 0. The hub exited 4, the same
 //     wrapper process execed itself, and a new hub process runs the new copy at exec 1.
@@ -30,9 +30,7 @@ import (
 // starts after a crash of its child (the old binary too). The new hub reports the new copy's
 // paths, and so does the old version after the failed exec.
 func TestRestartCommandLab(t *testing.T) {
-	if os.Getenv("SHUTDOWN_LAB") != "1" {
-		t.Skip("set SHUTDOWN_LAB=1 to run the restart command lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

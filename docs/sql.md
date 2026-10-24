@@ -188,7 +188,7 @@ Unit (`go test ./cmd/hub -run TestSQL`, also `-race`): values and tags, refusals
 time types, isolation and commit, waiting calls, idle and total limits, busy, stale instance and the
 fence, saved replies, batches, paging, notices (outbox, retry, receipts).
 
-Lab (`HARNESS_LAB=1 go test ./cmd/hub -run TestSQLWireLab`): a Rex Lua plugin; NULL in the middle and
+Lab (`LAZYREX_LAB=1 go test ./cmd/hub -run TestSQLWireLab`): a Rex Lua plugin; NULL in the middle and
 at the end of a row, a large integer, a handler transaction, `hub.test.sql`, the commit faults.
 
 Harness (docs/testing.md): `sql()`, `sql_write()`, `inject{match = {sql_commit_writes = t}}`.

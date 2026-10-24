@@ -103,11 +103,10 @@ func sdkFit(t *testing.T, unit, hub, k string) string {
 //     goes, and b's listener commits it once.
 //   - Hub a dies after it took a row and before b pulled it: after both start, b's listener commits
 //     it once.
+//
 // Then both outboxes are empty. b's lab server listens on TCP, as in TestPeerHubsLab.
 func TestPeerSDKLab(t *testing.T) {
-	if os.Getenv("HARNESS_LAB") == "" {
-		t.Skip("lab test: set HARNESS_LAB=1")
-	}
+	needLab(t)
 	_, root := harnessBinary(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
