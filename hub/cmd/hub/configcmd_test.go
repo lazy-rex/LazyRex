@@ -64,12 +64,20 @@ func TestConfigCmdRecords(t *testing.T) {
 func TestConfigCmdEscapes(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "hub.json")
-	if err := os.WriteFile(cfg, []byte(`{"server":"unix:///lab/rex.sock","state":"/tmp/rexlab-test"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	code, out, errOut := runConfigCmd(t, cfg)
-	if code != 0 || !strings.Contains(out, "state\t/tmp/rexlab-test\n") || strings.Contains(out, "view\t") {
-		t.Fatalf("exit %d, stdout:\n%s\nstderr: %q", code, out, errOut)
+	for _, body := range []string{
+		`{"server":"unix:///lab/rex.sock","state":"/tmp/rexlab-\u0074est"}`, // a Unicode escape in a value
+		`{"server":"unix:///lab/rex.sock","st\u0061te":"/tmp/rexlab-test"}`, // an escaped key
+	} {
+		if !strings.Contains(body, `\u00`) {
+			t.Fatalf("the case %s has no escape", body)
+		}
+		if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut := runConfigCmd(t, cfg)
+		if code != 0 || !strings.Contains(out, "state\t/tmp/rexlab-test\n") || strings.Contains(out, "view\t") {
+			t.Errorf("%s: exit %d, stdout:\n%s\nstderr: %q", body, code, out, errOut)
+		}
 	}
 }
 
