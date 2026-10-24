@@ -25,7 +25,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if *id == "" || flag.NArg() != 2 {
-		fmt.Fprintln(os.Stderr, "Usage: lazyrex-view -view-id <id> [-server unix://...] [-real-server] <plugin> <route>")
+		fmt.Fprintln(os.Stderr, "Usage: lazyrex-view -view-id <id> -server unix://... [-real-server] <plugin> <route>")
 		os.Exit(2)
 	}
 	if os.Getenv("REX_SESSION") == "" || os.Getenv("REX_BLOCK") == "" {

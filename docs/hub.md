@@ -29,7 +29,7 @@ Custom renderers use the same interface. Renderers never change Rex layout.
 
 ### Transport and admission
 
-Launch: `lazyrex-view -view-id <id> -server <endpoint> [-real-server] <plugin> <route>`. `-server` is the hub's own endpoint (`server` of hub.json, as loaded). A Linux Rex pane has no `REX_SERVER`, and the renderer never guesses a socket: without `-server` it takes `REX_SERVER` (a renderer that an older hub started, after a reload), with neither it refuses, and a `-server` and a `REX_SERVER` that name different sockets refuse. This argv is an interface between two binaries of one release: an older renderer refuses `-server`, so the hub and the renderer ship together.
+Launch: `lazyrex-view -view-id <id> -server <endpoint> [-real-server] <plugin> <route>`. `-server` is the hub's own endpoint (`server` of hub.json, as loaded). A Linux Rex pane has no `REX_SERVER`, and the renderer never guesses a socket: without `-server` it refuses, also when the pane has a `REX_SERVER`, and a `-server` and a `REX_SERVER` that name different sockets refuse. This argv is an interface between two binaries of one release: an older renderer refuses `-server`, so the hub and the renderer ship together.
 The hub passes the view ID and its endpoint (`-server`) as arguments.
 The lab launcher sets `REX_SERVER` before it starts Rex.
 `route` is the canonical path, for example `/thread/42`; `plugin` is `messaging`.
