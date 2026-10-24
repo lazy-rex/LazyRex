@@ -51,6 +51,9 @@ test('peer_wait fails at once on a failed row, with its code', function()
   expect(os.time() - t0 < 15, 'before the timeout').to_be(true)
   local row = sql('SELECT state, code FROM sdk_peer_outbox WHERE key = ?', {'lost'})[1]
   expect({row.state, row.code}).to_equal({'failed', 'unknown_hub'})
+  -- A hub that is not a peer raises at the call, not after the timeout (claude-42 L1).
+  local ok, e = pcall(H.peer_wait, 'speer', 'nobody', 'taken', 30)
+  expect(not ok and tostring(e):find('no peer nobody', 1, true) ~= nil, tostring(e)).to_be(true)
 end)
 
 test('a backlog over one SQL reply drains in row order, and status counts it', function()
@@ -106,7 +109,7 @@ test('a body at the SDK size limit reaches the hub whole; one byte more is too_l
     local k = 'size-' .. i
     local s = fit(unit, k)
     alice:call('speer.send', {hub = 'away', k = k, text = s})
-    expect_error(function() alice:call('speer.send', {hub = 'away', k = k .. 'x', text = s .. 'a'}) end, 'too_large')
+    expect_error(function() alice:call('speer.send', {hub = 'away', k = k, text = s .. 'a'}) end, 'too_large')
     H.peer_wait('speer', 'away', 'taken', 30)
     local env
     for _, e in ipairs(pull(0)) do if e.key == k then env = e end end

@@ -345,10 +345,17 @@ function H.peer_status() return hub('hub.peer.status', {}) end
 --     ANY plugin. An ack does not prove that the listener ran: a receiver with the plugin absent or
 --     stopped acks and drops it. A test that needs the listener's effect reads the receiver's
 --     database after the wait.
--- A row that becomes failed raises at once with its code and message. It returns the row count.
+-- A row that becomes failed raises at once with its code and message. A hub_name that is not a
+-- peer in hub.peer.status raises at the call. Both stages together take at most timeout (default
+-- 10 s). It returns the row count.
 function H.peer_wait(plugin, hub_name, stage, timeout)
   if stage ~= 'taken' and stage ~= 'acked' then error('peer_wait: stage must be taken or acked', 2) end
   plugin = plugin or A.plugin
+  local function peer_row()
+    for _, p in ipairs(H.peer_status().peers or {}) do if p.name == hub_name then return p end end
+  end
+  if not peer_row() then error('peer_wait: no peer ' .. tostring(hub_name) .. ' in hub.peer.status', 2) end
+  local deadline = os.time() + (timeout or 10)
   local q = 'SELECT n, key, state, code, message FROM sdk_peer_outbox WHERE hub = ? AND state = ?'
   local want = {}
   local count = 0
@@ -369,15 +376,13 @@ function H.peer_wait(plugin, hub_name, stage, timeout)
     error(setmetatable({code = 'peer_failed', message = 'peer_wait: the row ' .. tostring(r.key) .. ' to ' .. hub_name
       .. ' failed: ' .. tostring(r.code) .. ': ' .. tostring(r.message)}, Err), 2)
   end
-  local r = wait('the SDK rows of ' .. plugin .. ' to ' .. hub_name .. ' to be taken', check, timeout)
+  local r = wait('the SDK rows of ' .. plugin .. ' to ' .. hub_name .. ' to be taken', check, deadline - os.time())
   if r.failed then raise_failed(r.failed) end
   if stage == 'acked' then
     wait('the peer ' .. hub_name .. ' to ack every envelope', function()
-      for _, p in ipairs(H.peer_status().peers or {}) do
-        if p.name == hub_name then return p.outbox == 0 end
-      end
-      error('peer_wait: no peer ' .. hub_name .. ' in hub.peer.status', 0)
-    end, timeout)
+      local p = peer_row()
+      return p and p.outbox == 0
+    end, math.max(deadline - os.time(), 0))
   end
   return count
 end

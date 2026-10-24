@@ -146,7 +146,7 @@ func TestPeerSDKLab(t *testing.T) {
 		if r, err := send(k, s); err != nil || r["state"] != "queued" {
 			t.Fatalf("send %s at the limit (%d bytes): %v, %v", k, len(s), r, err)
 		}
-		if _, err := send(k+"x", s+"a"); err == nil || !strings.Contains(err.Error(), "too_large") {
+		if _, err := send(k, s+"a"); err == nil || !strings.Contains(err.Error(), "too_large") {
 			t.Fatalf("send %s one byte over the limit: %v, want too_large", k, err)
 		}
 		once(k, s)
