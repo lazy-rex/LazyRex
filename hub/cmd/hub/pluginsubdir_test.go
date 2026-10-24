@@ -93,7 +93,7 @@ func TestSubdirSync(t *testing.T) {
 		}
 	}
 	e := githubEntry(t, srcHome)
-	dir, commit, err := lockedDir(cfg, env.state, env.lock(), e)
+	dir, commit, err := lockedDir(env.state, env.lock(), e)
 	if err != nil || commit != head {
 		t.Fatalf("lockedDir: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestSubdirSync(t *testing.T) {
 	}
 	// A change outside the subdir changes the entry.
 	writeInto(entry, "lib/shared.lua", "changed")
-	if _, _, err := lockedDir(cfg, env.state, env.lock(), e); err == nil || !strings.Contains(err.Error(), "changed (digest mismatch)") {
+	if _, _, err := lockedDir(env.state, env.lock(), e); err == nil || !strings.Contains(err.Error(), "changed (digest mismatch)") {
 		t.Fatalf("a change outside the subdir: %v", err)
 	}
 }
@@ -173,47 +173,13 @@ func TestSubdirAgreement(t *testing.T) {
 	}
 	l := env.lock()
 	l.Plugins[srcHome].Subdir = "plugins/other"
-	_, _, err := lockedDir(cfg, env.state, l, githubEntry(t, srcHome))
-	if err == nil || err.Error() != "the lock entry for "+srcHome+" does not match: subdir; run lazyrex-hub plugin sync -config "+cfg {
+	_, _, err := lockedDir(env.state, l, githubEntry(t, srcHome))
+	if err == nil || err.Error() != "the lock entry for "+srcHome+" does not match: subdir; update the plugin in LazyRex: Plugins…" {
 		t.Fatalf("got %v", err)
 	}
 	r := githubEntry(t, "github:lazy-rex/Messaging@main").githubRef()
 	if f := goodLockEntry().agree(r); f != "" {
 		t.Fatalf("a root source: %q", f)
-	}
-}
-
-// sync repairs an empty, missing or null subdir of a non-root source at the locked commit, also
-// after the branch moved.
-func TestSubdirRepair(t *testing.T) {
-	for _, mode := range []string{"empty", "missing", "null"} {
-		env := newCmdEnv(t)
-		r := env.homeRepo()
-		cfg := env.config(srcHome)
-		if err := env.sync(cfg); err != nil {
-			t.Fatal(err)
-		}
-		good := env.lock().Plugins[srcHome]
-		var fields map[string]any
-		raw, _ := json.Marshal(good)
-		json.Unmarshal(raw, &fields)
-		switch mode {
-		case "empty":
-			fields["subdir"] = ""
-		case "missing":
-			delete(fields, "subdir")
-		default:
-			fields["subdir"] = nil
-		}
-		env.writeLockRaw(map[string]any{"version": 1, "plugins": map[string]any{srcHome: fields}})
-		r.commit(map[string]string{"plugins/lazyrex/main.lua": "moved"})
-		if err := env.sync(cfg); err != nil {
-			t.Fatalf("%s: %v", mode, err)
-		}
-		le := env.lock().Plugins[srcHome]
-		if le.lockPin != good.lockPin {
-			t.Fatalf("%s: %+v, want %+v", mode, le.lockPin, good.lockPin)
-		}
 	}
 }
 
@@ -248,7 +214,7 @@ func TestSubdirCannotRead(t *testing.T) {
 	plug := filepath.Join(entry, "plugins")
 	os.Chmod(plug, 0o000)
 	t.Cleanup(func() { os.Chmod(plug, 0o555) })
-	_, _, err := lockedDir(cfg, env.state, env.lock(), githubEntry(t, srcHome))
+	_, _, err := lockedDir(env.state, env.lock(), githubEntry(t, srcHome))
 	abs, _ := filepath.Abs(entry)
 	if err == nil || !strings.HasPrefix(err.Error(), "plugin lazyrex: cannot read the cache entry "+abs+": ") || strings.Contains(err.Error(), "sync") {
 		t.Fatalf("got %v", err)

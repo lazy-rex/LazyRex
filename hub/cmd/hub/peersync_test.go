@@ -179,7 +179,7 @@ func peerSyncLink(t *testing.T, a, b *Hub) {
 }
 
 // peerSourceHub is the source hub of a sync: a managed entry notes at src, fetched and locked, and
-// the config file that lazyrex-hub plugin export reads.
+// the config file that pluginExport reads.
 func peerSourceHub(t *testing.T, r *testRepo, src string) *Hub {
 	t.Helper()
 	a := fetchTestHub(t, r)

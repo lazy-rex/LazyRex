@@ -125,7 +125,7 @@ func TestPluginInstallNoLock(t *testing.T) {
 	if le == nil || le.Commit != commit {
 		t.Fatalf("the lock entry: %+v", le)
 	}
-	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, readTestLock(t, h), &configEntry{Source: "github:acme/notes@v1.0.0", github: true, owner: "acme", repo: "notes", gitRef: "v1.0.0"}); err != nil {
+	if _, _, err := lockedDir(h.cfg.State, readTestLock(t, h), &configEntry{Source: "github:acme/notes@v1.0.0", github: true, owner: "acme", repo: "notes", gitRef: "v1.0.0"}); err != nil {
 		t.Fatalf("the cache entry: %v", err)
 	}
 	starts.want(t, 1)

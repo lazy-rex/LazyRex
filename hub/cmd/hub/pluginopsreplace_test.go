@@ -375,8 +375,8 @@ func TestPluginOpUpdateCaseB(t *testing.T) {
 	if le := lock.Plugins[target]; le == nil || le.Commit != p.Commit || le.RefKind != "tag" || le.Ref != "v1.0.0" || lock.Plugins[latest] != nil {
 		t.Fatalf("the lock: %+v", lock.Plugins)
 	}
-	// Unpinning removed the @latest key that the update stopped naming, so status has no orphan.
-	if lockOld(t, h, op.ID)["outcome"] != "removed" || !statusOK(t, h) {
+	// Unpinning removed the @latest key that the update stopped naming.
+	if lockOld(t, h, op.ID)["outcome"] != "removed" {
 		t.Fatalf("unpinning: %v", lockOld(t, h, op.ID))
 	}
 	if managedSource(t, h, "notes") != target {

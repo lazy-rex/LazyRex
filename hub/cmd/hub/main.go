@@ -289,6 +289,11 @@ func loadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	// A relative state is relative to the working directory at the load. The hub keeps it
+	// absolute: the plugin manager's git children run in directories under it.
+	if c.State, err = filepath.Abs(c.State); err != nil {
+		return c, err
+	}
 	entries, err := parseEntries(filepath.Dir(abs), c.Entries)
 	if err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)

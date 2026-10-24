@@ -202,7 +202,7 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 	if op.Pin != "" {
 		var le lockEntry
 		if json.Unmarshal([]byte(op.Pin), &le) == nil {
-			if _, _, err := lockedDir(h.cfg.path, h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: &le}}, e); err == nil {
+			if _, _, err := lockedDir(h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: &le}}, e); err == nil {
 				return h.setOpPhase(ctx, op, op.nextPhase("fetching"), fmt.Sprintf("fetched %s %s", le.Name, le.Commit), "")
 			}
 		}
@@ -258,7 +258,7 @@ func (h *Hub) lockedTarget(t opResolved, e *configEntry) *lockEntry {
 	if le == nil || le.Commit != t.Commit || le.RefKind != t.RefKind || le.Tag != t.Tag || (t.Digest != "" && le.Digest != t.Digest) {
 		return nil
 	}
-	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: le}}, e); err != nil {
+	if _, _, err := lockedDir(h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: le}}, e); err != nil {
 		return nil
 	}
 	return le

@@ -461,7 +461,7 @@ func TestPluginOpLockRetainedDir(t *testing.T) {
 			attempts := len(lockProofs(t, h, op.ID))
 			e := &configEntry{Source: "github:acme/notes@v1.0.0"}
 			e.checkSource("")
-			if _, _, err := lockedDir(h.cfg.path, h.cfg.State, readTestLock(t, h), e); err != nil {
+			if _, _, err := lockedDir(h.cfg.State, readTestLock(t, h), e); err != nil {
 				t.Fatalf("the lock entry does not verify: %v", err)
 			}
 			switch c {

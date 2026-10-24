@@ -16,7 +16,7 @@ import (
 // read or a reply without the list is unknown, never "no refusals". Text from the hub reaches a
 // terminal, so control characters become "?".
 func TestPluginRefusalLines(t *testing.T) {
-	notInstalled := "plugin github:lazy-rex/Messaging@v0.1.2 is not installed: run lazyrex-hub plugin sync -config /h/hub.json"
+	notInstalled := "plugin github:lazy-rex/Messaging@v0.1.2 is not installed: the hub installs it at its next start or reload"
 	for _, c := range []struct {
 		name  string
 		reply string

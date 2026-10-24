@@ -212,9 +212,10 @@ func removeTree(dir string) {
 	os.RemoveAll(dir)
 }
 
-// cacheStateError is a lockedDir error about the cache entry: state is "missing" or "changed" (the
-// states of plugin status). The text is the final text of section 8.
-type cacheStateError struct{ state, text string }
+// cacheStateError is a lockedDir error about the cache entry: it is missing or it changed. The
+// install op fetches the locked commit again (installRequests). The text is the final text of
+// section 8.
+type cacheStateError struct{ text string }
 
 func (e *cacheStateError) Error() string { return e.text }
 
@@ -223,21 +224,17 @@ func (e *cacheStateError) Error() string { return e.text }
 // digest (section 4) and the manifest name. It returns the absolute plugin directory (the cache
 // entry, or <entry>/<subdir> for a source with a subdir) and the locked commit. It only reads
 // files, and never the lock file: lock is the caller's snapshot.
-// cfgPath is the config as the commands name it in the texts.
-func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir, commit string, err error) {
+func lockedDir(stateDir string, lock *pluginLock, e *configEntry) (dir, commit string, err error) {
 	le := lock.Plugins[e.Source]
 	if le == nil {
-		return "", "", fmt.Errorf("plugin %s is not installed: run lazyrex-hub plugin sync -config %s", e.Source, cfgPath)
+		return "", "", fmt.Errorf("plugin %s is not installed: the hub installs it at its next start or reload", e.Source)
 	}
 	if !e.github {
 		return "", "", fmt.Errorf("plugin %s: not a GitHub source", e.Source)
 	}
 	r := e.githubRef()
-	if le.legacyLatest(r) {
-		return "", "", fmt.Errorf("plugin %s: %w", e.Source, legacyLatestError(cfgPath, e.Source, le))
-	}
 	if field := le.agree(r); field != "" {
-		return "", "", lockMismatch(cfgPath, e.Source, le, r, field)
+		return "", "", lockMismatch(e.Source, le, r, field)
 	}
 	dir, err = filepath.Abs(filepath.Join(stateDir, "plugins", filepath.FromSlash(le.Dir)))
 	if err != nil {
@@ -245,9 +242,9 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
 	}
 	fi, err := os.Lstat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", "", &cacheStateError{"missing", fmt.Sprintf("plugin %s: the cache has no entry for commit %s: run lazyrex-hub plugin sync -config %s", le.Name, le.Commit, cfgPath)}
+		return "", "", &cacheStateError{fmt.Sprintf("plugin %s: the cache has no entry for commit %s: the hub installs the locked commit again at its next start or reload", le.Name, le.Commit)}
 	}
-	changed := &cacheStateError{"changed", fmt.Sprintf("plugin %s: the cache entry for commit %s changed (digest mismatch): run lazyrex-hub plugin sync -config %s", le.Name, le.Commit, cfgPath)}
+	changed := &cacheStateError{fmt.Sprintf("plugin %s: the cache entry for commit %s changed (digest mismatch): the hub installs the locked commit again at its next start or reload", le.Name, le.Commit)}
 	if err != nil {
 		return "", "", fmt.Errorf("plugin %s: cannot read the cache entry %s: %w", le.Name, dir, err)
 	}
@@ -278,7 +275,7 @@ func lockedDir(cfgPath, stateDir string, lock *pluginLock, e *configEntry) (dir,
 		return "", "", fmt.Errorf("plugin source %s: %w", e.Source, err)
 	}
 	if m.Name != le.Name {
-		return "", "", lockMismatch(cfgPath, e.Source, le, r, "name")
+		return "", "", lockMismatch(e.Source, le, r, "name")
 	}
 	return plugDir, le.Commit, nil
 }

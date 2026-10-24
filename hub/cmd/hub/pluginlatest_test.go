@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -177,7 +176,7 @@ func TestResolveLatestFetch(t *testing.T) {
 	r.commit(map[string]string{"m.lua": "moved"})
 	r.git("tag", "-f", "-a", "-m", "moved", "v1.0.0")
 	state, _, err := fetchTest(t, r, res.FetchRef, res.Commit, false)
-	if err == nil || err.Error() != "ref refs/tags/v1.0.0 moved during the fetch; run the command again" {
+	if err == nil || err.Error() != "ref refs/tags/v1.0.0 moved during the fetch; run the operation again" {
 		t.Fatalf("moved: %v", err)
 	}
 	if p := published(t, state); len(p) != 0 {
@@ -343,57 +342,5 @@ func TestPinDocLatest(t *testing.T) {
 		if err == nil || !strings.HasSuffix(err.Error(), ": "+c.want) {
 			t.Errorf("%s: %v, want %q", name, err, c.want)
 		}
-	}
-}
-
-// The base file is version 2 only while a base pin has a tag. A lock without a latest entry can
-// have a base with a tag: the base reads without error.
-func TestPeerBaseLatest(t *testing.T) {
-	lock := filepath.Join(t.TempDir(), "hub.lock.json")
-	base := &peerBase{Version: 2, Peers: map[string]map[string]basePin{pinHub: {"github:o/r@main": {Commit: pinCommit, Digest: pinDigest}}}}
-	if err := writePeers(lock, base); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(peersPath(lock)); !strings.HasPrefix(string(b), "{\n  \"version\": 1,") || strings.Contains(string(b), "\"tag\"") {
-		t.Fatalf("no tag:\n%s", b)
-	}
-	base.Peers[pinHub]["github:o/r@latest"] = basePin{Commit: pinCommit, Digest: pinDigest, Tag: "v1.2.0"}
-	if err := writePeers(lock, base); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(peersPath(lock)); !strings.HasPrefix(string(b), "{\n  \"version\": 2,") {
-		t.Fatalf("a tag:\n%s", b)
-	}
-	// No lock file at all: the base still reads.
-	got, err := readPeers(lock)
-	if err != nil || !reflect.DeepEqual(got.Peers, base.Peers) {
-		t.Fatalf("read back: %+v %v", got, err)
-	}
-	delete(base.Peers[pinHub], "github:o/r@latest")
-	if err := writePeers(lock, base); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(peersPath(lock)); !strings.HasPrefix(string(b), "{\n  \"version\": 1,") {
-		t.Fatalf("after the tag:\n%s", b)
-	}
-
-	fix := "; repair it, or remove it (the next pull then reports each differing key as a conflict)"
-	pin := func(v int, tag string) string {
-		return fmt.Sprintf(`{"version":%d,"peers":{"%s":{"s":{"commit":"%s","digest":"%s","tag":"%s"}}}}`, v, pinHub, pinCommit, pinDigest, tag)
-	}
-	for body, why := range map[string]string{
-		pin(1, "v1.2.0"): "peer " + pinHub + ", s: a tag needs version 2",
-		pin(2, "v1.2"):   "peer " + pinHub + `, s: tag "v1.2" is not a version tag vX.Y.Z`,
-		pin(2, "latest"): "peer " + pinHub + `, s: tag "latest" is not a version tag vX.Y.Z`,
-	} {
-		os.WriteFile(peersPath(lock), []byte(body), 0o600)
-		_, err := readPeers(lock)
-		if want := peersPath(lock) + " is not valid: " + why + fix; err == nil || err.Error() != want {
-			t.Errorf("%s\ngot  %v\nwant %s", body, err, want)
-		}
-	}
-	os.WriteFile(peersPath(lock), []byte(pin(2, "v1.2.0")), 0o600)
-	if _, err := readPeers(lock); err != nil {
-		t.Errorf("version 2 with a tag: %v", err)
 	}
 }

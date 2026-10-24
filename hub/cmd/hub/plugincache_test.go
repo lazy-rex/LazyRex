@@ -175,11 +175,12 @@ func TestLockedDir(t *testing.T) {
 	state := cacheTemp(t)
 	digest := treeDigest(testTree)
 	rel := publishTree(t, state, testCommit, testTree)
-	cfg := "cfg/hub.json"
-	sync := "run lazyrex-hub plugin sync -config cfg/hub.json"
+	install := "the hub installs it at its next start or reload"
+	again := "the hub installs the locked commit again at its next start or reload"
+	update := "update the plugin in LazyRex: Plugins…"
 
 	lock, e := lockFor(testCommit, rel, digest)
-	dir, commit, err := lockedDir(cfg, state, lock, e)
+	dir, commit, err := lockedDir(state, lock, e)
 	want, _ := filepath.Abs(filepath.Join(state, "plugins", rel))
 	if err != nil || dir != want || commit != testCommit {
 		t.Fatalf("got %s %s %v", dir, commit, err)
@@ -187,34 +188,34 @@ func TestLockedDir(t *testing.T) {
 
 	// Not installed: no lock entry.
 	other := &configEntry{Source: "github:lazy-rex/Profiles@main", github: true}
-	if _, _, err := lockedDir(cfg, state, lock, other); err == nil ||
-		err.Error() != "plugin github:lazy-rex/Profiles@main is not installed: "+sync {
+	if _, _, err := lockedDir(state, lock, other); err == nil ||
+		err.Error() != "plugin github:lazy-rex/Profiles@main is not installed: "+install {
 		t.Errorf("not installed: %v", err)
 	}
 	// An agreement mismatch.
 	lock, e = lockFor(testCommit, rel, digest)
 	lock.Plugins[e.Source].Owner = "x"
-	if _, _, err := lockedDir(cfg, state, lock, e); err == nil ||
-		err.Error() != "the lock entry for github:lazy-rex/Messaging@main does not match: owner; "+sync {
+	if _, _, err := lockedDir(state, lock, e); err == nil ||
+		err.Error() != "the lock entry for github:lazy-rex/Messaging@main does not match: owner; "+update {
 		t.Errorf("owner: %v", err)
 	}
 	// A manifest name that differs from the lock name.
 	lock, e = lockFor(testCommit, rel, digest)
 	lock.Plugins[e.Source].Name = "profiles"
-	if _, _, err := lockedDir(cfg, state, lock, e); err == nil ||
-		err.Error() != "the lock entry for github:lazy-rex/Messaging@main does not match: name; "+sync {
+	if _, _, err := lockedDir(state, lock, e); err == nil ||
+		err.Error() != "the lock entry for github:lazy-rex/Messaging@main does not match: name; "+update {
 		t.Errorf("name: %v", err)
 	}
 	// A digest that differs.
 	lock, e = lockFor(testCommit, rel, testDigest)
-	changed := "plugin messaging: the cache entry for commit " + testCommit + " changed (digest mismatch): " + sync
-	if _, _, err := lockedDir(cfg, state, lock, e); err == nil || err.Error() != changed {
+	changed := "plugin messaging: the cache entry for commit " + testCommit + " changed (digest mismatch): " + again
+	if _, _, err := lockedDir(state, lock, e); err == nil || err.Error() != changed {
 		t.Errorf("digest: %v", err)
 	}
 	// No cache entry.
 	lock, e = lockFor(testCommit, "github/lazy-rex/Messaging/"+testCommit+".0000000000000000", digest)
-	if _, _, err := lockedDir(cfg, state, lock, e); err == nil ||
-		err.Error() != "plugin messaging: the cache has no entry for commit "+testCommit+": "+sync {
+	if _, _, err := lockedDir(state, lock, e); err == nil ||
+		err.Error() != "plugin messaging: the cache has no entry for commit "+testCommit+": "+again {
 		t.Errorf("no entry: %v", err)
 	}
 }
@@ -254,7 +255,7 @@ func TestLockedDirChanged(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		lock, e := lockFor(testCommit, rel, digest)
-		_, _, err := lockedDir("hub.json", state, lock, e)
+		_, _, err := lockedDir(state, lock, e)
 		if err == nil || !strings.Contains(err.Error(), "changed (digest mismatch)") {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -272,7 +273,7 @@ func TestLockedDirEntrySymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	lock, e := lockFor(testCommit, link, digest)
-	if _, _, err := lockedDir("hub.json", state, lock, e); err == nil || !strings.Contains(err.Error(), "changed (digest mismatch)") {
+	if _, _, err := lockedDir(state, lock, e); err == nil || !strings.Contains(err.Error(), "changed (digest mismatch)") {
 		t.Fatalf("got %v", err)
 	}
 }

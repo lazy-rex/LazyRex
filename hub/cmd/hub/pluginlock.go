@@ -246,8 +246,8 @@ func refKinds(ref string) []string {
 
 // trust reports why the locked commit cannot be trusted, or "" when it is trusted (section 3,
 // "Repair"): 40 lowercase hex and, for a commit ref, equal to the ref. A latest entry also needs a
-// release tag: sync cannot rebuild the tag from the commit. Whether the commit exists and is
-// available needs git; plugin sync checks that.
+// release tag: an install cannot rebuild the tag from the commit. Whether the commit exists and
+// is available needs git; the fetch of an install or an update checks that.
 func (e *lockEntry) trust(r githubRef) string {
 	switch {
 	case e.Commit == "":
@@ -302,18 +302,18 @@ func (e *lockEntry) dirForm(r githubRef) bool {
 	return ok && cacheToken.MatchString(tok)
 }
 
-// lockMismatch is the text of an agreement failure. It names sync when the commit is trusted, and
-// update when it is not (section 3). cfgPath is the config as its command names it.
-func lockMismatch(cfgPath, source string, e *lockEntry, r githubRef, field string) error {
+// lockMismatch is the text of an agreement failure, a commit that cannot be trusted first (section
+// 3). An install does not repair a lock entry that does not agree: an update writes a new one.
+func lockMismatch(source string, e *lockEntry, r githubRef, field string) error {
 	if why := e.trust(r); why != "" {
-		return untrustedCommit(cfgPath, source, why)
+		return untrustedCommit(source, why)
 	}
-	return fmt.Errorf("the lock entry for %s does not match: %s; run lazyrex-hub plugin sync -config %s", source, field, cfgPath)
+	return fmt.Errorf("the lock entry for %s does not match: %s; update the plugin in LazyRex: Plugins…", source, field)
 }
 
-// untrustedCommit is the text of a locked commit that sync must not keep (section 3).
-func untrustedCommit(cfgPath, source, why string) error {
-	return fmt.Errorf("the locked commit for %s cannot be trusted: %s; run lazyrex-hub plugin update -config %s %s", source, why, cfgPath, source)
+// untrustedCommit is the text of a locked commit that the hub does not run (section 3).
+func untrustedCommit(source, why string) error {
+	return fmt.Errorf("the locked commit for %s cannot be trusted: %s; update the plugin in LazyRex: Plugins…", source, why)
 }
 
 // latestForm reports whether the pin has the form of a latest entry: the ref kind latest, or a

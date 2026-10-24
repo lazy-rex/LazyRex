@@ -70,7 +70,7 @@ func TestPluginOpFetch(t *testing.T) {
 	}
 	e := &configEntry{Source: "github:acme/notes@v1.0.0"}
 	e.checkSource("")
-	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{e.Source: &le}}, e); err != nil {
+	if _, _, err := lockedDir(h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{e.Source: &le}}, e); err != nil {
 		t.Fatalf("the pin does not verify: %v", err)
 	}
 	// The replay with a good pin runs no git.

@@ -5,7 +5,6 @@ package main
 // differs from the run's, with null for a candidate without a tag.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"path/filepath"
@@ -147,10 +146,9 @@ func TestLatestTagRunAndReload(t *testing.T) {
 	}
 }
 
-// plugin status: a latest entry's ref field names its release tag ("ref latest v1.0.0"). A pinned
-// tag source names the tag as its ref, as before, and a branch line is unchanged. The field count
-// and the cache text stay the same.
-func TestLatestStatusTag(t *testing.T) {
+// The hub resolution of a latest source, a pinned tag source and a branch source: only the latest
+// candidate has a tag; the pinned tag source has its tag name as its ref and no tag.
+func TestLatestCandidateTag(t *testing.T) {
 	env := newCmdEnv(t)
 	rm := env.repo("lazy-rex", "Messaging", "messaging")
 	cm := rm.commit(map[string]string{"main.lua": "1"})
@@ -166,23 +164,12 @@ func TestLatestStatusTag(t *testing.T) {
 	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if ok, err := runPluginStatus(cfg, &out); !ok || err != nil {
-		t.Fatalf("status: %v %v\n%s", ok, err, out.String())
-	}
-	want := srcLatest + "\tref latest v1.0.0\tcommit " + cm + "\tcache ok\tmanaged:messaging\n" +
-		srcP + "\tref v0.2.0\tcommit " + cp + "\tcache ok\tmanaged:profiles\n" +
-		srcW + "\tref main\tcommit " + cw + "\tcache ok\tmanaged:worktrees\n"
-	if out.String() != want {
-		t.Errorf("status:\n%s\nwant:\n%s", out.String(), want)
-	}
-	// The hub resolution: only the latest candidate has a tag; the pinned tag source has its tag
-	// name as its ref and no tag.
 	c := env.load(cfg)
 	resolve(&c)
+	commits := []string{cm, cp, cw}
 	for i, wantTag := range []string{"v1.0.0", "", ""} {
-		if e := c.entries[i]; e.err != nil || e.cand == nil || e.cand.Tag != wantTag {
-			t.Errorf("entry %d: candidate %+v, error %v, want tag %q", i+1, e.cand, e.err, wantTag)
+		if e := c.entries[i]; e.err != nil || e.cand == nil || e.cand.Tag != wantTag || e.cand.Commit != commits[i] {
+			t.Errorf("entry %d: candidate %+v, error %v, want tag %q at %s", i+1, e.cand, e.err, wantTag, commits[i])
 		}
 	}
 }

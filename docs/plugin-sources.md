@@ -11,7 +11,7 @@ Code:
 | Config entries, resolution | `pluginconfig.go`, `sources.go` (manifest and graph rules) |
 | Lock, cache | `pluginlock.go`, `plugincache.go`, `digest.go` |
 | Refs, fetch, `@latest` | `pluginfetch.go`, `pluginlatest.go` |
-| `lazyrex-hub plugin` commands | `plugincmd.go`, `pinsync.go`, `pluginnew.go` |
+| Lock writers, pin document, `lazyrex-hub plugin new` | `plugincmd.go`, `pinsync.go`, `pluginnew.go` |
 | Start, states, kept records | `plugins.go`, `respawn.go`, `reload.go` |
 | Selected run, local snapshots | `selectedrun.go`, `localsnapshot.go` |
 | `expect_run`, replace | `expectrun.go`, `replace.go` |
@@ -128,7 +128,7 @@ A lock with a latest entry is version 2. Its other entries keep the form above.
 - `tag` is the release tag that `@latest` selected (section 5). Only a latest entry has it; it is
   absent, never empty or null, on every other entry.
 - The key is the source string exactly as the config writes it. A changed source string (for
-  example `@main` to `@v2`) is a new key: `sync` installs it. It is not an update of the old key.
+  example `@main` to `@v2`) is a new key: the hub installs it. It is not an update of the old key.
 - `dir` is relative to `<state>/plugins`.
 - `subdir` is the subdir of the source, or "" without one. A version 1 lock entry without the
   field decodes as "": the version stays 1. The same repository at two subdirs gives two keys and
@@ -145,23 +145,21 @@ A lock with a latest entry is version 2. Its other entries keep the form above.
 - the manifest name in the cache entry equals the lock `name`;
 - the digest matches.
 
-A mismatch refuses the entry: `the lock entry for <source> does not match: <field>; run
-lazyrex-hub plugin sync`.
+A mismatch refuses the entry: `the lock entry for <source> does not match: <field>; update the
+plugin in LazyRex: Plugins…`.
 
 **Repair.** The key and the commit are the pin; for a latest entry, the key, the commit and the
 `tag` are the pin. Every other field is derived from them.
 
 - A commit is **trusted** when it is 40 lowercase hex and, for a commit ref, equal to the ref. The
-  commit of a latest entry also needs a `tag` of the release form: sync cannot rebuild the tag
-  from the commit. A `tag` on another entry is a field that sync rebuilds: sync drops it.
-- `sync` keeps a trusted commit and rebuilds every other field, except the `tag` of a latest
-  entry: sync keeps the locked tag and never derives it from the commit. It fetches that exact
-  commit, publishes a new dir, computes the digest, and reads the name from the fetched manifest.
-- An untrusted commit is malformed, not equal to a commit ref, not a commit, or not available.
-  `sync` refuses that entry and the lock stays unchanged: `the locked commit for <source> cannot be
-  trusted: <reason>; run lazyrex-hub plugin update -config <cfg> <source>`.
-- The hub start text for an agreement error names `sync` when the commit is trusted, and the
-  `update` text when it is not.
+  commit of a latest entry also needs a `tag` of the release form: an install cannot rebuild the
+  tag from the commit.
+- The install of a missing or changed cache entry keeps the locked commit (and the locked tag of a
+  latest entry) and fetches that exact commit again: it publishes a new dir, computes the digest,
+  and reads the name from the fetched manifest.
+- An untrusted commit is malformed, not equal to a commit ref, not a commit, or not available. The
+  hub refuses that entry: `the locked commit for <source> cannot be trusted: <reason>; update the
+  plugin in LazyRex: Plugins…`. An update pins a new commit.
 
 ## 4. Cache
 
@@ -176,9 +174,7 @@ lazyrex-hub plugin sync`.
 - **A published entry never moves.** No command renames, deletes or writes a published entry.
   - A repair publishes a new entry and points the lock at it.
   - A running instance keeps its directory.
-  - A changed entry stays on disk. `plugin status` lists each entry that the lock does not
-    reference with the text `unreferenced (no recorded digest; a running instance or another
-    config can use it)`. Without a lock entry there is no digest to compare.
+  - A changed entry stays on disk. An entry that the lock does not reference is not used.
 - **Publication** (observed on macOS 27.0.1, APFS; Linux: not tested). A rename of a 0555
   directory into another parent fails with EACCES, because the move must update the directory's
   `..`. A rename in the same parent works. So the command extracts the tree into a stage beside
@@ -223,11 +219,11 @@ lazyrex-hub plugin sync`.
   set".
 - A plugin start never runs git and never uses the network: it reads the config, the lock and the
   cache. Git runs only in the plugin manager's ops (add, update and the hub's install, docs/hub.md
-  "Plugin operations"), in a fetch child, and in the `lazyrex-hub plugin` commands.
+  "Plugin operations"), in a fetch child.
 
 ## 5. Refs and fetch
 
-The plugin manager's ops and the `lazyrex-hub plugin` commands use the git CLI. A plugin start
+The plugin manager's ops use the git CLI. A plugin start
 never runs git. Git runs with
 `GIT_TERMINAL_PROMPT=0`. It uses the user's credential helper and `url.insteadOf` (for SSH).
 
@@ -271,11 +267,11 @@ a commit. `git check-ref-format` validates `refs/heads/<name>` and
 **Fetch** into a bare repository in `<state>/plugins/.tmp/<random>/` (`git init -q --bare`, then
 `git fetch -q --depth 1`). The tree is extracted into the stage of section 4, "Publication":
 
-1. Fetch a branch or tag by its exact ref. Fetch a commit (a 40-hex ref, or a sync of a locked
-   commit) by its ID.
+1. Fetch a branch or tag by its exact ref. Fetch a commit (a 40-hex ref, or the install of a
+   locked commit) by its ID.
 2. Read `git rev-parse --verify FETCH_HEAD^{commit}` and compare it with the resolved commit. Raw
-   `FETCH_HEAD` is never compared. A difference: `ref <n> moved during the fetch; run the command
-   again`. There is no retry loop.
+   `FETCH_HEAD` is never compared. A difference: `ref <n> moved during the fetch; run the
+   operation again`. There is no retry loop.
 3. `git cat-file -t` of the commit must be `commit`.
 4. Read the tree with `git ls-tree -r -z <commit>`. Mode 100644 is a file; 100755 is an executable
    file. Mode 120000 is refused (`plugin trees with symlinks are not supported: <path>`). Mode
@@ -314,102 +310,53 @@ exactly, or nothing:
 - The cache entry is read-only (files 0444 or 0555). A plugin writes its data elsewhere, for
   example in the hub store.
 
-## 6. Commands
+## 6. Lock writers
 
-The commands are CLI only. A hub action must answer fast, because the hub has one request queue.
-The plugin manager's add and update ops also write the lock (docs/hub.md, the `locking` phase).
-They run in the hub's op manager, not in a hub action, and take the same two flocks.
+The plugin manager writes the lock: its install, add, update and remove ops (docs/hub.md, the
+`locking` and `unpinning` phases). They run in the hub's op manager, not in a hub action, because
+a hub action must answer fast. There is no CLI command that writes the lock.
 
-- `lazyrex-hub plugin sync -config <cfg>`: first install and repair.
-  - A GitHub source without a lock entry: resolve the ref, fetch, add the entry.
-  - An entry whose cache is missing or changed: fetch the locked commit again (section 3,
-    "Repair").
-  - It never moves an existing locked commit.
-  - It drops lock entries whose source is no longer in the config.
-  - A latest source: the first sync selects the highest release (section 5). A later sync keeps
-    the locked tag and commit, also when a higher release exists. A repair fetches the locked
-    commit by its ID and keeps the locked tag, also when the tag is gone from the repository.
-- `lazyrex-hub plugin update -config <cfg> [name|source ...]`: resolve the refs again (all, or the
-  named entries), fetch, and rewrite the lock. A latest entry selects the highest release again:
-  - the same tag at the same commit, with a good cache entry: unchanged (no line);
-  - a higher tag: `updated`;
-  - the same tag at another commit: refused, `the tag <t> moved from <old> to <new>; a release tag
-    must not move: check the repository`;
-  - a highest tag lower than the locked tag: refused, `the newest version tag is <t>, lower than
-    the locked <locked>`. Update never goes to a lower release;
-  - a latest entry whose commit is not trusted (section 3): replaced by the selected release.
+- An install fetches a GitHub source that has no lock entry (it resolves the ref), or the locked
+  commit again when its cache entry is missing or changed (section 3, "Repair"). It never moves a
+  locked commit. A latest source: the first install selects the highest release (section 5); a
+  repair fetches the locked commit by its ID and keeps the locked tag, also when the tag is gone
+  from the repository.
+- An update resolves the ref again and pins the result.
+- A lock entry that no entry names stays; it is not used.
+- `lazyrex-hub plugin new <name> [-dir <path>]` writes a new SDK plugin (`lazyrex.json`,
+  `main.lua`, `tests/<name>.lua`, `README.md`) into a directory that must not exist (default
+  `./<name>`). The files go into a stage beside it, then one rename publishes them: the directory
+  gets every file or none. It needs no config, and it does not write the lock.
 
-  An argument of `update` selects entries by three keys: the plugin name, the exact source string,
-  and `managed:<id>`. An argument that starts with `managed:` selects only by managed id; it never
-  matches a name or a source. (A local config source literally named `managed:...` is selected by
-  its plugin name.) The selector counts distinct entries: one entry that matches by name and by
-  source counts once. It must select exactly one entry. Zero: `plugin update: no entry has the
-  name, source or identity <arg>`. Two or more: `plugin update: <arg> selects <identities>; write
-  managed:<id> or the exact source`, with the identities `entry N` and `managed:<id>`.
-- Each tag that the selection skips gives a line before the verb line of its entry: `ignored
-  <source>: refs/tags/<t> points to a <tree|blob>, not a commit`. The line also prints when the
-  lock does not change. If that write fails: `plugin <cmd>: the lock is unchanged, but the result
-  lines are not written: ...`.
-- **A legacy entry**: a lock entry of the source ref `latest` with `ref_kind` `branch` or `tag`,
-  written before `@latest` (a branch or a tag named latest). sync, pull and the hub refuse it with
-  this text; the hub refuses only that plugin:
-
-  `@latest now means the highest version tag vX.Y.Z. To convert this entry (it replaces the
-  pinned <kind> commit <c>), run: lazyrex-hub plugin update -config <cfg> <source>. To keep
-  following the <kind> named latest, change the source to @refs/heads/latest` (`@refs/tags/latest`
-  for a tag).
-
-  Only update converts it. The converted entry is a latest entry; its line is `converted <source>:
-  <kind> latest <old commit> -> <tag> <commit>`, and it has no other verb line.
-- `lazyrex-hub plugin status -config <cfg>`: the source, ref, locked commit and cache state (ok,
-  missing, changed) of each entry, and the changed entries that no lock references. A latest
-  entry names its locked release tag in the ref field: `ref latest v1.2.0`; the field count stays
-  the same.
-- `lazyrex-hub plugin export -config <cfg>`: write the pin document of the lock to stdout (section
-  6a).
-- `lazyrex-hub plugin pull -config <cfg> -file <path> [-take <source>]... [-keep <source>]...`:
-  merge a pin document into the lock (section 6a).
-- `lazyrex-hub plugin new <name> [-dir <path>]`: write a new SDK plugin (`lazyrex.json`, `main.lua`,
-  `tests/<name>.lua`, `README.md`) into a directory that must not exist (default `./<name>`). The
-  files go into a stage beside it, then one rename publishes them: the directory gets every file or
-  none. It needs no config.
-
-**All or nothing.** A command writes the lock only after every fetch and check passes (temp file,
-fsync, rename, directory fsync). A failure before the rename leaves the old lock. Entries that the
-command published stay on disk; nothing references them. So a failed command never changes a
+**All or nothing.** A lock writer writes the lock only after every fetch and check passes (temp
+file, fsync, rename, directory fsync). A failure before the rename leaves the old lock. Entries
+that the writer published stay on disk; nothing references them. So a failed write never changes a
 directory that a lock references. A failure of the directory fsync comes after the rename: readers
-see the new lock, but a crash can still undo it. The command then fails with `<lock> is replaced,
+see the new lock, but a crash can still undo it. The writer then fails with `<lock> is replaced,
 but the sync of its directory failed (a crash can undo the change): ...`, never claims an
-unchanged lock, and rolls nothing back. The same rule holds for the base file of pull (section 6a).
+unchanged lock, and rolls nothing back.
 
-**Result lines.** sync and update print one line for each change (`installed`, `updated`,
-`repaired`, `dropped`) only after the lock write. A failure before output delivery prints no
-result lines. The lines go out in one write; a failed or short write is an error: `plugin <cmd>:
-the lock is written, but the result lines are not: ...`. A writer can take a part of the lines
-before it fails. status also writes its lines once; a failed write is `plugin status: the result
-lines are not written: ...`, with exit 1, before the not-ok result.
+**Graph check.** Before it writes the lock, the writer checks the new dependency graph (docs/hub.md,
+the `locking` phase).
 
-**Graph check.** Before it writes the lock, the command checks the new dependency graph. Example
-refusal: `plugin update: worktrees at <c> depends on profiles, which is not configured; the lock is
-unchanged`.
+**Concurrency.** A lock writer takes two exclusive flocks, the plugin command flocks, in this
+order:
 
-**Concurrency.** A command takes two exclusive flocks, in this order:
-
-1. `<state>/plugins/.lock`: all commands on one state, for any config or lock file.
+1. `<state>/plugins/.lock`: all writers on one state, for any config or lock file.
 2. `<lockfile>.lck`.
 
-A second command fails at once: `another plugin command runs (pid N)`. The plugin manager's
-writes (the lock and the managed file) take both flocks too, so N can be the hub's pid. An op
-that finds the flocks held waits in its phase and tries again. A rename replaces the lock, and
-cache entries are immutable, so a hub start reads the old lock or the new lock, never a mix.
+A second holder fails at once: `another plugin command runs (pid N)`. N can be the pid of this hub
+or of another hub on the same state. An op that finds the flocks held waits in its phase and tries
+again. The export of the pin document (section 6a) takes both flocks too. A rename replaces the
+lock, and cache entries are immutable, so a hub start reads the old lock or the new lock, never a
+mix.
 
 ## 6a. Pin sync
 
 The machines of the user select the same pins (commit and digest) for the GitHub sources that
-their configs share. Pull changes only the selected pins in the local lock. A running instance
-keeps its run commit: `hub.plugins.reload` or a start attempt shows the new candidate, and a stop
-and a start apply it (section 7). Pull writes the lock of section 3: version 2 only while the lock
-has a latest entry.
+their configs share. The hub of one machine reads the pins of a peer hub over federation
+(docs/hub.md, "Plugin sync"), and its plugin manager applies them as update ops. A running
+instance keeps its run commit until the op replaces it (section 7).
 
 Each machine fetches each commit from GitHub itself. No cache entry moves between machines. The
 digest shows that two machines have the same tree. Observed for one tree
@@ -417,9 +364,8 @@ digest shows that two machines have the same tree. Observed for one tree
 a711415): macOS 27.0.1 arm64 with git 2.54.0 and umask 022, and Linux 6.8.0 x86_64 with git
 2.43.0 and umask 0002, gave the same digest, the same 275 files and the same 5 executable files.
 
-The pins move in a file: the user carries it by git, a synced folder or scp. There is no hub-to-hub
-pull. Note: `hub.plugins` shows each entry's exact source, commit and digest to any client that
-can call the hub, and a source name can name a private repository.
+Note: `hub.plugins` shows each entry's exact source, commit and digest to any client that can call
+the hub, and a source name can name a private repository.
 
 **The pin document.**
 
@@ -452,75 +398,16 @@ A document with a latest entry is version 2. Its other entries keep the form abo
   equals a commit ref; name and digest have the lock forms. One bad entry refuses the whole
   document, before any fetch.
 
-**The sidecars.** They live beside the lock, and belong to the lock file: two configs that name
-one lock share them.
-
-- `<lock>.id`: the pull identity of the lock, the `hub` of the documents it exports. The first
-  export makes it (a new file, fsync). A malformed file: `<path> is not valid: ...; remove it to
-  make a new pull identity (peers then have no base for this lock)`.
-- `<lock>.peers.json`: `{"version": 1, "peers": {"<id>": {"<source>": {"commit", "digest"}}}}`,
-  the merge base: for each peer identity, the pins of the last pull from it. A base pin of a
-  latest entry also has `tag`; the file is then version 2, else version 1 with no `tag` field.
-  A malformed file refuses the pull before any fetch: `<path> is not valid: ...; repair it, or
-  remove it (the next pull then reports each differing key as a conflict)`.
+**The sidecar.** `<lock>.id` lives beside the lock and belongs to the lock file: two configs that
+name one lock share it. It is the pull identity of the lock, the `hub` of the documents it
+exports. The first export makes it (a new file, fsync). A malformed file: `<path> is not valid:
+...; remove it to make a new pull identity`. A stray `<lock>.peers.json` is ignored.
 
 **Export.** Under both flocks, export reads the lock and the managed file as one snapshot. It
 exports each GitHub entry of the config and of the managed file, and only when each one passes
 `lockedDir`: a machine never exports a pin that it cannot run itself. Otherwise it fails with that
 entry's text, writes nothing and makes no pull identity. An orphaned lock entry and a local source
 are not exported.
-
-**The merge.** For each GitHub source of the local config or managed file that the document has
-(base = the base of the document's `hub`; equal = the same commit, digest and tag; so a tag
-alone is a difference):
-
-- not installed: taken;
-- local equals peer: unchanged, and the base advances;
-- local equals base: taken, and the base advances;
-- peer equals base: kept;
-- otherwise (both changed, or no base and they differ): a conflict. The local pin stays, and the
-  base does not advance.
-
-`-take <source>` resolves a conflict with the peer pin (the base advances). `-keep <source>`
-keeps the local pin and advances the base, so the same document gives `kept` next time. A flag on a
-source without a conflict, or one source in both flags, refuses the pull before any fetch. A
-source that only the document has is `ignored`. A source that only the config has is not changed,
-and its base stays.
-
-**Pull.** Pull selects imported commits. It does not resolve a ref.
-
-- A document whose `hub` is this lock's own identity is refused.
-- A legacy entry in the local lock (section 6) refuses the pull before any fetch, with the
-  conversion text.
-- A taken pin keeps the tag of the document. A taken tag lower than the local tag is taken (the
-  peer went back on purpose), with one line on standard error: `plugin pull: warning: <source>:
-  lower version <t> than the local <local>`. The result lines on standard output keep their form.
-- Each taken pin is fetched by its commit from the repository of the local source. A full ref form
-  gives the kind; for a short ref, the imported `ref_kind` decides. The name comes from the fetched
-  manifest. The digest must equal the document: `plugin <name>: the tree of <commit> differs from
-  the pin document`.
-- Then the graph check of the complete new lock (section 6). As for update, each GitHub entry of
-  the config must be installed.
-- Any fetch, digest or graph failure writes nothing: the lock and the base stay byte-unchanged.
-  Published cache entries stay, as after a failed update.
-- The new lock has the GitHub entries of the config only. As for sync and update, pull removes an
-  orphaned lock entry (section 13); the output has no line for it.
-- The lock is written first (only when its bytes change), then the base. Nothing is rolled back.
-  A directory fsync failure after the rename of the lock (section 6) stops the pull with `<lock>
-  is replaced, ...; the base of <id> is not written`: the state of a crash between the two
-  writes. One after the rename of the base gives `<base> is replaced, ...`.
-  If the base write fails before its rename, the text tells whether the lock changed:
-  - taken pins: `the pins changed, but the base of <id> did not: the next pull can report
-    conflicts for <sources>`;
-  - only a removed orphan: `the lock changed, but the base of <id> did not`;
-  - no change: `the base of <id>: ...; the lock is unchanged`.
-
-  After a crash between the two writes, the next pull is `unchanged` while the peer has the same
-  pin, and a conflict when the peer or the local pin moved.
-- Output: one line for each source, `<outcome>\t<source>\tlocal <commit|->\tpeer <commit>`. A
-  remaining conflict gives exit 1, after the other sources applied. The lines come after both
-  writes. If they cannot be written: `the lock and the base are written, but the result lines are
-  not`.
 
 ## 7. Start, states and dependencies
 
@@ -675,11 +562,11 @@ are a malformed config, so a source names one entry. A hub restart works too.
     branch). A tag change alone is a change. No `"tag"` key when the two are equal (both absent or
     the same tag).
   - No `"candidate"` key when no field differs, or when the entry has no run.
-- `hub.plugins` reports the last resolution for `candidate`. After `plugin update`, a resolution
-  (for example `hub.plugins.reload` or an explicit start) gives the new candidate. `pinned_commit`
-  reads the current lock: the commit that it names for a GitHub entry, or `""` (a local entry, or
-  no pin). After a CLI update and a crash, `commit` is the running commit and `pinned_commit` the
-  new pin, until the next explicit start.
+- `hub.plugins` reports the last resolution for `candidate`. After a lock write of an update, a
+  resolution (for example `hub.plugins.reload` or an explicit start) gives the new candidate.
+  `pinned_commit` reads the current lock: the commit that it names for a GitHub entry, or `""` (a
+  local entry, or no pin). After an update's lock write and a crash, `commit` is the running commit
+  and `pinned_commit` the new pin, until the next explicit start.
 - A local run's `dir` is its snapshot, so a local candidate's source dir is not a `"dir"` change.
   A candidate of another source is: `"dir"` gives the new source dir.
 
@@ -716,12 +603,12 @@ hub`.
 
 ## 8. Error texts
 
-- `plugin messaging (github:lazy-rex/Messaging@main) is not installed: run lazyrex-hub plugin sync
-  -config <cfg>`
-- `plugin messaging: the cache has no entry for commit <c>: run lazyrex-hub plugin sync -config
-  <cfg>`
-- `plugin messaging: the cache entry for commit <c> changed (digest mismatch): run lazyrex-hub
-  plugin sync -config <cfg>`
+- `plugin github:lazy-rex/Messaging@main is not installed: the hub installs it at its next start
+  or reload`
+- `plugin messaging: the cache has no entry for commit <c>: the hub installs the locked commit
+  again at its next start or reload`
+- `plugin messaging: the cache entry for commit <c> changed (digest mismatch): the hub installs the
+  locked commit again at its next start or reload`
 - `plugin source ../Messaging: no lazyrex.json in <abs dir>`
 - `plugin messaging: main ../x.lua must be a file inside the plugin directory`
 
@@ -764,7 +651,7 @@ network, or writes a lock file or a cache entry.
 - `readLock(path)` reads the lock file. A missing file gives an empty lock and no error: each
   GitHub entry is then "not installed" (section 8). A file that does not parse, or has another
   version, gives an error.
-- `lockedDir(cfgPath, stateDir, lock, e)` checks the lock entry of the GitHub entry `e` and its
+- `lockedDir(stateDir, lock, e)` checks the lock entry of the GitHub entry `e` and its
   cache entry: the key lookup, the agreement check (section 3), the cache entry, the manifest name
   and the digest (section 4). It returns the absolute plugin directory (the cache entry, or
   `<entry>/<subdir>`) and the locked commit.
@@ -774,33 +661,29 @@ Rules:
 - Each resolution reads the lock once (`readLockSnapshot`), and calls `lockedDir` once for each
   GitHub entry with that one snapshot. When no entry is a GitHub source, the resolution reads no
   lock file.
-- The error of `lockedDir` is the entry error, unchanged. It is a final text of section 3 or 8,
-  with the `-config <cfgPath>` of its command: no lock entry (`is not installed`), an agreement
-  mismatch (`does not match: <field>`, with the `sync` or `update` text by the trusted-commit
-  rule), no cache entry, a changed cache entry (`digest mismatch`), and a cache entry that cannot
-  be read (`plugin <name>: cannot read the cache entry <absolute dir>: <error>`; this text does not
-  name `sync`).
+- The error of `lockedDir` is the entry error, unchanged. It is a final text of section 3 or 8:
+  no lock entry (`is not installed`), an agreement mismatch (`does not match: <field>`), an
+  untrusted commit (`cannot be trusted`), no cache entry, a changed cache entry (`digest
+  mismatch`), and a cache entry that cannot be read (`plugin <name>: cannot read the cache entry
+  <absolute dir>: <error>`).
 - A `readLock` error refuses every GitHub entry. The hub start does not fail (section 1: only a
   malformed config fails the start), and local entries resolve as usual. The graph rules refuse a
   local dependent of a refused GitHub entry. The ownership and retained-instance rules apply. The
   text depends on the error:
   - The file does not parse, or has another version: `plugin <source>: the lock file <path> is
-    not valid: <error>; repair the file or restore it from a backup`. Such a lock gives no
-    trustworthy pins, so the text does not name `sync`. `sync` and `update` refuse it too, and
-    never replace it: a lock that does not decode is never taken as an empty lock.
+    not valid: <error>; repair the file or restore it from a backup`. The lock writers refuse it
+    too, and never replace it: a lock that does not decode is never taken as an empty lock.
   - A filesystem error (for example, no read permission): `plugin <source>: cannot read the lock
     file <path>: <error>`.
-  - Only a missing entry and a repairable entry with a trusted commit name `sync` (section 3).
 - After `lockedDir`, the hub reads the manifest with `readPluginManifest(dir)`, as for a local
   source, so the manifest rules and the graph are the same for both kinds of source.
-- A hub start takes neither plugin command flock (section 6). The hub reads the lock with one read. The commands and
-  the plugin manager replace the file with a rename, so the hub reads the old lock or the new lock.
-- Tests: the commands are also Go functions (`pluginSync`, `pluginUpdate`) with `pluginCmdOpts`.
-  Its `remote` option gives the fetch URL, so a test can use a local bare repository (`file://`)
-  in place of GitHub. Its `afterResolve` hook runs between the resolution and the fetch (a test of
-  a ref that moves). Only these functions take the options: no CLI flag, config field or
-  environment variable sets them. A lab test calls `pluginSync` in the test process to make the
-  lock and the cache, then starts the hub binary, which reads them.
+- A hub start takes neither plugin command flock (section 6). The hub reads the lock with one
+  read. The plugin manager replaces the file with a rename, so the hub reads the old lock or the
+  new lock.
+- Tests: the `remote` option of `pluginCmdOpts` gives the fetch URL, so a unit test can use a local
+  bare repository (`file://`) in place of GitHub. No CLI flag, config field or environment variable
+  sets it. A lab hub reaches its test repositories through `url.insteadOf` in the lab's own git
+  config, and installs its managed entries at its start.
 
 ## 12. Tests
 
@@ -824,40 +707,25 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A hub restart with a refused candidate | the old process lives (pid and start time); its block stays; the row is retained; a dependent waits, or is refused when its check refuses | L |
 | `hub.register` with a retained instance ID | code `retained` | U |
 | A GitHub source without a lock entry | refused, "not installed" | U |
-| A synced GitHub source (also a subdir source), with local entries and dependencies across both kinds | resolves from the read-only cache entry; the run has the locked commit | U |
+| An installed GitHub source (also a subdir source), with local entries and dependencies across both kinds | resolves from the read-only cache entry; the run has the locked commit | U |
 | A lock that does not parse; a lock that cannot be read (a directory, no permission) | each GitHub entry refused with the exact text; local entries resolve | U |
-| `plugin update`, then a new resolution | the run keeps its commit, also after a save and a load; the candidate has the new commit and dir | U, L |
+| An update op, then a new resolution | the run keeps its commit, also after a save and a load; the candidate has the new commit and dir | U, L |
 | A pin document: each malformed form; an empty document round trip | refused before any fetch; `"entries": []` | U |
 | export: each GitHub entry passes; one fails; a static refusal; a malformed lock | the document; nothing written and no identity | U |
-| pull: each merge case, -take and -keep, a document from this lock, a malformed base | the outcome lines and the base; refused before any fetch | U |
-| pull: a fetch, digest or graph failure | lock and base byte-unchanged | U |
-| pull: a base write failure, then the same peer, a moved peer, a local update | the text; unchanged; conflict; conflict | U |
-| pull: a base write failure with no lock change, and after only an orphan removal; a failed write of the result lines | the text for each case | U |
-| sync: a failure after an earlier entry's fetch | no result line; the lock byte-unchanged | U |
-| sync (an install, a drop) and update: a failed and a short write of the result lines; status: the same, with a not-ok entry | the "lock is written" text, the lock written; the status text, exit 1 | U |
-| A directory fsync failure after the rename: the lock of sync and update; the lock and the base of pull, then the next pull | the new bytes in place; the "is replaced" text, no unchanged claim; the next pull unchanged | U |
-| pull into the config of a running hub, then `hub.plugins.reload` | the candidate has the pulled commit; the instance keeps its run commit | L |
 | `hub.plugins` candidate fields | `{"error"}` when refused; each differing field; no key when none differs or without a run | U |
 | A latest run in `hub.plugins` | `tag` in the entry and in a kept record; no `tag` key for another run; candidate `"tag"`: the new tag, or `null` for a candidate without one; no key when equal; a saved run keeps its tag across a load | U |
 | A latest run in a hub: a new release, update, reload, then replace with the old and the new `expect_run` | the candidate has the new commit and tag, the instance is the same; `candidate_changed`; a new instance with the new tag and no candidate | L (`TestLatestLab`) |
 | A release tag: each form; the order (`v1.10.0` > `v1.9.0`, no length limit) | only `vX.Y.Z` without a leading zero; decimal order | U |
 | @latest resolution: higher tags to a tree or a blob; no release; a failed fetch or ls-remote; a tag that moves before the fetch | skipped and named; refused, no branch fallback; the resolution fails, no older release; refused | U |
-| sync of a latest source: first; later with a higher release; a cache repair after the tag is gone; a missing or malformed tag | the highest release; unchanged; the locked tag and commit; refused with the update text | U |
-| update of a latest entry: the same release; a higher one; a moved tag; a lower tag; skipped tags with an unchanged lock | unchanged; updated; refused; refused; the ignored lines, the lock bytes unchanged | U |
-| A legacy entry (ref latest, kind branch or tag) | sync, pull and the hub refuse it with the conversion text; only its plugin is refused; update converts it | U, L (`TestLatestLegacyLab`) |
-| The lock, pin document and base versions | version 2 only with a latest form, else the bytes before `@latest`; a version 1 file with a latest form refused; back to version 1 when the last latest entry goes | U |
-| pull with tags: the same commit with another tag; a lower tag; a conflict with `-take`, `-keep` | a difference (taken, or a conflict without a base); taken, a warning on standard error only; resolved | U |
-| `plugin status` of a latest, a tag and a branch entry | `ref latest v1.0.0`; `ref v0.2.0`; `ref main` | U |
+| The install of a latest source: first; no release; a lock entry with no tag | the highest release; refused; refused | U (`TestLatestInstall`, `TestLatestInstallNoRelease`, `TestLatestInstallRefusesMissingTag`) |
+| The lock and pin document versions | version 2 only with a latest form, else the bytes before `@latest`; a version 1 file with a latest form refused; back to version 1 when the last latest entry goes | U |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
-| sync: a new entry; a missing cache; a changed cache | the lock gets the entry; a new dir; the running dir is untouched | U (`file://`) |
-| sync fails on the second of two plugins | the lock is unchanged; no referenced dir changed | U |
-| update moves a branch; the ref moves during the fetch | a new commit in the lock; refused, the lock is unchanged | U |
+| An install of a new entry; a missing cache; an update that moves a branch | the lock gets the entry; a new dir at the locked commit; a new commit in the lock | U (`TestCmdEnvInstallAndUpdate`), L (`TestPluginInstallCacheLab`) |
 | A suffix-only ref match; branch and tag; annotated tag through the real fetch path; invalid ref; 40-hex that is not a commit; unavailable commit | refused, or peeled as specified | U |
 | An executable helper; a symlink; a submodule in the tree | kept 0555 and the digest passes; refused; refused | U |
 | A lock agreement mismatch (each field) | refused; the text names the field | U |
-| A trusted and an untrusted locked commit | sync rebuilds the fields; sync refuses with the update text | U |
-| Two commands on one state with two lock files | the second fails at once | U |
-| Hub start during a sync | the old or the new lock, never a mix | U |
+| An untrusted locked commit; then an update | refused with the update text; the entry resolves | U (`TestLockAgreement`, `TestUpdateClearsLockMismatch`) |
+| Two flock holders on one state with two lock files | the second fails at once | U (`TestFlocks`) |
 | A start from a read-only cache entry that loads a sibling module (`require`) | runs | L |
 | `hub.admin.start {source}` after a repair | the entry resolves and starts | H |
 | A notify from a plugin without a notice | `no_notice`; no record written | U, H |
@@ -866,8 +734,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 ## 13. Managed plugins
 
 The plugin manager adds and removes plugins without editing the user's config. It writes the
-managed file. The hub and the `lazyrex-hub plugin` commands read the managed file with the config,
-so a `plugin sync` keeps the lock entries of managed plugins.
+managed file. The hub reads the managed file with the config.
 
 **File.** Config field `managed_plugins`: a path relative to the config directory. Default:
 `<state>/plugins.json`.
@@ -897,8 +764,7 @@ so a `plugin sync` keeps the lock entries of managed plugins.
   - Hub start does not fail. The hub starts the config plugins and refuses every managed entry.
     `hub.plugins` reports the file error once, as `{"managed_file": "<path>", "error": "..."}`.
     Reason: a defect of the manager must not stop the plugins that the user configured.
-  - `plugin sync`, `update` and `status` fail, and the lock stays unchanged. Reason: a command
-    that ignored the file could drop the managed lock entries.
+  - The plugin manager's ops on managed entries fail, and the lock stays unchanged.
 
 **Identity and graph.**
 
@@ -953,13 +819,10 @@ do not reload: a config change needs a hub restart.
 
 A reload keeps `run` and unresolved spawn intents when an entry changes or disappears.
 
-**Commands.** `sync`, `update` and `status` read the config entries and the managed entries.
-`update` accepts a managed `id` as well as a name or a source.
-
 **Orphaned lock entries.** A lock entry whose source is in neither the config nor the managed
-file never starts a plugin. `plugin status` reports it as `orphaned`. `plugin sync` removes it.
-For example, a cancelled add of the manager can leave one. A manager op removes the lock entry of the
-source that it stopped naming (update, remove); `plugin sync` removes other orphans.
+file never starts a plugin. For example, a cancelled add of the manager can leave one. A manager op
+removes the lock entry of the source that it stopped naming (update, remove). A lock entry that no
+entry names stays; it is not used.
 
 **Size bounds.** The hub refuses a `lazyrex.json` over 64 KiB (`maxManifestBytes`, `sources.go`),
 for config and managed entries and for the harness. The text: `<dir>/lazyrex.json is <n> bytes,
@@ -977,7 +840,7 @@ over the 65536-byte limit`.
 `hub.admin.replace {"plugin": "<name>", "expect_instance": "<instance id>"}` replaces the running
 instance of an entry-backed plugin with a new instance from its current candidate. It is an admin
 action: the guard of the other admin actions applies (an operator only). Use it after
-`lazyrex-hub plugin update`, or after a local source changed. `expect_instance` is the
+a lock write of an update, or after a local source changed. `expect_instance` is the
 `instance_id` that `hub.plugins` reports. A replay, or a race with another change, then cannot
 replace another instance.
 

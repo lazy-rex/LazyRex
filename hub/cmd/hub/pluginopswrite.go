@@ -42,7 +42,7 @@ func (h *Hub) writeChecks(ctx context.Context, op *pluginOp) (stop bool, err err
 	if cur := lockBase(lock, t.Source); cur != want {
 		return true, h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the lock changed since the %s wrote its pin: %s is %s, not %s; nothing more was written", op.Kind, t.Source, cur, want))
 	}
-	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, lock, e); err != nil {
+	if _, _, err := lockedDir(h.cfg.State, lock, e); err != nil {
 		return true, h.setOpPhase(ctx, op, "locking", fmt.Sprintf("the lock's cache entry of %s does not verify: %v; locking again", t.Source, err), "")
 	}
 	msg, err := h.lockRefusal(op, t, lockFile, lock, lock, fmt.Sprintf("the %s of %s", op.Kind, op.Entry))

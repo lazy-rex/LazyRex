@@ -253,7 +253,7 @@ func fetchCommit(ctx context.Context, git gitRunner, stateDir, tmp, url, owner, 
 		return nil, err
 	}
 	if strings.TrimSpace(string(got)) != commit {
-		return nil, fmt.Errorf("ref %s moved during the fetch; run the command again", fetchRef)
+		return nil, fmt.Errorf("ref %s moved during the fetch; run the operation again", fetchRef)
 	}
 	if t, err := git(ctx, gitDir, nil, "cat-file", "-t", commit); err != nil || strings.TrimSpace(string(t)) != "commit" {
 		return nil, fmt.Errorf("%s is not a commit", commit)

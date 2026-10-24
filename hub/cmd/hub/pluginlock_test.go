@@ -136,10 +136,10 @@ func TestLockDerivedFieldsMissing(t *testing.T) {
 			if got.agree(r) != field {
 				t.Errorf("%s %s: agree = %q", field, mode, got.agree(r))
 			}
-			err = lockMismatch("hub.json", src, got, r, got.agree(r))
-			want := "the lock entry for " + src + " does not match: " + field + "; run lazyrex-hub plugin sync -config hub.json"
+			err = lockMismatch(src, got, r, got.agree(r))
+			want := "the lock entry for " + src + " does not match: " + field + "; update the plugin in LazyRex: Plugins…"
 			if field == "commit" {
-				want = "the locked commit for " + src + " cannot be trusted: commit is missing; run lazyrex-hub plugin update -config hub.json " + src
+				want = "the locked commit for " + src + " cannot be trusted: commit is missing; update the plugin in LazyRex: Plugins…"
 			}
 			if err.Error() != want {
 				t.Errorf("%s %s: %q, want %q", field, mode, err, want)
@@ -189,10 +189,10 @@ func TestLockAgreement(t *testing.T) {
 		if c.field == "" {
 			continue
 		}
-		err := lockMismatch("cfg/hub.json", c.source, e, r, c.field)
-		want := "the lock entry for " + c.source + " does not match: " + c.field + "; run lazyrex-hub plugin sync -config cfg/hub.json"
+		err := lockMismatch(c.source, e, r, c.field)
+		want := "the lock entry for " + c.source + " does not match: " + c.field + "; update the plugin in LazyRex: Plugins…"
 		if c.why != "" {
-			want = "the locked commit for " + c.source + " cannot be trusted: " + c.why + "; run lazyrex-hub plugin update -config cfg/hub.json " + c.source
+			want = "the locked commit for " + c.source + " cannot be trusted: " + c.why + "; update the plugin in LazyRex: Plugins…"
 		}
 		if err.Error() != want {
 			t.Errorf("%s: %q, want %q", c.source, err, want)

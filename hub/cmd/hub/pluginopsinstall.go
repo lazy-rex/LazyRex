@@ -123,7 +123,7 @@ func (h *Hub) installRequests(ctx context.Context) []opRequest {
 			if e.checkSource("") != nil {
 				continue
 			}
-			_, _, err := lockedDir(h.cfg.path, h.cfg.State, lock, e)
+			_, _, err := lockedDir(h.cfg.State, lock, e)
 			var cs *cacheStateError
 			if !errors.As(err, &cs) {
 				continue // in place, or a lock error that an install does not repair

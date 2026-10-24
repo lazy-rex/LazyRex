@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,16 +32,6 @@ func lockOld(t *testing.T, h *Hub, id string) map[string]any {
 	var m map[string]any
 	json.Unmarshal([]byte(s), &m)
 	return m
-}
-
-// statusOK runs plugin status on the hub's config.
-func statusOK(t *testing.T, h *Hub) bool {
-	t.Helper()
-	ok, err := runPluginStatus(h.cfg.path, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ok
 }
 
 const (
@@ -95,8 +84,7 @@ func unpinUpdate(t *testing.T, afterReload func(h *Hub)) (*Hub, *opsCalls, *plug
 }
 
 // unpinning (C5f plan r4): after the reload, the update removes the lock key of the source that it
-// stopped naming, and plugin status is ok. Before C5f the @latest key stayed, and status was not
-// ok (an orphan).
+// stopped naming. Before C5f the @latest key stayed (an orphan).
 func TestPluginOpUnpinUpdate(t *testing.T) {
 	h, _, op := unpinUpdate(t, nil)
 	if err := h.runOp(context.Background(), op); err != nil || op.Phase != "done" {
@@ -105,9 +93,6 @@ func TestPluginOpUnpinUpdate(t *testing.T) {
 	lock := readTestLock(t, h)
 	if lock.Plugins[unpinLatest] != nil || lock.Plugins[unpinTarget] == nil {
 		t.Fatalf("the lock: %v", lock.Plugins)
-	}
-	if !statusOK(t, h) {
-		t.Fatal("plugin status is not ok after the update")
 	}
 	if rec := lockOld(t, h, op.ID); rec["key"] != unpinLatest || rec["outcome"] != "removed" {
 		t.Fatalf("lock_old: %v", rec)
@@ -300,7 +285,7 @@ func TestPluginOpUnpinRemoveAndNone(t *testing.T) {
 	if err := h.runOp(ctx, op); err != nil || op.Phase != "done" {
 		t.Fatalf("the remove: %+v %v", op, err)
 	}
-	if readTestLock(t, h).Plugins[src] != nil || !statusOK(t, h) {
+	if readTestLock(t, h).Plugins[src] != nil {
 		t.Fatalf("after the remove: lock %v", readTestLock(t, h).Plugins)
 	}
 

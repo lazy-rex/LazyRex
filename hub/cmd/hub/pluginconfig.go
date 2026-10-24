@@ -382,7 +382,7 @@ func resolveEntries(snap lockSnapshot, entries []*configEntry, kept []keptName) 
 				continue
 			}
 			var err error
-			if dir, commit, err = lockedDir(snap.cfgPath, snap.state, snap.lock, e); err != nil {
+			if dir, commit, err = lockedDir(snap.state, snap.lock, e); err != nil {
 				s.Err = err
 				continue
 			}

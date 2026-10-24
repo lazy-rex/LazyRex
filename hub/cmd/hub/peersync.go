@@ -84,7 +84,7 @@ func (h *Hub) peerOffered() []peerOffer {
 }
 
 // peerPluginsServe is hub.peer.plugins, called by a peer hub: the pin document of this hub
-// (lazyrex-hub plugin export) and the id and source of each managed GitHub entry.
+// (pluginExport) and the id and source of each managed GitHub entry.
 func (h *Hub) peerPluginsServe(args map[string]any) (any, error) {
 	peer, _ := args["hub"].(string)
 	if h.peerLink(peer) == nil {

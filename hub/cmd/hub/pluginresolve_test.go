@@ -97,20 +97,20 @@ func TestResolveLockedDirErrors(t *testing.T) {
 			t.Errorf("%s: the dependent entry: %v", what, d.err)
 		}
 	}
-	check("not installed", "plugin "+srcM+" is not installed: run lazyrex-hub plugin sync -config "+cfg)
+	check("not installed", "plugin "+srcM+" is not installed: the hub installs it at its next start or reload")
 	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	le := env.lock().Plugins[srcM]
 	entry := env.entryDir(srcM)
 	writeInto(entry, "main.lua", "changed")
-	check("changed", "plugin messaging: the cache entry for commit "+le.Commit+" changed (digest mismatch): run lazyrex-hub plugin sync -config "+cfg)
+	check("changed", "plugin messaging: the cache entry for commit "+le.Commit+" changed (digest mismatch): the hub installs the locked commit again at its next start or reload")
 	removeTree(entry)
-	check("missing", "plugin messaging: the cache has no entry for commit "+le.Commit+": run lazyrex-hub plugin sync -config "+cfg)
+	check("missing", "plugin messaging: the cache has no entry for commit "+le.Commit+": the hub installs the locked commit again at its next start or reload")
 	l := env.lock()
 	l.Plugins[srcM].Ref = "other"
 	env.writeLockRaw(l)
-	check("agreement", lockMismatch(cfg, srcM, l.Plugins[srcM], githubEntry(t, srcM).githubRef(), "ref").Error())
+	check("agreement", lockMismatch(srcM, l.Plugins[srcM], githubEntry(t, srcM).githubRef(), "ref").Error())
 }
 
 // A lock file that does not parse, or cannot be read, refuses every GitHub entry with

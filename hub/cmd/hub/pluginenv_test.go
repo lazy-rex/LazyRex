@@ -1,19 +1,149 @@
 package main
 
-// The plugin manager in a command environment: the install op and the update op install and
-// update the managed GitHub entries of a cmdEnv, as a running hub does.
+// The plugin manager in a command environment: a config directory, a state directory and the
+// GitHub repositories of one test. The install op and the update op install and update the
+// managed GitHub entries of a cmdEnv, as a running hub does. GitHub sources are local
+// repositories through file:// URLs (the internal remote option); the tests do not prove GitHub
+// behavior.
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 )
 
-// opsHub gives the ops test hub of the config cfg: its state, its lock and its managed file are
+// cmdEnv is a config directory, a state directory and the GitHub repositories of one test.
+type cmdEnv struct {
+	t        *testing.T
+	dir      string // the config directory
+	state    string
+	repos    map[string]*testRepo // "owner/repo" to the repository
+	opts     pluginCmdOpts
+	cfgState string // the state field of the config, when it differs from state (a relative state)
+	h        *Hub   // the ops test hub of opsHub
+	n        int    // the count of op keys
+}
+
+func newCmdEnv(t *testing.T) *cmdEnv {
+	t.Helper()
+	gitTestEnv(t)
+	env := &cmdEnv{t: t, dir: t.TempDir(), state: cacheTemp(t), repos: map[string]*testRepo{}}
+	env.opts.remote = func(owner, repo string) string {
+		if r := env.repos[owner+"/"+repo]; r != nil {
+			return r.url()
+		}
+		return "file:///nonexistent/" + owner + "/" + repo
+	}
+	return env
+}
+
+// repo makes the repository owner/repo with a manifest for name (and depends) on main, and gives
+// it.
+func (env *cmdEnv) repo(owner, repo, name string, depends ...string) *testRepo {
+	env.t.Helper()
+	r := newTestRepo(env.t)
+	env.repos[owner+"/"+repo] = r
+	r.commit(map[string]string{"lazyrex.json": manifestJSON(name, depends...), "main.lua": "return 1\n"})
+	return r
+}
+
+func manifestJSON(name string, depends ...string) string {
+	m := map[string]any{"name": name, "main": "main.lua"}
+	if len(depends) > 0 {
+		m["depends"] = depends
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// config writes hub.json with these sources and gives its path.
+func (env *cmdEnv) config(sources ...string) string {
+	env.t.Helper()
+	var plugins []map[string]any
+	for _, s := range sources {
+		plugins = append(plugins, map[string]any{"source": s})
+	}
+	st := env.state
+	if env.cfgState != "" {
+		st = env.cfgState
+	}
+	b, _ := json.Marshal(map[string]any{"server": "unix:///tmp/lrt-x/rex.sock", "state": st, "plugins": plugins})
+	p := filepath.Join(env.dir, "hub.json")
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		env.t.Fatal(err)
+	}
+	return p
+}
+
+// local makes a local plugin directory sub with a manifest for name.
+func (env *cmdEnv) local(sub, name string, depends ...string) string {
+	plugDir(env.t, env.dir, sub, manifestJSON(name, depends...), "main.lua")
+	return sub
+}
+
+func (env *cmdEnv) lockBytes() []byte {
+	b, err := os.ReadFile(filepath.Join(env.dir, "hub.lock.json"))
+	if err != nil && !os.IsNotExist(err) {
+		env.t.Fatal(err)
+	}
+	return b
+}
+
+func (env *cmdEnv) lock() *pluginLock {
+	env.t.Helper()
+	l, err := readLock(filepath.Join(env.dir, "hub.lock.json"))
+	if err != nil {
+		env.t.Fatal(err)
+	}
+	return l
+}
+
+// writeLockRaw replaces the lock file with a JSON value (for broken and partial locks).
+func (env *cmdEnv) writeLockRaw(v any) {
+	env.t.Helper()
+	b, _ := json.Marshal(v)
+	if err := os.WriteFile(filepath.Join(env.dir, "hub.lock.json"), b, 0o600); err != nil {
+		env.t.Fatal(err)
+	}
+}
+
+// treeSnapshot gives every path, mode and content under dir, to show that a directory did not change.
+func treeSnapshot(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			t.Fatal(err)
+		}
+		fi, _ := d.Info()
+		c := ""
+		if d.Type().IsRegular() {
+			x, _ := os.ReadFile(p)
+			c = string(x)
+		}
+		fmt.Fprintf(&b, "%s %o %q\n", p, fi.Mode(), c)
+		return nil
+	})
+	return b.String()
+}
+
+func (env *cmdEnv) entryDir(src string) string {
+	return filepath.Join(env.state, "plugins", filepath.FromSlash(env.lock().Plugins[src].Dir))
+}
+
+const srcM = "github:lazy-rex/Messaging@main"
+
+const srcLatest = "github:lazy-rex/Messaging@latest"
+
 // the environment's, and its git remotes are env.repos. A second call gives the same hub.
 func (env *cmdEnv) opsHub(cfg string) *Hub {
 	env.t.Helper()
@@ -98,7 +228,7 @@ func TestCmdEnvInstallAndUpdate(t *testing.T) {
 	if le == nil || le.Commit != r.git("rev-parse", "HEAD") {
 		t.Fatalf("the lock entry: %+v", le)
 	}
-	if _, _, err := lockedDir(cfg, env.state, env.lock(), githubEntry(t, srcM)); err != nil {
+	if _, _, err := lockedDir(env.state, env.lock(), githubEntry(t, srcM)); err != nil {
 		t.Fatal(err)
 	}
 	if ops := runInstalls(t, env.opsHub(cfg), "reload"); len(ops) != 0 {
@@ -123,10 +253,10 @@ func TestUpdateClearsLockMismatch(t *testing.T) {
 		want       func(cfg string, le *lockEntry) string
 	}{
 		{"ref", "does not match: ref;", func(le *lockEntry) { le.Ref = "other" }, func(cfg string, le *lockEntry) string {
-			return lockMismatch(cfg, srcM, le, githubEntry(t, srcM).githubRef(), "ref").Error()
+			return lockMismatch(srcM, le, githubEntry(t, srcM).githubRef(), "ref").Error()
 		}},
 		{"untrusted", "cannot be trusted: commit is not 40 lowercase hex;", func(le *lockEntry) { le.Commit = strings.ToUpper(le.Commit) }, func(cfg string, le *lockEntry) string {
-			return lockMismatch(cfg, srcM, le, githubEntry(t, srcM).githubRef(), "commit").Error()
+			return lockMismatch(srcM, le, githubEntry(t, srcM).githubRef(), "commit").Error()
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -232,7 +362,7 @@ func TestLatestInstallRefusesMissingTag(t *testing.T) {
 		}
 		c := env.load(cfg)
 		resolve(&c)
-		if want := untrustedCommit(cfg, srcLatest, why).Error(); c.entries[0].err == nil || c.entries[0].err.Error() != want {
+		if want := untrustedCommit(srcLatest, why).Error(); c.entries[0].err == nil || c.entries[0].err.Error() != want {
 			t.Fatalf("%q: got  %v\nwant %s", tag, c.entries[0].err, want)
 		}
 		if ops := runInstalls(t, env.opsHub(cfg), "reload"); len(ops) != 0 || !bytes.Equal(before, env.lockBytes()) {
@@ -259,5 +389,100 @@ func TestLatestInstallNoRelease(t *testing.T) {
 	}
 	if env.lockBytes() != nil {
 		t.Fatal("a lock file was made")
+	}
+}
+
+// The flock helper process: it takes both flocks of $LAZYREX_TEST_FLOCK ("state|lockfile"),
+// writes "locked" and waits until its stdin closes.
+func TestFlockHelper(t *testing.T) {
+	spec := os.Getenv("LAZYREX_TEST_FLOCK")
+	if spec == "" {
+		t.Skip("helper process only")
+	}
+	state, lock, _ := strings.Cut(spec, "|")
+	release, err := lockCommands(state, lock)
+	if err != nil {
+		fmt.Println("error:", err)
+		os.Exit(1)
+	}
+	defer release()
+	fmt.Println("locked")
+	b := make([]byte, 1)
+	os.Stdin.Read(b)
+}
+
+// holdFlocks starts a helper process that holds the flocks of state and lock, and gives its pid.
+func holdFlocks(t *testing.T, state, lock string) int {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFlockHelper$")
+	cmd.Env = append(os.Environ(), "LAZYREX_TEST_FLOCK="+state+"|"+lock)
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stdin.Close(); cmd.Wait() })
+	buf := make([]byte, 64)
+	n, _ := stdout.Read(buf)
+	if !strings.HasPrefix(string(buf[:n]), "locked") {
+		t.Fatalf("helper: %q", buf[:n])
+	}
+	return cmd.Process.Pid
+}
+
+// Two commands on one state (any lock file) or on one lock file (any state): the second fails at
+// once with the holder's pid. A failed second flock releases the first.
+func TestFlocks(t *testing.T) {
+	dir := t.TempDir()
+	s1, s2 := filepath.Join(dir, "s1"), filepath.Join(dir, "s2")
+	l1, l2, l3 := filepath.Join(dir, "a.lock.json"), filepath.Join(dir, "b.lock.json"), filepath.Join(dir, "c.lock.json")
+	pid := holdFlocks(t, s1, l1)
+	want := fmt.Sprintf("another plugin command runs (pid %d)", pid)
+	if _, err := lockCommands(s1, l2); err == nil || err.Error() != want {
+		t.Errorf("same state, other lock: %v", err)
+	}
+	if _, err := lockCommands(s2, l1); err == nil || err.Error() != want {
+		t.Errorf("other state, same lock: %v", err)
+	}
+	// The failure on l1 released the flock of s2.
+	release, err := lockCommands(s2, l3)
+	if err != nil {
+		t.Fatalf("s2 after a failed second flock: %v", err)
+	}
+	release()
+	// An empty pid file (a holder that has not written it yet) gives pid unknown.
+	f, _ := os.OpenFile(filepath.Join(s1, "plugins", ".lock"), os.O_RDWR, 0)
+	f.Truncate(0)
+	f.Close()
+	if _, err := lockCommands(s1, l2); err == nil || err.Error() != "another plugin command runs (pid unknown)" {
+		t.Errorf("empty pid: %v", err)
+	}
+}
+
+// A relative state is relative to the working directory at the load (lead-relstate): the load
+// makes it absolute, and the install op fetches into it. Before, the fetch child failed in a
+// relative directory.
+func TestRelativeStateInstall(t *testing.T) {
+	env := newCmdEnv(t)
+	r := env.repo("lazy-rex", "Messaging", "messaging")
+	env.cfgState = "state"
+	env.state = filepath.Join(env.dir, "state")
+	t.Cleanup(func() { removeTree(env.state) })
+	t.Chdir(env.dir)
+	env.managed("messaging=" + srcM)
+	cfg := env.config()
+	c := env.load(cfg)
+	wd, _ := os.Getwd()
+	if c.State != filepath.Join(wd, "state") || c.managedPath != filepath.Join(wd, "state", "plugins.json") {
+		t.Fatalf("state %s, managed file %s; want them under %s", c.State, c.managedPath, wd)
+	}
+	if err := env.install(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if le := env.lock().Plugins[srcM]; le == nil || le.Commit != r.git("rev-parse", "HEAD") {
+		t.Fatalf("the lock entry: %+v", le)
+	}
+	if _, _, err := lockedDir(env.state, env.lock(), githubEntry(t, srcM)); err != nil {
+		t.Fatal(err)
 	}
 }

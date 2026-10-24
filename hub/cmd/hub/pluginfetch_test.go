@@ -215,7 +215,7 @@ func TestFetchMoved(t *testing.T) {
 	old := r.commit(map[string]string{"lazyrex.json": `{"name":"messaging","main":"m.lua"}`, "m.lua": ""})
 	r.commit(map[string]string{"m.lua": "moved"})
 	state, _, err := fetchTest(t, r, "refs/heads/main", old, false)
-	if err == nil || err.Error() != "ref refs/heads/main moved during the fetch; run the command again" {
+	if err == nil || err.Error() != "ref refs/heads/main moved during the fetch; run the operation again" {
 		t.Fatalf("got %v", err)
 	}
 	if p := published(t, state); len(p) != 0 {

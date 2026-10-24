@@ -1,9 +1,7 @@
 package main
 
 // The locking phase of add and update (step 4 plan, item 4): the lock writer. It writes the op's
-// pin into the lock file under both plugin command flocks, as a CLI "plugin update" does, with a
-// file attempt (write:lock). It never writes <lock>.peers.json: a manager change is a local
-// change, as a CLI update is.
+// pin into the lock file under both plugin command flocks, with a file attempt (write:lock).
 
 import (
 	"context"
@@ -158,7 +156,7 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	if err != nil {
 		return h.setOpPhase(ctx, op, "conflict", "", err.Error()+"; nothing was written")
 	}
-	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: &pin}}, e); err != nil {
+	if _, _, err := lockedDir(h.cfg.State, &pluginLock{Plugins: map[string]*lockEntry{t.Source: &pin}}, e); err != nil {
 		if _, err := h.db.ExecContext(ctx, `UPDATE plugin_ops SET pin = '', updated = ? WHERE op_id = ?`, time.Now().UnixMilli(), op.ID); err != nil {
 			return err
 		}
@@ -178,7 +176,7 @@ func (h *Hub) opLock(ctx context.Context, op *pluginOp) error {
 	// does not count.
 	repair := false
 	if written && lock.Plugins[t.Source].Dir != pin.Dir {
-		if _, _, err := lockedDir(h.cfg.path, h.cfg.State, lock, e); err != nil {
+		if _, _, err := lockedDir(h.cfg.State, lock, e); err != nil {
 			written, repair = false, true
 		}
 	}

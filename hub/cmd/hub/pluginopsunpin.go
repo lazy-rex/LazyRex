@@ -2,8 +2,8 @@ package main
 
 // The unpinning phase of update and remove (C5f plan r4; the hub lead's rulings lead-lockorphan and
 // lead-c5f3): after the reload, the op removes the lock entry of the source that it stopped naming,
-// so that a successful op does not leave an orphan (plugin status not ok). plugin sync removes the
-// orphans of other writers. A kept key never stops the op: its reason is in the record (lock_old)
+// so that a successful op does not leave an orphan. A lock entry that no entry names stays; it is
+// not used (docs/hub.md). A kept key never stops the op: its reason is in the record (lock_old)
 // and in the end text.
 
 import (
@@ -162,8 +162,8 @@ func (h *Hub) opUnpin(ctx context.Context, op *pluginOp) error {
 	if err != nil {
 		return done("kept", fmt.Sprintf("the config file %s does not read: %v", h.cfg.path, err))
 	}
-	// plugin sync reads the files that the config on disk names, under the flocks of its state. When
-	// they are not the hub's, the guards below do not see what sync sees.
+	// The lock writers read the files that the config on disk names, under the flocks of its state.
+	// When they are not the hub's, the guards below do not see what those writers see.
 	if !samePath(cfg.managed, h.cfg.managedPath) || !samePath(cfg.lock, lockFile) || !samePath(cfg.state, h.cfg.State) {
 		return done("kept", fmt.Sprintf("the config file names the managed file %s, the lock %s and the state %s; the hub uses %s, %s and %s", cfg.managed, cfg.lock, cfg.state, h.cfg.managedPath, lockFile, h.cfg.State))
 	}
