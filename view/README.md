@@ -216,6 +216,8 @@ Schema tests reject unknown versions and oversized history pages.
 ## Behavior
 
 Physical mouse behavior, iOS touch, and two real apps with different sizes are not verified.
+The protocol fixture verifies recovery of a committed operation after its reply is lost.
+It does not replace the full lab test of a hub restart during a send.
 
 ### No hub
 
@@ -258,7 +260,6 @@ When these checks pass, Bubble Tea restores the terminal. The renderer then call
 and the same environment. This permits an atomic binary replacement at that path.
 A reload does not preserve cursor position, focus, or scroll position.
 
-
 Tests verify that reload waits for a save result, a generic action result, and
 connection recovery. Tests also verify that conflicts, removed controls, and dirty
 text or choice fields prevent reload. These tests pass with the Go race detector.
@@ -292,7 +293,6 @@ the client has not already started the call. The renderer starts with unknown
 focus, treated as not focused. Rex app forwarding of focus events, including
 initial focus after reload, remains unverified. Hub navigation handles its own
 visibility evidence.
-
 
 Tests pass with the Go race detector. They cover 38×24, 80×24, and 140×40 layouts
 in light and dark colors; fixed composer position; scroll anchors; Markdown;
