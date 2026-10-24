@@ -30,6 +30,7 @@ var conflictSites = []struct{ file, format, path, test, message string }{
 	{"promptanswer.go", `"key %s was used with another prompt_id or input"`, "real", "../../../tests/prompts/tests/prompts.lua", `operation_conflict: key k-keys was used with another prompt_id or input`},
 	{"pluginops.go", `"key %q has a different operation"`, "real", "pluginops_lab_test.go", `operation_conflict: key "rm-d" has a different operation`},
 	{"peers.go", `"key %q was sent to %s with another body"`, "real", "peers_lab_test.go", `operation_conflict: key "k1" was sent to b with another body`},
+	{"peers.go", `"key %q was sent to %s for another plugin"`, "real", "peers_lab_test.go", `operation_conflict: key "k1" was sent to b for another plugin`},
 	{"identity.go", `"key %q was used by %s before they became one identity; use a new key"`, "direct", "keyconflict_test.go", `key "dup" was used by claude:x and by spawn:spawn-test before they became one identity; use a new key`},
 }
 

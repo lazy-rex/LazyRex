@@ -51,6 +51,7 @@ func openDB(path string) (*DB, error) {
 		`ALTER TABLE plugins ADD COLUMN entry_identity TEXT NOT NULL DEFAULT ''`, // entryIdentity of the entry that the record was last saved with; '' = unknown
 		`ALTER TABLE plugins ADD COLUMN selected_run TEXT NOT NULL DEFAULT ''`,   // Plugin.selected as JSON; '' = none (selectedrun.go)
 		`ALTER TABLE peer_inbox ADD COLUMN outbox_id TEXT NOT NULL DEFAULT ''`,   // the identity of the peer's outbox that the cursor belongs to (peers.go)
+		`ALTER TABLE peer_outbox ADD COLUMN target TEXT NOT NULL DEFAULT ''`,     // the plugin on the peer that gets the envelope; '' = the sender's name (peers.go)
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return nil, err

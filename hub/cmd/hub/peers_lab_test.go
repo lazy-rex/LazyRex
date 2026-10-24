@@ -46,15 +46,30 @@ if err then print('register: ' .. tostring(err)) end
 rex.call('client.set_label', {label = 'lazyrex-plugin:peerfix'})
 `
 
-// peerLab is one lab hub of the two-hub test, with more lab server options (serverArgs).
+// peerQuiet is a plugin without a peer.receive listener: its keymap has one other action.
+const peerQuiet = `local hub_id = assert(rex.args.hub_client_id, 'hub_client_id is required')
+local instance_id = assert(rex.args.instance_id, 'instance_id is required')
+rex.call('client.keymap', {actions = {{name = 'quiet.ping', kind = 'client', title = 'Ping', args = {type = 'object'}}}})
+rex.on('client_perform_requested', function(ctx, ev)
+  rex.call('client.reply', {call_id = ev.call_id, result = {}})
+end)
+local res, err = rex.call('client.perform', {client_id = hub_id, action = 'hub.register', args = {plugin = 'peerquiet', instance_id = instance_id, exports = {}}, timeout_ms = 10000})
+if err then print('register: ' .. tostring(err)) end
+rex.call('client.set_label', {label = 'lazyrex-plugin:peerquiet'})
+`
+
+// peerLab is one lab hub of the two-hub test, with more lab server options (serverArgs). It has the
+// plugins peerfix and peerquiet.
 func peerLab(t *testing.T, serverArgs ...string) *startLab {
-	s := newServerLab(t, serverArgs, "peerfix")
-	d := filepath.Join(s.src, "peerfix")
-	if err := os.MkdirAll(d, 0o700); err != nil {
-		t.Fatal(err)
+	s := newServerLab(t, serverArgs, "peerfix", "peerquiet")
+	for name, main := range map[string]string{"peerfix": peerFixture, "peerquiet": peerQuiet} {
+		d := filepath.Join(s.src, name)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(d, "lazyrex.json"), []byte(`{"name":"`+name+`","main":"main.lua"}`), 0o600)
+		os.WriteFile(filepath.Join(d, "main.lua"), []byte(main), 0o600)
 	}
-	os.WriteFile(filepath.Join(d, "lazyrex.json"), []byte(`{"name":"peerfix","main":"main.lua"}`), 0o600)
-	os.WriteFile(filepath.Join(d, "main.lua"), []byte(peerFixture), 0o600)
 	return s
 }
 
@@ -96,6 +111,11 @@ func (s *startLab) got() []any {
 // body stays a string. A refused envelope does not stop the next one. Then both outboxes are
 // empty and both links are up, and an agent on a reads hub.peer.status through the agent face.
 //
+// Targets (lead-fedxp): an envelope for a plugin that b does not have, and one for b's peerquiet,
+// which offers no peer.receive (Rex refuses the perform: not_supported), are dropped and counted in
+// b's hub.peer.status; neither stops the next envelope. A target that is not a plugin name is
+// refused at the send, and a key sent again for another target is operation_conflict.
+//
 // b's lab server also listens on HTTP at 127.0.0.1, and a reaches b at that address: a's pulls and
 // nudges arrive at b's hub over TCP, from a caller with no process ID, as from a remote hub.
 func TestPeerHubsLab(t *testing.T) {
@@ -113,6 +133,7 @@ func TestPeerHubsLab(t *testing.T) {
 	b.start()
 	a.registered("peerfix")
 	b.registered("peerfix")
+	b.registered("peerquiet")
 
 	send := func(s *startLab, peer, key, body string) {
 		t.Helper()
@@ -144,6 +165,26 @@ func TestPeerHubsLab(t *testing.T) {
 		!strings.Contains(fmt.Sprint(out["error"]), `operation_conflict: key "k1" was sent to b with another body`) {
 		t.Fatalf("another body for k1: %v", out)
 	}
+	for _, x := range [][2]string{{"x1", "ghost"}, {"x2", "peerquiet"}, {"x3", "peerfix"}} {
+		if out := a.plugin("fix.send", map[string]any{"hub": "b", "key": x[0], "body": "t", "plugin": x[1]}); out["error"] != nil {
+			t.Fatalf("send %s to %s: %v (%v)", x[0], x[1], out["error"], out["code"])
+		}
+	}
+	if g := wait(b, 3); g[2].(map[string]any)["key"] != "x3" {
+		t.Fatalf("b got %v, want x3 third", g)
+	}
+	b.wait("two drops", func() bool {
+		d := b.must("hub.peer.status", map[string]any{})["peers"].([]any)[0].(map[string]any)["dropped"].(map[string]any)
+		last, _ := d["last"].(map[string]any)
+		return d["count"] == float64(2) && last["plugin"] == "peerquiet" && last["from_plugin"] == "peerfix" && last["key"] == "x2" && last["reason"] == "no_listener"
+	})
+	if out := a.plugin("fix.send", map[string]any{"hub": "b", "key": "x4", "body": "t", "plugin": "Bad"}); !strings.Contains(fmt.Sprint(out["error"]), "invalid: plugin must be a plugin name") {
+		t.Fatalf("a bad target: %v", out)
+	}
+	if out := a.plugin("fix.send", map[string]any{"hub": "b", "key": "k1", "body": `{"v":1,"text":"hello"}`, "plugin": "peerquiet"}); !strings.Contains(fmt.Sprint(out["error"]), "code=operation_conflict") ||
+		!strings.Contains(fmt.Sprint(out["error"]), `operation_conflict: key "k1" was sent to b for another plugin`) {
+		t.Fatalf("k1 for another target: %v", out)
+	}
 	for _, s := range []*startLab{a, b} {
 		s.wait("an empty outbox and an up link", func() bool {
 			st := s.must("hub.peer.status", map[string]any{})
@@ -152,8 +193,8 @@ func TestPeerHubsLab(t *testing.T) {
 		})
 		t.Logf("hub.peer.status: %v", s.must("hub.peer.status", map[string]any{}))
 	}
-	if g := b.got(); len(g) != 2 {
-		t.Fatalf("b got %d envelopes after the acks, want 2 (no redelivery): %v", len(g), g)
+	if g := b.got(); len(g) != 3 {
+		t.Fatalf("b got %d envelopes after the acks, want 3 (no redelivery): %v", len(g), g)
 	}
 	// An agent reads the peer state through the agent face (rex -C lazyrex).
 	st, err := a.agentDo(a.opsAgent("x"), "hub.peer.status", map[string]any{})
