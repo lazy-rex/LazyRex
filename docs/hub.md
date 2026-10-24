@@ -23,7 +23,6 @@ Lab only (`spikes/lab/server.sh`). Nothing runs on the real server.
 
 This section defines schema version `1`. Claude owns the hub and plugin side.
 Codex owns the renderer and the schema types under `view/`.
-The first proof uses the real renderer, hub, and messaging plugin in a lab.
 Custom renderers use the same interface. Renderers never change Rex layout.
 
 ### Transport and admission
