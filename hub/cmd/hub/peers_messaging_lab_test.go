@@ -33,13 +33,13 @@ func (s *startLab) agentID(name string) string {
 	return id
 }
 
-// messagingOutbox counts the rows of Messaging's own peer_outbox table on s's hub.
+// messagingOutbox counts the queued rows of the SDK peer outbox of Messaging on s's hub.
 func (s *startLab) messagingOutbox() string {
 	s.t.Helper()
-	r := s.must("hub.test.sql", map[string]any{"plugin": "messaging", "sql": "SELECT count(*) FROM peer_outbox", "params": []any{}})
+	r := s.must("hub.test.sql", map[string]any{"plugin": "messaging", "sql": "SELECT count(*) FROM sdk_peer_outbox WHERE state = ?", "params": []any{"queued"}})
 	rows, _ := r["rows"].([]any)
 	if len(rows) != 1 {
-		s.t.Fatalf("peer_outbox count: %v", r)
+		s.t.Fatalf("sdk_peer_outbox count: %v", r)
 	}
 	v := rows[0].([]any)[0]
 	if m, ok := v.(map[string]any); ok {
@@ -120,7 +120,7 @@ func TestPeerMessagingLab(t *testing.T) {
 			return p["state"] == "up" && p["outbox"] == float64(0)
 		})
 		if n := s.messagingOutbox(); n != "0" {
-			t.Fatalf("Messaging peer_outbox has %s rows", n)
+			t.Fatalf("SDK peer outbox has %s queued rows", n)
 		}
 		t.Logf("hub.peer.status: %v", s.must("hub.peer.status", map[string]any{}))
 	}
