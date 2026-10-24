@@ -21,7 +21,6 @@ Lab only (`spikes/lab/server.sh`). Nothing runs on the real server.
 
 ## Renderer contract
 
-Status: **approved by Claude with changes, 2026-10-16**. Implementation is in progress.
 This section defines schema version `1`. Claude owns the hub and plugin side.
 Codex owns the renderer and the schema types under `view/`.
 The first proof uses the real renderer, hub, and messaging plugin in a lab.
@@ -524,7 +523,7 @@ Gallery: the messaging plugin adds a `Gallery` tab at route `/gallery`. The gall
 
 ## Profiles and workers
 
-A **profile** is a named command, for example "Rails Server" or "Codex". A **worker** is one running copy of a profile: the hub starts it in a new tab of the hub's session. Status: lab only (Claude and Codex, Rex 1203, 2026-10-16). Not deployed.
+A **profile** is a named command, for example "Rails Server" or "Codex". A **worker** is one running copy of a profile: the hub starts it in a new tab of the hub's session.
 
 **Profiles file.** The config key `profiles` names a JSON file `{"profiles": [...]}`. Each profile has `id` (`^[a-z][a-z0-9_]{0,31}$`), `name`, `kind` (`agent` or `accessory`), `command` (argv), optional absolute `cwd` and optional `env`. Env names that start with `LAZYREX_` are refused. Optional `args` declares named values, for example `{"name": "task", "label": "Task"}` with `"command": ["claude", "${task}"]`. A spawn passes `args: {"task": "..."}`. Each `${name}` must be a whole command argument (not the program), and the hub replaces it with the value as one argument: no shell runs, so any text is safe. An arg with no value and no default is left out, so plain `claude` runs. A `required` arg must have a value; an undeclared arg is refused. Each declared arg must appear in the command. An agent profile can have `resume`, the argv that continues a conversation, for example `["codex", "--no-daemon", "resume", "${conversation_id}"]` or `["claude", "--resume", "${conversation_id}"]`. `${conversation_id}` is required; the hub fills it from the identity, never from an arg. Other tokens are declared args, filled from the spawn's effective args; the same token rules apply. The resume command gets the same environment as a spawn (see "Agent resume"). An unknown field or an invalid profile makes the whole file invalid, so a typo never removes a profile silently. The hub reads the file at each request and tells the plugins when it changes. Profiles are global now. Later, spawn point files come after the global file, and a profile in a later file replaces the profile with the same `id` (`loadFrom` already applies this order).
 
@@ -596,7 +595,7 @@ No cap on workers is configured, and nothing starts or restarts a worker automat
 
 A worker in a previous live session stays recorded and can be stopped. The agent-session integration routes readiness and notices through the recorded session. A legacy row has no recorded session. Recovery searches sessions for its exact recorded block. A legacy row without a located block stays unresolved. A pending agent spawn opens through its pane's identity report (an adoption); a label alone cannot establish ownership.
 
-Verification: `workers_session_test.go` calls the worker entry points against an isolated Rex server. Six lab cases passed on Rex 1203 (`0.0.1792158932-g88fd41`): session loss with same-key retry, stop in a previous session, legacy block discovery, legacy late-join adoption, a pending worker in a previous session, and pending loss versus unknown legacy state. The previous-session cases detach the test connection first. The schema test preserves an old row through two migrations. The hub test package passed with these lab cases enabled. The late-join case tests adoption after caller proof; it does not run a new agent's complete handshake. No live workspace changed during this verification.
+Verification: `workers_session_test.go` calls the worker entry points against an isolated Rex server. Six lab cases cover session loss with same-key retry, stop in a previous session, legacy block discovery, legacy late-join adoption, a pending worker in a previous session, and pending loss versus unknown legacy state. The previous-session cases detach the test connection first. The schema test preserves an old row through two migrations. The late-join case tests adoption after caller proof; it does not run a new agent's complete handshake.
 
 Run the lab cases with `LAZYREX_LAB=1 go test ./cmd/hub -run TestWorkerSessionLab -v` from the hub directory. Each lab case starts its own lab Rex server (rexLab). Without LAZYREX_LAB=1, the lab cases skip. Integration with the plugin recovery changes remains the integration owner's next step.
 
@@ -614,18 +613,16 @@ Not verified on a real hub: the `failed` state (no harmless way to make Rex refu
 
 ## The work session
 
-Status: lab (Claude, Rex 1203, 2026-10-16).
-
 The hub owns its work session: the LazyRex session (`ui_sessions` key `*`). Agents bind to panes there, and plugin processes and workers start there. The config has no `session` field; the hub refuses a config that has one. At start, the hub uses the recorded LazyRex session, or adopts one session labeled "LazyRex", or creates one.
 
-Reason: the config used to name a session ID. On 2026-10-16 the maintainer closed that session (LazyRexWork). Its panes, the plugin processes and the hub itself closed with it, and the stale ID stopped every restart.
+Reason: the config used to name a session ID. When the maintainer closed that session, its panes, the plugin processes and the hub itself closed with it, and the stale ID stopped every restart.
 
-Each plugin row records the session of its instance (`plugins.session_id`, and `spawn_intents.session_id`). Rules (Codex review of d35ab4b):
+Each plugin row records the session of its instance (`plugins.session_id`, and `spawn_intents.session_id`). Rules:
 
 - A recorded block that is missing from its live session is a user stop, as before. Closing one plugin pane while the hub runs is a user stop too.
 - A block whose session is gone is not a stop. The hub starts the plugin again in the work session. This applies at start and while the hub runs: on `block_closed` the hub checks the plugin's session first. If the work session closed, the UI pass creates a new one and the plugin starts there.
 - If the hub cannot check the session (an error, not an answer), it saves no stop. The saved identity stays, so a hub restart classifies the close again. The hub also checks again in the background for about a minute. If it still cannot tell, it emits `plugin_close_unclassified` and starts nothing; use `hub.admin.start` or `hub.admin.stop`.
-- The hub attaches another session before it reads or closes blocks there: Rex refuses those calls on a session the connection has not attached. Observed in the lab: a sending intent named an instance alive in an old, unattached session; the hub found it, stopped it and started a new instance in the work session.
+- The hub attaches another session before it reads or closes blocks there: Rex refuses those calls on a session the connection has not attached.
 - A row from before the session was recorded: the hub searches every session for the block and retires it there. If no session has it, the hub starts the plugin again (migration decision: desired=running means the hub never recorded a stop).
 - A spawn intent for a session that is gone is abandoned. An intent for a live session is searched for in that session, and stays unresolved until found. A legacy intent is searched for in every session. An unresolved intent stops every start of the plugin, also `hub.admin.start` (code `unresolved_intent`). There is no override (plugin-sources.md, section 7).
 - A plugin whose dependency is not registered waits (state `waiting`, with the names). An accepted `hub.register`, a `hub.admin.start` or `hub.admin.stop` of any plugin, and a refusal start each waiting plugin again. `hub.admin.start` of such a plugin answers `{"desired": "running", "state": "waiting", "waiting": [names]}`. A dependency that stops, crashes or is refused later does not stop its dependents (plugin-sources.md, section 7).
@@ -714,8 +711,6 @@ Each plugin row records the session of its instance (`plugins.session_id`, and `
   After the latch is set, every later admin call that passes the admin guard is refused with `refused: relaunch in progress` until the hub exits. This includes a resend of the same request and `hub.admin.shutdown`. The admin guard runs first, so an agent or plugin pane learns nothing about a relaunch. Other actions still answer. Unlike `hub.admin.shutdown`, an accepted relaunch also stops the hub when its reply cannot be delivered. The guarantee is at most one relaunch for each hub process: a resend with the same `expect_exec` gets "relaunch in progress" from this hub or "already restarted" from a new hub. The exception is a failed exec (see "Relaunch"): the wrapper starts the old version again as a new hub process at the same exec N, without a latch, so that hub accepts `expect_exec` N again, and `restart.json` `last_exec` {target N+1, outcome failed} records the failed attempt. That is the way to retry on purpose. The restart command sends `hub.admin.relaunch` once and never resends; a second relaunch needs a new command. A stale resend from another sender can at worst repeat an exec of the same binary. Tests: `TestRelaunchRefusals`, `TestRelaunchLatch`, `TestRelaunchStopsAlsoWhenItsReplyIsLost`.
 - `hub.info` returns `{"state", "pid", "generation", "exec", "commit", "modified", "sdk", "view"}`: the canonical state directory (absolute, symlinks resolved), the hub process id, the hub generation, the exec count of its restart wrapper (`LAZYREX_EXEC`; 0 without a wrapper), the build's VCS revision and modified flag (`""` and false when the build has no VCS information), and the SDK directory and renderer path that the hub resolved at its start (`""` for none; see "Paths at the start" in "Restart wrapper"). Any client may call it; it is a read. It takes no arguments (`hub.info takes no arguments`). The commands `lazyrex-hub stop` and `status` use it to find the hub of a config (see "Stop and status").
 - Process information reads: macOS uses sysctl `kern.proc.pid` (an empty answer means no such process). Linux reads `/proc/<pid>/stat` (the parent pid, and starttime after the last `)`, with the boot time from `/proc/stat` btime) and `/proc/<pid>/cmdline`. Verified on Linux (reviewer, 2026-10-21, Rex 0.0.1792593189-g3f4a0a, Go 1.27.2 linux/amd64, CGO_ENABLED=0): the process and guard unit tests and the plugin lifecycle labs (`TestManaged*Lab`, `TestPlugin*Lab`). The full harness (`TestHarness`: the self-tests, the failure fixtures, the no-match selection, the interrupt cleanup and the isolation checks) passes on Linux at c6f5c15 (reviewer, 2026-10-21, same Rex and Go). Both give the start time as `<seconds>.<microseconds>`. On Linux the resolution is 10 ms (USER_HZ 100): two processes that start in the same tick have equal start times. Equal is not "before" (`startBefore`), so for two hook reports with an equal start time, arrival order decides; the stale-report order is weaker on Linux. Pid reuse: a pid and a start time identify one process lifetime. A false match needs the kernel to give the same pid again within one tick, after the pid space wraps (pid_max: 32768 by default; systemd raises it to 4194304). The hub does not refuse on that case: /proc gives no signal to detect it.
-
-Observed in the lab (Rex 1203): plugins with blocks in a gone session restarted in a new LazyRex session; destroying the work session while the hub ran restarted all three plugins in a new session within about 0.5 s; closing one plugin pane stopped it; a legacy row found its live block and replaced it; a normal restart replaced each instance in place.
 
 Agents may run in any session (the maintainer, 2026-10-16). An identity report (`hub.identity.report`) accepts a caller whose process descends from a pane's child process. The hub searches the work session first, then every other session (`paneChildOf`). The pane row records the session (`identity_panes.session_id`); notices and readiness use it. Observed in the lab (Rex 1203), then with the join: codex and claude joined from a session other than the work session; a message from claude wrote the notice into codex's pane, also while that pane was detached. Every status read attaches the pane's session first (rex-protocol.md, "Program status needs an attached session"). A read that fails, or a pane without the configured record, gives the unknown state. Unknown is never ready: a notice ends with CR, and a blocked prompt could take it as an answer. When a notice waits for an agent in the unknown state, the notice loop reads the status again, outside the hub lock, and applies the result only if no status event or pane change came during the read. The notice text is the one of the plugin's current run (plugin-sources.md, section 7). After the read, the loop checks the agent and the plugin again: a plugin with no run (for example after a stop during the read) gets no notice, and the notice waits for its next run. A read that gives no state is retried with a backoff of 5 s to 1 min for that agent (tests: `tests/harness/tests/notice_ready.lua`). Start Codex with `--no-daemon` (for example `codex --no-daemon resume <id>`). Without it, Codex 0.163.0 starts MCP servers under its `codex app-server` daemon, not under the pane, and the hub refuses the call because the caller is in no pane. Observed 2026-10-16 on the real server, then with the join.
 
@@ -1005,7 +1000,7 @@ Phases: `admitted`, `launching`, `launched`, `prompt_sending`, `prompt_sent`, `r
 - At most 3 targets are between admission and their end at one time: each launch makes the hub tell every plugin that agents changed. The waits are bounded: 120 s for a ready status, 120 s for the hook after the prompt; then `unknown`. These numbers are implementation choices.
 - A pane whose create answer was lost is not adopted by its label (`resolveSpawns`), and the hub writes no prompt to it.
 
-Profiles: see "Profiles and workers" (`resume`). Observed on 2026-10-22 (lab, Codex 0.163.0, Claude 2.1.307): both report program status `idle` before their hook; Codex's hook runs at its first prompt; Claude's at its start.
+Profiles: see "Profiles and workers" (`resume`). With Codex 0.163.0 and Claude 2.1.307, both report program status `idle` before their hook; Codex's hook runs at its first prompt; Claude's at its start.
 
 Palette: with `palette_lua` set, while the hub runs, the generated palette file (`forms.go`) has the hub entry "LazyRex: Resume detached agents" (`hub.admin.resume {}`). It runs at once: it stops nothing. The key is `palette-resume-<seconds>`: a second run in the same second replays the first operation. The palette shows no result; the operation is in the event log (`agent_op_admitted`, `agent_op_phase`). That the Rex app shows the entry and that its run passes the admin guard is inferred: the lab has no app. The restart entries open a form that lists the targets ("Agent restart", "Restart form"). Test: `LAZYREX_LAB=1 go test ./cmd/hub -run 'TestHubPalette(StartFails)?Lab'` (a lab server loads the file; the entry reaches `hub.admin.resume`; after the hub stop the entry is gone: `no action named "lazyrexhub_resume_detached"`).
 
@@ -1031,7 +1026,7 @@ Admission refuses a target when the identity is not current, its pane has no spa
 - The live executable must equal the recorded one: an exec to another path in the same pid is refused. This detects a changed path. It is no proof against an exec of the same path, and the check and the signal are two steps, not one atomic operation.
 - A row without a record (an identity reported by an older hub): the live exec path must be the configured program; a null one refuses ("cannot be verified").
 - A null live executable refuses: on macOS Rex reports none after the running executable was removed (a version cleanup); restart the agent by hand. On Linux Rex reports the old path then. A moved executable is refused as a changed path.
-- The exec path's base name is the CLI of the identity's kind (`claude`, `codex`): v1 restarts a direct agent CLI only. A pane shell reports the shell as its exec path, and a script launcher its interpreter (lab, 2026-10-22), so both are refused ("a shell or a launcher is not restarted"). This is a name rule on the exec path, not on argv0; it cannot tell a program that is deliberately named after the CLI.
+- The exec path's base name is the CLI of the identity's kind (`claude`, `codex`): v1 restarts a direct agent CLI only. A pane shell reports the shell as its exec path, and a script launcher its interpreter, so both are refused ("a shell or a launcher is not restarted"). This is a name rule on the exec path, not on argv0; it cannot tell a program that is deliberately named after the CLI.
 - Missing evidence refuses: no recorded pid or start time, or a start time that cannot be read now.
 
 The check runs at admission and again before each key write and each signal. The stop, each step a stored phase (`restart_admitted`, `stopping`, `terminating`, `killing`):
@@ -1074,31 +1069,27 @@ Tests: `TestCallLogKeepsEveryLineButFastRoutineReads` (the 250 ms boundary inclu
 
 ## Spawn directories and path locks
 
-Status: lab (Claude, Rex 1203, 2026-10-16). Contract agreed with Codex for the worktrees plugin.
-
 - `hub.spawn {cwd}`: an absolute, existing directory. It replaces the profile's cwd. When given, the text as given is part of the retry identity: a retry returns the original result also after the directory is removed. Observed in the lab.
 - The hub always records an explicit effective cwd (the argument, else the profile's cwd, else the home directory), with symlinks resolved (`filepath.EvalSymlinks`), and passes it to Rex. `hub.workers` shows it as `cwd`. Observed in the lab: a spawn with cwd `/tmp/…` ran in `/private/tmp/…`.
 - `hub.cwd.lock {path, key}` (registered plugins): one operation (plugin + key) locks a resolved path. It answers `{locked: false, workers}` while a pending or open worker has a cwd in the path, or an unknown cwd (a row from before cwd was recorded). It also asks Rex for the live cwd of every terminal pane in every session (`com.superlogical.terminal.process`, child and foreground process, from the OS). It answers `panes` for each pane in the path, also a user's shell that ran `cd` into it. This check is a snapshot: it cannot stop a shell from changing to the path after the lock. Observed in the lab (Rex 1203): a shell that ran `cd` into the tree refused the lock until its pane closed. A retry with the same key succeeds; another key gets a conflict.
 - While a lock exists, `hub.spawn` refuses a cwd in the path. The lock check, a second check of the resolved directory, and the INSERT share one transaction. The store has one connection, so transactions run one at a time: a removal (lock, remove, unlock) either refuses the spawn or sees the admitted worker and refuses the lock.
-- A lock refuses a path that overlaps (is a parent or a descendant of) another operation's lock. Observed in the lab: a spawn into a locked directory got "conflict: … is locked by worktrees".
+- A lock refuses a path that overlaps (is a parent or a descendant of) another operation's lock. The refusal is "conflict: … is locked by <owner>".
 - `hub.cwd.unlock {path, key}`: only the owning operation; idempotent; works after the path is removed. `hub.admin.unlock {path}` is for manual recovery. Locks are durable: the plugin keeps a lock until it can prove its operation finished or was refused.
 
 ## Removed: app mode
 
 Status: removed (the user's decision, 2026-10-19: "remove all app mode stuff including state"). Every plugin's tabs open in the one LazyRex session (decision "One LazyRex session; app mode retired").
 
-An older build had app mode. Opening an app hid the user's own sessions (it detached their blocks), and "Exit LazyRex" (`hub.ui.exit`) rebuilt them. Each plugin also had its own app session (`app:<plugin>` in `ui_sessions`, labeled "LazyRex: <name>"). The hub has none of this now. It has no `hub.ui.exit`, no `hub.ui.mode`, no `hub.changed {what: "mode"}`, and no `session` argument for `hub.ui.tabs`.
-
 A view in a session that is not its tab's target (the LazyRex session or the tab's home) retires. Its tab
 opens again in the target session. The hub keeps one `ui_sessions` row: the LazyRex session.
 
 ## Navigation to an agent
 
-- `hub.navigate.agent {agent}` shows the tab of a live agent (a current identity) on the apps, like `hub.navigate.worker`. It refuses an agent with no open tab or a detached tab. Agents cannot call it. The messaging thread overview calls it when the user clicks an agent. `hub.agents` reports `activity` (the agent's program status, for example `working` or `idle`) for a live agent. Lab (2026-10-18): a click on an agent row in the overview made the agent's tab the active window and closed the overview. Untested: a jump to another session on a real app.
+- `hub.navigate.agent {agent}` shows the tab of a live agent (a current identity) on the apps, like `hub.navigate.worker`. It refuses an agent with no open tab or a detached tab. Agents cannot call it. The messaging thread overview calls it when the user clicks an agent. `hub.agents` reports `activity` (the agent's program status, for example `working` or `idle`) for a live agent.
 
 ## One LazyRex session (mount and detach)
 
-Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). The home tab is gone too (see "No LazyRex tab"). Lab (Claude, Rex 1203, 2026-10-16).
+Status: superseded: every plugin's tabs are mounted in the LazyRex session now (see "Removed: app mode"). The home tab is gone too (see "No LazyRex tab").
 
 All plugin views live in one Rex session, labeled `lazyrex`. The home plugin (config `home`, default `lazyrex`) is always mounted, first. Its tab is the menu. One other plugin is **active**, and its tabs are mounted after the home tab. The views of every other plugin are **detached** with `session.detach_block`: their processes and unsaved input stay.
 
@@ -1108,26 +1099,11 @@ All plugin views live in one Rex session, labeled `lazyrex`. The home plugin (co
 - The user cannot close the home: it opens again. User suppression and the crash count of other tabs are unchanged.
 - A view in a session that is not its tab's target session (a session of an older hub, or a home that the tab left) closes: the hub closes its pane, then its row (`view_closed`, by `hub`, why `moved`), and the tab opens in its target session. A failed pane close keeps the row, so the tab opens no second view, and a later pass tries again (`closeMoved`). It counts no crash. The close does not ask the renderer to save its draft: text typed after the last draft save is lost. The saved draft stays, and the new view reads it (lead-noretire; coord-reset-0 accepts the loss).
 - Durable intent: `ui_state` holds `active` and `nav` (written together). The nav intent goes only after Rex confirms the focus. A restore records its nonce (`ui_restores`) before the placeholder exists. The record goes only when that placeholder is confirmed closed. More than one session labeled `lazyrex` is a refusal.
-- The placeholder runs `/bin/sh -c "while :; do sleep 600; done" lazyrex-placeholder <nonce>`. With a plain `sleep 600` the shell execs sleep, and the nonce leaves the process arguments (observed in the lab).
+- The placeholder runs `/bin/sh -c "while :; do sleep 600; done" lazyrex-placeholder <nonce>`. With a plain `sleep 600` the shell execs sleep, and the nonce leaves the process arguments.
 
-Lab results (observed):
-- Mount: the LazyRex tab, then Messages' 9 tabs, with the navigation target active.
-- Swap to a test plugin: Messages' 9 views were detached, and the test plugin's 3 tabs were mounted after LazyRex.
-- Swap back: the same 9 renderer PIDs. Unsaved composer text was visible, and typing worked after the restore. The 9 restores took 0.21 s.
-- A placeholder with the right label and arguments was closed. A pane with only the label was not closed.
-- A hub restart during a swap converged: 13 blocks, no duplicates, no placeholders. The in-memory focus target was lost, so the restart kept the plugin mounted but did not focus the target tab.
-- A user close of the home tab: the home came back, first.
+## No LazyRex tab
 
-- A crash before the move (a recorded placeholder, the view still detached): the placeholder was closed. A crash after the move (the view placed beside a recorded placeholder): the placeholder was closed, and the view was detached again (its plugin was not active).
-
-- Resize after a swap out and back: the restored Claude view redrew at 60 and at 110 columns (its composer border followed the width), and the unsaved draft stayed.
-
-Untested: app selection (no app in the lab).
-
-## No LazyRex tab (2026-10-22)
-
-Status: code with tests; next hub release (coord-parallel-push-1, item 2; decisions Q1 A and Q2,
-2026-10-22). The home plugin has no tab. Every LazyRex command comes from the palette and its
+Decisions Q1 A and Q2 (2026-10-22). The home plugin has no tab. Every LazyRex command comes from the palette and its
 popups.
 
 - Any plugin may declare no tabs (`hub.ui.tabs {tabs = {}}`). The home plugin declares none: it has
@@ -1169,10 +1145,9 @@ returns a final result. A definite plugin error fails the operation as before.
 as `hub.cwd.lock`, but reserves nothing and writes no lock. A removal must still
 call `hub.cwd.lock`; advice can become stale before submit.
 
-Observed on Rex `0.0.1792158932-g88fd41` in the Worktrees Codex lab: a running action
-stayed pending, blocked later actions, and resumed with identical input through a
-fresh hub object. Final success and refusal ended the operations. Directory advice
-found an unmanaged terminal and a worker with an unknown directory, and created
+A running action stays pending, blocks later actions, and resumes with identical input through a
+fresh hub object. Final success and refusal end the operations. Directory advice
+finds an unmanaged terminal and a worker with an unknown directory, and creates
 no lock. Run `LAZYREX_LAB=1 go test ./cmd/hub -run 'TestWorktree(RunningViewAction|CwdCheck)Lab'` from
 hub/; each test starts its own lab Rex server.
 
@@ -1255,31 +1230,9 @@ Discard refuses a running or starting Git process.
 For an unknown spawn without a recorded block, discard requires a confirmed destroyed session.
 The plugin does not use a timeout as proof that a process cannot start.
 
-Tests use an isolated Rex server:
-
-```sh
-REX_SERVER=unix:///tmp/rexlab/rex.sock node spikes/03-ui-framework/tests/worktrees.mjs
-HUB_BIN=/tmp/lazyrex-hub VIEW_BIN=/tmp/lazyrex-view REX_SERVER=unix:///tmp/rexlab/rex.sock \
-  node spikes/03-ui-framework/tests/worktrees-hub.mjs
-```
-
-The first test uses real Rex Lua and Git with a controlled hub.
-The second test uses the real hub, a real agent pane, and SQLite storage.
-Set `GIT_SOURCE` for the second test to use an owned shared clone of an existing repository.
-The test does not add a worktree or branch to that source repository.
-
 TestWorktreeRunningViewActionLab and TestWorktreeCwdCheckLab (hub/cmd/hub/worktree_contract_lab_test.go)
 check the hub's pending-operation consumer and directory guards. They run under `LAZYREX_LAB=1`
 and start their own lab Rex server.
-`tests/worktrees-panel-lab.mjs` checks the palette, panel, forms, shell launches, and agent launch through the renderer.
-Its header gives the lab setup commands.
-
-Observed on Rex `0.0.1792158932-g88fd41`: the controlled-hub test passed with source-directory defaults,
-source HEAD selection, form retries, launch retries, removal advice, and four crash recovery cases.
-The three focused hub checks also passed on that version.
-
-Observed on Rex `0.0.1792158932-g88fd41`: the real-hub test passed with an owned shared clone of restty.
-Creation completed in 657 ms in that run. This measurement is not a performance guarantee.
 
 ## Notices
 
@@ -1576,7 +1529,7 @@ message revisions, operation replay, history pagination, and a send that races a
 membership change. Full palette, renderer, and hub integration remains a separate
 acceptance check.
 
-## Thread home sessions: plugin candidate (2026-10-17)
+## Thread home sessions
 
 The messaging plugin stores the first home session in a `thread-meta/` record.
 The record uses the same canonical participant pair or group identity as history.
@@ -1600,21 +1553,16 @@ Rex `0.0.1792158932-g88fd41`: `session.attach` of `session:kv-home` fails with s
 `internal`, not `session_not_found`. Before this rule, that error failed every reconcile pass, so
 no view opened (`TestInvalidHomeGoesToTheAppSession`).
 
-Controlled Lua tests passed on Rex `0.0.1792158932-g88fd41`. Tests cover first-home
-preservation, concurrent creation, alias migration, old operation replay, session
-filtering, direct expansion, and revision stability across rename and acknowledgment.
-Combined hub tests remain pending. This candidate is not deployed. The session
-list follows `home_redirects` when the hub recreates a missing home session.
+The session list follows `home_redirects` when the hub recreates a missing home session.
 
-## One-tab migration: renderer and plugins (2026-10-17)
+## One-tab migration: renderer and plugins
 
 The hub places plugin tabs without an explicit home in the LazyRex session.
 App mode is removed: the hub restores nothing (see "Removed: app mode"). The hub
 releases an old app session that holds user panes. Existing home sessions,
 closed-tab revisions, and drafts must survive migration and restart.
 
-Claude owns hub placement, restoration, and migration tests. Codex owns the
-renderer and plugin status changes. The renderer reads only `snapshot.status`.
+The renderer reads only `snapshot.status`.
 The hub lifts a plugin's `tree.status` into that field when present. Otherwise,
 the hub uses the status from `hub.ui.tabs`. The renderer sends OSC 7501 with
 `app=rex`. Each report includes all applicable fields. An absent status clears
@@ -1622,11 +1570,8 @@ the record. OSC 2 continues to use the view title.
 
 Messages declares `done` with an unread count for inbox and thread tabs. Open
 forms report `blocked` with `kind=question`. Worktrees reports `working` during
-its existing scan and `error` when refresh fails. The home removes app-mode
-controls. This phase does not add progress or a separate status title.
-
-Verification: the renderer Go suite and the controlled messaging plugin suite
-pass. Combined hub migration and real renderer status verification remain pending.
+its existing scan and `error` when refresh fails.
+Status reports have no progress and no separate status title.
 
 ### Session choice and thread moves
 
@@ -1662,12 +1607,6 @@ the prefix when the result is truncated. No plugin uses `list_directory` since t
 lost its in-form browser (2026-10-18); only its lab test calls it. `worktrees(path)` returns the current
 root and Git's worktrees. Bare repository entries are not selectable.
 
-Observed on Rex `0.0.1792158932-g88fd41`: all 12 checks in
-`tests/profiles-directories-lab.mjs` pass. These cover absolute helper loading,
-foreign-session directory reads, URI decoding, source errors, unusual directory
-names, prefix narrowing, worktree discovery, and inherited Git variables.
-This verifies the helper. The combined Start form is tested below.
-
 ### Start Agent… and Start Accessory…
 
 `plugins/profiles.lua` declares two palette commands. Each opens a form in the tab's side slot
@@ -1689,8 +1628,8 @@ This verifies the helper. The combined Start form is tested below.
 - **Explicit directory choice.** A worktree and the profile default are explicit choices. Each one increments the draft's `dir_rev`, which the plugin sends as the field's
   integer `rev`. When `rev` changes, the renderer replaces the editor text, also after an edit, so
   the field shows and submits the choice. An ordinary render keeps `rev`. The choice also replaces
-  the directory in the values that a failed start saved, and keeps the other saved values. Observed
-  on Rex 1203: Rex Lua is 5.1 and encodes the count as a JSON integer.
+  the directory in the values that a failed start saved, and keeps the other saved values. Rex Lua
+  (Rex 1203) is 5.1 and encodes the count as a JSON integer.
 - **Draft.** The directory choice is a draft keyed by `view_id`
   (`draft/<view_id>`). Each click writes the draft with an operation record, so a replayed action
   changes nothing again. The hub renders the form again after each action, and the renderer keeps
@@ -1716,17 +1655,11 @@ This verifies the helper. The combined Start form is tested below.
 - A broken profiles file shows its error in the form. Before, the render failed as `unavailable`
   and the hub retried it, so the form showed Loading.
 
-Observed on Rex `0.0.1792158932-g88fd41`: `tests/profiles-lab.mjs` passes (agent in a chosen
-worktree in a new tab with its task, typed text kept across a directory choice, accessory from the
-folder browser in a split, focus, draft removal, broken profiles file, Ctrl+Q), and
-`tests/profiles-plugin.mjs` passes (pending, replay, Check again, failure, shared args).
-
 ## Tunnels
 
-### Pair contract (2026-10-17)
+### Pair contract
 
-Status: proposed lifecycle contract. Port discovery passed its isolated lab test on
-Rex `0.0.1792158932-g88fd41`. Full plugin and panel verification is pending.
+Status: proposed lifecycle contract.
 
 The Tunnels plugin owns discovery, tunnel intents, and forward records. Rex owns
 the tunnel processes and their session lifetime. The hub provides its existing
@@ -1779,13 +1712,6 @@ Lifecycle invariants:
   clearly. Creation and connection readiness are distinct. A printed URL alone
   does not prove the process is still running.
 
-Verification: `tests/tunnels-ports-lab.mjs` uses two lab sessions and local TCP
-listeners. It checks descendant attribution, session order, exclusion of a
-listener outside the pane trees, detached panes, and closed panes.
-`tests/tunnels-ports-unit.lua` checks parsers and failed scans through fake APIs.
-The partner owns full form, panel, log placement, stop, session-close, and restart
-tests. Both agents review the combined result before completion.
-
 Public tunnel provisioning, installation, and internet tests require coordinator
 direction and the maintainer's approval. Until then, use the local stand-in. Do not deploy
 from either pair worktree.
@@ -1816,19 +1742,11 @@ Threads and Worktrees declare landing panels. Home returns a declared panel effe
 The Threads panel lists all threads. It puts current-session threads first within each list.
 Conversation tabs remain declared.
 
-Observed on Rex 0.0.1792158932-g88fd41 in an isolated lab:
-`tests/messaging.mjs` passes with the global panel and session-order checks.
-The home panel checks (panel effects, retained tab navigation) are now `plugins/lazyrex/tests/navigation.lua` and `render.lua`.
-Renderer tests pass with the Go race detector, including the release reply order,
-attachment checks, replacement recovery, and input typed after submission.
-These checks do not establish combined hub replacement or production deployment.
-
 Direct-thread tabs now require a message or an explicit user open.
 New Thread and the thread list record durable open intent.
 Identity migration preserves that intent. Archive still hides the tab.
 An explicit navigation can call the plugin's `view.open` once to declare a missing tab.
 Restore and reconciliation do not call `view.open`.
-The direct-thread checks pass in the controlled Lua test on Rex 0.0.1792158932-g88fd41.
 The hub unit checks cover declaration, a lost answer, unsupported hooks, and missing tabs.
 
 The user's Threads panel also lists agent-only threads in a separate section.
@@ -1848,39 +1766,28 @@ The controlled Lua suite passes on Rex 0.0.1792158932-g88fd41 for observer lists
 read-only directs, agent access, group joins, revision conflicts, legacy delivery,
 unread isolation, and older-history retries. Combined hub and renderer checks remain separate.
 
-## Session templates (2026-10-17)
+## Session templates
 
-Status: lab (Templates pair, Rex 0.0.1792158932-g88fd41). Not deployed. Decision: "Session templates".
+Decision: "Session templates".
 
 - Plugin `templates` (`plugins/templates.lua`). Palette commands: "Start Session…" (`/forms/start`), "Save as Template…" (`/forms/save`), "Templates…" (panel `/panels/templates`, the landing). The engine `plugins/templates_run.lua` must sit beside it.
 - Hub actions: `hub.spawn_window {key, session?, title?, layout}` starts one tab of profiles with one Rex request; `hub.spawn.spec {block_id}` gives the launch spec of a spawned pane. Contract: the header of `hub/cmd/hub/spawnwindow.go`. The spec has `title` (the resolved title, a default when the caller gave none), `requested_title` (the title as the caller gave it; absent when no explicit title is known: none was given, or an old row cannot tell; `title_source` tells which) and `title_source` (`request` when the saved request has a title string, also an empty one; `unknown` for an old or malformed request, which cannot tell). A pane rename after the spawn changes neither.
-- Hub config: add `{"source": "<the Templates directory>"}` to `plugins` (its manifest must set `"events": "all"`; on 2026-10-20 the Templates manifest has no `events`). The profiles file needs no change; `shell` is built in.
+- Hub config: add `{"source": "<the Templates directory>"}` to `plugins` (its manifest must set `"events": "all"`). The profiles file needs no change; `shell` is built in.
 
-Lab test (observed, real hub and renderer):
+Save refuses an undecided pane; Leave out removes the pane and its split; a pane can take a profile choice. A start from a pane in another repository into a new session keeps the exact ratios, puts the directories under the new root, and uses the profile's default arg. A saved template does not capture floating panes. A hub killed after a start is admitted leaves the run pending, as decided (see "Not in v1" in the decision).
 
-```sh
-spikes/lab/server.sh /tmp/rexlab-templates-<name>
-# run the hub on that server with plugins lazyrex and templates, state in $LAB/hubstate,
-# and a profiles file with "server" (arg port, default 3000) and "watcher"
-TEMPLATES_LAB=/tmp/rexlab-templates-<name> node spikes/03-ui-framework/tests/templates-lab.mjs
-LAZYREX_LAB=1 go test ./cmd/hub -run TestSpawnWindow   # from hub/; TestSpawnWindowLab starts its own lab Rex server
-```
-
-Passed: save (an undecided pane is refused; Leave out removes the pane and its split; a profile choice), start from a pane in another repository into a new session (exact ratios, directories under the new root, the profile's default arg), the panel. `TEMPLATES_RESTART=1` kills the hub after a start is admitted: the run stays pending, as decided (see "Not in v1" in the decision).
-
-Limits: the lab pane is short, so the test reads lower form rows only after a focus change scrolls them in. Floating panes are not captured.
-
-### App switch (lab, 2026-10-19)
+### App switch
 
 A start into a new session switches the app to it (decision: "App switch" in "Session templates"). Hub action: `hub.app.select_session {view_id, session_id, window_id}`, for a plugin's own open form (`hub/cmd/hub/appaction.go`). Plugin: `switch_app` in `plugins/templates.lua`.
 
-Tests (observed, Rex 0.0.1792158932-g88fd41, lab):
+Tests (`go test ./cmd/hub -run 'AppAction|AppSelect'`): one app, no app, two apps, not focused, an existing-session target, a window of another session, a closed form, another plugin's form, a caller that is not a plugin.
 
-- `go test ./cmd/hub -run 'AppAction|AppSelect'`: one app, no app, two apps, not focused, an existing-session target, a window of another session, a closed form, another plugin's form, a caller that is not a plugin.
-- `tests/templates-plugin.mjs` F1–F6 (the real plugin, a controlled hub): one switch and no switch on replay; none for an existing session; a refusal gives the hint and is not asked again; an earlier `attempted` reads as unknown with no call; the wait times out and a late first tab does not switch; the waiting form shows "Starting…".
-- `tests/templates-lab.mjs` 2, 5 and 6 (real hub and renderer, a fake app client): the app gets one `session.select` with the new session and its first tab; none for a start into the current session; two apps give `ambiguous_app`, no call, and the hint in the panel. Two full runs with `TEMPLATES_RESTART=1` passed.
+Behavior:
 
-Not tested: the real app. A lab has no app, so what `session.select` does on screen is unknown until the maintainer approves a check.
+- Plugin: one switch and no switch on replay; none for an existing session; a refusal gives the hint and is not asked again; an earlier `attempted` reads as unknown with no call; the wait times out and a late first tab does not switch; the waiting form shows "Starting…".
+- With a fake app client: the app gets one `session.select` with the new session and its first tab; none for a start into the current session; two apps give `ambiguous_app`, no call, and the hint in the panel.
+
+Not verified: what `session.select` does on screen in the real app.
 
 ### Remote Control (observed)
 
