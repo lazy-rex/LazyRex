@@ -56,6 +56,10 @@ type Config struct {
 	// peer budgets use min(the server's max_message_bytes, it), so a lab can measure a 64 KiB server.
 	// 0: no cap. Only -test accepts it.
 	TestReplyLimit int `json:"test_reply_limit"`
+	// TestPeerSyncEvery is the interval of the plugin sync with the plugins_from peer in seconds, in
+	// place of a minute (peersync.go), so a lab does not wait a minute for each sync. 0: a minute.
+	// Only -test accepts it.
+	TestPeerSyncEvery int `json:"test_peer_sync_every"`
 	// UISlot is where forms and panels open, for an experiment (the user, 2026-10-22): "split" (the
 	// window's right split, the default) or "layer" (a floating layer in the same window). It goes
 	// away when the user decides.
@@ -414,6 +418,9 @@ func main() {
 	}
 	if cfg.TestReplyLimit != 0 && cfg.TestReplyLimit < testReplyLimitMin {
 		log.Fatalf("test_reply_limit must be at least %d", testReplyLimitMin)
+	}
+	if err := checkTestPeerSyncEvery(cfg); err != nil {
+		log.Fatal(err)
 	}
 	if cfg.Test && len(cfg.TestRoots) == 0 {
 		log.Fatal("-test needs test_roots in the config (lazyrex-hub test writes it)")

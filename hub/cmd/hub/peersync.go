@@ -130,19 +130,36 @@ func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(peerSyncWait(err)):
+		case <-time.After(h.peerSyncWait(err)):
 		}
 	}
 }
 
-// peerSyncWait is the wait before the next sync: a minute, or 2 s while the peer's lazyrex-hub
-// label is ambiguous (its hub restarted; as the pull, peerRetryWait), so the sync does not show
-// that error for a minute after the peer's restart window ends.
-func peerSyncWait(err error) time.Duration {
+// peerSyncWait is the wait before the next sync: a minute (test_peer_sync_every in a lab), or 2 s
+// while the peer's lazyrex-hub label is ambiguous (its hub restarted; as the pull, peerRetryWait),
+// so the sync does not show that error for a minute after the peer's restart window ends.
+func (h *Hub) peerSyncWait(err error) time.Duration {
 	if err != nil && peerAmbiguous(err) {
 		return peerPollUp
 	}
+	if s := h.cfg.TestPeerSyncEvery; s > 0 {
+		return time.Duration(s) * time.Second
+	}
 	return peerSyncEvery
+}
+
+// checkTestPeerSyncEvery checks the config key test_peer_sync_every: only -test accepts it, and it
+// is at least 1 s.
+func checkTestPeerSyncEvery(c Config) error {
+	switch {
+	case c.TestPeerSyncEvery == 0:
+		return nil
+	case !c.Test:
+		return errors.New("test_peer_sync_every needs -test")
+	case c.TestPeerSyncEvery < 1:
+		return errors.New("test_peer_sync_every must be at least 1 (seconds)")
+	}
+	return nil
 }
 
 // peerSyncApply stores the result of one sync. s is nil only when the peer's document was not read

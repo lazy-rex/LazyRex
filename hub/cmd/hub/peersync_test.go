@@ -562,11 +562,38 @@ func TestPeerPluginsSyncAmbiguous(t *testing.T) {
 	} {
 		fail = errors.New(c.err)
 		_, err := b.peerPluginsSync(context.Background(), b.peers.links["mac"])
-		if err == nil || peerSyncWait(err) != c.want {
-			t.Fatalf("%s: err %v, wait %s, want %s", c.err, err, peerSyncWait(err), c.want)
+		if err == nil || b.peerSyncWait(err) != c.want {
+			t.Fatalf("%s: err %v, wait %s, want %s", c.err, err, b.peerSyncWait(err), c.want)
 		}
 	}
-	if peerSyncWait(nil) != peerSyncEvery {
-		t.Fatalf("after a success: %s", peerSyncWait(nil))
+	if b.peerSyncWait(nil) != peerSyncEvery {
+		t.Fatalf("after a success: %s", b.peerSyncWait(nil))
+	}
+}
+
+// test_peer_sync_every sets the sync interval in a lab; the ambiguous retry stays 2 s. Only -test
+// accepts it, and it is at least 1.
+func TestPeerSyncEveryTest(t *testing.T) {
+	b := peerHub(t, "linux", "mac", nil)
+	b.cfg.TestPeerSyncEvery = 3
+	if w := b.peerSyncWait(nil); w != 3*time.Second {
+		t.Fatalf("after a success: %s, want 3s", w)
+	}
+	if w := b.peerSyncWait(errors.New(`exit status 3: Error: client target "lazyrex-hub" is ambiguous`)); w != peerPollUp {
+		t.Fatalf("ambiguous: %s, want %s", w, peerPollUp)
+	}
+	for _, c := range []struct {
+		cfg  Config
+		want string
+	}{
+		{Config{}, ""},
+		{Config{Test: true, TestPeerSyncEvery: 2}, ""},
+		{Config{TestPeerSyncEvery: 2}, "needs -test"},
+		{Config{Test: true, TestPeerSyncEvery: -1}, "at least 1"},
+	} {
+		err := checkTestPeerSyncEvery(c.cfg)
+		if c.want == "" && err != nil || c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%+v: %v, want %q", c.cfg, err, c.want)
+		}
 	}
 }
