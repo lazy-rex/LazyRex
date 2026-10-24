@@ -12,7 +12,37 @@ set -u
 CFG=${1:?hub config}
 DIR=$(cd "$(dirname "$0")" && pwd)
 REX_BIN=${REX_BIN:-$(/usr/bin/which rex)}
-field() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$CFG" "$1"; }
+# json_str PATH [FILE] prints each string value at PATH in the JSON of FILE (else stdin), one a line.
+# A PATH is dot-separated object keys, with * for any array item: "server", "plugins.*.plugin".
+# Plain awk (no python3, no jq): it reads strings, escapes and nesting, not numbers or literals.
+json_str() {
+  awk -v want="$1" '
+    { s = s $0 "\n" }
+    END {
+      n = length(s); d = 0; i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "{" || c == "[") { d++; kind[d] = c; key[d] = ""; i++; continue }
+        if (c == "}" || c == "]") { d--; i++; continue }
+        if (c != "\"") { i++; continue }
+        v = ""; i++
+        while (i <= n && (c = substr(s, i, 1)) != "\"") {
+          if (c == "\\") {
+            i++; c = substr(s, i, 1)
+            if (c == "n") c = "\n"; else if (c == "t") c = "\t"
+          }
+          v = v c; i++
+        }
+        i++
+        j = i; while (j <= n && index(" \t\r\n", substr(s, j, 1))) j++
+        if (substr(s, j, 1) == ":") { key[d] = v; i = j + 1; continue }
+        path = ""
+        for (k = 1; k <= d; k++) path = path (k > 1 ? "." : "") (kind[k] == "[" ? "*" : key[k])
+        if (path == want) print v
+      }
+    }' ${2:+"$2"}
+}
+field() { json_str "$1" "$CFG"; }
 SERVER=$(field server); STATE=$(field state); VIEW=$(field view)
 DEV=$STATE/dev; mkdir -p "$DEV"
 L() { env -u REX_SESSION -u REX_BLOCK "$REX_BIN" -S "$SERVER" --autostart=false "$@"; }
@@ -22,8 +52,8 @@ hub_id() { grep -o '"client_id":"client:[^"]*","event":"hub_started"' "$STATE/ev
 hub_do() { L -C "$(hub_id)" do "$@"; }
 # The manifests own the plugin names (docs/plugin-sources.md). plugin_names asks the running hub;
 # manifest_name reads the manifest of a plugin directory under plugins/.
-plugin_names() { hub_do hub.plugins --json 2>/dev/null | python3 -c "import json,sys; print(' '.join(p['plugin'] for p in json.load(sys.stdin).get('plugins', [])))"; }
-manifest_name() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$1/lazyrex.json"; }
+plugin_names() { hub_do hub.plugins --json 2>/dev/null | json_str plugins.*.plugin; }
+manifest_name() { json_str name "$1/lazyrex.json"; }
 
 HUB_PID=
 start_hub() {
