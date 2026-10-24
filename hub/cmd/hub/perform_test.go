@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -69,7 +72,7 @@ func TestViewReloadHasADeadline(t *testing.T) {
 	wait := neverAnswer(t)
 	fr := newPerformRex(t, func(performCall) (any, string) { return wait() })
 	h.rex = fr.dial(t)
-	if _, err := h.uiReload(context.Background(), map[string]any{"plugin": "p"}); err != nil {
+	if _, err := h.uiReload(context.Background(), perform{}, map[string]any{"plugin": "p"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the view_reload event", 5*time.Second, func() bool { return len(loggedEvents(t, h, "view_reload")) == 1 })
@@ -245,5 +248,72 @@ func TestUnknownOutcomeText(t *testing.T) {
 	cancel()
 	if err := unknownOutcome(ctx, "the app", 5000); !isRefusal(err, "outcome_unknown") || err.Error() != "outcome_unknown: the app did not answer before the caller's deadline; the request may still apply" {
 		t.Errorf("the caller's deadline: %v", err)
+	}
+}
+
+// hub.ui.reload {all = true} (lead-devsh5): one view.reload for each open, attached view of every
+// plugin, each view counted once, and the crash reset of every plugin's tabs. plugin and all are
+// exclusive. all passes the admin guard: a caller in a plugin pane gets the guard's refusal, and
+// nothing is reloaded.
+func TestUIReloadAll(t *testing.T) {
+	h, _ := relaunchTestHub(t)
+	if _, err := h.db.Exec(uiSchema); err != nil {
+		t.Fatal(err)
+	}
+	h.ui = &uiState{kick: make(chan struct{}, 1)}
+	for _, q := range []string{
+		`INSERT INTO views (view_id, plugin, tab, route, status, client_id, attachment) VALUES
+			('p1', 'p', 't', '/', 'open', 'c', 'a1'), ('p2', 'p', 'u', '/', 'open', 'c', 'a2'),
+			('q1', 'q', 't', '/', 'open', 'c', 'a3'), ('q2', 'q', 'u', '/', 'open', 'c', ''),
+			('r1', 'r', 't', '/', 'closed', 'c', 'a4')`,
+		`INSERT INTO ui_tabs (plugin, tab, title, route, pos, suppressed, crashes) VALUES
+			('p', 't', 'T', '/', 1, 1, 9), ('q', 't', 'T', '/', 1, 1, 9), ('s', 't', 'T', '/', 1, 1, 9)`,
+	} {
+		if _, err := h.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	var reloaded []string
+	fr := newPerformRex(t, func(c performCall) (any, string) {
+		var a struct {
+			ViewID string `json:"view_id"`
+		}
+		json.Unmarshal(c.Args, &a)
+		mu.Lock()
+		reloaded = append(reloaded, a.ViewID)
+		mu.Unlock()
+		return map[string]any{}, ""
+	})
+	h.rex = fr.dial(t)
+
+	for _, args := range []string{`{}`, `{"all":false}`, `{"plugin":"p","all":true}`, `{"plugin":"","all":false}`} {
+		wantRefusal(t, args, func() error { _, err := adminCall(h, "hub.ui.reload", 20, args); return err }(),
+			"invalid_input", "invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither")
+	}
+	if _, err := adminCall(h, "hub.ui.reload", 40, `{"all":true}`); err == nil || err.Error() != "admin actions are refused from agent and plugin panes" {
+		t.Errorf("plugin pane caller: %v", err)
+	}
+	var crashed int
+	h.db.QueryRow(`SELECT COUNT(*) FROM ui_tabs WHERE crashes > 0`).Scan(&crashed)
+	if crashed != 3 || len(loggedEvents(t, h, "view_reload")) != 0 {
+		t.Fatalf("a refused call reset %d tabs or reloaded a view", 3-crashed)
+	}
+
+	out, err := adminCall(h, "hub.ui.reload", 20, `{"all":true}`)
+	if err != nil || !reflect.DeepEqual(out, map[string]any{"status": "accepted", "views": 3}) {
+		t.Fatalf("all: %v, %v", out, err)
+	}
+	waitFor(t, "three view_reload events", 5*time.Second, func() bool { return len(loggedEvents(t, h, "view_reload")) == 3 })
+	mu.Lock()
+	slices.Sort(reloaded)
+	got := slices.Clone(reloaded)
+	mu.Unlock()
+	if !reflect.DeepEqual(got, []string{"p1", "p2", "q1"}) {
+		t.Errorf("reloaded %v, want p1 p2 q1", got)
+	}
+	h.db.QueryRow(`SELECT COUNT(*) FROM ui_tabs WHERE crashes > 0 OR suppressed != 0`).Scan(&crashed)
+	if crashed != 0 {
+		t.Errorf("%d tabs keep their crash count after all", crashed)
 	}
 }

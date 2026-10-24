@@ -75,9 +75,23 @@
   "title": "hub.ui.navigate"
  },
  {
+  "args": {
+   "additionalProperties": false,
+   "properties": {
+    "all": {
+     "type": "boolean"
+    },
+    "plugin": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "Ask every attached renderer of one plugin (plugin), or of every plugin (all = true, behind the admin guard), to run the renderer binary again. Exactly one of plugin and all.",
   "kind": "client",
   "name": "hub.ui.reload",
-  "title": "hub.ui.reload"
+  "title": "Reload renderers"
  },
  {
   "kind": "client",

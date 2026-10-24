@@ -1554,36 +1554,73 @@ func (h *Hub) navigateCommitLocked(ctx context.Context, plugin, key string, seq 
 	return true, nil
 }
 
-// uiReload asks every attached renderer of the plugin to run its binary again (view.reload).
-// The renderer replaces itself in the same process, so the pane, tab and PID stay. Tabs that
-// crashed too often open again. A renderer that does not answer is left alone: it reattaches
-// or exits, and the reconciler handles either. The hub waits timeout_ms + performMargin for each
-// request (perform.go); Rex can still deliver one after that.
-func (h *Hub) uiReload(ctx context.Context, args map[string]any) (any, error) {
+// uiReload asks every attached renderer of one plugin ({plugin}), or of every plugin ({all = true},
+// lead-devsh5), to run its binary again (view.reload). The renderer replaces itself in the same
+// process, so the pane, tab and PID stay. Tabs that crashed too often open again. A renderer that
+// does not answer is left alone: it reattaches or exits, and the reconciler handles either. The hub
+// waits timeout_ms + performMargin for each request (perform.go); Rex can still deliver one after
+// that. plugin and all are exclusive. all reaches other plugins' views, so it passes the admin guard
+// (lead-devsh7), as an operator action does.
+func (h *Hub) uiReload(ctx context.Context, p perform, args map[string]any) (any, error) {
 	plugin, _ := args["plugin"].(string)
-	if _, err := h.db.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND crashes >= ?`, plugin, maxCrashes); err != nil {
-		return nil, err
+	all, _ := args["all"].(bool)
+	if (plugin != "") == all {
+		return nil, refuse("invalid_input", "hub.ui.reload takes plugin or all = true, not both and not neither")
 	}
-	views, err := h.loadViews(ctx, plugin)
+	plugins := []string{plugin}
+	if all {
+		if err := h.operatorGuard(p.Requester.Principal.PID); err != nil {
+			return nil, err
+		}
+		var err error
+		if plugins, err = h.viewPlugins(ctx); err != nil {
+			return nil, err
+		}
+	}
+	n := 0
+	for _, plugin := range plugins {
+		if _, err := h.db.ExecContext(ctx, `UPDATE ui_tabs SET suppressed = 0, crashes = 0 WHERE plugin = ? AND crashes >= ?`, plugin, maxCrashes); err != nil {
+			return nil, err
+		}
+		views, err := h.loadViews(ctx, plugin)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range views {
+			if v.Status != "open" || v.Attachment == "" {
+				continue
+			}
+			n++
+			go func(v *view) {
+				ctx, cancel := performCtx(context.Background(), 5000)
+				defer cancel()
+				err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.reload",
+					"args": map[string]any{"view_id": v.ID, "attachment": v.Attachment}, "timeout_ms": 5000}, nil)
+				h.ev.emit("view_reload", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "error": errString(err)})
+			}(v)
+		}
+		h.kickUI(plugin)
+	}
+	return map[string]any{"status": "accepted", "views": n}, nil
+}
+
+// viewPlugins lists the plugins that have a view or a tab row, for hub.ui.reload {all}: the views
+// to reload and the tabs whose crash count resets.
+func (h *Hub) viewPlugins(ctx context.Context) ([]string, error) {
+	rows, err := h.db.QueryContext(ctx, `SELECT plugin FROM views WHERE status != 'closed' UNION SELECT plugin FROM ui_tabs ORDER BY 1`)
 	if err != nil {
 		return nil, err
 	}
-	n := 0
-	for _, v := range views {
-		if v.Status != "open" || v.Attachment == "" {
-			continue
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
 		}
-		n++
-		go func(v *view) {
-			ctx, cancel := performCtx(context.Background(), 5000)
-			defer cancel()
-			err := h.rex.Call(ctx, "client.perform", map[string]any{"client_id": v.ClientID, "action": "view.reload",
-				"args": map[string]any{"view_id": v.ID, "attachment": v.Attachment}, "timeout_ms": 5000}, nil)
-			h.ev.emit("view_reload", map[string]any{"plugin": plugin, "view_id": v.ID, "error": errString(err)})
-		}(v)
+		out = append(out, p)
 	}
-	h.kickUI(plugin)
-	return map[string]any{"status": "accepted", "views": n}, nil
+	return out, rows.Err()
 }
 
 // viewAttach binds a renderer to its view. The caller must run in the view's pane.

@@ -11,10 +11,10 @@ import (
 )
 
 // newModeLab is a chunk lab (lab server, hub -test, real renderer panes) with the plugin
-// testdata/modelab. Lab only: LAZYREX_LAB=1.
-func newModeLab(t *testing.T) *chunkLab {
+// testdata/modelab, and the absolute plugin directories more. Lab only: LAZYREX_LAB=1.
+func newModeLab(t *testing.T, more ...string) *chunkLab {
 	needLab(t)
-	l := newChunkLab(t, "modelab", "view/testdata/modelab")
+	l := newChunkLab(t, "modelab", "view/testdata/modelab", more...)
 	b, _ := json.Marshal(map[string]any{"plugin": "modelab", "sql": "SELECT count(*) FROM clicked", "params": []any{}})
 	f := filepath.Join(l.lab, "tables.json")
 	os.WriteFile(f, b, 0o600)

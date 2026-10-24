@@ -902,14 +902,8 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		degraded = c.degraded
 		return result, err
 	case a != nil && a.caller == callerOperator:
-		if in, err := h.callerInManagedPane(pid); err != nil {
-			return nil, unverifiedCaller(err)
-		} else if in {
-			return nil, bad("admin actions are refused from agent and plugin panes")
-		}
-		// After the admin guard: a caller that the guard refuses learns nothing about a relaunch.
-		if h.relaunching.Load() {
-			return nil, refuse("refused", "relaunch in progress")
+		if err := h.operatorGuard(pid); err != nil {
+			return nil, err
 		}
 		return a.run(h, ctx, c)
 	}
@@ -923,6 +917,22 @@ func (h *Hub) dispatch(ctx context.Context, p perform) (result any, err error) {
 		return nil, bad("unknown action %s", p.Action)
 	}
 	return a.run(h, ctx, c)
+}
+
+// operatorGuard is the admin guard of every operator action (callerOperator, and hub.ui.reload
+// {all}): a caller in an agent or plugin pane, or one whose ancestry the hub cannot check, is
+// refused, and so is every call while a relaunch runs.
+func (h *Hub) operatorGuard(pid int) error {
+	if in, err := h.callerInManagedPane(pid); err != nil {
+		return unverifiedCaller(err)
+	} else if in {
+		return bad("admin actions are refused from agent and plugin panes")
+	}
+	// After the pane check: a caller that it refuses learns nothing about a relaunch.
+	if h.relaunching.Load() {
+		return refuse("refused", "relaunch in progress")
+	}
+	return nil
 }
 
 // identify handles hub.identify {pid}. spawn_id is the agent spawn whose open block is the found

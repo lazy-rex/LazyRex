@@ -729,12 +729,12 @@
   "plugin/test": "ok"
  },
  "hub.ui.reload": {
-  "pane": "ok",
-  "pane/test": "ok",
-  "plain": "ok",
-  "plain/test": "ok",
-  "plugin": "ok",
-  "plugin/test": "ok"
+  "pane": "error: invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither",
+  "pane/test": "error: invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither",
+  "plain": "error: invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither",
+  "plain/test": "error: invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither",
+  "plugin": "error: invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither",
+  "plugin/test": "error: invalid_input: hub.ui.reload takes plugin or all = true, not both and not neither"
  },
  "hub.ui.tabs": {
   "pane": "error: only a registered plugin instance may call hub.ui.tabs",

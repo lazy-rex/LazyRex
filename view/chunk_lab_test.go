@@ -38,7 +38,8 @@ type chunkLab struct {
 	hubArgs []string // the hub binary and its arguments
 }
 
-func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
+// source is relative to the repository root; each of more is an absolute plugin directory.
+func newChunkLab(t *testing.T, plugin, source string, more ...string) *chunkLab {
 	needLab(t)
 	root, err := filepath.Abs("..")
 	if err != nil {
@@ -76,10 +77,14 @@ func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
 	os.MkdirAll(rexcfg, 0o755)
 	initLua := filepath.Join(rexcfg, "init.lua")
 	os.WriteFile(initLua, []byte(`pcall(require, "lazyrex_palette")`+"\n"), 0o644)
+	plugins := []any{map[string]string{"source": filepath.Join(root, source)}}
+	for _, dir := range more {
+		plugins = append(plugins, map[string]string{"source": dir})
+	}
 	cfg := filepath.Join(lab, "hub.json")
 	c, _ := json.Marshal(map[string]any{"server": l.socket, "state": filepath.Join(lab, "state-hub"), "view": view,
 		"palette_lua": filepath.Join(rexcfg, "lazyrex_palette.lua"), "agents": []any{map[string]string{"id": "user", "name": "User"}},
-		"plugins": []any{map[string]string{"source": filepath.Join(root, source)}}, "test_roots": []string{lab}})
+		"plugins": plugins, "test_roots": []string{lab}})
 	os.WriteFile(cfg, c, 0o600)
 
 	server := exec.Command(filepath.Join(root, "lab", "server.sh"), lab)

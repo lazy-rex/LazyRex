@@ -111,8 +111,11 @@ func init() {
 			return h.uiNavigate(ctx, c.args)
 		}},
 		{name: "hub.ui.reload", plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
-			return h.uiReload(ctx, c.args)
-		}},
+			return h.uiReload(ctx, c.p, c.args)
+		}, desc: map[string]any{"name": "hub.ui.reload", "kind": "client", "title": "Reload renderers",
+			"description": "Ask every attached renderer of one plugin (plugin), or of every plugin (all = true, behind the admin guard), to run the renderer binary again. Exactly one of plugin and all.",
+			"args": map[string]any{"type": "object", "properties": map[string]any{"plugin": map[string]any{"type": "string", "minLength": 1},
+				"all": map[string]any{"type": "boolean"}}, "additionalProperties": false}}},
 		{name: "hub.ui.describe", plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
 			return h.uiDescribe(ctx, c.args)
 		}},
