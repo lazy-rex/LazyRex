@@ -257,24 +257,21 @@ func (e setupEnv) rexConfigFile() string {
 
 // setupAgent is an agent CLI that setup configures.
 type setupAgent struct {
-	kind, name string
-	program    string // the CLI's path, or "" if it is not on PATH
-	found      bool   // the CLI is on PATH or its configuration directory exists
-	hooks      string // the hook file
-	skill      string // the skill file
+	*harness
+	program string // the CLI's path, or "" if it is not on PATH
+	found   bool   // the CLI is on PATH or its configuration directory exists
+	hooks   string // the hook file
+	skill   string // the skill file
 }
 
 func (e setupEnv) agents() []setupAgent {
-	claudeDir := e.configDir("CLAUDE_CONFIG_DIR", ".claude")
-	codexDir := e.configDir("CODEX_HOME", ".codex")
-	as := []setupAgent{
-		{kind: "claude", name: "Claude Code", hooks: filepath.Join(claudeDir, "settings.json"), skill: filepath.Join(claudeDir, "skills", "lazyrex", "SKILL.md")},
-		// Codex reads user skills from ~/.agents/skills; $CODEX_HOME/skills is its deprecated
-		// location (codex-rs ext/skills host_roots.rs).
-		{kind: "codex", name: "Codex", hooks: filepath.Join(codexDir, "hooks.json"), skill: filepath.Join(e.home, ".agents", "skills", "lazyrex", "SKILL.md")},
+	var as []setupAgent
+	for _, h := range harnesses {
+		dir := e.configDir(h.configEnv, h.configDir)
+		as = append(as, setupAgent{harness: h, hooks: filepath.Join(dir, h.hooksFile), skill: h.skill(e.home, dir)})
 	}
 	for i, a := range as {
-		if p, err := e.lookPath(a.kind); err == nil {
+		if p, err := e.lookPath(a.exe); err == nil {
 			if abs, err := filepath.Abs(p); err == nil {
 				as[i].program = abs
 			}
@@ -292,16 +289,8 @@ func setupProfiles(e setupEnv, agents []setupAgent) ([]byte, error) {
 		if a.program == "" {
 			continue
 		}
-		p := Profile{ID: a.kind, Name: map[string]string{"claude": "Claude", "codex": "Codex"}[a.kind], Kind: "agent", Cwd: e.home,
-			Args: []ProfileArg{{Name: "task", Label: "Task"}}}
-		if a.kind == "claude" {
-			p.Command = []string{a.program, "${task}"}
-			p.Resume = []string{a.program, "--resume", "${conversation_id}"}
-		} else {
-			// Without --no-daemon, Codex starts MCP servers outside the pane (docs/hub.md).
-			p.Command = []string{a.program, "--no-daemon", "${task}"}
-			p.Resume = []string{a.program, "--no-daemon", "resume", "${conversation_id}"}
-		}
+		p := Profile{ID: a.kind, Name: a.harness.name, Kind: "agent", Cwd: e.home,
+			Args: []ProfileArg{{Name: "task", Label: "Task"}}, Command: a.command(a.program), Resume: a.resume(a.program)}
 		if err := validProfile(p); err != nil {
 			return nil, fmt.Errorf("profile %s: %w", p.ID, err)
 		}
@@ -539,13 +528,13 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	var skippedAgents []string
 	for _, a := range agents {
 		if !a.found {
-			skippedAgents = append(skippedAgents, fmt.Sprintf("%s: no %s on PATH and no %s. Setup leaves it out.", a.name, a.kind, filepath.Dir(a.hooks)))
+			skippedAgents = append(skippedAgents, fmt.Sprintf("%s: no %s on PATH and no %s. Setup leaves it out.", a.product, a.exe, filepath.Dir(a.hooks)))
 			continue
 		}
 		h := snapshotFile(a.hooks, 0o644)
 		hookFile(h, a.kind, shellWord(e.exe)+" hook "+a.kind)
-		if a.kind == "codex" && h.changes() {
-			h.notes = append(h.notes, "After setup, review and trust the new hook in Codex with /hooks.")
+		if a.trustHook && h.changes() {
+			h.notes = append(h.notes, "After setup, review and trust the new hook in "+a.harness.name+" with /hooks.")
 		}
 		s := snapshotFile(a.skill, 0o644)
 		if s.block == "" {

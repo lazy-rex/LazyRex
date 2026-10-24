@@ -11,7 +11,7 @@ import (
 // server started from an agent's pane has. Neither a shell nor an agent gets them. The lab check is
 // tests/isolation (a worker of a real hub).
 func TestSpawnArgvEnv(t *testing.T) {
-	for _, k := range agentEnvUnset {
+	for _, k := range agentEnvUnset() {
 		t.Setenv(k, "stale")
 	}
 	t.Setenv("LRT_KEPT", "kept")
@@ -31,7 +31,7 @@ func TestSpawnArgvEnv(t *testing.T) {
 		return env
 	}
 	check := func(who string, env map[string]string) {
-		for _, k := range agentEnvUnset {
+		for _, k := range agentEnvUnset() {
 			if v, ok := env[k]; ok {
 				t.Errorf("%s: %s = %q, want unset", who, k, v)
 			}

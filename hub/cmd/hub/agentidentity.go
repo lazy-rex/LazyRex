@@ -55,9 +55,7 @@ func agentIdentityLines(raw []byte, readErr error) []string {
 		case "none":
 			// Only a running CLI can still report; an exited one is not a hook problem.
 			if w.State == "running" {
-				lines = append(lines, paneSafe(fmt.Sprintf("agent %s (pane %s): no current conversation identity yet. "+
-					"Claude Code reports at its start; Codex can report only at its first prompt. "+
-					"If it stays, check the LazyRex hook (lazyrex-hub setup; Codex: trust it with /hooks).", w.Title, w.Block)))
+				lines = append(lines, paneSafe(fmt.Sprintf("agent %s (pane %s): no current conversation identity yet. %s", w.Title, w.Block, harnessHelp())))
 			}
 		default:
 			return unknown("worker %s: identity %q", w.Title, *w.Identity)

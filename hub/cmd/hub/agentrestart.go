@@ -20,9 +20,6 @@ const (
 	restartKeysWait = 5 * time.Second
 	restartTermWait = 5 * time.Second
 	restartKillWait = 5 * time.Second
-	// claudeExitGap is the gap between the two Ctrl-C that end Claude (S1, 2026-10-22: 300 ms
-	// exits, 1.5 s does not).
-	claudeExitGap = 300 * time.Millisecond
 )
 
 // adminRestart is hub.admin.restart {key, agent} | {key, kind?, session_id?}. The admin guard runs
@@ -67,7 +64,7 @@ type paneRecord struct {
 //     refused. This detects a changed path; it does not prove that no exec of the same path ran.
 //   - A row from before the record (no values): the live exec path must equal program; a null one
 //     refuses.
-//   - The exec path's base name is the CLI of the identity's kind (claude, codex): v1 restarts a
+//   - The exec path's base name is the CLI of the identity's kind (harness.go exe): v1 restarts a
 //     direct agent CLI only. A pane shell reports the shell, and a script launcher its interpreter
 //     (lab, 2026-10-22). This is a name rule on the exec path, not on argv0; it cannot tell a
 //     program deliberately named after the CLI.
@@ -101,7 +98,7 @@ func restartCheck(p paneState, rec paneRecord, liveStart, program, kind string) 
 		return "the exec path cannot be verified: none was recorded at the agent's report, and Rex reports none now (an update since its start?)"
 	case rec.invoked == "" && p.invoked != program:
 		return fmt.Sprintf("the pane runs %s, not the configured program %s", p.invoked, program)
-	case filepath.Base(cli) != kind:
+	case harnessOf(kind) == nil || filepath.Base(cli) != harnessOf(kind).exe:
 		return fmt.Sprintf("the pane runs %s, not the %s CLI: a shell or a launcher is not restarted", cli, kind)
 	}
 	return ""
@@ -314,22 +311,28 @@ func (h *Hub) stopFailed(ctx context.Context, t *opTarget, why string) {
 	h.setPhase(ctx, t, t.phase, "failed", why, map[string]string{"stop_result": "not stopped: " + why})
 }
 
-// exitKeys writes the exit keys of the agent's kind: one Ctrl-C for Codex, two for Claude.
+// exitKeys writes the exit keys of the agent's kind (harness.go: exitKeys Ctrl-C, exitGap apart).
 func (h *Hub) exitKeys(ctx context.Context, t *opTarget) error {
 	var kind string
 	h.db.QueryRowContext(ctx, `SELECT kind FROM identities WHERE identity = ?`, t.identity).Scan(&kind)
 	write := func() error {
 		return h.rex.BlockCall(ctx, "com.superlogical.terminal.write", t.stopSession, t.stopBlock, map[string]any{"data": "\x03"}, nil)
 	}
-	if err := write(); err != nil || kind != "claude" {
+	if err := write(); err != nil {
 		return err
 	}
-	time.Sleep(claudeExitGap)
-	// The second key goes only to the same process: it may have exited after the first.
-	if p, why, err := h.restartLook(ctx, t); err != nil || why != "" || p.foreground != t.childPID {
-		return nil
+	cli := harnessOf(kind)
+	for i := 1; cli != nil && i < cli.exitKeys; i++ {
+		time.Sleep(cli.exitGap)
+		// A later key goes only to the same process: it may have exited after the first.
+		if p, why, err := h.restartLook(ctx, t); err != nil || why != "" || p.foreground != t.childPID {
+			return nil
+		}
+		if err := write(); err != nil {
+			return err
+		}
 	}
-	return write()
+	return nil
 }
 
 // restartStopped ends the stop when the verified process is gone. The identity is detached as its

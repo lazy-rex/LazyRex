@@ -433,6 +433,7 @@ local function lazyrex_admin(action, name, args)
 end
 `)
 	b.WriteString(hubPaletteLua)
+	b.WriteString(restartPaletteLua())
 
 	plugins := make([]string, 0, len(cmds))
 	for p := range cmds {
@@ -996,23 +997,24 @@ local function lazyrex_restart_form(kind)
     return res
   end
 end
-rex.action {
-  name = "lazyrexhub_restart_codex",
-  title = "LazyRex: Restart Codex agents…",
-  category = "LazyRex",
-  description = "List the current Codex agents, then stop and resume them in new panes",
-  keywords = "agent restart codex",
-  run = lazyrex_restart_form("codex"),
-}
-rex.action {
-  name = "lazyrexhub_restart_claude",
-  title = "LazyRex: Restart Claude agents…",
-  category = "LazyRex",
-  description = "List the current Claude agents, then stop and resume them in new panes",
-  keywords = "agent restart claude",
-  run = lazyrex_restart_form("claude"),
-}
 `
+
+// restartPaletteLua is the restart entry of each harness (harness.go), in table order.
+func restartPaletteLua() string {
+	var b strings.Builder
+	for _, h := range harnesses {
+		fmt.Fprintf(&b, `rex.action {
+  name = "lazyrexhub_restart_%[1]s",
+  title = "LazyRex: Restart %[2]s agents…",
+  category = "LazyRex",
+  description = "List the current %[2]s agents, then stop and resume them in new panes",
+  keywords = "agent restart %[1]s",
+  run = lazyrex_restart_form("%[1]s"),
+}
+`, h.kind, h.name)
+	}
+	return b.String()
+}
 
 // freezeSourcePwd reads the working directory of fc's source pane once, at the open, and keeps the
 // raw value (the plugin decodes it). A form that a form opens keeps its source's frozen value.

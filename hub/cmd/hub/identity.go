@@ -49,15 +49,6 @@ CREATE INDEX IF NOT EXISTS identity_log_block ON identity_log (block_id);
 
 var conversationID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// agentEnvUnset are conversation, nesting and per-process variables that an agent pane must not
-// inherit from another agent (a pane inherits the Rex server's environment; a server started from
-// an agent's shell carries that agent's variables, observed in the lab on Rex 1203). With
-// CLAUDE_CODE_CHILD_SESSION set, Claude ignores --session-id (lab, 2.1.302). Deliberate
-// configuration (for example CLAUDE_EFFORT, CODEX_HOME) stays.
-var agentEnvUnset = []string{"CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT",
-	"CLAUDE_PID", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-	"CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID"}
-
 // startBefore compares two process start times ("sec.usec", see procInfo).
 func startBefore(a, b string) bool {
 	as, au, _ := strings.Cut(a, ".")
@@ -98,8 +89,8 @@ func (h *Hub) identityReport(ctx context.Context, p perform, args map[string]any
 	conv, _ := args["conversation_id"].(string)
 	source, _ := args["source"].(string)
 	hint, _ := args["block"].(string)
-	if kind != "claude" && kind != "codex" {
-		return nil, bad("invalid: kind must be claude or codex")
+	if harnessOf(kind) == nil {
+		return nil, bad("invalid: kind must be %s", harnessKinds())
 	}
 	if !conversationID.MatchString(conv) {
 		return nil, bad("invalid: conversation_id must be 1-128 characters: letters, digits, '.', '_', '-'")
