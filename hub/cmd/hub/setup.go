@@ -422,8 +422,9 @@ const setupManagedExists = "The managed file exists: setup leaves it; add plugin
 // (managedFilePath, as the hub's load): the existing hub.json, or the new one with the state
 // <dir>/state. An existing managed file is left as it is.
 func setupManagedFile(e setupEnv, dir string, hub *setupFile) *setupFile {
-	c := Config{State: filepath.Join(dir, "state")}
+	c := Config{State: filepath.Join(dir, "state")} // the new hub.json
 	if hub.exists {
+		c = Config{} // the existing file alone: a missing state is not the default (codex-27)
 		// The user's own hub.json that the hub cannot load either: setup leaves the managed file out
 		// and says why. It is not an error of setup.
 		if err := json.Unmarshal(hub.old, &c); err != nil || c.State == "" {
@@ -432,6 +433,13 @@ func setupManagedFile(e setupEnv, dir string, hub *setupFile) *setupFile {
 			if err != nil {
 				f.notes[0] = "hub.json cannot be read: setup cannot tell the managed file and leaves it out."
 			}
+			return f
+		}
+		// A relative state is relative to the hub's working directory, not to hub.json (lead-c2h5):
+		// setup cannot tell that directory.
+		if c.ManagedPlugins == "" && !filepath.IsAbs(c.State) {
+			f := &setupFile{path: filepath.Join(dir, "state", "plugins.json")}
+			f.notes = append(f.notes, "hub.json has a relative state: setup cannot tell the managed file and leaves it out.")
 			return f
 		}
 	}
