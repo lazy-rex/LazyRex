@@ -2,12 +2,12 @@
 -- peer "away" has no server: hub.peer.send queues for it, and a test pulls and acks as "away".
 local app = require('lazyrex').plugin('speer')
 
-app.db.migrate {'CREATE TABLE got (from_hub TEXT, key TEXT, len INTEGER, head TEXT)'}
+app.db.migrate {'CREATE TABLE got (from_hub TEXT, key TEXT, len INTEGER, head TEXT, text TEXT)'}
 
 local peer
 peer = app.peer{receive = function(msg)
   local t = msg.body.t
-  app.db.exec('INSERT INTO got (from_hub, key, len, head) VALUES (?, ?, ?, ?)', msg.from_hub, msg.key, #t, t:sub(1, 16))
+  app.db.exec('INSERT INTO got (from_hub, key, len, head, text) VALUES (?, ?, ?, ?, ?)', msg.from_hub, msg.key, #t, t:sub(1, 16), t)
 end}
 
 local ANY = {type = 'object', additionalProperties = true}

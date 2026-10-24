@@ -126,8 +126,8 @@ func TestPeerSDKLab(t *testing.T) {
 	send := func(k, text string) (map[string]any, error) {
 		return a.agentDo(x, "speer.send", map[string]any{"hub": "b", "k": k, "text": text})
 	}
-	got := func(k string) []string { return b.speerSQL("SELECT len FROM got WHERE key = ?", k) }
-	once := func(k string, want int) {
+	got := func(k string) []string { return b.speerSQL("SELECT text FROM got WHERE key = ?", k) }
+	once := func(k, want string) {
 		t.Helper()
 		// After a kill, the dead hub's Rex client can keep the label lazyrex-hub for a while: a peer's
 		// pull is then "ambiguous" and backs off (up to 30 s).
@@ -135,8 +135,8 @@ func TestPeerSDKLab(t *testing.T) {
 		b.waitLong("b's listener got "+k, 120*time.Second, func() bool { return len(got(k)) > 0 })
 		t.Logf("%s reached b's listener in %s", k, time.Since(t0).Round(time.Millisecond))
 		time.Sleep(3 * time.Second) // more than one pull interval: a second delivery would show
-		if g := got(k); len(g) != 1 || g[0] != fmt.Sprint(want) {
-			t.Fatalf("b's listener rows for %s: %v, want one row of length %d", k, g, want)
+		if g := got(k); len(g) != 1 || g[0] != want {
+			t.Fatalf("b's listener rows for %s: %d rows, want one row with the exact text (%d bytes)", k, len(g), len(want))
 		}
 	}
 
@@ -149,7 +149,7 @@ func TestPeerSDKLab(t *testing.T) {
 		if _, err := send(k+"x", s+"a"); err == nil || !strings.Contains(err.Error(), "too_large") {
 			t.Fatalf("send %s one byte over the limit: %v, want too_large", k, err)
 		}
-		once(k, len(s))
+		once(k, s)
 		t.Logf("%s: %d bytes of text at the SDK limit reached b's listener", k, len(s))
 	}
 
@@ -167,7 +167,7 @@ func TestPeerSDKLab(t *testing.T) {
 	a.kill()
 	a.start()
 	a.registered("speer")
-	once("kill-queued", 1)
+	once("kill-queued", "q")
 
 	// Between the take and the pull: b is down while a takes the row; then a dies.
 	b.stop()
@@ -183,7 +183,7 @@ func TestPeerSDKLab(t *testing.T) {
 	b.start()
 	a.registered("speer")
 	b.registered("speer")
-	once("kill-taken", 1)
+	once("kill-taken", "t")
 
 	for _, s := range []*startLab{a, b} {
 		s.waitLong("an empty outbox and an up link", 120*time.Second, func() bool {
