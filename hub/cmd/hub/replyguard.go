@@ -24,6 +24,9 @@ const (
 	replyMargin = 1 << 10
 	// referenceMaxMessage is the Control v1 reference limit, for a welcome without limits.
 	referenceMaxMessage = 64 << 10
+	// testReplyLimitMin is the smallest test_reply_limit: the frames that the hub sends without a
+	// guard (its own calls) stay below it.
+	testReplyLimitMin = 16 << 10
 )
 
 // replyLimit is the largest client.reply frame that the guard sends on r.
@@ -33,6 +36,18 @@ func replyLimit(r *rex.Rex) int {
 		max = referenceMaxMessage
 	}
 	return max - replyMargin
+}
+
+// replyLimit is replyLimit(r) with the test_reply_limit cap; r nil is a connection without limits.
+func (h *Hub) replyLimit(r *rex.Rex) int {
+	n := referenceMaxMessage - replyMargin
+	if r != nil {
+		n = replyLimit(r)
+	}
+	if c := h.cfg.TestReplyLimit; c > 0 {
+		n = min(n, c-replyMargin)
+	}
+	return n
 }
 
 // guardReply encodes reply ({call_id, result} or {call_id, error}). When its client.reply frame
@@ -73,9 +88,9 @@ func shortName(action string) string {
 	return strconv.Quote(action[:cut]) + "…"
 }
 
-// sendReply sends reply on r through the guard.
-func sendReply(ctx context.Context, r *rex.Rex, action string, reply map[string]any) error {
-	raw, ok := guardReply(action, reply, replyLimit(r))
+// sendReply sends reply on r through the guard, with frames of at most limit bytes.
+func sendReply(ctx context.Context, r *rex.Rex, action string, reply map[string]any, limit int) error {
+	raw, ok := guardReply(action, reply, limit)
 	if !ok {
 		log.Printf("reply %s %v: not sent as is: %s", action, reply["call_id"], raw)
 	}

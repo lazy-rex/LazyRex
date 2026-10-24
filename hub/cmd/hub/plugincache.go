@@ -49,10 +49,19 @@ func digestOf(files []digestFile) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// dirDigest gives the digest of the published entry root. A file is executable when any execute
-// bit is set. A symlink, or any type other than a file or a directory, is an error: a published
-// entry has none.
+// dirDigest gives the digest of the published entry root (cacheFiles).
 func dirDigest(root string) (string, error) {
+	files, err := cacheFiles(root)
+	if err != nil {
+		return "", err
+	}
+	return digestOf(files), nil
+}
+
+// cacheFiles gives the digest lines of the files under root, sorted by path bytes. A file is
+// executable when any execute bit is set. A symlink, or any type other than a file or a directory,
+// is an error: a published entry has none.
+func cacheFiles(root string) ([]digestFile, error) {
 	var files []digestFile
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -85,9 +94,10 @@ func dirDigest(root string) (string, error) {
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return digestOf(files), nil
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, nil
 }
 
 // errNotRegular is a path in a cache entry that is not a regular file or a directory.

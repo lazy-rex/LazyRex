@@ -151,6 +151,19 @@ func (h *Hub) peerLink(name string) *peerLink {
 	return h.peers.links[name]
 }
 
+// pluginsFrom is the link of the plugins_from peer, or nil.
+func (h *Hub) pluginsFrom() *peerLink {
+	if h.peers == nil {
+		return nil
+	}
+	for _, l := range h.peers.links {
+		if l.cfg.PluginsFrom {
+			return l
+		}
+	}
+	return nil
+}
+
 // peerCall runs action on the hub of peer with the rex CLI (the Go client dials only a unix socket;
 // the CLI reaches a remote Rex server by its host label). The call has a 10 s bound.
 //
@@ -344,11 +357,7 @@ func peerEnvelopeBytes(seq int64, plugin, target, key, body, created string) int
 // peerPullBudget is the most bytes of envelopes in one pull reply: 1 MiB, or less if the hub's
 // Rex connection takes smaller reply frames (the reply guard would refuse a larger reply).
 func (h *Hub) peerPullBudget() int {
-	limit := referenceMaxMessage - replyMargin
-	if h.rex != nil {
-		limit = replyLimit(h.rex)
-	}
-	return min(peerPullBytes, limit) - peerReplyWrap - len(`{"envelopes":[],"more":false}`)
+	return min(peerPullBytes, h.replyLimit(h.rex)) - peerReplyWrap - len(`{"envelopes":[],"more":false}`)
 }
 
 // peerPullServe is hub.peer.pull, called by a peer for its envelopes: after N acks every envelope

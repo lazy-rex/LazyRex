@@ -133,7 +133,7 @@ func TestSendReplyKeepsTheConnectionLab(t *testing.T) {
 			if failed {
 				reply = map[string]any{"call_id": callID, "error": &rex.RexError{Code: "failed", Message: big}}
 			}
-			sendReply(context.Background(), r, "lab.big", reply)
+			sendReply(context.Background(), r, "lab.big", reply, replyLimit(r))
 		})
 		start := time.Now()
 		_, err := labPerform(caller, l2.id)

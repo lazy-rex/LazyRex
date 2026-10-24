@@ -1528,6 +1528,9 @@ func (h *Hub) pluginsList(ctx context.Context) (any, error) {
 			args, roots := map[string]string{}, []string{}
 			maps.Copy(args, e.Args)
 			item["args"], item["watch_roots"] = args, append(roots, e.WatchRoots...)
+			if e.github {
+				item["fetch"] = fetchName(e.fetch) // github or peer (peerfetch.go)
+			}
 		}
 		if e.github && snap.err == nil { // a lock that does not read has no pins (snap.lock is nil)
 			if le := snap.lock.Plugins[e.Source]; le != nil {

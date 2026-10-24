@@ -52,7 +52,7 @@ func (op *pluginOp) newManaged(t opResolved) (managedFileEntry, error) {
 		if err := json.Unmarshal([]byte(op.Input), &in); err != nil {
 			return managedFileEntry{}, fmt.Errorf("the stored input: %v", err)
 		}
-		return managedFileEntry{ID: in.ID, Source: t.Source, Args: in.Args, WatchRoots: in.WatchRoots}, nil
+		return managedFileEntry{ID: in.ID, Source: t.Source, Args: in.Args, WatchRoots: in.WatchRoots, Fetch: fetchValue(in.Fetch)}, nil
 	case "update", "install": // an install keeps the source (t.Source is the base's)
 		var m managedFileEntry
 		if err := json.Unmarshal([]byte(op.Base), &m); err != nil {

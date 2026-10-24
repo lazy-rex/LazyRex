@@ -52,6 +52,10 @@ type Config struct {
 	// run, localsnapshot.go). `lazyrex-hub test` names only the plugin under test, so ${PLUGIN} is
 	// the dir it runs from. Only -test accepts it, and each dir must be in test_roots.
 	TestSourceRuns []string `json:"test_source_runs"`
+	// TestReplyLimit caps the hub's max frame on its Rex connection (bytes): the reply guard and the
+	// peer budgets use min(the server's max_message_bytes, it), so a lab can measure a 64 KiB server.
+	// 0: no cap. Only -test accepts it.
+	TestReplyLimit int `json:"test_reply_limit"`
 	// UISlot is where forms and panels open, for an experiment (the user, 2026-10-22): "split" (the
 	// window's right split, the default) or "layer" (a floating layer in the same window). It goes
 	// away when the user decides.
@@ -404,6 +408,12 @@ func main() {
 	}
 	if !cfg.Test && cfg.TestHoldRecovery {
 		log.Fatal("test_hold_recovery needs -test")
+	}
+	if !cfg.Test && cfg.TestReplyLimit != 0 {
+		log.Fatal("test_reply_limit needs -test")
+	}
+	if cfg.TestReplyLimit != 0 && cfg.TestReplyLimit < testReplyLimitMin {
+		log.Fatalf("test_reply_limit must be at least %d", testReplyLimitMin)
 	}
 	if cfg.Test && len(cfg.TestRoots) == 0 {
 		log.Fatal("-test needs test_roots in the config (lazyrex-hub test writes it)")
@@ -809,7 +819,7 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 	} else {
 		reply["result"] = result
 	}
-	replyErr := sendReply(ctx, h.rex, p.Action, reply) // replyguard.go
+	replyErr := sendReply(ctx, h.rex, p.Action, reply, h.replyLimit(h.rex)) // replyguard.go
 	if replyErr != nil {
 		log.Printf("reply %s %s: %v", p.Action, p.CallID, replyErr)
 	}

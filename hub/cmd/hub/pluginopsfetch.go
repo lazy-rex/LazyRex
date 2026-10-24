@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,8 +221,15 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 		return err
 	}
 	fctx, cancel := context.WithTimeout(ctx, fetchLimit)
-	cfg := &pluginCmdConfig{path: h.cfg.path, state: h.cfg.State}
-	le, err := fetchAt(fctx, cfg, h.opCmd(op, "fetching"), tmpRoot, e.githubRef(), t.FetchRef, t.Commit, t.RefKind, t.Tag, t.RefKind == "commit" || t.ByID)
+	var le *lockEntry
+	var stats *peerFetchStats
+	var err error
+	if op.fetchPeer() {
+		le, stats, err = h.peerFetch(fctx, t, e)
+	} else {
+		cfg := &pluginCmdConfig{path: h.cfg.path, state: h.cfg.State}
+		le, err = fetchAt(fctx, cfg, h.opCmd(op, "fetching"), tmpRoot, e.githubRef(), t.FetchRef, t.Commit, t.RefKind, t.Tag, t.RefKind == "commit" || t.ByID)
+	}
 	timedOut := errors.Is(fctx.Err(), context.DeadlineExceeded)
 	cancel()
 	switch {
@@ -242,7 +250,25 @@ func (h *Hub) opFetch(ctx context.Context, op *pluginOp) error {
 		return err
 	}
 	op.Pin = string(b)
-	return h.setOpPhase(ctx, op, op.nextPhase("fetching"), fmt.Sprintf("fetched %s %s", le.Name, le.Commit), "")
+	result := fmt.Sprintf("fetched %s %s", le.Name, le.Commit)
+	if stats != nil {
+		result += " " + stats.String()
+		log.Printf("plugin op %s: %s", op.ID, result)
+	}
+	return h.setOpPhase(ctx, op, op.nextPhase("fetching"), result, "")
+}
+
+// fetchPeer reports whether the op's fetch takes the files from the plugins_from peer: the fetch
+// of the add's input, or of the managed entry at admission (op.Base).
+func (op *pluginOp) fetchPeer() bool {
+	if op.Kind == "add" {
+		var in opAddInput
+		json.Unmarshal([]byte(op.Input), &in)
+		return in.Fetch == "peer"
+	}
+	var m managedFileEntry
+	json.Unmarshal([]byte(op.Base), &m)
+	return m.Fetch == "peer"
 }
 
 // lockedTarget is the lock entry of the target's key when it is the target (the commit, ref_kind

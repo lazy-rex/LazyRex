@@ -63,6 +63,7 @@ type configEntry struct {
 	UserMessaging bool              `json:"user_messaging"`
 	index         int               // 1-based, as the error texts count; 0 for a managed entry
 	managed       string            // the managed id (section 13); "" for a config entry
+	fetch         string            // a managed GitHub entry: "peer" (the plugins_from peer), or "" (GitHub)
 	dir           string            // a local source: the absolute directory
 	github        bool
 	static        error // a refusal that no resolution changes (a managed source that the config also names)
@@ -181,6 +182,9 @@ type managedFileEntry struct {
 	Source     string            `json:"source"`
 	Args       map[string]string `json:"args"`
 	WatchRoots []string          `json:"watch_roots"`
+	// Fetch is where a fetch of the entry's pin takes the files (peerfetch.go): "peer" (the
+	// plugins_from peer), or absent (GitHub). The writers write it only for "peer".
+	Fetch string `json:"fetch,omitempty"`
 }
 
 // encodeManaged is the managed file of the entries, as every writer writes it (the plugin
@@ -230,6 +234,16 @@ func parseManagedBytes(b []byte) ([]*configEntry, error) {
 			return nil, fmt.Errorf("managed:%s: the id is used twice", p.ID)
 		}
 		e := &configEntry{Source: p.Source, Args: p.Args, WatchRoots: p.WatchRoots, managed: p.ID}
+		switch p.Fetch {
+		case "", "github":
+		case "peer":
+			if !strings.HasPrefix(p.Source, "github:") {
+				return nil, fmt.Errorf("managed:%s: fetch peer needs a GitHub source", p.ID)
+			}
+			e.fetch = "peer"
+		default:
+			return nil, fmt.Errorf("managed:%s: fetch %q must be github or peer", p.ID, p.Fetch)
+		}
 		if !strings.HasPrefix(p.Source, "github:") && !filepath.IsAbs(p.Source) {
 			return nil, fmt.Errorf("managed:%s: source %q must be an absolute directory or github:<owner>/<repo>@<ref>", p.ID, p.Source)
 		}

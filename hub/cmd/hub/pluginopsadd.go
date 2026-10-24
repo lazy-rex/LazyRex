@@ -24,6 +24,7 @@ type opAddInput struct {
 	ID         string            `json:"id"`
 	Args       map[string]string `json:"args"`
 	WatchRoots []string          `json:"watch_roots"`
+	Fetch      string            `json:"fetch,omitempty"` // "github" (or absent) or "peer": only the add of an offer
 }
 
 // opUpdateInput is the input of an update: "@" (a refresh of the entry's own ref), "latest", or a
@@ -107,7 +108,15 @@ func (h *Hub) addAdmission(op *pluginOp, req opRequest) (*pluginOp, error) {
 		}
 		offer = &o
 	}
-	e := &configEntry{Source: in.Source, Args: in.Args, WatchRoots: in.WatchRoots}
+	if in.Fetch != "" {
+		if err := h.checkFetch(in.Fetch, in.Source); err != nil {
+			return nil, err
+		}
+		if in.Fetch == "peer" && offer == nil {
+			return nil, bad("invalid: fetch peer is for the add of an offer; the peer's pin is the target")
+		}
+	}
+	e := &configEntry{Source: in.Source, Args: in.Args, WatchRoots: in.WatchRoots, fetch: fetchValue(in.Fetch)}
 	if err := e.checkSource(""); err != nil {
 		return nil, bad("invalid: %v", err)
 	}
@@ -152,7 +161,7 @@ func (h *Hub) addAdmission(op *pluginOp, req opRequest) (*pluginOp, error) {
 	}
 	h.entriesMu.Unlock()
 	m := fileEntry(e)
-	b, _ := json.Marshal(opAddInput{Source: m.Source, ID: m.ID, Args: m.Args, WatchRoots: m.WatchRoots})
+	b, _ := json.Marshal(opAddInput{Source: m.Source, ID: m.ID, Args: m.Args, WatchRoots: m.WatchRoots, Fetch: m.Fetch})
 	op.Entry, op.Input, op.Base, op.EntryIdentity = "managed:"+in.ID, string(b), "absent", entryIdentity(e)
 	if offer != nil {
 		pin, _ := json.Marshal(offer.Pin)
@@ -239,6 +248,9 @@ func (h *Hub) opResolveTarget(ctx context.Context, op *pluginOp) (opResolved, er
 		var base managedFileEntry
 		if err := json.Unmarshal([]byte(op.Base), &base); err != nil {
 			return opResolved{}, err
+		}
+		if base.Fetch == "peer" { // the peer's pin of the source; no git
+			return h.peerPinTarget(ctx, base.Source)
 		}
 		source = base.Source
 	default:

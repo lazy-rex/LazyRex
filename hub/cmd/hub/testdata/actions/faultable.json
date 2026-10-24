@@ -28,6 +28,8 @@
  "hub.palette.run",
  "hub.peer.agents",
  "hub.peer.nudge",
+ "hub.peer.plugin_bytes",
+ "hub.peer.plugin_tree",
  "hub.peer.plugins",
  "hub.peer.pull",
  "hub.peer.send",

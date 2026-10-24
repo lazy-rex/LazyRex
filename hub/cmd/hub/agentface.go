@@ -178,7 +178,7 @@ func (h *Hub) agentAnswer(ctx context.Context, p perform) {
 	} else {
 		reply["result"] = result
 	}
-	if err := sendReply(ctx, h.agentRex, p.Action, reply); err != nil { // replyguard.go
+	if err := sendReply(ctx, h.agentRex, p.Action, reply, h.replyLimit(h.agentRex)); err != nil { // replyguard.go
 		log.Printf("agent reply %s %s: %v", p.Action, p.CallID, err)
 	}
 	log.Printf("agent %s from pid %d -> %v", p.Action, p.Requester.Principal.PID, err)

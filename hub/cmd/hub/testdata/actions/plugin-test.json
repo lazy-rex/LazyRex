@@ -394,6 +394,16 @@
   "title": "hub.peer.agents"
  },
  {
+  "kind": "client",
+  "name": "hub.peer.plugin_tree",
+  "title": "hub.peer.plugin_tree"
+ },
+ {
+  "kind": "client",
+  "name": "hub.peer.plugin_bytes",
+  "title": "hub.peer.plugin_bytes"
+ },
+ {
   "args": {
    "additionalProperties": false,
    "properties": {},

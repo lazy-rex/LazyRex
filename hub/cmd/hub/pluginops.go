@@ -156,7 +156,7 @@ type opRequest struct {
 	Op     string          `json:"op"`
 	Entry  string          `json:"entry"`  // "managed:<id>", or the exact source of a config entry
 	Expect json.RawMessage `json:"expect"` // start from the panel: the run that the panel showed
-	Input  json.RawMessage `json:"input"`  // settings: {args, watch_roots}; add: {source, id?, args?, watch_roots?}; update: {to}
+	Input  json.RawMessage `json:"input"`  // settings: {args, watch_roots, fetch?}; add: {source, id?, args?, watch_roots?, fetch?}; update: {to}
 	// Target: a peer update (peersync.go): the peer's pin of the source, a pin document entry. A
 	// user's add of an offer: the complete offer {peer, id, source, pin} (hub.plugins "offered").
 	// The pin is the stored target, so the op does not resolve; the fetch must give its digest.
@@ -166,6 +166,39 @@ type opRequest struct {
 type opSettings struct {
 	Args       map[string]string `json:"args"`
 	WatchRoots []string          `json:"watch_roots"`
+	// Fetch is "github" or "peer" (peerfetch.go). Absent: the input keeps the entry's value (the
+	// admission stores it), and an expect does not check it.
+	Fetch *string `json:"fetch,omitempty"`
+}
+
+// fetchValue is the managed entry's fetch of an input value: "peer", or "" for "github".
+func fetchValue(s string) string {
+	if s == "peer" {
+		return "peer"
+	}
+	return ""
+}
+
+// fetchName is the input value of a managed entry's fetch.
+func fetchName(fetch string) string {
+	if fetch == "peer" {
+		return "peer"
+	}
+	return "github"
+}
+
+// checkFetch checks a fetch input value for a source: "github", or "peer" for a GitHub source on
+// a hub with a plugins_from peer.
+func (h *Hub) checkFetch(v, source string) error {
+	switch {
+	case v != "github" && v != "peer":
+		return bad("invalid: fetch %q must be github or peer", v)
+	case v == "peer" && !strings.HasPrefix(source, "github:"):
+		return bad("invalid: fetch peer needs a GitHub source; %s is not one", source)
+	case v == "peer" && h.pluginsFrom() == nil:
+		return bad("invalid: fetch peer needs a plugins_from peer")
+	}
+	return nil
 }
 
 // pluginOp is one plugin_ops row.
@@ -233,7 +266,7 @@ func canonicalEntry(e *configEntry) string {
 // fileEntry is the file form of a parsed managed entry. Empty args and roots are written as {} and
 // [], so an absent field and an empty one are the same entry.
 func fileEntry(e *configEntry) managedFileEntry {
-	m := managedFileEntry{ID: e.managed, Source: e.Source, Args: e.Args, WatchRoots: e.WatchRoots}
+	m := managedFileEntry{ID: e.managed, Source: e.Source, Args: e.Args, WatchRoots: e.WatchRoots, Fetch: e.fetch}
 	if m.Args == nil {
 		m.Args = map[string]string{}
 	}
@@ -542,6 +575,11 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 		if err := (&configEntry{Args: in.Args, WatchRoots: in.WatchRoots}).checkFields(); err != nil {
 			return nil, bad("invalid: %v", err)
 		}
+		if in.Fetch != nil {
+			if err := h.checkFetch(*in.Fetch, source); err != nil {
+				return nil, err
+			}
+		}
 		b, _ := json.Marshal(in)
 		op.Input = string(b)
 	case "update":
@@ -597,6 +635,9 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 			return nil, refuse("refused", "%s is not in the managed file now; reload first", req.Entry)
 		}
 		op.Base = canonicalEntry(m)
+		if req.Op == "update" && op.Target == "" && m.fetch == "peer" {
+			return nil, bad("invalid: %s fetches from the peer; the plugin sync updates it (set fetch github to update it from GitHub)", req.Entry)
+		}
 		if req.Op == "settings" {
 			if err := settingsAdmission(op, req, m); err != nil {
 				return nil, err
@@ -660,7 +701,8 @@ func (h *Hub) opAdmission(origin opOrigin, req opRequest) (*pluginOp, error) {
 // field and an empty one are equal.
 func settingsAdmission(op *pluginOp, req opRequest, m *configEntry) error {
 	same := func(s opSettings) bool {
-		return maps.Equal(s.Args, m.Args) && slices.Equal(s.WatchRoots, m.WatchRoots)
+		return maps.Equal(s.Args, m.Args) && slices.Equal(s.WatchRoots, m.WatchRoots) &&
+			(s.Fetch == nil || fetchValue(*s.Fetch) == m.fetch)
 	}
 	if len(req.Expect) > 0 {
 		var x opSettings
@@ -673,6 +715,12 @@ func settingsAdmission(op *pluginOp, req opRequest, m *configEntry) error {
 	}
 	var in opSettings
 	json.Unmarshal([]byte(op.Input), &in)
+	if in.Fetch == nil { // a missing fetch keeps the entry's value
+		v := fetchName(m.fetch)
+		in.Fetch = &v
+		b, _ := json.Marshal(in)
+		op.Input = string(b)
+	}
 	if same(in) {
 		op.Phase, op.Result = "done", "no change"
 	}
@@ -1010,7 +1058,7 @@ func (op *pluginOp) intended() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return canonicalEntry(&configEntry{managed: m.ID, Source: m.Source, Args: m.Args, WatchRoots: m.WatchRoots}), nil
+		return canonicalEntry(&configEntry{managed: m.ID, Source: m.Source, Args: m.Args, WatchRoots: m.WatchRoots, fetch: m.Fetch}), nil
 	}
 	var m managedFileEntry
 	if err := json.Unmarshal([]byte(op.Base), &m); err != nil {
@@ -1018,7 +1066,10 @@ func (op *pluginOp) intended() (string, error) {
 	}
 	var in opSettings
 	json.Unmarshal([]byte(op.Input), &in)
-	e := &configEntry{managed: m.ID, Source: m.Source, Args: in.Args, WatchRoots: in.WatchRoots}
+	e := &configEntry{managed: m.ID, Source: m.Source, Args: in.Args, WatchRoots: in.WatchRoots, fetch: m.Fetch}
+	if in.Fetch != nil {
+		e.fetch = fetchValue(*in.Fetch)
+	}
 	return canonicalEntry(e), nil
 }
 
@@ -1951,11 +2002,13 @@ var unprovenPrefix = fmt.Sprintf("unproven: observation ended after %d passes; "
 // settingsSchema is the agent-face schema of the settings input and of its expect.
 var settingsSchema = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 	"args":        map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}},
-	"watch_roots": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}}}
+	"watch_roots": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	"fetch":       map[string]any{"type": "string", "enum": []any{"github", "peer"}}}}
 
-// opInputSchema is the agent-face schema of the input: settings {args, watch_roots}, or update
+// opInputSchema is the agent-face schema of the input: settings {args, watch_roots, fetch}, or update
 // {to}. Admission decodes the input of each op strictly.
 var opInputSchema = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 	"args":        settingsSchema["properties"].(map[string]any)["args"],
 	"watch_roots": settingsSchema["properties"].(map[string]any)["watch_roots"],
+	"fetch":       settingsSchema["properties"].(map[string]any)["fetch"],
 	"to":          map[string]any{"type": "string", "minLength": 1}}}
