@@ -253,8 +253,8 @@ func (h *Hub) peerPluginsSync(ctx context.Context, l *peerLink) (*peerSync, erro
 	return s, nil
 }
 
-// peerUpdate admits a peer update of entry to the pin p, unless an op of the peer on that entry
-// runs, or an op of the same target ended less than peerSyncRetry ago. The key is the target's
+// peerUpdate admits a peer update of entry to the pin p, unless any op on that entry runs (of
+// any scope), or a peer op of the same target ended less than peerSyncRetry ago. The key is the target's
 // hash and a count, so a later try of the same target is a new op. It gives {entry, op_id, phase}
 // of the running or new op, or nil.
 func (h *Hub) peerUpdate(ctx context.Context, peer, entry string, p pinEntry) (map[string]any, error) {
@@ -265,13 +265,21 @@ func (h *Hub) peerUpdate(ctx context.Context, peer, entry string, p pinEntry) (m
 	scope, base := "peer:"+strings.ToLower(peer), hashBytes(target)
 	var id, key, phase string
 	var updated int64
+	// Any open op on the entry goes first, of any scope: an install, a user's or an agent's update.
+	// The next sync decides again after it (installRequests waits the same way for a peer op).
+	err = h.db.QueryRowContext(ctx, `SELECT op_id, phase FROM plugin_ops WHERE entry = ? AND phase NOT IN ('done', 'failed', 'conflict', 'unknown') ORDER BY created, rowid LIMIT 1`,
+		entry).Scan(&id, &phase)
+	switch {
+	case err == nil:
+		return map[string]any{"entry": entry, "op_id": id, "phase": phase}, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return nil, err
+	}
 	err = h.db.QueryRowContext(ctx, `SELECT op_id, key, phase, updated FROM plugin_ops WHERE scope = ? AND entry = ? ORDER BY created DESC, rowid DESC LIMIT 1`,
 		scope, entry).Scan(&id, &key, &phase, &updated)
 	switch {
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return nil, err
-	case err == nil && !opFinal[phase]:
-		return map[string]any{"entry": entry, "op_id": id, "phase": phase}, nil
 	case err == nil && strings.HasPrefix(key, base+"#") && time.Since(time.UnixMilli(updated)) < peerSyncRetry:
 		return nil, nil
 	}

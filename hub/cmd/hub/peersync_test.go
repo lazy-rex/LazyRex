@@ -235,6 +235,7 @@ func TestPeerPluginsServe(t *testing.T) {
 // waits 5 minutes after the same target ended, and goes on at once for another target.
 func TestPeerPluginsSync(t *testing.T) {
 	b, _, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	endFixtureOps(t, b)
 	ctx := context.Background()
 	cfgEntry := &configEntry{Source: "github:acme/cfg@v1"}
 	if err := cfgEntry.checkSource(""); err != nil {
@@ -356,6 +357,7 @@ func TestPeerPluginsSync(t *testing.T) {
 // peer's digest, and locks the peer's pin.
 func TestPeerPluginsSyncFetch(t *testing.T) {
 	b, r, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	endFixtureOps(t, b)
 	c2 := r.commit(map[string]string{"lazyrex.json": manifestJSON("notes"), "main.lua": "return 2\n"})
 	r.git("tag", "v1.1.0")
 	a := peerSourceHub(t, r, "github:acme/notes@v1.1.0")
@@ -383,6 +385,7 @@ func TestPeerPluginsSyncFetch(t *testing.T) {
 // another release tag is not in sync.
 func TestPeerPluginsSyncLatestTag(t *testing.T) {
 	b, _, _, _ := atTestHub(t, "github:acme/notes@latest")
+	endFixtureOps(t, b)
 	cur := readTestLock(t, b).Plugins["github:acme/notes@v1.0.0"]
 	lock := readTestLock(t, b)
 	le := *cur
@@ -421,6 +424,7 @@ func TestPeerPluginsSyncLatestTag(t *testing.T) {
 // it: a running plugin whose selected run is another commit gets a peer update (alreadyAt).
 func TestPeerPluginsSyncRunBehind(t *testing.T) {
 	b, _, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	endFixtureOps(t, b)
 	cur := readTestLock(t, b).Plugins["github:acme/notes@v1.0.0"]
 	b.entriesMu.Lock()
 	id := entryIdentity(b.entries[len(b.entries)-1])
@@ -449,4 +453,47 @@ func TestPeerPluginsSyncRunBehind(t *testing.T) {
 			t.Fatalf("a selected run at %s: %d ops, want %d", c.commit, n, c.ops)
 		}
 	}
+}
+
+// A peer update waits while any op on the entry runs, of any scope (an install, a user's or an
+// agent's update): the sync admits no peer op, and lists the open op as updating.
+func TestPeerPluginsSyncWaitsForAnyOp(t *testing.T) {
+	b, _, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	endFixtureOps(t, b)
+	commit, digest := strings.Repeat("c", 40), "sha256:"+strings.Repeat("d", 64)
+	b.cfg.HubName, b.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	b.peers = newPeerSet(b.cfg)
+	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
+		p := pinEntry{Source: "github:acme/notes@v1.1.0", lockPin: lockPin{Name: "notes", Owner: "acme", Repo: "notes", Ref: "v1.1.0", RefKind: "tag", Commit: commit, Digest: digest}}
+		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: []pinEntry{p}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return json.Marshal(map[string]any{"pins": json.RawMessage(doc), "managed": []peerManaged{}})
+	}
+	v, err := b.admitOp(context.Background(), opOrigin{"user", "v1"}, "user:v1", "u1", opRequest{Op: "update", Entry: "managed:notes", Input: rawJSON(map[string]any{"to": "latest"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userOp := v.(map[string]any)["op_id"]
+	count := func() int {
+		var n int
+		b.db.QueryRow(`SELECT count(*) FROM plugin_ops WHERE scope = 'peer:mac'`).Scan(&n)
+		return n
+	}
+	s, err := b.peerPluginsSync(context.Background(), b.peerLink("mac"))
+	if err != nil || count() != 0 || len(s.Updating) != 1 || s.Updating[0]["op_id"] != userOp {
+		t.Fatalf("an open user op: %d peer ops, updating %+v, %v", count(), s, err)
+	}
+	mustExec(t, b, `UPDATE plugin_ops SET phase = 'done' WHERE op_id = ?`, userOp)
+	if _, err := b.peerPluginsSync(context.Background(), b.peerLink("mac")); err != nil || count() != 1 {
+		t.Fatalf("after the user op ended: %d peer ops, %v", count(), err)
+	}
+}
+
+// endFixtureOps ends the ops that a test fixture left open (atTestHub's add stays in writing), so
+// a peer update does not wait for them (peerUpdate waits for any open op on the entry).
+func endFixtureOps(t *testing.T, h *Hub) {
+	t.Helper()
+	mustExec(t, h, `UPDATE plugin_ops SET phase = 'done' WHERE phase NOT IN ('done', 'failed', 'conflict', 'unknown')`)
 }
