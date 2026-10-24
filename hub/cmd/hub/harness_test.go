@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -179,5 +180,72 @@ func TestHarnessNamesOnlyInTheTable(t *testing.T) {
 			t.Errorf("%s: a string names a CLI: %.80s", fset.Position(lit.Pos()), lit.Value)
 			return true
 		})
+	}
+}
+
+// The resume consumer of the table (lead-harness2 item 1): a fake row with a resumePrompt gets that
+// text once in the new pane (prompt_sending, then prompt_sent); a row without one gets no write, waits
+// in launched, and is unknown after resumeRebindWait. Both rebind from the target's pane.
+func TestHarnessFakeResumePrompt(t *testing.T) {
+	for _, text := range []string{"Fake: resumed.", ""} {
+		withHarness(t, fakeHarness(false, text))
+		h := resumeTestHub(t)
+		h.ui = &uiState{kick: make(chan struct{}, 1), sess: map[string]string{"session:test": uiSessionKey}} // the work session: no attach
+		ctx := context.Background()
+		var writes []string
+		pid := os.Getpid() // a real process: the hub compares its start time between looks
+		h.rex = payloadRex(t, func(method string, payload json.RawMessage) (any, string) {
+			switch method {
+			case "com.superlogical.terminal.process":
+				return map[string]any{"child": map[string]any{"pid": pid}, "foreground": map[string]any{"pid": pid}}, ""
+			case "com.superlogical.terminal.program_status":
+				return map[string]any{"records": []any{map[string]any{"id": "", "state": "idle", "owner": map[string]any{"pid": pid}}}}, ""
+			case "com.superlogical.terminal.write":
+				writes = append(writes, string(payload))
+			}
+			return map[string]any{}, ""
+		})
+		mustExec(t, h, `INSERT INTO identities VALUES ('fake:a', 'fake', 'a', 'detached', 'block:old', '', '', 't0', 't0')`)
+		if _, err := h.adminResume(ctx, map[string]any{"key": "k", "agent": "fake:a"}); err != nil {
+			t.Fatal(err)
+		}
+		// The launch itself is covered elsewhere: the new pane is open.
+		mustExec(t, h, `INSERT INTO spawns (spawn_id,caller,key,request,profile,title,agent_id,parent,status,created,session_id,block_id)
+ VALUES ('spawn-new','user','key-new','{}','agent','Agent 1','spawn:spawn-test','user','open','2026-10-16T23:00:00Z','session:test','block:new')`)
+		mustExec(t, h, `UPDATE agent_op_targets SET phase = 'launched', spawn_id = 'spawn-new', block_id = 'block:new', updated = ? WHERE identity = 'fake:a'`,
+			time.Now().UTC().Format(time.RFC3339Nano))
+		phase := func() (p, d string) {
+			h.db.QueryRow(`SELECT phase, detail FROM agent_op_targets WHERE identity = 'fake:a'`).Scan(&p, &d)
+			return p, d
+		}
+		for range 2 {
+			if _, err := h.resumeStep(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p, d := phase()
+		if text != "" {
+			if p != "prompt_sent" || len(writes) != 2 || !strings.Contains(writes[0], text) || !strings.Contains(writes[1], `\r`) {
+				t.Fatalf("prompt %q: phase %s %q, writes %q", text, p, d, writes)
+			}
+		} else {
+			if p != "launched" || len(writes) != 0 {
+				t.Fatalf("no prompt: phase %s %q, writes %q", p, d, writes)
+			}
+			mustExec(t, h, `UPDATE agent_op_targets SET updated = ? WHERE identity = 'fake:a'`,
+				time.Now().Add(-resumeRebindWait-time.Second).UTC().Format(time.RFC3339Nano))
+			h.resumeStep(ctx)
+			if p, d := phase(); p != "unknown" || !strings.Contains(d, "no hook report") || len(writes) != 0 {
+				t.Fatalf("no prompt, after the wait: phase %s %q, writes %q", p, d, writes)
+			}
+		}
+		// The hook reports from the new pane: the target is rebound, and nothing more is written.
+		mustExec(t, h, `UPDATE identities SET state = 'current', block_id = 'block:new' WHERE identity = 'fake:a'`)
+		n := len(writes)
+		h.resumeStep(ctx)
+		if p, _ := phase(); p != "rebound" || len(writes) != n {
+			t.Fatalf("prompt %q: after the report: phase %s, writes %d -> %d", text, p, n, len(writes))
+		}
+		harnesses = harnesses[:len(harnesses)-1]
 	}
 }
