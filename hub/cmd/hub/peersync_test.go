@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -496,4 +497,31 @@ func TestPeerPluginsSyncWaitsForAnyOp(t *testing.T) {
 func endFixtureOps(t *testing.T, h *Hub) {
 	t.Helper()
 	mustExec(t, h, `UPDATE plugin_ops SET phase = 'done' WHERE phase NOT IN ('done', 'failed', 'conflict', 'unknown')`)
+}
+
+// TestPeerPluginsSyncAmbiguous (fed-live-hub item 4): a sync that fails because the peer's
+// lazyrex-hub label is ambiguous (the peer hub restarted; Rex keeps its lost client about a minute)
+// comes again in 2 s, as the pull does; another failure and a success wait the minute.
+func TestPeerPluginsSyncAmbiguous(t *testing.T) {
+	b := peerHub(t, "linux", "mac", nil)
+	b.cfg.Peers = []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	b.peers = newPeerSet(b.cfg)
+	var fail error
+	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) { return nil, fail }
+	for _, c := range []struct {
+		err  string
+		want time.Duration
+	}{
+		{`hub.peer.plugins on mac: exit status 3: Error: client target "lazyrex-hub" is ambiguous`, peerPollUp},
+		{`hub.peer.plugins on mac: exit status 1: Error: dial: connection refused`, peerSyncEvery},
+	} {
+		fail = errors.New(c.err)
+		_, err := b.peerPluginsSync(context.Background(), b.peers.links["mac"])
+		if err == nil || peerSyncWait(err) != c.want {
+			t.Fatalf("%s: err %v, wait %s, want %s", c.err, err, peerSyncWait(err), c.want)
+		}
+	}
+	if peerSyncWait(nil) != peerSyncEvery {
+		t.Fatalf("after a success: %s", peerSyncWait(nil))
+	}
 }

@@ -2409,7 +2409,8 @@ A hub with `plugins_from` on a peer (the receiver) syncs the GitHub plugins of t
 hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lead-fed-r1 item 4.
 
 - **Read.** The receiver calls `hub.peer.plugins {hub}` on the source hub when the hub starts, then
-  every minute. The source hub checks only that `hub` names a configured peer (else `unknown_hub`).
+  every minute; after a failure because the source hub's `lazyrex-hub` label is ambiguous (its hub
+  restarted, "Transport"), again in 2 s. The source hub checks only that `hub` names a configured peer (else `unknown_hub`).
   This is a name check, not authentication ("Trust limit"): any client that reaches the source
   hub's Rex server can name a peer and read the reply. Pins are not secret, so v1 accepts this
   (lead-fsync). The reply is

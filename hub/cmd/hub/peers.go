@@ -450,10 +450,16 @@ func (h *Hub) peerLoop(ctx context.Context, l *peerLink) {
 // tries again every 2 s and takes the new hub as soon as Rex drops the old one. The loop logs an
 // error only when it changes, so the episode logs once.
 func peerRetryWait(err error, wait time.Duration) time.Duration {
-	if strings.Contains(err.Error(), `client target "lazyrex-hub" is ambiguous`) {
+	if peerAmbiguous(err) {
 		return peerPollUp
 	}
 	return min(max(2*wait, peerPollUp), peerPollDown)
+}
+
+// peerAmbiguous: a peer call failed because the peer's lazyrex-hub label names two clients, the
+// new hub and the lost client of the hub before its restart.
+func peerAmbiguous(err error) bool {
+	return strings.Contains(err.Error(), `client target "lazyrex-hub" is ambiguous`)
 }
 
 // peerPluginClient returns the client of the plugin name, or "" and wait: true when the plugin is

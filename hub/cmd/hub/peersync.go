@@ -130,9 +130,19 @@ func (h *Hub) peerPluginsLoop(ctx context.Context, l *peerLink) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(peerSyncEvery):
+		case <-time.After(peerSyncWait(err)):
 		}
 	}
+}
+
+// peerSyncWait is the wait before the next sync: a minute, or 2 s while the peer's lazyrex-hub
+// label is ambiguous (its hub restarted; as the pull, peerRetryWait), so the sync does not show
+// that error for a minute after the peer's restart window ends.
+func peerSyncWait(err error) time.Duration {
+	if err != nil && peerAmbiguous(err) {
+		return peerPollUp
+	}
+	return peerSyncEvery
 }
 
 // peerSyncApply stores the result of one sync. s is nil only when the peer's document was not read
