@@ -172,7 +172,7 @@
    },
    "type": "object"
   },
-  "description": "List the agents you can message: \"user\" (the human) and each conversation (id \"\u003ckind\u003e:\u003cconversation id\u003e\", name = its tab label, state current, detached or superseded). Set all=true to include superseded conversations and the agent spawns that wait for their first report (id \"spawn:\u003cspawn_id\u003e\", state starting). Each entry has session_id, the Rex session of its pane (empty when unknown); set session_id to list only that session's agents. A current entry has binding (\"b-\u003cn\u003e\"), the name of its pane generation; a detached entry has revision (an integer). Plugins pass them to a later effect so that the hub refuses it after the agent changed (not_current).",
+  "description": "List the agents you can message: \"user\" (the human) and each conversation (id \"\u003ckind\u003e:\u003cconversation id\u003e\", name = its tab label, state current, detached or superseded). Set all=true to include superseded conversations and the agent spawns that wait for their first report (id \"spawn:\u003cspawn_id\u003e\", state starting). Each entry has session_id, the Rex session of its pane (empty when unknown); set session_id to list only that session's agents. A current entry with a live process has block_id, the Rex block of its pane, and binding (\"b-\u003cn\u003e\"), the name of its pane generation; a detached entry has revision (an integer). Plugins pass them to a later effect so that the hub refuses it after the agent changed (not_current).",
   "kind": "client",
   "name": "hub.agents",
   "title": "List agents"
