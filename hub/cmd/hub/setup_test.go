@@ -304,7 +304,9 @@ func TestHighestTag(t *testing.T) {
 	for want, tags := range map[string][]string{
 		"v0.10.0": {"v0.9.0", "v0.10.0", "v0.2.11"},
 		"v2.0.0":  {"v1.99.99", "v2.0.0", "v10.0", "v3.0.0-rc1", "V4.0.0"},
-		"":        {"v01.0.0", "latest", "1.0.0", "v99999999999999999999.0.0"},
+		"":        {"v01.0.0", "latest", "1.0.0"},
+		// A number too long for an int is still a release tag, as for the hub's @latest.
+		"v99999999999999999999.0.0": {"v2.0.0", "v99999999999999999999.0.0", "v3.0.0"},
 	} {
 		if got := highestTag(tags); got != want {
 			t.Errorf("%v: %q, want %q", tags, got, want)

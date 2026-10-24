@@ -19,8 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -204,24 +202,13 @@ func lazyRexTags(repo string) ([]string, error) {
 	return tags, nil
 }
 
-var releaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
-
-// highestTag is the highest vX.Y.Z tag, or "". Other tags do not count.
+// highestTag is the highest vX.Y.Z tag, or "". Other tags do not count. It uses the parser and
+// the order of the hub's @latest (pluginlatest.go), so setup and the hub choose the same tag.
 func highestTag(tags []string) string {
-	best, bv := "", [3]int{-1}
+	best, bv := "", tagVersion{}
 	for _, t := range tags {
-		m := releaseTag.FindStringSubmatch(t)
-		if m == nil {
-			continue
-		}
-		var v [3]int
-		usable := true
-		for i := range v {
-			n, err := strconv.Atoi(m[i+1])
-			usable = usable && err == nil // a number too long for an int is not a usable tag
-			v[i] = n
-		}
-		if usable && (v[0] > bv[0] || v[0] == bv[0] && (v[1] > bv[1] || v[1] == bv[1] && v[2] > bv[2])) {
+		v, ok := parseVersionTag(t)
+		if ok && (best == "" || compareVersions(v, bv) > 0) {
 			best, bv = t, v
 		}
 	}
