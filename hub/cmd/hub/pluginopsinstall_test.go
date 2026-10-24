@@ -3,20 +3,42 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// noInstallStart replaces the start after a scan's installs with a count.
-func noInstallStart(t *testing.T) *int {
+// installStarts receives one value for each start after a scan's installs.
+type installStarts chan struct{}
+
+// noInstallStart replaces the start after a scan's installs (a goroutine) with a send.
+func noInstallStart(t *testing.T) installStarts {
 	t.Helper()
-	n := 0
+	c := make(installStarts, 16)
 	old := afterInstalls
-	afterInstalls = func(*Hub, context.Context) { n++ }
+	afterInstalls = func(*Hub, context.Context) { c <- struct{}{} }
 	t.Cleanup(func() { afterInstalls = old })
-	return &n
+	return c
+}
+
+// want checks that exactly n starts come.
+func (c installStarts) want(t *testing.T, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		select {
+		case <-c:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the start after the installs ran %d times, want %d", i, n)
+		}
+	}
+	select {
+	case <-c:
+		t.Fatalf("the start after the installs ran more than %d times", n)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 // runInstalls runs a scan and each install op that it admitted to its end, then the manager's
@@ -103,9 +125,7 @@ func TestPluginInstallNoLock(t *testing.T) {
 	if _, _, err := lockedDir(h.cfg.path, h.cfg.State, readTestLock(t, h), &configEntry{Source: "github:acme/notes@v1.0.0", github: true, owner: "acme", repo: "notes", gitRef: "v1.0.0"}); err != nil {
 		t.Fatalf("the cache entry: %v", err)
 	}
-	if *starts != 1 {
-		t.Errorf("the start after the scan ran %d times", *starts)
-	}
+	starts.want(t, 1)
 	if got := runInstalls(t, h, "reload"); len(got) != 0 {
 		t.Errorf("a second scan: %+v", got)
 	}
@@ -247,4 +267,84 @@ func TestPluginInstallFailedError(t *testing.T) {
 	if got := entryError(); strings.Contains(got, "install failed") {
 		t.Errorf("the entry error after a done install: %q", got)
 	}
+}
+
+// An install that a hub stop interrupted (lead-c22b item 1, lead-c22c): the new hub keeps the
+// database and loses the pending map. pluginOpsStart makes the open install pending before the
+// manager's first pass, so its end leads to the one normal start. With the manager, the install
+// ends before the scan (the start recovery) runs, and the start waits for the scan; with the scan
+// first (the reviewer's order), the pass after the scan ends it.
+func TestPluginInstallRecovered(t *testing.T) {
+	for _, manager := range []bool{true, false} {
+		t.Run(fmt.Sprintf("manager %v", manager), func(t *testing.T) {
+			starts := noInstallStart(t)
+			r, _ := fetchTestRepo(t)
+			h := fetchTestHub(t, r)
+			if err := os.WriteFile(h.cfg.managedPath, []byte(`{"plugins":[{"id":"notes","source":"github:acme/notes@v1.0.0"}]}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opsLoadEntries(t, h)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			h.installScan(ctx, "start")
+			id := mustLastOp(t, h)
+			h.pops.installs.mu.Lock()
+			h.pops.installs.pending, h.pops.installs.scanned = nil, false // a new hub
+			h.pops.installs.mu.Unlock()
+			if !manager {
+				if err := h.installsRecover(ctx); err != nil {
+					t.Fatal(err)
+				}
+				h.installScan(ctx, "start")
+				h.opsRun(ctx)
+			} else {
+				if err := h.pluginOpsStart(ctx); err != nil {
+					t.Fatal(err)
+				}
+				for deadline := time.Now().Add(10 * time.Second); opsOf(t, h, id).Phase != "done"; time.Sleep(20 * time.Millisecond) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the resumed install: %+v", opsOf(t, h, id))
+					}
+				}
+				starts.want(t, 0) // the start recovery has not run
+				h.installScan(ctx, "start")
+			}
+			if op := opsOf(t, h, id); op.Phase != "done" {
+				t.Fatalf("the resumed install: %s %s", op.Phase, op.Error)
+			}
+			starts.want(t, 1)
+		})
+	}
+}
+
+// An install that ends before its scan records it (lead-c22b item 2: a fast manager): the scan's
+// kick after the record gives the pass that sees it ended, and the normal start runs once.
+func TestPluginInstallEndsBeforeRecord(t *testing.T) {
+	starts := noInstallStart(t)
+	r, _ := fetchTestRepo(t)
+	h := fetchTestHub(t, r)
+	if err := os.WriteFile(h.cfg.managedPath, []byte(`{"plugins":[{"id":"notes","source":"github:acme/notes@v1.0.0"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opsLoadEntries(t, h)
+	ctx := context.Background()
+	h.pops.kick = make(chan struct{}, 1)
+	old := installAdmitted
+	installAdmitted = func(h *Hub, ctx context.Context) {
+		<-h.pops.kick // the manager takes the kick of the admission, then runs its pass
+		h.opsRun(ctx)
+	}
+	t.Cleanup(func() { installAdmitted = old })
+	h.installScan(ctx, "start")
+	if op := opsOf(t, h, mustLastOp(t, h)); op.Phase != "done" {
+		t.Fatalf("the install: %s %s", op.Phase, op.Error)
+	}
+	starts.want(t, 0)
+	select {
+	case <-h.pops.kick:
+	default:
+		t.Fatal("the scan did not kick the manager after its record")
+	}
+	h.opsRun(ctx) // the pass of the kick
+	starts.want(t, 1)
 }

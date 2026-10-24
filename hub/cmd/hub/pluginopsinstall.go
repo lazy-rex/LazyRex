@@ -22,18 +22,48 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"sync"
 )
 
-// pluginInstalls are the install ops that the scans admitted and that have not all ended.
+// pluginInstalls are the install ops that the scans admitted, and the ones that a hub stop
+// interrupted, that have not all ended.
 type pluginInstalls struct {
 	mu      sync.Mutex
 	pending map[string]string // op ID -> entry key
+	scanned bool              // a scan ran: the start recovery has visited every record
+}
+
+// installsRecover makes each open install op pending (lead-c22c). pluginOpsStart runs it before
+// the manager's first pass, so an install that a hub stop interrupted cannot end untracked. Its
+// normal start waits for the first scan (installsEnded): before the start recovery, a record does
+// not know its live instance.
+func (h *Hub) installsRecover(ctx context.Context) error {
+	rows, err := h.db.QueryContext(ctx, `SELECT op_id, entry FROM plugin_ops WHERE kind = 'install' AND phase NOT IN ('done', 'failed', 'conflict', 'unknown')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	h.pops.installs.mu.Lock()
+	defer h.pops.installs.mu.Unlock()
+	for rows.Next() {
+		var id, entry string
+		if err := rows.Scan(&id, &entry); err != nil {
+			return err
+		}
+		if h.pops.installs.pending == nil {
+			h.pops.installs.pending = map[string]string{}
+		}
+		h.pops.installs.pending[id] = entry
+	}
+	return rows.Err()
 }
 
 // installScan admits the install ops of the managed GitHub entries whose code is not in place.
-// why is "start" or "reload" (the origin ID).
+// why is "start" or "reload" (the origin ID). The scan records its ops as pending and then kicks
+// the manager: an op that ended before the record still gets a pass that sees it ended.
 func (h *Hub) installScan(ctx context.Context, why string) {
+	ids := map[string]string{}
 	for _, r := range h.installRequests(ctx) {
 		v, err := h.admitInstall(ctx, why, r)
 		if err != nil {
@@ -41,14 +71,22 @@ func (h *Hub) installScan(ctx context.Context, why string) {
 			continue
 		}
 		id, _ := v["op_id"].(string)
-		h.pops.installs.mu.Lock()
-		if h.pops.installs.pending == nil {
-			h.pops.installs.pending = map[string]string{}
-		}
-		h.pops.installs.pending[id] = r.Entry
-		h.pops.installs.mu.Unlock()
+		ids[id] = r.Entry
 	}
+	installAdmitted(h, ctx)
+	h.pops.installs.mu.Lock()
+	if len(ids) > 0 && h.pops.installs.pending == nil {
+		h.pops.installs.pending = map[string]string{}
+	}
+	maps.Copy(h.pops.installs.pending, ids)
+	h.pops.installs.scanned = true
+	h.pops.installs.mu.Unlock()
+	h.kickOps()
 }
+
+// installAdmitted runs in a scan after its admissions and before it records them as pending. A
+// test replaces it to end the installs there, as a fast manager can.
+var installAdmitted = func(*Hub, context.Context) {}
 
 // installRequests gives the install request of each managed GitHub entry whose code is not in
 // place and that has no open op.
@@ -111,11 +149,12 @@ func (h *Hub) admitInstall(ctx context.Context, why string, r opRequest) (map[st
 }
 
 // installsEnded runs on the manager goroutine after each pass. When every pending install has
-// ended, it records each entry's install error and runs the normal start once.
+// ended and a scan ran (the start recovery is over), it records each entry's install error and
+// runs the normal start once.
 func (h *Hub) installsEnded(ctx context.Context) {
 	h.pops.installs.mu.Lock()
 	pending := h.pops.installs.pending
-	if len(pending) == 0 {
+	if len(pending) == 0 || !h.pops.installs.scanned {
 		h.pops.installs.mu.Unlock()
 		return
 	}

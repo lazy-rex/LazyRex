@@ -197,6 +197,9 @@ func (h *Hub) pluginOpsStart(ctx context.Context) error {
 	}
 	h.pops.kick = make(chan struct{}, 1)
 	h.loadsStart(ctx)
+	if err := h.installsRecover(ctx); err != nil { // before the first pass (pluginopsinstall.go)
+		return err
+	}
 	go h.opsLoop(ctx)
 	h.kickOps() // ops that a stop or a crash interrupted
 	return nil
