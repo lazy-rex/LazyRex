@@ -2290,13 +2290,21 @@ default the plugin with the sender's name (lead-fedxp). The code is in `hub/cmd/
 Each hub pulls from its peers. A hub never pushes data.
 
 - The hub calls a peer with the rex CLI:
-  `rex -S <server> --autostart=false --timeout 10s -C lazyrex-hub do hub.peer.<x>`.
+  `rex -S <server> --autostart=false --timeout 10s -C <hub client> do hub.peer.<x>`.
   The Go Rex client dials only a unix socket. The CLI also reaches a remote Rex server.
+- `<hub client>` is the client ID of the peer's hub (`peerCall`). After a peer's hub restarts, Rex
+  keeps the lost client of the old hub for about a minute with the same `lazyrex-hub` label
+  (docs/rex-protocol.md "Lost clients and reconnect tokens"), so the label names two clients. The
+  hub keeps the ID of the one `connected` `lazyrex-hub` client from `rex -S <server> client ls
+  --json` and lists the clients again only for its first call and after a failed call. When that
+  list names another connected hub (the new hub of a restart), the failed call runs once more with
+  the new ID, so a peer restart costs seconds. The same ID again means the failure was not a
+  restart, and the call is not run twice. Without exactly one connected hub in the list (none, two,
+  or a failed list), the call names the label `lazyrex-hub`.
 - One loop for each peer pulls every 2 s while the peer is up. While the peer is down, the
   interval doubles up to 30 s. A `more` reply pulls again at once. One exception: while the peer's
-  `lazyrex-hub` label is ambiguous (Rex keeps the lost client of a restarted hub for about a
-  minute, docs/rex-protocol.md "Lost clients and reconnect tokens"), the pull tries again every
-  2 s: after Rex drops the old one, the next pull comes at most 2 s later (plus the time to
+  `lazyrex-hub` label is ambiguous (the label fallback above), the pull tries again every 2 s:
+  after Rex drops the old client, the next pull comes at most 2 s later (plus the time to
   connect). The error is logged once.
 - After a send, the hub sends `hub.peer.nudge` to the peer. The peer pulls at once. A nudge
   carries no data, so a lost nudge only adds delay.

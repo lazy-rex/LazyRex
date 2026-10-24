@@ -147,25 +147,8 @@ func hookReport(kind string) {
 	if err != nil {
 		return
 	}
-	var listing struct {
-		Clients []struct {
-			ClientID string `json:"client_id"`
-			Info     struct {
-				Label string `json:"label"`
-			} `json:"info"`
-			ConnectionState string `json:"connection_state"`
-		} `json:"clients"`
-	}
-	if json.Unmarshal(out, &listing) != nil {
-		return
-	}
-	var hubs []string
-	for _, c := range listing.Clients {
-		if c.Info.Label == "lazyrex-hub" && c.ConnectionState == "connected" {
-			hubs = append(hubs, c.ClientID)
-		}
-	}
-	if len(hubs) != 1 {
+	hubs, err := connectedHubs(out)
+	if err != nil || len(hubs) != 1 {
 		return
 	}
 	report, err := json.Marshal(map[string]string{"kind": kind, "conversation_id": conversation, "source": source,

@@ -233,6 +233,14 @@ func (v *ctlView) hubIDsCtx(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return connectedHubs(out)
+}
+
+// connectedHubs reads the output of `rex client ls --json` and lists the client IDs with the label
+// lazyrex-hub that are connected. Rex keeps the lost client of a hub that exited for about a minute,
+// with the same label (docs/rex-protocol.md "Label resolution includes lost clients"), so a caller
+// that needs the running hub names it by one of these IDs, not by the label.
+func connectedHubs(out []byte) ([]string, error) {
 	var listing struct {
 		Clients []struct {
 			ClientID string `json:"client_id"`

@@ -267,9 +267,13 @@ func TestPeerOutboxResetLab(t *testing.T) {
 	a.start()
 	a.registered("peerfix")
 	send("k2", "after") // seq 1 of the new outbox
-	// b's pull reaches a with `rex -C lazyrex-hub`, which is ambiguous while Rex keeps the old hub's
-	// lost client (about 61 s, docs/rex-protocol.md "Resume works"); then b's pull succeeds.
-	b.waitLong("b gets k2 from the new outbox", 120*time.Second, func() bool { return len(b.got()) == 2 })
+	// Rex keeps the old hub's lost client with the label lazyrex-hub for about 61 s
+	// (docs/rex-protocol.md "Lost clients and reconnect tokens"). b's pull names a's hub by the ID of
+	// its one connected client (peerCall), so it reaches the new hub in seconds; the bound fails for
+	// the 61 s.
+	t0 := time.Now()
+	b.waitLong("b gets k2 from the new outbox within 20 s", 20*time.Second, func() bool { return len(b.got()) == 2 })
+	t.Logf("k2 reached b in %s", time.Since(t0).Round(time.Millisecond))
 	if e := b.got()[1].(map[string]any); e["from_hub"] != "a" || e["key"] != "k2" || e["body"] != "after" {
 		t.Fatalf("b got %v", b.got())
 	}
@@ -282,4 +286,44 @@ func TestPeerOutboxResetLab(t *testing.T) {
 		return r["outbox"] == float64(0)
 	})
 	t.Logf("b's row: %v (old outbox_id %v)", row(), old)
+}
+
+// TestPeerCallTCPLab (deploy-2bbca-mesh1): peerCall reaches a peer over TCP as an anonymous caller,
+// as on the tailnet. `client ls --json` works for that caller, the call names the peer's hub by its
+// client ID, and after the peer's hub restarts (Rex keeps the old hub's lost client, so the label is
+// ambiguous) the next call reaches the new hub at once.
+func TestPeerCallTCPLab(t *testing.T) {
+	needLab(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcp := "http://" + ln.Addr().String()
+	ln.Close()
+	b := peerLab(t, "--extra-listen", tcp, "--allow-anonymous")
+	b.setPeer("b", "a", "unix:///nowhere")
+	b.start()
+	cfg := Config{HubName: "a", Peers: []PeerConfig{{Name: "b", Server: tcp}}}
+	h := &Hub{cfg: cfg, rexBinary: b.o.rexBin, peers: newPeerSet(cfg)}
+	call := func(what string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, err := h.peerCall(ctx, cfg.Peers[0], "hub.peer.agents", map[string]any{"hub": "a"}); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if id := h.peerLink("b").hubID; id != b.hub {
+			t.Fatalf("%s: the link keeps %q, the hub is %q", what, id, b.hub)
+		}
+	}
+	call("the first call")
+	old := b.hub
+	b.stop()
+	b.start()
+	if b.hub == old {
+		t.Fatalf("the restarted hub has the old client ID %s", old)
+	}
+	t0 := time.Now()
+	call("the call after the restart")
+	t.Logf("the call after the restart took %s", time.Since(t0).Round(time.Millisecond))
 }

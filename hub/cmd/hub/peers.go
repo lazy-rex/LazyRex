@@ -122,12 +122,18 @@ type peerLink struct {
 	agentsErr string // the last read error, to log a new one once
 	// sync: the plugin sync with a plugins_from peer (peersync.go); nil before its first try.
 	sync *peerSync
+	// hubID: the client ID of the one connected lazyrex-hub client on the peer's server, from its
+	// last client list (peerCall); "" before the first list, or when it named none or two.
+	hubID string
 }
 
 type peerSet struct {
 	links map[string]*peerLink
-	// call runs a hub action on a peer's hub. nil: peerDo; a test connects two hubs directly.
+	// call runs a hub action on a peer's hub. nil: peerCall runs the rex CLI; a test connects two
+	// hubs directly.
 	call func(ctx context.Context, peer PeerConfig, action string, args any) ([]byte, error)
+	// rex runs the rex CLI with argv for peerCall. nil: h.rexBinary; a test fakes the peer's server.
+	rex func(ctx context.Context, argv []string) ([]byte, error)
 }
 
 func newPeerSet(c Config) *peerSet {
@@ -147,6 +153,15 @@ func (h *Hub) peerLink(name string) *peerLink {
 
 // peerCall runs action on the hub of peer with the rex CLI (the Go client dials only a unix socket;
 // the CLI reaches a remote Rex server by its host label). The call has a 10 s bound.
+//
+// The call names the peer's hub by its client ID. After the peer's hub restarts, Rex keeps the lost
+// client of the old hub for about a minute with the same label, so `-C lazyrex-hub` names two
+// clients ("ambiguous") until Rex drops it. The link keeps the ID of the one connected lazyrex-hub
+// client from the peer's client list. When a call with the kept ID fails, peerCall lists the clients
+// again; when the list names another connected hub (the new hub of a restart), it runs the action
+// once more with that ID. The same ID again means that the failure was not a restart: no second try.
+// Without exactly one connected hub in the list (none, two, or a failed list), the call names the
+// label, and its "ambiguous" error keeps the 2 s retry (peerRetryWait).
 func (h *Hub) peerCall(ctx context.Context, peer PeerConfig, action string, args any) ([]byte, error) {
 	if h.peers != nil && h.peers.call != nil {
 		return h.peers.call(ctx, peer, action, args)
@@ -157,14 +172,68 @@ func (h *Hub) peerCall(ctx context.Context, peer PeerConfig, action string, args
 	}
 	ctx, cancel := context.WithTimeout(ctx, peerCallTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, h.rexBinary, "-S", peer.Server, "--autostart=false", "--timeout", "10s",
-		"-C", "lazyrex-hub", "do", action, "--args", string(b))
+	l := h.peerLink(peer.Name)
+	id := ""
+	if l != nil {
+		l.mu.Lock()
+		id = l.hubID
+		l.mu.Unlock()
+	}
+	kept := id != ""
+	if !kept {
+		id = h.peerHubID(ctx, peer, l)
+	}
+	out, err := h.peerDo(ctx, peer, id, action, b)
+	if err != nil && kept {
+		if next := h.peerHubID(ctx, peer, l); next != "" && next != id {
+			out, err = h.peerDo(ctx, peer, next, action, b)
+		}
+	}
+	return out, err
+}
+
+// peerHubID lists the clients of the peer's server and returns the one connected lazyrex-hub client,
+// or "" (none, two, or a failed list). It keeps the result on the link.
+func (h *Hub) peerHubID(ctx context.Context, peer PeerConfig, l *peerLink) string {
+	id := ""
+	if out, err := h.peerRex(ctx, []string{"-S", peer.Server, "--autostart=false", "--timeout", "10s", "client", "ls", "--json"}); err == nil {
+		if ids, err := connectedHubs(out); err == nil && len(ids) == 1 {
+			id = ids[0]
+		}
+	}
+	if l != nil {
+		l.mu.Lock()
+		l.hubID = id
+		l.mu.Unlock()
+	}
+	return id
+}
+
+// peerDo runs action on the peer's hub client id; "" names the label lazyrex-hub.
+func (h *Hub) peerDo(ctx context.Context, peer PeerConfig, id, action string, args []byte) ([]byte, error) {
+	if id == "" {
+		id = "lazyrex-hub"
+	}
+	out, err := h.peerRex(ctx, []string{"-S", peer.Server, "--autostart=false", "--timeout", "10s",
+		"-C", id, "do", action, "--args", string(args)})
+	if err != nil {
+		return nil, fmt.Errorf("%s on %s: %v", action, peer.Name, err)
+	}
+	return out, nil
+}
+
+// peerRex runs the rex CLI with argv. An error carries the exit status and the trimmed stderr.
+func (h *Hub) peerRex(ctx context.Context, argv []string) ([]byte, error) {
+	if h.peers != nil && h.peers.rex != nil {
+		return h.peers.rex(ctx, argv)
+	}
+	cmd := exec.CommandContext(ctx, h.rexBinary, argv...)
 	cmd.WaitDelay = 100 * time.Millisecond
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("%s on %s: %v: %s", action, peer.Name, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
