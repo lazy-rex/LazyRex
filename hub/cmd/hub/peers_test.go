@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -989,5 +990,55 @@ func TestPeerRetryWait(t *testing.T) {
 		if got := peerRetryWait(ambiguous, wait); got != peerPollUp {
 			t.Fatalf("ambiguous after %s: %s, want %s", wait, got, peerPollUp)
 		}
+	}
+}
+
+// TestPeerAgents (lead-g4): hub.peer.agents gives a peer this hub's current identities with id,
+// name (the ID for an unnamed tab), kind, state and joined, as hub.agents; no superseded or
+// detached row, no "user", no pane or session field. An unknown peer is unknown_hub. The receiver
+// keeps the list with its time in hub.peer.status peers[].agents (null before the first read); a
+// failed read keeps the old list and its time.
+func TestPeerAgents(t *testing.T) {
+	a := peerHub(t, "a", "b", nil)
+	b := peerHub(t, "b", "a", nil)
+	linkHubs(a, b, func() bool { return false })
+	me := os.Getpid()
+	a.mu.Lock()
+	a.idents = map[string]*Agent{}
+	a.idents["claude:live"] = &Agent{ID: "claude:live", Name: "Lead", Kind: "claude", IdState: "current", BlockID: "block:1", ChildPID: me, ChildStart: startTime(me), Session: "s1"}
+	a.idents["codex:idle"] = &Agent{ID: "codex:idle", Kind: "codex", IdState: "current"}
+	a.idents["claude:old"] = &Agent{ID: "claude:old", Kind: "claude", IdState: "superseded"}
+	a.idents["claude:away"] = &Agent{ID: "claude:away", Kind: "claude", IdState: "detached"}
+	a.mu.Unlock()
+	if _, err := a.peerAgentsServe(map[string]any{"hub": "nobody"}); errCode(err) != "unknown_hub" {
+		t.Fatalf("an unknown peer: %v", err)
+	}
+	ctx, l := context.Background(), b.peers.links["a"]
+	row := func() map[string]any {
+		st, err := b.peerStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.(map[string]any)["peers"].([]any)[0].(map[string]any)
+	}
+	if r := row(); r["agents"] != (*peerAgents)(nil) {
+		t.Fatalf("agents before the first read: %v", r["agents"])
+	}
+	if err := b.peerAgentsRead(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	got := row()["agents"].(*peerAgents)
+	list, _ := json.Marshal(got.List)
+	want := `[{"id":"claude:live","joined":true,"kind":"claude","name":"Lead","state":"current"},{"id":"codex:idle","joined":false,"kind":"codex","name":"codex:idle","state":"current"}]`
+	if string(list) != want || got.At == "" {
+		t.Fatalf("agents %s at %q, want %s", list, got.At, want)
+	}
+	// A failed read keeps the list and its time.
+	linkHubs(a, b, func() bool { return true })
+	if err := b.peerAgentsRead(ctx, l); err == nil {
+		t.Fatal("a read of a down peer succeeded")
+	}
+	if again := row()["agents"].(*peerAgents); again != got {
+		t.Fatalf("after a failed read: %+v, want the old %+v", again, got)
 	}
 }

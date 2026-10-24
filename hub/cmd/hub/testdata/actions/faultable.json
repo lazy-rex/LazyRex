@@ -26,6 +26,7 @@
  "hub.navigate.agent",
  "hub.navigate.worker",
  "hub.palette.run",
+ "hub.peer.agents",
  "hub.peer.nudge",
  "hub.peer.plugins",
  "hub.peer.pull",

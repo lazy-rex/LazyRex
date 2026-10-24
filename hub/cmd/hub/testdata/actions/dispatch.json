@@ -226,6 +226,14 @@
   "plugin": "error: unknown command \"\"",
   "plugin/test": "error: unknown command \"\""
  },
+ "hub.peer.agents": {
+  "pane": "error: unknown_hub: \"\" is not a configured peer",
+  "pane/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plain": "error: unknown_hub: \"\" is not a configured peer",
+  "plain/test": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin": "error: unknown_hub: \"\" is not a configured peer",
+  "plugin/test": "error: unknown_hub: \"\" is not a configured peer"
+ },
  "hub.peer.nudge": {
   "pane": "error: unknown_hub: \"\" is not a configured peer",
   "pane/test": "error: unknown_hub: \"\" is not a configured peer",

@@ -114,7 +114,8 @@ func (s *startLab) got() []any {
 // Targets (lead-fedxp): an envelope for a plugin that b does not have, and one for b's peerquiet,
 // which offers no peer.receive (Rex refuses the perform: not_supported), are dropped and counted in
 // b's hub.peer.status; neither stops the next envelope. A target that is not a plugin name is
-// refused at the send, and a key sent again for another target is operation_conflict.
+// refused at the send, and a key sent again for another target is operation_conflict. Peer agents
+// (lead-g4): b lists a's agent in hub.peer.status peers[].agents.
 //
 // b's lab server also listens on HTTP at 127.0.0.1, and a reaches b at that address: a's pulls and
 // nudges arrive at b's hub over TCP, from a caller with no process ID, as from a remote hub.
@@ -200,6 +201,22 @@ func TestPeerHubsLab(t *testing.T) {
 	st, err := a.agentDo(a.opsAgent("x"), "hub.peer.status", map[string]any{})
 	if err != nil || st["hub_name"] != "a" || len(st["peers"].([]any)) != 1 {
 		t.Fatalf("hub.peer.status through the agent face: %v, %v", st, err)
+	}
+	// Peer agents (lead-g4): b sees a's agent claude:x in peers[].agents within one read (30 s).
+	var seen map[string]any
+	b.waitLong("b lists a's agent claude:x", 45*time.Second, func() bool {
+		ag, _ := b.must("hub.peer.status", map[string]any{})["peers"].([]any)[0].(map[string]any)["agents"].(map[string]any)
+		list, _ := ag["list"].([]any)
+		for _, e := range list {
+			if e := e.(map[string]any); e["id"] == "claude:x" {
+				seen = e
+				return ag["at"] != ""
+			}
+		}
+		return false
+	})
+	if seen["kind"] != "claude" || seen["state"] != "current" || seen["joined"] != true || seen["name"] == "" || len(seen) != 5 {
+		t.Fatalf("a's agent as b sees it: %v", seen)
 	}
 }
 

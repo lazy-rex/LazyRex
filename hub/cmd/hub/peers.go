@@ -61,7 +61,8 @@ const (
 	peerCallTimeout = 10 * time.Second
 	peerPollUp      = 2 * time.Second
 	peerPollDown    = 30 * time.Second
-	peerBlockMax    = 5 * time.Minute // the retries of one envelope for a plugin that does not run
+	peerBlockMax    = 5 * time.Minute  // the retries of one envelope for a plugin that does not run
+	peerAgentsEvery = 30 * time.Second // a read of a peer's agents (hub.peer.agents)
 )
 
 // checkPeers checks hub_name and peers: peers need a name for this hub; each peer has a valid,
@@ -115,6 +116,10 @@ type peerLink struct {
 	// hub started, and the last one.
 	dropped  int
 	lastDrop *peerDrop
+	// agents: the peer's agents at its last successful hub.peer.agents read; nil before the first.
+	// Only the agents loop writes it (a new value each time); mu guards it for status.
+	agents    *peerAgents
+	agentsErr string // the last read error, to log a new one once
 	// sync: the plugin sync with a plugins_from peer (peersync.go); nil before its first try.
 	sync *peerSync
 }
@@ -366,7 +371,7 @@ func (h *Hub) peerStatus(ctx context.Context) (any, error) {
 			l.mu.Lock()
 			row := map[string]any{"name": p.Name, "server": p.Server, "state": l.state, "last_error": l.lastErr, "outbox": outbox,
 				"after": after, "outbox_id": outboxID, "more": l.more, "last_ok": nil, "oldest_age_s": nil, "blocked_plugin": nil, "blocked_since": nil,
-				"dropped": map[string]any{"count": l.dropped, "last": l.lastDrop}}
+				"dropped": map[string]any{"count": l.dropped, "last": l.lastDrop}, "agents": l.agents}
 			if !l.lastOK.IsZero() {
 				row["last_ok"] = l.lastOK.UTC().Format(time.RFC3339)
 			}
@@ -408,6 +413,7 @@ func (h *Hub) peersRun(ctx context.Context) {
 	}
 	for _, l := range h.peers.links {
 		go h.peerLoop(ctx, l)
+		go h.peerAgentsLoop(ctx, l)
 		if l.cfg.PluginsFrom {
 			go h.peerPluginsLoop(ctx, l)
 		}
@@ -460,6 +466,78 @@ func peerRetryWait(err error, wait time.Duration) time.Duration {
 // new hub and the lost client of the hub before its restart.
 func peerAmbiguous(err error) bool {
 	return strings.Contains(err.Error(), `client target "lazyrex-hub" is ambiguous`)
+}
+
+// peerAgents is hub.peer.status peers[].agents: the peer's agents and the time of the read.
+type peerAgents struct {
+	At   string `json:"at"`
+	List []any  `json:"list"`
+}
+
+// peerAgentsServe is hub.peer.agents, called by a peer: this hub's current identities, with the
+// fields id, name, kind, state and joined of hub.agents (the same values). No "user", spawn
+// address, pane, session or binding field. The peer check is a name check ("Trust limit").
+func (h *Hub) peerAgentsServe(args map[string]any) (any, error) {
+	peer, _ := args["hub"].(string)
+	if h.peerLink(peer) == nil {
+		return nil, refuse("unknown_hub", "%q is not a configured peer", peer)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	list := []any{}
+	for _, a := range identsOf(h.idents) {
+		if a.IdState != "current" {
+			continue
+		}
+		name := a.Name
+		if name == "" {
+			name = a.ID // as hub.agents
+		}
+		list = append(list, map[string]any{"id": a.ID, "name": name, "kind": a.Kind, "state": a.IdState, "joined": a.live()})
+	}
+	return map[string]any{"agents": list}, nil
+}
+
+// peerAgentsLoop reads the peer's agents at the start, then every 30 s (2 s after an ambiguous
+// label, as the pull). A plugin reads the list from hub.peer.status, so no plugin request waits on
+// a peer. A failed read keeps the last list and its time.
+func (h *Hub) peerAgentsLoop(ctx context.Context, l *peerLink) {
+	for {
+		wait := peerAgentsEvery
+		if err := h.peerAgentsRead(ctx, l); err != nil && peerAmbiguous(err) {
+			wait = peerPollUp
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// peerAgentsRead runs one hub.peer.agents read of the peer and keeps the list.
+func (h *Hub) peerAgentsRead(ctx context.Context, l *peerLink) error {
+	out, err := h.peerCall(ctx, l.cfg, "hub.peer.agents", map[string]any{"hub": h.cfg.HubName})
+	var r struct {
+		Agents []any `json:"agents"`
+	}
+	if err == nil {
+		if json.Unmarshal(out, &r) != nil || r.Agents == nil {
+			err = fmt.Errorf("hub.peer.agents on %s: the reply has no agents list", l.cfg.Name)
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err != nil {
+		if l.agentsErr != err.Error() {
+			log.Printf("peer %s: agents: %v", l.cfg.Name, err)
+		}
+		l.agentsErr = err.Error()
+		return err
+	}
+	l.agentsErr = ""
+	l.agents = &peerAgents{At: time.Now().UTC().Format(time.RFC3339), List: r.Agents}
+	return nil
 }
 
 // peerPluginClient returns the client of the plugin name, or "" and wait: true when the plugin is

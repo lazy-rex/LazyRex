@@ -2286,6 +2286,7 @@ Each hub pulls from its peers. A hub never pushes data.
 | `hub.peer.pull` | a peer hub | `hub` (the caller's name), `after`, `outbox_id` (optional) | `{envelopes: [{seq, plugin, target, key, body, created}], more, outbox_id}` |
 | `hub.peer.nudge` | a peer hub | `hub` | `{}` |
 | `hub.peer.plugins` | a peer hub | `hub` | `{pins, managed: [{id, source}]}` ("Plugin sync") |
+| `hub.peer.agents` | a peer hub | `hub` | `{agents: [{id, name, kind, state, joined}]}` ("Peer agents") |
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
 
 - **Target.** `plugin` names the plugin on the peer that gets the envelope. It must match the
@@ -2338,8 +2339,26 @@ Each hub pulls from its peers. A hub never pushes data.
   (null unless an envelope waits for a plugin), and `dropped`: `{count, last}`, the envelopes from
   that peer that no plugin here could take since the hub started (in memory; a restart sets 0),
   with the last one as `{plugin, from_plugin, key, reason, at}` (`plugin` is the target; null
-  before the first drop). The `plugins_from` row also has `plugin_sync`
+  before the first drop), and `agents`: `{at, list}` ("Peer agents"; null before the first read).
+  The `plugins_from` row also has `plugin_sync`
   ("Plugin sync").
+
+### Peer agents
+
+A plugin or an agent sees the agents of a peer hub in `hub.peer.status` `peers[].agents`
+(lead-g4). The Messaging plugin uses it for the new-thread form and the `<id>@<hub>` display.
+
+- Each hub reads `hub.peer.agents {hub}` from each peer when it starts, then every 30 s (2 s after
+  an ambiguous `lazyrex-hub` label, "Transport"). It keeps the last list in memory.
+- `agents` is `{at, list}`: `at` is the time of the last successful read. A failed read keeps the
+  old list and its old `at`. So the list is up to 30 s old, or older while the peer is down. No
+  plugin request waits on a peer.
+- `list` has the peer's current identities with `id`, `name`, `kind`, `state` and `joined`, the
+  same values as in the peer's `hub.agents` (an unnamed tab has its ID as the name). It has no
+  `user` row, no spawn address, and no pane, session or binding field.
+- The peer check of `hub.peer.agents` is a name check ("Trust limit"): a client that reaches the
+  hub's Rex server can name a peer and read the list.
+- An agent on this hub addresses a peer's agent as `<id>@<hub>` ("Addresses").
 
 ### Delivery
 
@@ -2411,7 +2430,8 @@ an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
 v1 has no puller authentication. Any client that reaches the Rex server of hub A can call
 `hub.peer.pull` with any peer name. That client can read the envelopes for that peer, and can ack
 them, which removes their bodies. The same client can call `hub.peer.plugins` with any peer name
-and read the hub's plugin sources and pins ("Plugin sync"). The peer check of both actions is a
+and read the hub's plugin sources and pins ("Plugin sync"), and `hub.peer.agents` to read its
+agents ("Peer agents"). The peer check of these actions is a
 name check, not authentication. The network (the tailnet) is the boundary. Connect only Rex
 servers on a network that you trust.
 

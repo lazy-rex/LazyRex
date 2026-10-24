@@ -298,10 +298,13 @@ func init() {
 		{name: "hub.peer.plugins", plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
 			return h.peerPluginsServe(c.args)
 		}},
+		{name: "hub.peer.agents", plugin: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
+			return h.peerAgentsServe(c.args)
+		}},
 		{name: "hub.peer.status", plugin: true, agentOrder: 1, agentHub: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
 			return h.peerStatus(ctx)
 		}, desc: map[string]any{"name": "hub.peer.status", "kind": "client", "title": "Peer hubs",
-			"description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes from this hub that it has not acked (outbox, oldest_age_s), the cursor of what this hub took from it (after), the identity of its outbox that the cursor belongs to (outbox_id; a new one resets the cursor), whether it holds more, and the envelopes from it that no plugin here could take since the hub started (dropped). A remote agent's address is \"<agent>@<hub>\".",
+			"description": "List this hub's name and its peer hubs: for each, its server, the link state (up, down or unknown), the last success and error, the envelopes from this hub that it has not acked (outbox, oldest_age_s), the cursor of what this hub took from it (after), the identity of its outbox that the cursor belongs to (outbox_id; a new one resets the cursor), whether it holds more, the envelopes from it that no plugin here could take since the hub started (dropped), and its agents at the last read (agents: up to 30 s old, or older while it is down). A remote agent's address is \"<agent>@<hub>\".",
 			"args":        map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}},
 		{name: "hub.profiles", plugin: true, agentOrder: 2, agentHub: true, run: func(h *Hub, ctx context.Context, c *hubCall) (any, error) {
 			h.checkProfiles() // no loop: a second check finds the same files
