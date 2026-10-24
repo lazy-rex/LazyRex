@@ -502,9 +502,13 @@ func TestReloadFetch(t *testing.T) {
 			t.Fatal(err)
 		}
 		var list struct {
-			Entries []map[string]any `json:"entries"`
+			Entries     []map[string]any `json:"entries"`
+			PluginsFrom *string          `json:"plugins_from"`
 		}
 		json.Unmarshal(rawJSON(v), &list)
+		if list.PluginsFrom == nil || *list.PluginsFrom != "mac" {
+			t.Fatalf("hub.plugins plugins_from %v, want mac", list.PluginsFrom)
+		}
 		if f := list.Entries[0]["fetch"]; f != want {
 			t.Fatalf("after a reload to %s: hub.plugins shows fetch %v", want, f)
 		}
