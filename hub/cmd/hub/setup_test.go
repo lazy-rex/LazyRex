@@ -39,10 +39,6 @@ func setupTestEnv(t *testing.T, answers string, tty bool) (setupEnv, *strings.Bu
 		endpoint: func(string) (string, error) { return setupLabServer, nil },
 		isReal:   func(string) bool { return false },
 		tags:     func(string) ([]string, error) { return []string{"v0.9.0", "v0.10.0", "v1.0.0-rc1", "nightly"}, nil },
-		// No test runs git: the plugins are not installed, and a sync is a failure unless a test
-		// sets its own (setupsync_test.go).
-		installed: func(string) bool { return false },
-		sync:      func(string, io.Writer) error { return errors.New("no sync in this test") },
 		// Rex's skill and hooks are current; setupskill_test.go tests the offer.
 		skillStatus: func() ([]byte, error) { return skillStatusJSON("current", "claude", "codex"), nil },
 		skillSetup:  func([]string, io.Writer) error { return errors.New("no rex skill setup in this test") },
@@ -144,24 +140,40 @@ func TestSetupPrerequisites(t *testing.T) {
 // Every yes: the files are written, the generated configs pass the hub's own readers, and a second
 // run has nothing to write.
 func TestSetupAllYes(t *testing.T) {
-	e, out := setupTestEnv(t, strings.Repeat("y\n", 8), true)
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 9), true)
 	dir := filepath.Join(e.home, ".lazyrex")
 	if got := runSetup(e, dir, false); got != 0 {
 		t.Fatalf("exit %d\n%s", got, out)
 	}
-	if n := strings.Count(out.String(), "Written:"); n != 8 {
+	if n := strings.Count(out.String(), "Written:"); n != 9 {
 		t.Fatalf("%d written:\n%s", n, out)
 	}
 	cfg, err := loadConfig(filepath.Join(dir, "hub.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// hub.json has no plugins: the hub's own load reads them from the managed file that setup wrote.
 	if cfg.Server != setupLabServer || cfg.View != filepath.Join(dir, "bin", "lazyrex-view") || len(cfg.entries) != 6 ||
-		cfg.PaletteLua != filepath.Join(e.home, ".config", "rex", "lazyrex_palette.lua") {
+		cfg.PaletteLua != filepath.Join(e.home, ".config", "rex", "lazyrex_palette.lua") || cfg.managedPath != filepath.Join(dir, "state", "plugins.json") {
 		t.Fatalf("config %+v", cfg)
 	}
-	if src := cfg.entries[0].Source; src != "github:lazy-rex/LazyRex/plugins/lazyrex@v0.10.0" {
-		t.Fatalf("source %q", src)
+	for _, en := range cfg.entries {
+		if en.managed == "" {
+			t.Fatalf("a config entry: %+v", en)
+		}
+	}
+	if en := cfg.entries[0]; en.managed != "lazyrex" || en.Source != "github:lazy-rex/LazyRex/plugins/lazyrex@v0.10.0" {
+		t.Fatalf("the first entry: %s %q", en.managed, en.Source)
+	}
+	var plugins []managedFileEntry
+	for _, en := range cfg.entries {
+		plugins = append(plugins, fileEntry(en))
+	}
+	if b, _ := encodeManaged(plugins); readFile(cfg.managedPath) != string(b) {
+		t.Fatalf("the managed file is not in the encoder's format:\n%s", readFile(cfg.managedPath))
+	}
+	if strings.Contains(out.String(), "plugin sync") {
+		t.Fatalf("setup offers the plugin sync:\n%s", out)
 	}
 	// The reload names the server that setup configured, not the caller's (codex-24's review of
 	// 87ecc24).
@@ -194,7 +206,6 @@ func TestSetupAllYes(t *testing.T) {
 
 	e2, out2 := setupTestEnv(t, "", true)
 	e2.home, e2.exe, e2.lookPath = e.home, e.exe, e.lookPath
-	e2.installed = func(string) bool { return true } // the plugin sync is setupsync_test.go
 	if got := runSetup(e2, dir, false); got != 0 || !strings.Contains(out2.String(), "Nothing to write.") || strings.Contains(out2.String(), "[y/N]") {
 		t.Fatalf("second run: exit %d\n%s", got, out2)
 	}
@@ -202,13 +213,14 @@ func TestSetupAllYes(t *testing.T) {
 
 // A partial consent reports each file: written, declined, or not answered.
 func TestSetupPartialConsent(t *testing.T) {
-	e, out := setupTestEnv(t, "y\nno\n", true)
+	e, out := setupTestEnv(t, "y\ny\nno\n", true)
 	dir := filepath.Join(e.home, ".lazyrex")
 	if got := runSetup(e, dir, false); got != 0 {
 		t.Fatalf("exit %d\n%s", got, out)
 	}
 	s := out.String()
-	if !strings.Contains(s, "Written:  "+filepath.Join(dir, "hub.json")) || !strings.Contains(s, "Declined: "+filepath.Join(dir, "profiles.json")+"\n") ||
+	if !strings.Contains(s, "Written:  "+filepath.Join(dir, "hub.json")) || !strings.Contains(s, "Written:  "+filepath.Join(dir, "state", "plugins.json")) ||
+		!strings.Contains(s, "Declined: "+filepath.Join(dir, "profiles.json")+"\n") ||
 		strings.Count(s, "(no answer)") != 6 {
 		t.Fatalf("report:\n%s", s)
 	}
@@ -223,7 +235,7 @@ func TestSetupPartialConsent(t *testing.T) {
 // An existing hub.json is not changed; a plugin without a release tag is left out and reported; an
 // agent without a CLI or a configuration directory is skipped.
 func TestSetupExistingAndSkipped(t *testing.T) {
-	e, out := setupTestEnv(t, strings.Repeat("y\n", 8), true)
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 9), true)
 	dir := filepath.Join(e.home, ".lazyrex")
 	os.WriteFile(filepath.Join(dir, "hub.json"), []byte("mine\n"), 0o600)
 	e.tags = func(repo string) ([]string, error) {
@@ -258,7 +270,7 @@ func TestSetupExistingAndSkipped(t *testing.T) {
 	}
 }
 
-// A tag that cannot be read blocks hub.json; the other files are still proposed.
+// A tag that cannot be read blocks the managed file; the other files are still proposed.
 func TestSetupTagsError(t *testing.T) {
 	e, out := setupTestEnv(t, "", false)
 	e.tags = func(string) ([]string, error) {
@@ -316,9 +328,10 @@ func TestSetupBlockedFails(t *testing.T) {
 	}
 	dir := filepath.Join(e.home, ".lazyrex")
 	if got := runSetup(e, dir, false); got != 1 {
-		t.Errorf("a blocked hub.json: exit %d\n%s", got, out)
+		t.Errorf("a blocked managed file: exit %d\n%s", got, out)
 	}
-	if s := out.String(); !strings.Contains(s, "Blocked:  "+filepath.Join(dir, "hub.json")) || !strings.Contains(s, "Written:  "+filepath.Join(dir, "profiles.json")) {
+	if s := out.String(); !strings.Contains(s, "Blocked:  "+filepath.Join(dir, "state", "plugins.json")) || !strings.Contains(s, "Written:  "+filepath.Join(dir, "hub.json")) ||
+		!strings.Contains(s, "Written:  "+filepath.Join(dir, "profiles.json")) {
 		t.Errorf("report:\n%s", s)
 	}
 

@@ -1158,31 +1158,23 @@ func (h *Hub) opWrite(ctx context.Context, op *pluginOp) error {
 	}
 	// The new file: every other entry as the locked read gave it, in its order. An add's entry
 	// comes last.
-	var file struct {
-		Plugins []managedFileEntry `json:"plugins"`
-	}
-	file.Plugins = []managedFileEntry{}
+	plugins := []managedFileEntry{}
 	var m managedFileEntry
 	json.Unmarshal([]byte(intended), &m)
 	for _, e := range list {
 		if e.managed != id {
-			file.Plugins = append(file.Plugins, fileEntry(e))
+			plugins = append(plugins, fileEntry(e))
 			continue
 		}
 		if op.Kind == "settings" || op.Kind == "update" {
-			file.Plugins = append(file.Plugins, m)
+			plugins = append(plugins, m)
 		}
 	}
 	if op.Kind == "add" {
-		file.Plugins = append(file.Plugins, m)
+		plugins = append(plugins, m)
 	}
-	nb, err := json.MarshalIndent(file, "", "  ")
+	nb, err := encodeManaged(plugins)
 	if err != nil {
-		return err
-	}
-	nb = append(nb, '\n')
-	// The strict loader checks the whole new file (ids, sources, fields, the size bound).
-	if _, err := parseManagedBytes(nb); err != nil {
 		return h.setOpPhase(ctx, op, "conflict", "", fmt.Sprintf("the new managed file is not valid: %v; nothing was written", err))
 	}
 	if op.Kind == "add" {

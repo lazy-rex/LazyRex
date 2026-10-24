@@ -730,6 +730,7 @@ The files:
 | File | What setup does |
 | --- | --- |
 | `DIR/hub.json` | Creates it (mode 0600). Never changes an existing one. |
+| The managed file (`DIR/state/plugins.json` for a new hub.json) | Creates it (mode 0600) with the plugins. Never changes an existing one. |
 | `DIR/profiles.json` | Creates it with a Claude and a Codex agent profile, each one only if the CLI is on `PATH`. Never changes an existing one. |
 | `lazyrex_boot.lua` beside the Rex config file | Writes the boot palette entries (setup owns this file and replaces it). |
 | The Rex config file | Appends `pcall(require, "lazyrex_boot")` and `pcall(require, "lazyrex_palette")`, each one only if it is missing. |
@@ -746,7 +747,16 @@ The new `hub.json` names:
 - the profiles file;
 - `lazyrex_palette.lua` beside the Rex config file (`REX_CONFIG`, else `$XDG_CONFIG_HOME/rex/init.lua`, else `~/.config/rex/init.lua`).
 
-Its plugins are the home plugin (`github:lazy-rex/LazyRex/plugins/lazyrex`) and Messaging, Profiles, Templates, Tunnels and Worktrees. Each one uses its repository's highest `vX.Y.Z` tag, which setup reads with `git ls-remote` (the coordinator, 2026-10-22). A repository without such a tag is left out and reported. Setup never falls back to `main`. When the hub supports `@latest`, setup writes `@latest`. If setup cannot read the tags, `hub.json` is blocked.
+The new `hub.json` has no plugins. The plugins are in the managed file (C2 item 3, lead-c2h): the file of the plugin manager (`docs/plugin-sources.md`, section 13), so the user changes them later in **LazyRex: Plugins**. The plugins are the home plugin (id `lazyrex`, `github:lazy-rex/LazyRex/plugins/lazyrex`) and Messaging, Profiles, Templates, Tunnels and Worktrees (ids `messaging`, `profiles`, `templates`, `tunnels`, `worktrees`). Each one uses its repository's highest `vX.Y.Z` tag, which setup reads with `git ls-remote` (the coordinator, 2026-10-22). A repository without such a tag is left out and reported. Setup never falls back to `main`. If setup cannot read the tags, the managed file is blocked.
+
+The managed file:
+
+- Its path is the one that the hub reads from the effective hub.json: the existing one, or the new one (`managedFilePath`, the same function as the hub's load). That is `managed_plugins` (relative to the hub.json directory) if it is set, else `<state>/plugins.json`. An existing hub.json that setup cannot read, or that names no state, gets no managed file, with a note.
+- Setup writes it with the encoder of the plugin manager's own write (`encodeManaged`), so the file has one format.
+- An existing managed file holds the user's own entries: setup leaves it as it is and prints `The managed file exists: setup leaves it; add plugins in LazyRex: Plugins…`. Setup creates the file only if it does not exist at the write (a link, as for every new file). A file that another writer made after the diff gets the same row; that is not an error.
+- Setup installs nothing and runs no plugin command. At its first start, the hub installs each entry of the managed file through the install op (no lock entry: the op resolves the entry's tag) and then starts it.
+
+Tests: `TestSetupAllYes`, `TestSetupManagedFilePath` (an existing hub.json with `state` or `managed_plugins`; the hub's load reads the file), `TestSetupManagedFileExists`, `TestSetupManagedFileAppears`, and the lab `TestSetupManagedInstallLab` (a fresh hub installs and runs the entries of `setupManaged` at its first start).
 
 An agent is skipped when its CLI is not on `PATH` and its configuration directory does not exist. The hook command names the running binary. The path is in double quotes, as in `hooks/README.md`. A path with `"`, `$`, `` ` ``, `\`, `!` or a newline gets POSIX single quotes. Setup adds no hook to an event that already has the same command, the Python hook (`session-start.py`), or another `lazyrex-hub … hook <kind>`. It reports that event instead. The switch from the Python hook is a separate step.
 
@@ -767,7 +777,6 @@ Exit status:
 | --- | --- |
 | Every file was written, unchanged, or declined | 0 |
 | A file is blocked, or a write failed (also with `-print`, for a blocked file) | 1 |
-| The plugin sync failed | 1 |
 | `rex skill setup` failed, or `rex skill status` does not confirm it afterwards | 1 |
 | A prerequisite is missing | 1 |
 | Standard input is not a terminal (without `-print`) | 2 |
@@ -780,14 +789,6 @@ Rex's own skill and hooks (the user, 2026-10-22). Rex installs them with `rex sk
 - `rex skill status --json` says that the skill and the hook of each agent are `current`: setup says `Rex's skill and hooks: installed for <agents>.` and asks nothing. A failed, malformed or incomplete status is not an installed claim.
 - Otherwise it asks `Install Rex's own skill and hooks for <agents> now (rex skill setup --agent ...)? [y/N]`. On `y` it runs the command and shows its output, then asks `rex skill status` again. Only a status that says `current` for each agent prints the installed line; a failed setup or an unconfirmed status is an error (exit 1).
 - On `N` and at the end of input, setup runs no `rex skill setup`; the read-only `rex skill status` call before the question can still run. With `-print` and without a terminal, setup runs neither command. In each of these cases, setup prints the exact command.
-
-Plugins. The hub refuses a plugin of hub.json that is not installed ("is not installed: run lazyrex-hub plugin sync"), so setup offers the plugin sync (the coordinator, 2026-10-22). The sync comes after the files and before the Rex skill offer, and only for a hub.json that exists and names a server (the one that the hub controls read):
-
-- If `plugin status` finds every plugin installed, setup says `Plugins: installed.` and asks nothing.
-- Otherwise it asks `Install the plugins of <hub.json> now (lazyrex-hub plugin sync)? [y/N]`. On `y` it runs `plugin sync` (git, with network) and shows its lines, then `Plugins: installed.` A failed sync prints `Plugin sync failed: <error>`, and setup exits 1.
-- On no, no answer, or a failed sync, setup prints the exact command as a next step: `Install the plugins: <binary> plugin sync -config <hub.json>`, each path quoted for a shell.
-
-No sync, no question and no command when hub.json was declined, is blocked, failed to write, or names no server, and never with `-print` or without a terminal. Setup reads hub.json again before the sync: the file that it kept or wrote must still name a server (another writer can change it during setup). Tests: `TestSetupOffersThePluginSync` (yes, yes with another `-dir`, no, no answer, a failed sync), `TestSetupSkipsTheSyncWhenInstalled`, `TestSetupNoSyncWithoutAUsableConfig`, `TestSetupNoSyncAfterTheConfigChanged` (a write refused because another writer made hub.json after the diff; a kept hub.json that lost its server).
 
 The boot file has the palette entries that work without a running hub. **LazyRex: Set Up** opens a new window in the caller's session, with a pane that runs the same setup command: the same binary, `-dir`, and `-server` if it was given. The pane stays open after setup ends, so the user can read the report. After setup writes the boot file or the Rex config, it prints `rex -S <server> config reload` as the next step, with the server that it configured (a bare `rex config reload` would reach the caller's server). The Rex config loads both files with `pcall`, so a missing file is not an error.
 

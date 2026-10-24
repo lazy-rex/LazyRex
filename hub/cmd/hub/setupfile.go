@@ -78,6 +78,9 @@ func (f *setupFile) changes() bool {
 	return f.block == "" && f.next != nil && (!f.exists || !bytes.Equal(f.old, f.next))
 }
 
+// errAppeared: a file that did not exist at the snapshot exists now. Setup never replaces it.
+var errAppeared = errors.New("the file appeared after setup showed it; run setup again")
+
 // write writes f.next. It refuses a file that is not the snapshot any more. Before it changes an
 // existing file, it copies the file to a new backup and returns the backup's path. A new file is
 // created with a link, so a file that appeared after the snapshot is never replaced.
@@ -85,6 +88,9 @@ func (f *setupFile) write(now time.Time) (backup string, err error) {
 	cur := snapshotFile(f.path, f.perm)
 	if cur.block != "" {
 		return "", errors.New(cur.block)
+	}
+	if !f.exists && cur.exists {
+		return "", errAppeared
 	}
 	if cur.target != f.target || cur.exists != f.exists || !bytes.Equal(cur.old, f.old) || f.exists && cur.perm != f.perm {
 		return "", errors.New("the file changed after setup showed it; run setup again")
@@ -119,7 +125,7 @@ func (f *setupFile) write(now time.Time) (backup string, err error) {
 		return backup, os.Rename(tmp.Name(), f.target)
 	}
 	if err := os.Link(tmp.Name(), f.target); errors.Is(err, fs.ErrExist) {
-		return "", errors.New("the file appeared after setup showed it; run setup again")
+		return "", errAppeared
 	} else if err != nil {
 		return "", err
 	}

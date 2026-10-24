@@ -51,13 +51,12 @@ func TestSetupControlsFollowTheConfigFile(t *testing.T) {
 		{name: "new"},
 		{name: "existing, another server", existing: `{"server":"` + other + `"}`, real: true},
 		{name: "existing, not JSON", existing: "mine\n", left: "hub.json cannot be read"},
-		{name: "existing, no server", existing: `{"state":"/s"}`, left: "hub.json names no server"},
+		{name: "existing, no server", existing: `{"state":"/s","managed_plugins":"plugins.json"}`, left: "hub.json names no server"},
 	} {
-		e, out := setupTestEnv(t, strings.Repeat("y\n", 8), true)
+		e, out := setupTestEnv(t, strings.Repeat("y\n", 9), true)
 		dir := filepath.Join(e.home, ".lazyrex")
 		var asked []string
 		e.isReal = func(s string) bool { asked = append(asked, s); return s == other }
-		e.installed = func(string) bool { return true } // the plugin sync is setupsync_test.go
 		if c.existing != "" {
 			os.MkdirAll(dir, 0o755)
 			os.WriteFile(filepath.Join(dir, "hub.json"), []byte(c.existing), 0o600)

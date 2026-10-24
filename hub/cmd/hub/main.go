@@ -247,6 +247,19 @@ type Hub struct {
 	peers    *peerSet     // the peer hubs of the config (peers.go); nil in tests that build a Hub by hand
 }
 
+// managedFilePath is the managed file of the config c read from the absolute path abs: the field
+// managed_plugins (relative to the config directory), else <state>/plugins.json. setup proposes
+// the managed file at this path too.
+func managedFilePath(c Config, abs string) string {
+	if c.ManagedPlugins == "" {
+		return filepath.Join(c.State, "plugins.json")
+	}
+	if filepath.IsAbs(c.ManagedPlugins) {
+		return c.ManagedPlugins
+	}
+	return filepath.Join(filepath.Dir(abs), c.ManagedPlugins)
+}
+
 func loadConfig(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path)
@@ -280,13 +293,7 @@ func loadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
-	c.managedPath = filepath.Join(c.State, "plugins.json")
-	if c.ManagedPlugins != "" {
-		c.managedPath = c.ManagedPlugins
-		if !filepath.IsAbs(c.managedPath) {
-			c.managedPath = filepath.Join(filepath.Dir(abs), c.managedPath)
-		}
-	}
+	c.managedPath = managedFilePath(c, abs)
 	managed, err := parseManaged(c.managedPath)
 	if err != nil {
 		// A defect of the manager must not stop the plugins that the user configured (section 13).

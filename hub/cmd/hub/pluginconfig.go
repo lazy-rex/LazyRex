@@ -183,6 +183,26 @@ type managedFileEntry struct {
 	WatchRoots []string          `json:"watch_roots"`
 }
 
+// encodeManaged is the managed file of the entries, as every writer writes it (the plugin
+// manager's write and setup): JSON with 2-space indentation and a final newline. The strict loader
+// checks the whole file (ids, sources, fields, the size bound) before a writer may write it.
+func encodeManaged(plugins []managedFileEntry) ([]byte, error) {
+	if plugins == nil {
+		plugins = []managedFileEntry{}
+	}
+	b, err := json.MarshalIndent(struct {
+		Plugins []managedFileEntry `json:"plugins"`
+	}{plugins}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	b = append(b, '\n')
+	if _, err := parseManagedBytes(b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 // parseManagedBytes is parseManaged on the bytes of the file.
 func parseManagedBytes(b []byte) ([]*configEntry, error) {
 	if len(b) > managedFileLimit {

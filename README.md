@@ -12,7 +12,7 @@ Requirements:
 
 You need Rex, with its server running. LazyRex runs on macOS and Linux, arm64 and amd64.
 
-- git. Setup reads the plugin tags, and the plugin sync fetches the plugins.
+- git. Setup reads the plugin tags, and the hub fetches the plugins at its first start.
 - The Claude Code or Codex CLI, for agents: installed, and run once (logged in) before Start Agent.
   A CLI that was never run stops in its own first-run screens, and the agent waits there.
 - Access to the [lazy-rex](https://github.com/lazy-rex) repositories on GitHub. The repositories are
@@ -52,23 +52,24 @@ for a first installation; they do not stop or restart a running hub.
 
 Setup lists the files that it would create or change. For each file it shows the diff and asks
 `[y/N]`; it writes nothing without `y`, and it backs up a file before it changes it. It writes
-`~/.lazyrex/hub.json` (your default Rex server and the latest released plugins), the agent
-profiles, the LazyRex palette entries for Rex, and the agent hooks and skill. Details:
+`~/.lazyrex/hub.json` (your default Rex server), the managed plugin file
+`~/.lazyrex/state/plugins.json` (the latest released plugins), the agent profiles, the LazyRex
+palette entries for Rex, and the agent hooks and skill. Details:
 [docs/hub.md, "Setup"](docs/hub.md#setup).
 
 - Setup makes a profile only for an agent CLI that is on `PATH`, and it never changes an existing
   `profiles.json`. A CLI that you install later gets no profile by itself.
-- Last, setup asks to install the plugins of `hub.json` (`lazyrex-hub plugin sync`). Answer `y`:
-  git fetches each plugin, and setup says `Plugins: installed.` If you answer no, or the sync
-  fails, setup prints the exact command to run later.
+- Setup installs no plugin. At its first start, the hub fetches each plugin of the managed file
+  with git and starts it. An existing managed file keeps your own plugins: setup does not change
+  it. You add and remove plugins later in **LazyRex: Plugins**.
 
 Then:
 
 1. Always: run the `rex -S <server> config reload` line that setup prints. It loads the palette
    entries.
 
-The other steps depend on your answers to setup and on what it printed. Setup offers the skill and
-plugin installs; trusting a Codex hook is always yours:
+The other steps depend on your answers to setup and on what it printed. Setup offers the skill
+install; trusting a Codex hook is always yours:
 
 2. Setup also offers `rex skill setup` for the agents that it found: Rex's own skill and hooks. If
    you answered no, run the command that setup prints.
@@ -173,7 +174,8 @@ Without `TARGETS`, the script builds all four archives, as CI does on a tag
 ### Run from the sources
 
 `hub.example.json` and `profiles.example.json` are the developer examples: their plugin sources
-are the sibling checkouts. (Setup writes a user's `hub.json` with released plugins instead.)
+are the sibling checkouts. (Setup writes a user's managed plugin file with released plugins
+instead.)
 
 1. Copy `hub.example.json` and `profiles.example.json`, and set the paths. Each `plugins` entry
    names a source: a plugin directory with `lazyrex.json`, absolute or relative to the config

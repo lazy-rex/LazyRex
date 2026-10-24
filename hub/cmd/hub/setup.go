@@ -18,12 +18,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -36,9 +34,11 @@ import (
 //go:embed setupfiles/SKILL.md
 var setupSkill []byte
 
-// setupPlugins are the plugins of a new hub.json: a lazy-rex repository and a directory in it.
-var setupPlugins = []struct{ repo, dir string }{
-	{"LazyRex", "plugins/lazyrex"}, {"Messaging", ""}, {"Profiles", ""}, {"Templates", ""}, {"Tunnels", ""}, {"Worktrees", ""},
+// setupPlugins are the plugins of a new managed file: a managed id, a lazy-rex repository and a
+// directory in it.
+var setupPlugins = []struct{ id, repo, dir string }{
+	{"lazyrex", "LazyRex", "plugins/lazyrex"}, {"messaging", "Messaging", ""}, {"profiles", "Profiles", ""},
+	{"templates", "Templates", ""}, {"tunnels", "Tunnels", ""}, {"worktrees", "Worktrees", ""},
 }
 
 // setupEnv is what setup reads from the system. Tests replace it.
@@ -51,10 +51,6 @@ type setupEnv struct {
 	endpoint func(server string) (string, error) // the server's own address, from Rex
 	tags     func(repo string) ([]string, error) // a lazy-rex repository's tag names
 	isReal   func(server string) bool            // isRealServer: the hub controls need -real-server
-	// installed reports that every plugin of a hub.json is installed (plugin status, no network);
-	// sync installs them (plugin sync) and prints a line for each change to w.
-	installed func(config string) bool
-	sync      func(config string, w io.Writer) error
 	// skillStatus is the output of `rex skill status --json` (it changes nothing); skillSetup runs
 	// `rex skill setup` with args and prints its output to w.
 	skillStatus func() ([]byte, error)
@@ -87,12 +83,6 @@ func setupMain(args []string) int {
 	env := setupEnv{
 		home: home, getenv: os.Getenv, exe: exe, lookPath: exec.LookPath,
 		server: *server, endpoint: rexEndpoint, tags: lazyRexTags, isReal: func(s string) bool { return isRealServer(context.Background(), s) },
-		installed: func(cfg string) bool { ok, err := runPluginStatus(cfg, io.Discard); return err == nil && ok },
-		sync: func(cfg string, w io.Writer) error {
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			return runPluginCmd(ctx, "sync", cfg, nil, pluginCmdOpts{}, w)
-		},
 		skillStatus: rexSkillStatus, skillSetup: rexSkillSetup,
 		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now,
 	}
@@ -300,13 +290,28 @@ func setupProfiles(e setupEnv, agents []setupAgent) ([]byte, error) {
 	return append(b, '\n'), err
 }
 
-// setupHubConfig is a new hub.json. skipped lists the plugins that have no release tag.
-func setupHubConfig(e setupEnv, dir, server string) (b []byte, skipped []string, err error) {
-	type entry struct {
-		Source string `json:"source"`
+// setupHubConfig is a new hub.json. It has no plugins: the plugins of a new hub are in the
+// managed file (setupManaged), because a GitHub plugin in hub.json is refused at load.
+func setupHubConfig(e setupEnv, dir, server string) ([]byte, error) {
+	c := struct {
+		Server     string `json:"server"`
+		State      string `json:"state"`
+		View       string `json:"view"`
+		Profiles   string `json:"profiles"`
+		PaletteLua string `json:"palette_lua"`
+	}{
+		Server: server, State: filepath.Join(dir, "state"), View: filepath.Join(filepath.Dir(e.exe), "lazyrex-view"),
+		Profiles: filepath.Join(dir, "profiles.json"), PaletteLua: filepath.Join(filepath.Dir(e.rexConfigFile()), "lazyrex_palette.lua"),
 	}
-	var plugins []entry
-	var raws []json.RawMessage
+	b, err := json.MarshalIndent(c, "", "  ")
+	return append(b, '\n'), err
+}
+
+// setupManaged is a new managed file (encodeManaged, the format of the plugin manager): the
+// plugins of setupPlugins, each at its repository's highest vX.Y.Z tag. skipped lists the plugins
+// that have no release tag. The hub installs the entries at its first start (the install op).
+func setupManaged(e setupEnv) (b []byte, skipped []string, err error) {
+	var plugins []managedFileEntry
 	for _, p := range setupPlugins {
 		tags, err := e.tags(p.repo)
 		if err != nil {
@@ -318,28 +323,13 @@ func setupHubConfig(e setupEnv, dir, server string) (b []byte, skipped []string,
 			skipped = append(skipped, name)
 			continue
 		}
-		src := entry{"github:" + name + "@" + tag}
-		plugins = append(plugins, src)
-		raw, _ := json.Marshal(src)
-		raws = append(raws, raw)
+		plugins = append(plugins, managedFileEntry{ID: p.id, Source: "github:" + name + "@" + tag, Args: map[string]string{}, WatchRoots: []string{}})
 	}
-	if _, err := parseEntries(dir, raws); err != nil {
-		return nil, nil, fmt.Errorf("the plugin entries: %w", err)
+	b, err = encodeManaged(plugins)
+	if err != nil {
+		return nil, nil, fmt.Errorf("the managed file: %w", err)
 	}
-	c := struct {
-		Server     string  `json:"server"`
-		State      string  `json:"state"`
-		View       string  `json:"view"`
-		Plugins    []entry `json:"plugins"`
-		Profiles   string  `json:"profiles"`
-		PaletteLua string  `json:"palette_lua"`
-	}{
-		Server: server, State: filepath.Join(dir, "state"), View: filepath.Join(filepath.Dir(e.exe), "lazyrex-view"),
-		Plugins:  plugins,
-		Profiles: filepath.Join(dir, "profiles.json"), PaletteLua: filepath.Join(filepath.Dir(e.rexConfigFile()), "lazyrex_palette.lua"),
-	}
-	b, err = json.MarshalIndent(c, "", "  ")
-	return append(b, '\n'), skipped, err
+	return b, skipped, nil
 }
 
 // hubControls is what the boot file's hub controls (Start Hub, Stop Hub, Hub Status) run with:
@@ -424,6 +414,46 @@ rex.action {
 	return s
 }
 
+// setupManagedExists is the row of a managed file that exists (lead-c2h): setup never merges or
+// replaces the user's own entries.
+const setupManagedExists = "The managed file exists: setup leaves it; add plugins in LazyRex: Plugins…"
+
+// setupManagedFile proposes the managed file at the path that the effective hub.json gives
+// (managedFilePath, as the hub's load): the existing hub.json, or the new one with the state
+// <dir>/state. An existing managed file is left as it is.
+func setupManagedFile(e setupEnv, dir string, hub *setupFile) *setupFile {
+	c := Config{State: filepath.Join(dir, "state")}
+	if hub.exists {
+		// The user's own hub.json that the hub cannot load either: setup leaves the managed file out
+		// and says why. It is not an error of setup.
+		if err := json.Unmarshal(hub.old, &c); err != nil || c.State == "" {
+			f := &setupFile{path: filepath.Join(dir, "state", "plugins.json")}
+			f.notes = append(f.notes, "hub.json names no state: setup cannot tell the managed file and leaves it out.")
+			if err != nil {
+				f.notes[0] = "hub.json cannot be read: setup cannot tell the managed file and leaves it out."
+			}
+			return f
+		}
+	}
+	f := snapshotFile(managedFilePath(c, hub.path), 0o600)
+	switch {
+	case f.block != "":
+	case f.exists:
+		f.notes = append(f.notes, setupManagedExists)
+	default:
+		b, skipped, err := setupManaged(e)
+		if err != nil {
+			f.block = err.Error()
+			break
+		}
+		f.next = b
+		for _, s := range skipped {
+			f.notes = append(f.notes, fmt.Sprintf("Plugin %s has no release tag (vX.Y.Z). Setup leaves it out.", s))
+		}
+	}
+	return f
+}
+
 // createOnly proposes content for a file that setup creates but never changes.
 func createOnly(f *setupFile, content []byte) {
 	if f.block != "" {
@@ -471,19 +501,17 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	var files []*setupFile
 	hub := snapshotFile(filepath.Join(dir, "hub.json"), 0o600)
 	if !hub.exists && hub.block == "" {
-		b, skipped, err := setupHubConfig(e, dir, server)
+		b, err := setupHubConfig(e, dir, server)
 		if err != nil {
 			hub.block = err.Error()
 		} else {
 			createOnly(hub, b)
-			for _, s := range skipped {
-				hub.notes = append(hub.notes, fmt.Sprintf("Plugin %s has no release tag (vX.Y.Z). Setup leaves it out.", s))
-			}
 		}
 	} else {
 		createOnly(hub, nil)
 	}
-	files = append(files, hub)
+	managed := setupManagedFile(e, dir, hub)
+	files = append(files, hub, managed)
 	// The hub controls of the boot file read this hub.json. -real-server must match its server
 	// exactly, so it comes from the file that they read: the proposed one, or the existing one,
 	// which setup never changes (its server can differ from the one that setup found).
@@ -582,9 +610,6 @@ func runSetup(e setupEnv, dir string, print bool) int {
 
 	var written, declined, blocked, failed []string
 	rexWritten := false // the boot file or the Rex config was written
-	// hubKept: hub.json is the file that setup kept (it existed, setup proposes no change) or the
-	// one that this run wrote. A declined, blocked or failed hub.json is neither.
-	hubKept := hub.block == "" && hub.exists && !hub.changes()
 	eof := false
 	for _, f := range files {
 		if f.block != "" {
@@ -613,8 +638,10 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		}
 		backup, err := f.write(e.now())
 		rexWritten = rexWritten || err == nil && (f == boot || f == init)
-		hubKept = hubKept || err == nil && f == hub
 		switch {
+		case f == managed && errors.Is(err, errAppeared):
+			// A managed file that another writer made after the snapshot: the user's own entries.
+			say("%s: %s", f.path, setupManagedExists)
 		case err != nil:
 			failed = append(failed, f.path+": "+err.Error())
 		case backup != "":
@@ -634,40 +661,6 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	}
 	if len(written)+len(declined)+len(blocked)+len(failed) == 0 {
 		say("Nothing to write.")
-	}
-	// The plugins of hub.json: the hub refuses a plugin that is not installed, so setup offers the
-	// sync last, with a question like the files (the coordinator, 2026-10-22). Only for the hub.json
-	// that setup kept or wrote, read again now: another writer can change it during setup, so its
-	// earlier snapshot does not count (codex-24's review of 10a9632).
-	syncCmd, syncFailed := "", false
-	usable := false
-	if b, err := os.ReadFile(hub.path); err == nil && hubKept && ctl.err == "" {
-		_, why := configServer(b)
-		usable = why == ""
-	}
-	if usable {
-		switch {
-		case e.installed(hub.path):
-			say("\nPlugins: installed.")
-		case eof:
-			syncCmd = shellWord(e.exe) + " plugin sync -config " + shellWord(hub.path)
-		default:
-			fmt.Fprintf(e.out, "\nInstall the plugins of %s now (lazyrex-hub plugin sync)? [y/N] ", hub.path)
-			line, err := e.in.ReadString('\n')
-			if err != nil {
-				say("")
-			}
-			syncCmd = shellWord(e.exe) + " plugin sync -config " + shellWord(hub.path)
-			if a := strings.ToLower(strings.TrimSpace(line)); err == nil && (a == "y" || a == "yes") {
-				if err := e.sync(hub.path, e.out); err != nil {
-					say("Plugin sync failed: %v", err)
-					syncFailed = true
-				} else {
-					say("Plugins: installed.")
-					syncCmd = ""
-				}
-			}
-		}
 	}
 	// Rex's own skill and hooks, for exactly the agents that setup found (the user, 2026-10-22).
 	// Only a status that says "current" for the skill and the hook of each one counts as installed.
@@ -710,16 +703,13 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		// The server that setup configured: a bare `rex config reload` would reach the caller's.
 		say("Load the LazyRex palette entries: rex -S %s config reload", shellWord(server))
 	}
-	if syncCmd != "" {
-		say("Install the plugins: %s", syncCmd)
-	}
 	// Remote Control is a setting of the Rex app. Setup does not ask the app (no probe): the hub
 	// records what the app does with its actions (remotecontrol.go).
 	say("\nRemote Control: LazyRex asks the Rex app for Go to Session and Insert Path. The app runs them only " +
 		"with Remote Control on (Rex app: Settings, Rex Server, Remote Control). Hub Status shows what the hub last observed.")
-	// A blocked file, a failed write, a failed sync or a failed skill setup is an error; a declined
-	// file, sync or skill setup is the user's choice.
-	if len(failed) > 0 || len(blocked) > 0 || syncFailed || skillFailed {
+	// A blocked file, a failed write or a failed skill setup is an error; a declined file or skill
+	// setup is the user's choice.
+	if len(failed) > 0 || len(blocked) > 0 || skillFailed {
 		return 1
 	}
 	return 0

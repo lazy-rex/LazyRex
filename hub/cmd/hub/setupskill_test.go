@@ -69,8 +69,7 @@ type skillRun struct {
 
 func runSkillSetup(t *testing.T, answer string, status func(n int) ([]byte, error), setup error, edit func(*setupEnv)) skillRun {
 	t.Helper()
-	e, out := setupTestEnv(t, strings.Repeat("y\n", 8)+answer, true)
-	e.installed = func(string) bool { return true }
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 9)+answer, true)
 	var r skillRun
 	e.skillStatus = func() ([]byte, error) { r.statuses++; return status(r.statuses) }
 	e.skillSetup = func(args []string, w io.Writer) error {
@@ -176,7 +175,7 @@ func TestSetupSkillOffer(t *testing.T) {
 				}
 				return filepath.Join(tools, n), nil
 			}
-			*e = withAnswers(*e, strings.Repeat("y\n", 6)+"y\n")
+			*e = withAnswers(*e, strings.Repeat("y\n", 7)+"y\n")
 		})
 		want := [][]string{{"skill", "setup", "--agent", "claude"}}
 		if r.code != 0 || !reflect.DeepEqual(r.setups, want) || !strings.Contains(r.out, "Rex's skill and hooks: installed for claude.") {
@@ -186,7 +185,7 @@ func TestSetupSkillOffer(t *testing.T) {
 	t.Run("no agent found: no question, no command", func(t *testing.T) {
 		r := runSkillSetup(t, "y\n", missing, nil, func(e *setupEnv) {
 			e.lookPath = func(string) (string, error) { return "", errors.New("not found") }
-			*e = withAnswers(*e, strings.Repeat("y\n", 4)+"y\n")
+			*e = withAnswers(*e, strings.Repeat("y\n", 5)+"y\n")
 		})
 		if r.code != 0 || r.setups != nil || r.statuses != 0 || strings.Contains(r.out, "rex skill setup") {
 			t.Fatalf("exit %d, setups %v, statuses %d:\n%s", r.code, r.setups, r.statuses, r.out)

@@ -142,6 +142,7 @@ func TestSetupLab(t *testing.T) {
 	claudeSkill := filepath.Join(home, ".claude", "skills", "lazyrex", "SKILL.md")
 	answers := []struct{ file, answer string }{
 		{filepath.Join(dir, "hub.json"), "y"},
+		{filepath.Join(dir, "state", "plugins.json"), "y"},
 		{filepath.Join(dir, "profiles.json"), "y"},
 		{filepath.Join(rexcfg, "lazyrex_boot.lua"), "y"},
 		{initLua, "y"},
@@ -155,7 +156,7 @@ func TestSetupLab(t *testing.T) {
 			// Before any answer: the resolved endpoint, and the full path of every proposed file
 			// (the file list comes before the first diff).
 			want := []string{`"server": "` + socket + `"`, `"palette_lua": "` + filepath.Join(rexcfg, "lazyrex_palette.lua") + `"`,
-				"skipped    Codex: no codex on PATH and no " + filepath.Join(home, ".codex") + ".", "github:lazy-rex/Messaging@v0.2.0"}
+				"skipped    Codex: no codex on PATH and no " + filepath.Join(home, ".codex") + "."}
 			for _, a := range answers {
 				state := "new       "
 				if a.file == initLua {
@@ -171,11 +172,7 @@ func TestSetupLab(t *testing.T) {
 		}
 		cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], a.answer+"\r")
 	}
-	// The plugin sync comes last. The lab's git is a fake that only prints tags, so the test
-	// declines it, and setup prints the exact command.
-	syncPrompt := "Install the plugins of " + filepath.Join(dir, "hub.json") + " now (lazyrex-hub plugin sync)? [y/N] "
-	waitFor(syncPrompt, func(s string) bool { return strings.HasSuffix(s, syncPrompt) })
-	cli("block", "send", "-s", s.ID, "-b", w.Blocks[0], "n\r")
+	// No plugin sync: the hub installs the managed file's entries at its first start.
 	// Rex's own skill and hooks: the real rex installs them into the lab HOME, for Claude only
 	// (setup found no Codex), and its status confirms them.
 	skillPrompt := "Install Rex's own skill and hooks for claude now (rex skill setup --agent claude)? [y/N] "
@@ -184,8 +181,8 @@ func TestSetupLab(t *testing.T) {
 	got := waitFor("the report", func(s string) bool {
 		return strings.Contains(s, "Load the LazyRex palette entries: rex -S "+shellWord(socket)+" config reload")
 	})
-	if want := "Install the plugins: " + shellWord(bin) + " plugin sync -config " + shellWord(filepath.Join(dir, "hub.json")); !strings.Contains(got, want) {
-		t.Fatalf("no %q:\n%s", want, got)
+	if strings.Contains(got, "plugin sync") {
+		t.Fatalf("setup offers the plugin sync:\n%s", got)
 	}
 	if !strings.Contains(got, "Rex's skill and hooks: installed for claude.") || strings.Contains(got, "Install Rex's own skill and hooks: ") {
 		t.Fatalf("the Rex skill:\n%s", got)
@@ -196,11 +193,12 @@ func TestSetupLab(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "rex")); !os.IsNotExist(err) {
 		t.Fatalf("rex skill setup went beyond Claude: %v", err)
 	}
-	if strings.Count(got, "Written:") != 5 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
+	if strings.Count(got, "Written:") != 6 || !strings.Contains(got, "Declined: "+claudeSkill+"\n") {
 		t.Fatalf("report:\n%s", got)
 	}
+	// hub.json has no plugins; the hub's load reads the six from the managed file at their tag.
 	cfg, err := loadConfig(filepath.Join(dir, "hub.json"))
-	if err != nil || cfg.Server != socket {
+	if err != nil || cfg.Server != socket || cfg.managedErr != nil || len(cfg.entries) != 6 || cfg.entries[1].Source != "github:lazy-rex/Messaging@v0.2.0" {
 		t.Fatalf("hub.json: %v %+v", err, cfg)
 	}
 	if init := readFile(initLua); !strings.HasPrefix(init, "-- the lab config\n") || !strings.Contains(init, `pcall(require, "lazyrex_boot")`) {
