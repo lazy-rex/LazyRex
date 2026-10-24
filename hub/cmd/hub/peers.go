@@ -431,7 +431,7 @@ func (h *Hub) peerLoop(ctx context.Context, l *peerLink) {
 				log.Printf("peer %s: %v", l.cfg.Name, err)
 			}
 			l.state, l.lastErr = "down", err.Error()
-			wait = min(max(2*wait, peerPollUp), peerPollDown)
+			wait = peerRetryWait(err, wait)
 		default:
 			l.state, l.lastErr, l.lastOK, l.more = "up", "", time.Now(), more
 			wait = peerPollUp
@@ -441,6 +441,19 @@ func (h *Hub) peerLoop(ctx context.Context, l *peerLink) {
 		}
 		l.mu.Unlock()
 	}
+}
+
+// peerRetryWait is the wait before the next pull after a failed one: it doubles from 2 s up to 30 s.
+// An ambiguous peer hub is the exception: after the peer's hub restarts, Rex keeps the lost client
+// of the old hub process for about a minute (docs/rex-protocol.md, "Lost clients and reconnect
+// tokens"), and `-C lazyrex-hub` names two clients until it goes. That ends by itself, so the pull
+// tries again every 2 s and takes the new hub as soon as Rex drops the old one. The loop logs an
+// error only when it changes, so the episode logs once.
+func peerRetryWait(err error, wait time.Duration) time.Duration {
+	if strings.Contains(err.Error(), `client target "lazyrex-hub" is ambiguous`) {
+		return peerPollUp
+	}
+	return min(max(2*wait, peerPollUp), peerPollDown)
 }
 
 // peerPluginClient returns the client of the plugin name, or "" and wait: true when the plugin is

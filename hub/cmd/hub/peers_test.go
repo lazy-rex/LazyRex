@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // peerHub is a hub named name with one peer and an installed, running plugin "messaging" (client
@@ -967,5 +968,26 @@ func TestPeerPullDrops(t *testing.T) {
 	if after, _ := b.peerAfter(ctx, "a"); after != 5 || r["blocked_plugin"] != nil || d["count"] != 4 ||
 		last.Plugin != "later" || last.FromPlugin != "messaging" || last.Key != "k5" || last.Reason != "blocked" || last.At == "" {
 		t.Fatalf("after the hold: cursor %d, status %v, last %+v; want 5, no block, 4 drops, the last k5 blocked", after, r, last)
+	}
+}
+
+// TestPeerRetryWait (lead-fedkill item 2): a failed pull backs off from 2 s to 30 s, except while the
+// peer's lazyrex-hub label is ambiguous (Rex still keeps the restarted hub's lost client): then the
+// pull tries again every 2 s.
+func TestPeerRetryWait(t *testing.T) {
+	down := errors.New(`hub.peer.pull on b: exit status 1: Error: dial: connection refused`)
+	ambiguous := errors.New(`hub.peer.pull on b: exit status 1: Error: client target "lazyrex-hub" is ambiguous`)
+	var waits []time.Duration
+	for wait, i := time.Duration(0), 0; i < 6; i++ {
+		wait = peerRetryWait(down, wait)
+		waits = append(waits, wait)
+	}
+	if fmt.Sprint(waits) != "[2s 4s 8s 16s 30s 30s]" {
+		t.Fatalf("backoff %v", waits)
+	}
+	for _, wait := range []time.Duration{0, 4 * time.Second, peerPollDown} {
+		if got := peerRetryWait(ambiguous, wait); got != peerPollUp {
+			t.Fatalf("ambiguous after %s: %s, want %s", wait, got, peerPollUp)
+		}
 	}
 }
