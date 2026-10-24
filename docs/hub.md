@@ -2312,7 +2312,8 @@ Each hub pulls from its peers. A hub never pushes data.
   {hub, what: "plugins"}` to each peer (lead-nudge). A peer whose `plugins_from` peer is this hub
   syncs its plugins at once ("Plugin sync"); another peer does nothing. A lost nudge only adds
   delay: the sync's minute timer stays. Limit: during a deploy window, a peer that runs an older
-  hub refuses `what` (`invalid_input`), and its timer takes the change.
+  hub ignores `what` and takes the nudge as a pull kick; it does not start its plugin sync from
+  the nudge, and its timer takes the change.
 
 ### Actions
 
