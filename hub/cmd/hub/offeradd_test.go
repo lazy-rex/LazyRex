@@ -190,7 +190,7 @@ func TestPeerSyncPartialResult(t *testing.T) {
 	upd := pinEntry{Source: "github:acme/notes@v1.1.0", lockPin: lockPin{Name: "notes", Owner: "acme", Repo: "notes", Ref: "v1.1.0", RefKind: "tag", Commit: commit, Digest: digest}}
 	entries := []pinEntry{upd, newp.Pin}
 	b.peers.call = func(ctx context.Context, _ PeerConfig, action string, args any) ([]byte, error) {
-		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: entries})
+		doc, err := encodePinDoc(&pinDoc{Entries: entries})
 		if err != nil {
 			t.Fatal(err)
 		}

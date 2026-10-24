@@ -2449,7 +2449,10 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
   `{pins, managed}`: `pins` is the pin document of the lock (`pluginExport`, plugin-sources.md,
   section 6a), and `managed` is `[{id, source}]` of the source hub's managed GitHub entries. A failed
   export (another lock writer holds the flocks, or an entry that does not verify) is `refused`,
-  and the receiver tries again at the next sync.
+  and the receiver tries again at the next sync. The pin document has no `hub` field: a receiver
+  refuses the document of an older source hub (`unknown field "hub"`), `plugin_sync.last_error`
+  shows the refusal, and the sync tries again each minute. Both hubs must run the same document
+  format.
 - **Match.** For each pin, the receiver looks for its own GitHub entry of the same repository and
   subdir (the lock key; the ref does not count). Only GitHub sources sync: the document has no
   local source.

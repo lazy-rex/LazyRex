@@ -370,14 +370,14 @@ the hub, and a source name can name a private repository.
 **The pin document.**
 
 ```json
-{"version": 1, "hub": "<32 lowercase hex>", "entries": [{"source": "<exact source>",
+{"version": 1, "entries": [{"source": "<exact source>",
   "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "commit": "", "digest": ""}]}
 ```
 
 A document with a latest entry is version 2. Its other entries keep the form above.
 
 ```json
-{"version": 2, "hub": "<32 lowercase hex>", "entries": [{"source": "github:<owner>/<repo>@latest",
+{"version": 2, "entries": [{"source": "github:<owner>/<repo>@latest",
   "name": "", "owner": "", "repo": "", "subdir": "", "ref": "latest", "ref_kind": "latest",
   "tag": "v1.2.0", "commit": "", "digest": ""}]}
 ```
@@ -388,25 +388,22 @@ A document with a latest entry is version 2. Its other entries keep the form abo
   `pin document version N is not supported by this hub (it reads versions 1 and 2)`.
 - `tag`: only on a latest entry, and required there. Texts: `tag is missing`, `tag "<t>" is not a
   version tag vX.Y.Z`, `tag is set, but ref_kind is <kind>`.
-- The entries are sorted by source. The same pull identity (`hub`) and the same pins give the same
-  bytes; two locks with the same pins give different documents. The document has no path
-  and no cache token. An empty document has `"entries": []`.
+- The entries are sorted by source. The same pins give the same bytes. The document has no path,
+  no cache token and no identity of the lock. An empty document has `"entries": []`.
 - The reader is strict. Another version gives `pin document version N is not supported by this
-  hub`. Unknown fields and a source that is there twice are refused.
+  hub`. Unknown fields and a source that is there twice are refused. So the document of an older
+  hub, which has the field `hub`, is refused: `json: unknown field "hub"`.
 - Each entry must agree with its source: owner, repo, subdir and ref equal the parsed source;
   `ref_kind` is a kind that the ref form allows (section 5); the commit is 40 lowercase hex and
   equals a commit ref; name and digest have the lock forms. One bad entry refuses the whole
   document, before any fetch.
 
-**The sidecar.** `<lock>.id` lives beside the lock and belongs to the lock file: two configs that
-name one lock share it. It is the pull identity of the lock, the `hub` of the documents it
-exports. The first export makes it (a new file, fsync). A malformed file: `<path> is not valid:
-...; remove it to make a new pull identity`. A stray `<lock>.peers.json` is ignored.
+A stray `<lock>.id` or `<lock>.peers.json` beside the lock (from an older hub) is ignored.
 
 **Export.** Under both flocks, export reads the lock and the managed file as one snapshot. It
 exports each GitHub entry of the config and of the managed file, and only when each one passes
 `lockedDir`: a machine never exports a pin that it cannot run itself. Otherwise it fails with that
-entry's text, writes nothing and makes no pull identity. An orphaned lock entry and a local source
+entry's text and writes nothing. An orphaned lock entry and a local source
 are not exported.
 
 ## 7. Start, states and dependencies

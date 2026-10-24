@@ -3,42 +3,31 @@ package main
 // Pin sync (docs/plugin-sources.md, "Pin sync"): the machines of the user select the same pins
 // for the GitHub sources that their configs share. pluginExport writes the pins of one lock as a
 // pin document, and hub.peer.plugins serves it to the peer hub (peersync.go). The local lock
-// format does not change: the document carries the pins (lockPin) and no path.
-//
-// One sidecar lives beside the lock and belongs to it (two configs that name one lock share it):
-// <lock>.id, the pull identity of this lock, the "hub" of the documents it exports. A stray
-// <lock>.peers.json is ignored.
+// format does not change: the document carries the pins (lockPin) and no path. A stray <lock>.id
+// or <lock>.peers.json beside the lock is ignored.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
-	"strings"
 )
 
-// pinDocVersion is the version of a pin document and of a base file without a release tag, and
-// pinDocVersionLatest the version with one (section 6a). Each file takes its version from its own
-// content. Both ends are hubs of the user, which the user updates; another version is an error,
+// pinDocVersion is the version of a pin document without a release tag, and pinDocVersionLatest
+// the version with one (section 6a). A document takes its version from its own content. Both ends are hubs of the user, which the user updates; another version is an error,
 // not a format to tolerate.
 const (
 	pinDocVersion       = 1
 	pinDocVersionLatest = 2
 )
 
-// pullID is the form of a pull identity: 32 lowercase hex.
-var pullID = regexp.MustCompile(`^[0-9a-f]{32}$`)
-
 // pinDoc is a pin document: the pins of one lock, sorted by source.
 type pinDoc struct {
 	Version int        `json:"version"`
-	Hub     string     `json:"hub"` // the pull identity of the exporting lock
 	Entries []pinEntry `json:"entries"`
 }
 
@@ -49,7 +38,7 @@ type pinEntry struct {
 }
 
 // encodePinDoc gives the bytes of a document: entries sorted by source, two-space indent, and a
-// final newline. The same pins and identity give the same bytes. The version is
+// final newline. The same pins give the same bytes. The version is
 // pinDocVersionLatest when an entry has a latest form, else pinDocVersion.
 func encodePinDoc(d *pinDoc) ([]byte, error) {
 	sorted := *d
@@ -73,7 +62,6 @@ func encodePinDoc(d *pinDoc) ([]byte, error) {
 func decodePinDoc(b []byte) (*pinDoc, error) {
 	var top struct {
 		Version *int            `json:"version"`
-		Hub     string          `json:"hub"`
 		Entries json.RawMessage `json:"entries"`
 	}
 	if err := decodeStrict(b, &top); err != nil {
@@ -84,14 +72,12 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 		return nil, errors.New("version is missing")
 	case *top.Version != pinDocVersion && *top.Version != pinDocVersionLatest:
 		return nil, fmt.Errorf("pin document version %d is not supported by this hub (it reads versions %d and %d)", *top.Version, pinDocVersion, pinDocVersionLatest)
-	case !pullID.MatchString(top.Hub):
-		return nil, errors.New("hub must be 32 lowercase hex")
 	}
 	var raws []json.RawMessage
 	if err := json.Unmarshal(top.Entries, &raws); err != nil || raws == nil {
 		return nil, errors.New("entries must be an array")
 	}
-	d := &pinDoc{Version: *top.Version, Hub: top.Hub, Entries: []pinEntry{}}
+	d := &pinDoc{Version: *top.Version, Entries: []pinEntry{}}
 	seen := map[string]bool{}
 	for i, raw := range raws {
 		var e pinEntry
@@ -155,69 +141,6 @@ func (e *pinEntry) check() error {
 	return nil
 }
 
-// idPath is the sidecar of the lock file lockFile that holds its pull identity.
-func idPath(lockFile string) string { return lockFile + ".id" }
-
-// sidecarInvalid is the text of a sidecar that does not decode.
-func sidecarInvalid(path, fix string, err error) error {
-	return fmt.Errorf("%s is not valid: %v; %s", path, err, fix)
-}
-
-// readPullID reads the pull identity of a lock. A missing file gives "" and no error.
-func readPullID(lockFile string) (string, error) {
-	p := idPath(lockFile)
-	b, err := os.ReadFile(p)
-	if errors.Is(err, fs.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	id, ok := strings.CutSuffix(string(b), "\n")
-	if !ok || !pullID.MatchString(id) {
-		return "", sidecarInvalid(p, "remove it to make a new pull identity", errors.New("not 32 lowercase hex and a newline"))
-	}
-	return id, nil
-}
-
-// pullIdentity gives the pull identity of a lock, and makes one when the lock has none: a new
-// file (O_EXCL), fsync, and fsync of the directory. The caller holds both plugin command flocks.
-func pullIdentity(lockFile string) (string, error) {
-	id, err := readPullID(lockFile)
-	if err != nil || id != "" {
-		return id, err
-	}
-	a, err := randomToken()
-	if err != nil {
-		return "", err
-	}
-	b, err := randomToken()
-	if err != nil {
-		return "", err
-	}
-	id = a + b
-	p := idPath(lockFile)
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", err
-	}
-	if _, err := f.WriteString(id + "\n"); err != nil {
-		f.Close()
-		os.Remove(p)
-		return "", err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(p)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(p)
-		return "", err
-	}
-	return id, syncDir(filepath.Dir(p))
-}
-
 // replaceFile writes b to path by a rename: a reader sees the old file or the new file.
 func replaceFile(path string, b []byte) error {
 	dir := filepath.Dir(path)
@@ -273,12 +196,10 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// pluginExport writes the pin document of the lock to w. Under
-// both flocks it reads the lock and the managed file as one snapshot. It exports each GitHub
+// pluginExport writes the pin document of the lock to w. Under both flocks it reads the lock and the managed file as one snapshot. It exports each GitHub
 // entry of the config and of the managed file, and only when every one passes lockedDir: a machine
 // never exports a pin that it cannot run itself. A lock entry without an entry is not exported,
-// and a local source has no pin. A failed check writes nothing and makes no pull identity. After
-// the checks, the first export makes the pull identity; it stays when the write to w then fails.
+// and a local source has no pin. A failed check writes nothing.
 func pluginExport(cfgPath string, w io.Writer) error {
 	fail := func(err error) error { return fmt.Errorf("pin document: %w", err) }
 	cfg, err := readPluginCmdConfig(cfgPath)
@@ -306,9 +227,6 @@ func pluginExport(cfgPath string, w io.Writer) error {
 			return fail(err)
 		}
 		doc.Entries = append(doc.Entries, pinEntry{Source: e.Source, lockPin: lock.Plugins[e.Source].lockPin})
-	}
-	if doc.Hub, err = pullIdentity(cfg.lock); err != nil {
-		return fail(err)
 	}
 	b, err := encodePinDoc(doc)
 	if err != nil {

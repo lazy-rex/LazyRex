@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,6 @@ import (
 const (
 	pinCommit = "0123456789abcdef0123456789abcdef01234567"
 	pinDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-	pinHub    = "00112233445566778899aabbccddeeff"
 )
 
 // testPin is a valid document entry for github:o/r@main.
@@ -24,11 +24,11 @@ func testPin() pinEntry {
 func TestPinDocRoundTrip(t *testing.T) {
 	a, b := testPin(), testPin()
 	b.Source, b.Subdir, b.Ref, b.RefKind = "github:o/r/plugins/x@refs/tags/v1", "plugins/x", "refs/tags/v1", "tag"
-	one, err := encodePinDoc(&pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{a, b}})
+	one, err := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{a, b}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, _ := encodePinDoc(&pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{b, a}})
+	two, _ := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{b, a}})
 	if !bytes.Equal(one, two) {
 		t.Fatalf("the entry order changed the bytes:\n%s\n%s", one, two)
 	}
@@ -60,18 +60,19 @@ func TestPinDocRefused(t *testing.T) {
 	entry := func(f func(e *pinEntry)) string {
 		e := testPin()
 		f(&e)
-		b, _ := encodePinDoc(&pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{e}})
+		b, _ := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{e}})
 		return string(b)
 	}
 	good := entry(func(*pinEntry) {})
 	for doc, want := range map[string]string{
-		`{"hub":"` + pinHub + `","entries":[]}`:                           "version is missing",
-		`{"version":3,"hub":"` + pinHub + `","entries":[]}`:               "pin document version 3 is not supported by this hub (it reads versions 1 and 2)",
-		`{"version":1,"hub":"ABC","entries":[]}`:                          "hub must be 32 lowercase hex",
-		`{"version":1,"hub":"` + pinHub + `"}`:                            "entries must be an array",
-		`{"version":1,"hub":"` + pinHub + `","entries":null}`:             "entries must be an array",
-		`{"version":1,"hub":"` + pinHub + `","entries":[],"x":1}`:         `unknown field "x"`,
-		`{"version":1,"hub":"` + pinHub + `","entries":[]} {}`:            "data after the object",
+		`{"entries":[]}`:             "version is missing",
+		`{"version":3,"entries":[]}`: "pin document version 3 is not supported by this hub (it reads versions 1 and 2)",
+		// The pull identity of a hub before the identity was removed: an unknown field.
+		`{"version":1,"hub":"00112233445566778899aabbccddeeff","entries":[]}`: `unknown field "hub"`,
+		`{"version":1}`:                                                   "entries must be an array",
+		`{"version":1,"entries":null}`:                                    "entries must be an array",
+		`{"version":1,"entries":[],"x":1}`:                                `unknown field "x"`,
+		`{"version":1,"entries":[]} {}`:                                   "data after the object",
 		strings.Replace(good, `"digest"`, `"extra": 1, "digest"`, 1):      `entry 1: json: unknown field "extra"`,
 		entry(func(e *pinEntry) { e.Source, e.Owner = "/local/dir", "" }): "entry 1 (/local/dir): not a GitHub source",
 		entry(func(e *pinEntry) { e.Owner = "x" }):                        "owner does not match the source",
@@ -102,39 +103,13 @@ func TestPinDocRefused(t *testing.T) {
 	}
 }
 
-// The pull identity is made once (0600) and read back; a malformed file is refused with the text
-// that says how to repair it.
-func TestPullIdentity(t *testing.T) {
-	lock := filepath.Join(t.TempDir(), "hub.lock.json")
-	if id, err := readPullID(lock); id != "" || err != nil {
-		t.Fatalf("no file: %q %v", id, err)
-	}
-	id, err := pullIdentity(lock)
-	if err != nil || !pullID.MatchString(id) {
-		t.Fatalf("made %q: %v", id, err)
-	}
-	if fi, _ := os.Stat(lock + ".id"); fi.Mode().Perm() != 0o600 {
-		t.Errorf("mode %o", fi.Mode().Perm())
-	}
-	if again, err := pullIdentity(lock); again != id || err != nil {
-		t.Errorf("a second call gave %q %v, want %q", again, err, id)
-	}
-	for _, body := range []string{id, "xyz\n", id + "\n\n"} {
-		os.WriteFile(lock+".id", []byte(body), 0o600)
-		want := lock + ".id is not valid: not 32 lowercase hex and a newline; remove it to make a new pull identity"
-		if _, err := pullIdentity(lock); err == nil || err.Error() != want {
-			t.Errorf("%q: %v", body, err)
-		}
-	}
-}
-
 // A document without entries is an empty array, also from a new pinDoc and after a decode.
 func TestPinDocEmpty(t *testing.T) {
-	b, err := encodePinDoc(&pinDoc{Version: 1, Hub: pinHub})
+	b, err := encodePinDoc(&pinDoc{Version: 1})
 	if err != nil || !strings.Contains(string(b), `"entries": []`) {
 		t.Fatalf("a new empty document: %s %v", b, err)
 	}
-	d, err := decodePinDoc([]byte(`{"version":1,"hub":"` + pinHub + `","entries":[]}`))
+	d, err := decodePinDoc([]byte(`{"version":1,"entries":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,15 +119,15 @@ func TestPinDocEmpty(t *testing.T) {
 	}
 }
 
-// export runs plugin export on cfg and gives its output.
+// export runs pluginExport on cfg and gives its output.
 func (env *cmdEnv) export(cfg string) (string, error) {
 	var b bytes.Buffer
 	err := pluginExport(cfg, &b)
 	return b.String(), err
 }
 
-// export writes the pins of each managed GitHub entry that passes lockedDir, with the
-// lock's pull identity. A local source and an orphaned lock entry are not exported. A second
+// export writes the pins of each managed GitHub entry that passes lockedDir, with no "hub"
+// field and no sidecar beside the lock. A local source and an orphaned lock entry are not exported. A second
 // export gives the same bytes.
 func TestExport(t *testing.T) {
 	env := newCmdEnv(t)
@@ -175,10 +150,12 @@ func TestExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, _ := readPullID(filepath.Join(env.dir, "hub.lock.json"))
 	d, err := decodePinDoc([]byte(out))
-	if err != nil || d.Hub != id || len(d.Entries) != 2 {
-		t.Fatalf("document %s: %v (id %s)", out, err, id)
+	if err != nil || len(d.Entries) != 2 || strings.Contains(out, `"hub"`) {
+		t.Fatalf("document %s: %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(env.dir, "hub.lock.json.id")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the export made a sidecar: %v", err)
 	}
 	for _, e := range d.Entries {
 		if want := l.Plugins[e.Source].lockPin; e.lockPin != want {
@@ -197,7 +174,7 @@ func TestExport(t *testing.T) {
 }
 
 // A GitHub entry that does not pass lockedDir, a static refusal and a malformed lock fail the
-// export: nothing is written, and no pull identity is made.
+// export: nothing is written.
 func TestExportRefused(t *testing.T) {
 	env := newCmdEnv(t)
 	env.repo("lazy-rex", "Messaging", "messaging")
@@ -209,9 +186,6 @@ func TestExportRefused(t *testing.T) {
 		out, err := env.export(cfg)
 		if err == nil || err.Error() != "pin document: "+want || out != "" {
 			t.Errorf("%s: %q %v\nwant %s", what, out, err, want)
-		}
-		if _, err := os.Stat(lockFile + ".id"); err == nil {
-			t.Errorf("%s: a pull identity was made", what)
 		}
 	}
 	check("not installed", "plugin "+srcM+" is not installed: the hub installs it at its next start or reload")
@@ -237,7 +211,7 @@ type failWriter struct{}
 
 func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
 
-// A failed write of the document has the plugin export prefix.
+// A failed write of the document has the pin document prefix.
 func TestExportWriteError(t *testing.T) {
 	env := newCmdEnv(t)
 	cfg := env.config(env.local("loc", "loc"))

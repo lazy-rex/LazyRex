@@ -257,7 +257,7 @@ func TestPeerPluginsSync(t *testing.T) {
 		if action != "hub.peer.plugins" || args.(map[string]any)["hub"] != "linux" {
 			t.Errorf("the peer call %s %v", action, args)
 		}
-		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: entries})
+		doc, err := encodePinDoc(&pinDoc{Entries: entries})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -354,6 +354,51 @@ func TestPeerPluginsSync(t *testing.T) {
 	}
 }
 
+// A peer that still serves the old document (with the pull identity "hub", claude-48): the receiver
+// refuses the document as an unknown field "hub". The managed file and the lock stay byte-unchanged,
+// no op is admitted, and plugin_sync.last_error shows the refusal.
+func TestPeerPluginsSyncOldDocument(t *testing.T) {
+	b, _, _, _ := atTestHub(t, "github:acme/notes@v1.0.0")
+	endFixtureOps(t, b)
+	b.cfg.HubName, b.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
+	b.peers = newPeerSet(b.cfg)
+	// A pin at another commit: the new document would admit an update op for it.
+	p := pinEntry{Source: "github:acme/notes@v1.1.0", lockPin: lockPin{Name: "notes", Owner: "acme", Repo: "notes", Ref: "v1.1.0", RefKind: "tag", Commit: strings.Repeat("c", 40), Digest: "sha256:" + strings.Repeat("d", 64)}}
+	pins, err := json.Marshal(map[string]any{"version": 1, "hub": "00112233445566778899aabbccddeeff", "entries": []pinEntry{p}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.peers.call = func(ctx context.Context, _ PeerConfig, action string, args any) ([]byte, error) {
+		return json.Marshal(map[string]any{"pins": json.RawMessage(pins), "managed": []peerManaged{}})
+	}
+	lockBefore, err := os.ReadFile(opLockFile(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedBefore := managedText(t, b)
+	l := b.peerLink("mac")
+	s, err := b.peerPluginsSync(context.Background(), l)
+	b.peerSyncApply(l, s, err)
+	want := `hub.peer.plugins on mac: the pin document: json: unknown field "hub"`
+	if s != nil || err == nil || err.Error() != want {
+		t.Fatalf("the sync: %+v %v, want %q", s, err, want)
+	}
+	if l.sync.LastError != want || l.sync.LastOK != nil {
+		t.Errorf("last_error %q, last_ok %v", l.sync.LastError, l.sync.LastOK)
+	}
+	var n int
+	b.db.QueryRow(`SELECT COUNT(*) FROM plugin_ops WHERE scope = 'peer:mac'`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d peer ops", n)
+	}
+	if after, _ := os.ReadFile(opLockFile(b)); string(after) != string(lockBefore) {
+		t.Errorf("the lock changed:\n%s", after)
+	}
+	if after := managedText(t, b); after != managedBefore {
+		t.Errorf("the managed file changed:\n%s", after)
+	}
+}
+
 // A sync from the source hub's real export: the receiver's op fetches the peer's commit, gets the
 // peer's digest, and locks the peer's pin.
 func TestPeerPluginsSyncFetch(t *testing.T) {
@@ -399,7 +444,7 @@ func TestPeerPluginsSyncLatestTag(t *testing.T) {
 	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
 		p := pinEntry{Source: "github:acme/notes@latest", lockPin: le.lockPin}
 		p.Tag = tag
-		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: []pinEntry{p}})
+		doc, err := encodePinDoc(&pinDoc{Entries: []pinEntry{p}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +478,7 @@ func TestPeerPluginsSyncRunBehind(t *testing.T) {
 	b.cfg.HubName, b.cfg.Peers = "linux", []PeerConfig{{Name: "mac", Server: "lab-mac", PluginsFrom: true}}
 	b.peers = newPeerSet(b.cfg)
 	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
-		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: []pinEntry{{Source: "github:acme/notes@v1.0.0", lockPin: cur.lockPin}}})
+		doc, err := encodePinDoc(&pinDoc{Entries: []pinEntry{{Source: "github:acme/notes@v1.0.0", lockPin: cur.lockPin}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -466,7 +511,7 @@ func TestPeerPluginsSyncWaitsForAnyOp(t *testing.T) {
 	b.peers = newPeerSet(b.cfg)
 	b.peers.call = func(context.Context, PeerConfig, string, any) ([]byte, error) {
 		p := pinEntry{Source: "github:acme/notes@v1.1.0", lockPin: lockPin{Name: "notes", Owner: "acme", Repo: "notes", Ref: "v1.1.0", RefKind: "tag", Commit: commit, Digest: digest}}
-		doc, err := encodePinDoc(&pinDoc{Hub: strings.Repeat("a", 32), Entries: []pinEntry{p}})
+		doc, err := encodePinDoc(&pinDoc{Entries: []pinEntry{p}})
 		if err != nil {
 			t.Fatal(err)
 		}

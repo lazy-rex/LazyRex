@@ -305,11 +305,11 @@ func testLatestPin() pinEntry {
 // The pin document is version 2 only with a latest entry, and a version 1 document has no latest
 // form. Each malformed tag is refused with its own text.
 func TestPinDocLatest(t *testing.T) {
-	b, err := encodePinDoc(&pinDoc{Version: 2, Hub: pinHub, Entries: []pinEntry{testPin()}})
+	b, err := encodePinDoc(&pinDoc{Version: 2, Entries: []pinEntry{testPin()}})
 	if err != nil || !strings.HasPrefix(string(b), "{\n  \"version\": 1,") || strings.Contains(string(b), "\"tag\"") {
 		t.Fatalf("no latest entry: %v\n%s", err, b)
 	}
-	d := &pinDoc{Version: 1, Hub: pinHub, Entries: []pinEntry{testLatestPin(), testPin()}}
+	d := &pinDoc{Version: 1, Entries: []pinEntry{testLatestPin(), testPin()}}
 	if b, err = encodePinDoc(d); err != nil || !strings.HasPrefix(string(b), "{\n  \"version\": 2,") {
 		t.Fatalf("a latest entry: %v\n%s", err, b)
 	}
@@ -337,7 +337,7 @@ func TestPinDocLatest(t *testing.T) {
 	} {
 		e := testLatestPin()
 		c.f(&e)
-		b, _ := encodePinDoc(&pinDoc{Hub: pinHub, Entries: []pinEntry{e}})
+		b, _ := encodePinDoc(&pinDoc{Entries: []pinEntry{e}})
 		_, err := decodePinDoc(b)
 		if err == nil || !strings.HasSuffix(err.Error(), ": "+c.want) {
 			t.Errorf("%s: %v, want %q", name, err, c.want)
