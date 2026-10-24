@@ -10,7 +10,7 @@ import (
 // The hub controls run an argv: the binary, the config, and -real-server only for the real server.
 func TestSetupBootHubControls(t *testing.T) {
 	exe, cfg := `/the bin/lazyrex-hub`, `/a "dir"/hub.json`
-	lua := setupBootLua(exe, "/d", "", hubControls{config: cfg})
+	lua := setupBootLua(exe, "/d", "", hubControls{config: cfg}, nil)
 	c := `"-config", ` + luaString(cfg)
 	for _, want := range []string{
 		`run = lazyrex_pane("LazyRex: Set Up", "LazyRex setup", { ` + luaString(exe) + `, "setup", "-dir", "/d" }),`,
@@ -29,10 +29,10 @@ func TestSetupBootHubControls(t *testing.T) {
 	if strings.Contains(lua, "-real-server") {
 		t.Errorf("-real-server for a lab server:\n%s", lua)
 	}
-	if n := strings.Count(setupBootLua(exe, "/d", "", hubControls{config: cfg, real: true}), c+`, "-real-server"`); n != 3 {
+	if n := strings.Count(setupBootLua(exe, "/d", "", hubControls{config: cfg, real: true}, nil), c+`, "-real-server"`); n != 3 {
 		t.Errorf("%d controls with -real-server, want 3", n)
 	}
-	only := setupBootLua(exe, "/d", "", hubControls{config: cfg, err: "hub.json names no server"})
+	only := setupBootLua(exe, "/d", "", hubControls{config: cfg, err: "hub.json names no server"}, nil)
 	if !strings.Contains(only, "lazyrexboot_setup") || strings.Contains(only, "lazyrexboot_start") || strings.Contains(only, "-config") {
 		t.Errorf("controls without a server:\n%s", only)
 	}

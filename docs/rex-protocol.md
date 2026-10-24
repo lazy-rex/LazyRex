@@ -671,6 +671,19 @@ Two long-lived control clients A and B on one session, window 1 (block X) and wi
 - **Route that works in the lab:** a config action run from the palette (`spikes/lab/palette-init.lua`, `lazyrex_form`) finds the window of `ctx.block_id`, opens a focused floating layer there, and calls `rex.client.queue("session.select", {session_id, window_id})`. The `client.action` response returned `client_actions: [{action: "session.select", args: {...}}]`. The calling client (the app) performs these after the action. The docs say that `rex.client.queue` fails when the action runs from the CLI and no client can be found. They also say that the app accepts actions from the CLI only with Remote Control on. A palette run comes from the app itself. Inferred: it does not need Remote Control. Not observed in the app.
 - Run from the CLI without a session, the same action failed, because `ctx` had no session.
 
+## The config file at server start (hub autostart)
+
+Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-24 (claude-51). The lab ran `lab/server.sh` with `LAB_CONFIG` set to a probe `init.lua`.
+
+- The top level of `init.lua` runs at server start. It runs again at each `rex config reload`.
+- At load, `rex.call` returns nil and an error. The error is "the configuration file cannot call server.status here: there is no client in scope". `session.create` gives the same error. So the load itself cannot create a session or a pane.
+- At load, `rex.after` and `rex.every` are nil. `rex.on` is a function. `rex.host()` returns nil. `rex.servers()` returns an empty table. `rex.server()` without an argument raises "string expected, got nil". So the load cannot read the address of its own server.
+- `rex.exec.start` without `detach` returns a handle, but the command did not run.
+- `rex.exec.start(argv, {detach = true, timeout = 60})` runs the command, both at server start and at a reload. The child's parent is the server process. Its first `rex -S <socket> --autostart=false ls` succeeded at server start, so the socket already listened.
+- Rex does not set `REX_SERVER` for that child. In the lab, the child inherited it from `lab/server.sh`. With `env = {REX_SERVER = false}`, it was unset. So a boot command must name the server address itself.
+- The child's `rex -S <socket> new <label> -- <argv>` created a session with a running pane. So the boot path is: a detached `rex.exec.start` at load runs a command that checks the server and starts the hub through the Rex CLI.
+- Panes do not survive a server restart: after the restart, only the session that the new child created was present.
+
 ## Hiding and grouping
 
 - No session hide or archive exists. `session.list` items carry only `session_id` and `label`.

@@ -29,7 +29,7 @@ func actionNames(lua string) []string {
 // testPaletteFiles are the files of one config directory: the boot file with the hub controls, and
 // the hub's full file with one plugin command.
 func testPaletteFiles() (boot, full string) {
-	boot = setupBootLua("/bin/lazyrex-hub", "/d", "", hubControls{config: "/d/hub.json"})
+	boot = setupBootLua("/bin/lazyrex-hub", "/d", "", hubControls{config: "/d/hub.json"}, nil)
 	full = paletteLua(map[string][]paletteCommand{"todo": {{ID: "add", Title: "Add a todo", Route: "/add"}}})
 	return boot, full
 }

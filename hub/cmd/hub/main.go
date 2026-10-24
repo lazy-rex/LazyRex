@@ -374,6 +374,8 @@ func main() {
 			os.Exit(configCmdMain(os.Args[2:], os.Stdout, os.Stderr))
 		case "stop", "status", "restart":
 			os.Exit(ctlMain(os.Args[1], os.Args[2:], os.Stdout, os.Stderr))
+		case "autostart":
+			os.Exit(autostartMain(os.Args[2:], os.Stdout, os.Stderr))
 		case "version":
 			fmt.Println(versionText())
 			os.Exit(0)

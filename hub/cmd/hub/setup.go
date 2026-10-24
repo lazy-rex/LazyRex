@@ -57,6 +57,14 @@ type setupEnv struct {
 	tty         bool          // in is a terminal
 	out         io.Writer
 	now         func() time.Time
+	autostart   *setupAutostart // -autostart, -autostart-cmd; nil: no autostart
+}
+
+// setupAutostart is the autostart of the boot file: argv in a pane labeled pane, in the session
+// labeled session. A nil argv is the Start Hub command.
+type setupAutostart struct {
+	argv          []string
+	session, pane string
 }
 
 func setupMain(args []string) int {
@@ -64,8 +72,24 @@ func setupMain(args []string) int {
 	dir := fs.String("dir", "", "the LazyRex directory (default ~/.lazyrex)")
 	print := fs.Bool("print", false, "print the proposed files and write nothing")
 	server := fs.String("server", "", "the Rex server for hub.json (default: the server that Rex reports as its default)")
+	autostart := fs.Bool("autostart", false, "start the hub at each Rex server start (lazyrex_boot.lua)")
+	autostartCmd := fs.String("autostart-cmd", "", "the autostart command, a JSON array of strings (default: the Start Hub command); implies -autostart")
+	autostartSession := fs.String("autostart-session", "lazyrex-hub", "the label of the autostart session")
+	autostartPane := fs.String("autostart-pane", startHubPane, "the label of the autostart pane")
 	if fs.Parse(args) != nil || fs.NArg() != 0 {
 		return 2
+	}
+	var auto *setupAutostart
+	if *autostart || *autostartCmd != "" {
+		auto = &setupAutostart{session: *autostartSession, pane: *autostartPane}
+		if *autostartCmd != "" && (json.Unmarshal([]byte(*autostartCmd), &auto.argv) != nil || len(auto.argv) == 0) {
+			fmt.Fprintln(os.Stderr, `setup: -autostart-cmd must be a JSON array of strings, such as '["/path/dev.sh", "/path/hub.json"]'`)
+			return 2
+		}
+		if auto.session == "" || auto.pane == "" {
+			fmt.Fprintln(os.Stderr, "setup: -autostart-session and -autostart-pane must not be empty")
+			return 2
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -82,7 +106,7 @@ func setupMain(args []string) int {
 		home: home, getenv: os.Getenv, exe: exe, lookPath: exec.LookPath,
 		server: *server, endpoint: rexEndpoint, tags: lazyRexTags, isReal: func(s string) bool { return isRealServer(context.Background(), s) },
 		skillStatus: rexSkillStatus, skillSetup: rexSkillSetup,
-		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now,
+		in: bufio.NewReader(os.Stdin), tty: terr == nil, out: os.Stdout, now: time.Now, autostart: auto,
 	}
 	if *dir == "" {
 		*dir = filepath.Join(home, ".lazyrex")
@@ -349,10 +373,19 @@ func configServer(b []byte) (string, string) {
 // can read its output. Set Up runs the same setup command (the binary, -dir, and -server if it was
 // given). Start Hub runs the hub under the restart wrapper: that pane owns the wrapper. Stop Hub
 // and Hub Status run lazyrex-hub stop and status. Without ctl (ctl.err), only Set Up is written.
-func setupBootLua(exe, dir, server string, ctl hubControls) string {
+// With auto, Set Up keeps the autostart flags, and the file ends with the autostart (setupAutostartLua).
+func setupBootLua(exe, dir, server string, ctl hubControls, auto *setupAutostart) string {
 	argv := luaString(exe) + `, "setup", "-dir", ` + luaString(dir)
 	if server != "" {
 		argv += `, "-server", ` + luaString(server)
+	}
+	if auto != nil {
+		argv += `, "-autostart"`
+		if auto.argv != nil {
+			b, _ := json.Marshal(auto.argv)
+			argv += `, "-autostart-cmd", ` + luaString(string(b))
+		}
+		argv += `, "-autostart-session", ` + luaString(auto.session) + `, "-autostart-pane", ` + luaString(auto.pane)
 	}
 	s := `-- Written by lazyrex-hub setup. Setup replaces this file: do not edit it.
 -- init.lua loads it with: pcall(require, "lazyrex_boot")
@@ -398,7 +431,28 @@ rex.action {
 }
 `
 	}
+	if auto != nil {
+		s += setupAutostartLua(exe, cfg, auto)
+	}
 	return s
+}
+
+// setupAutostartLua runs lazyrex-hub autostart at each load of the config: the server start and
+// each config reload. The load cannot call the server ("no client in scope"), so a detached
+// command does the checks and the start (docs/rex-protocol.md, "The config file at server start").
+// cfg is the -config argument (and -real-server) of the hub controls.
+func setupAutostartLua(exe, cfg string, auto *setupAutostart) string {
+	argv := []string{luaString(exe), cfg, `"-restart"`} // the Start Hub command
+	if auto.argv != nil {
+		argv = argv[:0]
+		for _, a := range auto.argv {
+			argv = append(argv, luaString(a))
+		}
+	}
+	return `-- Autostart (lazyrex-hub setup -autostart): start the hub when no hub runs and no hub pane exists.
+pcall(rex.exec.start, { ` + luaString(exe) + `, "autostart", ` + cfg + `, "-session", ` + luaString(auto.session) +
+		`, "-pane", ` + luaString(auto.pane) + `, "--", ` + strings.Join(argv, ", ") + ` }, { detach = true, timeout = 120 })
+`
 }
 
 // setupManagedExists is the row of a managed file that exists (lead-c2h): setup never merges or
@@ -537,9 +591,12 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	rexDir := filepath.Dir(e.rexConfigFile())
 	boot := snapshotFile(filepath.Join(rexDir, "lazyrex_boot.lua"), 0o644)
 	if boot.block == "" {
-		boot.next = []byte(setupBootLua(e.exe, dir, e.server, ctl))
+		boot.next = []byte(setupBootLua(e.exe, dir, e.server, ctl, e.autostart))
 		if ctl.err != "" {
 			boot.notes = append(boot.notes, "Start Hub, Stop Hub and Hub Status are left out: "+ctl.err)
+			if e.autostart != nil {
+				boot.notes = append(boot.notes, "The autostart is left out: "+ctl.err)
+			}
 		}
 	}
 	init := snapshotFile(e.rexConfigFile(), 0o644)

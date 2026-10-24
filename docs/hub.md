@@ -718,7 +718,7 @@ The config field `rex` is optional. Without it, the hub runs `rex` from `PATH`, 
 
 ## Setup
 
-`lazyrex-hub setup [-dir DIR] [-server ADDR] [-print]` makes the first configuration of a user's hub (`hub/cmd/hub/setup.go`, `setupfile.go`, `setupjson.go`). The default DIR is `~/.lazyrex`. `-server` names the Rex server for `hub.json`, for a user with more than one server. Without it, setup uses the server that Rex reports as its default.
+`lazyrex-hub setup [-dir DIR] [-server ADDR] [-print] [-autostart] [-autostart-cmd JSON] [-autostart-session LABEL] [-autostart-pane LABEL]` makes the first configuration of a user's hub (`hub/cmd/hub/setup.go`, `setupfile.go`, `setupjson.go`). The default DIR is `~/.lazyrex`. `-server` names the Rex server for `hub.json`, for a user with more than one server. Without it, setup uses the server that Rex reports as its default.
 
 Prerequisites. Setup stops before it proposes a file if one of these is missing:
 
@@ -733,7 +733,7 @@ The files:
 | `DIR/hub.json` | Creates it (mode 0600). Never changes an existing one. |
 | The managed file (`DIR/state/plugins.json` for a new hub.json) | Creates it (mode 0600) with the plugins. Never changes an existing one. |
 | `DIR/profiles.json` | Creates it with a Claude and a Codex agent profile, each one only if the CLI is on `PATH`. Never changes an existing one. |
-| `lazyrex_boot.lua` beside the Rex config file | Writes the boot palette entries (setup owns this file and replaces it). |
+| `lazyrex_boot.lua` beside the Rex config file | Writes the boot palette entries, and with `-autostart` the autostart (setup owns this file and replaces it). |
 | The Rex config file | Appends `pcall(require, "lazyrex_boot")` and `pcall(require, "lazyrex_palette")`, each one only if it is missing. |
 | Claude Code: `$CLAUDE_CONFIG_DIR/settings.json` (default `~/.claude`) | Adds the `SessionStart` and `UserPromptSubmit` hooks of `hooks/README.md`. |
 | Codex: `$CODEX_HOME/hooks.json` (default `~/.codex`) | Adds the `SessionStart` hook of `hooks/README.md`. |
@@ -802,6 +802,22 @@ The boot file has the palette entries that work without a running hub. **LazyRex
 Each control gets `-real-server` when the server of that hub.json is the real Rex server (`isRealServer`, the check that the hub makes; the flag must match exactly). Setup reads the server from the hub.json that the controls read: the one that it proposes, or the existing file, which it never changes and whose server can differ from the one that setup found. If setup cannot read a server from it (not JSON, no `server`, or a blocked hub.json), the boot file has only Set Up, and the report says why (`Start Hub, Stop Hub and Hub Status are left out: ...`). After the user's default Rex server changes, run setup again. Rex shows the command's output in the kept pane but not its exit status (lab, Rex 1203: the screen has no exit line; the pane's `process` method reports `last_exit`). So the first words of the output say the result: `stopped`, `not running`, `running`, or the wrapper's lines. That the Rex app shows these entries is inferred: the lab has no app.
 
 Tests: `TestSetupBootHubControls` (the argv of each entry, quoting, `-real-server` only for the real server, no controls without a server) and `TestSetupControlsFollowTheConfigFile` (a new hub.json, an existing one with another server, one that is not JSON, one without a server). Lab: `LAZYREX_LAB=1 go test ./cmd/hub -run TestHubControlsLab`. A lab server loads the boot file, and the test runs each entry as the palette does (`rex -s <session> do <action>`), then reads the pane's screen and its exit code: Hub Status before a start (`not running`, exit 1); Start Hub (the hub answers `hub.info`); Hub Status (`running`, exit 0); a second Start (refused, exit 1); Stop Hub (`stopped`, exit 0; no connected hub; the Start pane's command ended with exit 0; no hub 3 s later); Stop Hub again (`not running`, exit 0); a hub started without the wrapper, then Start Hub (exit 1, the pane shows `another hub owns`; the first hub still answers `hub.info`).
+
+**Autostart** (`autostart.go`; the hub lead's lead-cwd item 2 and the coordinator's b4-answer, 2026-10-24). With `-autostart`, the boot file also starts the hub when a Rex server instance starts. The command and its labels live only in the boot file. The hub does not read them, and `hub.json` has no autostart field.
+
+- `-autostart` alone: the Start Hub command (`<binary> -config <hub.json> [-real-server] -restart`), in session `lazyrex-hub`, pane label `LazyRex hub`.
+- `-autostart-cmd '<JSON array>'` gives another argv and implies `-autostart`. `-autostart-session` and `-autostart-pane` give the labels. Live runs dev.sh this way, for example: `-autostart-cmd '["/usr/bin/env", "DEV_REAL=1", "PATH=<Go bin>:/usr/bin:/bin", "<release clone>/dev.sh", "<hub-live.json>"]' -autostart-session lazyrex-live-keep -autostart-pane lazyrex-dev-process`.
+- Set Up keeps these flags. A setup run without them writes the boot file without the autostart.
+- Without the hub controls (no server read from hub.json), the autostart is left out, and the report says why.
+
+The load of the Rex config cannot call the server (docs/rex-protocol.md, "The config file at server start"). So the boot file runs `lazyrex-hub autostart -config <hub.json> [-real-server] -session <label> -pane <label> -- <argv>` with a detached `rex.exec.start` at each load: the server start and each config reload. The hub reloads the config at each palette write, so the command runs often. It waits up to 30 s for the server to answer. Then it starts argv in a new pane only when both hold:
+
+- (a) no connected `lazyrex-hub` client;
+- (b) no pane labeled `<pane>` or `LazyRex hub` in any session of this server instance.
+
+Panes do not survive a server restart. The hub pane stays open after its command ends. So a deliberate stop (`lazyrex-hub stop`, Stop Hub, or Ctrl-C in the pane) is not undone by the next reload. To start the hub again after a deliberate stop, close that pane, then use Start Hub or reload the config. The pane goes into a new window of the first session with the session label, or into a new session with that label. The command takes no lock. With the Start Hub command, `restart.lock` keeps one wrapper for each state. With dev.sh, the hub's state lock (`hub.lock`) keeps one hub (accepted for live: one user, four machines, one hub each). The result of the last run is in `<state>/autostart.log`, when the state directory exists. Each run replaces that file.
+
+Tests: `TestAutostartConditions` (a fake rex: a connected hub, a lost hub client, a pane with either label, an existing session, a new session, the pane's argv and options), `TestAutostartNoServer`, `TestSetupBootAutostart` (the boot file's call, Set Up keeps the flags, no autostart without hub controls, the flag refusals). Lab: `LAZYREX_LAB=1 go test ./cmd/hub -run TestHubAutostartLab`. With the Start Hub command, the server start starts the hub; a reload while it runs starts nothing; after `lazyrex-hub stop`, a reload starts nothing, and no hub runs 3 s later. Then the server restarts with a hub without the wrapper (in session `lazyrex-live-keep`, pane `lazyrex-dev-process`), and the same three steps pass.
 
 The skill in the binary is a copy of `skills/lazyrex/SKILL.md` at `hub/cmd/hub/setupfiles/SKILL.md`, because `go:embed` cannot reach outside the hub module. `TestSetupSkillCopy` fails when the two differ.
 

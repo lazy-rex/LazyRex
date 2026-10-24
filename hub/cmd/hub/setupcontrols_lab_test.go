@@ -62,7 +62,7 @@ func hubControlsLab(t *testing.T, failPlugins bool) {
 	os.WriteFile(cfg, []byte(`{`+rexField+`"server":"`+socket+`","state":"`+filepath.Join(lab, "state")+`","agents":[{"id":"user","name":"User"}],"plugins":[{"source":"`+labRefused+`"}]}`), 0o600)
 	rexcfg := filepath.Join(lab, "rexcfg")
 	os.MkdirAll(rexcfg, 0o755)
-	os.WriteFile(filepath.Join(rexcfg, "lazyrex_boot.lua"), []byte(setupBootLua(bin, lab, socket, hubControls{config: cfg, server: socket})), 0o644)
+	os.WriteFile(filepath.Join(rexcfg, "lazyrex_boot.lua"), []byte(setupBootLua(bin, lab, socket, hubControls{config: cfg, server: socket}, nil)), 0o644)
 	initLua := filepath.Join(rexcfg, "init.lua")
 	os.WriteFile(initLua, []byte(`pcall(require, "lazyrex_boot")`+"\n"), 0o644)
 	t.Setenv("LAB_CONFIG", initLua)
