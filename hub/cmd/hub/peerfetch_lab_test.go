@@ -113,11 +113,12 @@ func (s *startLab) peerFetchLine(commit string, d time.Duration) []string {
 // entry is a tree of the home plugin's size (the whole repository), so the file list and the bytes
 // both come in several pages:
 //   - b installs the plugin with no lock entry: the target is a's pin; b runs it.
-//   - a moves to a new commit (an update "@"); b's plugin sync takes it, from a again.
+//   - a moves to a new commit (an update "@"); b's plugin sync takes it, from a again. b syncs
+//     only every 600 s here, so the nudge of a's lock write (lead-nudge) starts that sync.
 //   - a's cache entry of a third commit no longer verifies: a refuses its pin document, b keeps
 //     its commit; after a's restart repairs the entry, b takes the third commit.
 //   - b's cache entry goes while a moves back: b's install of its locked commit fails not_cached
-//     (a no longer has that pin), and b's next sync takes a's pin.
+//     (a no longer has that pin), and b's next sync takes a's pin. From step 3, b syncs every 2 s.
 //
 // The log has the call counts and the fetch time of each fetch (the 120 s phase bound applies).
 func TestPeerFetchLab(t *testing.T) {
@@ -154,10 +155,11 @@ func TestPeerFetchLab(t *testing.T) {
 	a.setPeer("a", "b", tcp)
 	b.setPeer("b", "a", a.l.server)
 	a.editConfig(func(c map[string]any) { c["test_reply_limit"] = 65536 })
-	// b syncs every 2 s (test_peer_sync_every), not every minute: each step waits for one sync.
+	// Steps 1 and 2: b syncs every 600 s (test_peer_sync_every), so only a's nudge makes the sync of
+	// step 2 come in time.
 	b.editConfig(func(c map[string]any) {
 		c["peers"].([]any)[0].(map[string]any)["plugins_from"] = true
-		c["test_peer_sync_every"] = 2
+		c["test_peer_sync_every"] = 600
 	})
 	a.writeManagedFile(`{"plugins":[{"id":"speer","source":"` + peerFetchSource + `"}]}`)
 	b.writeManagedFile(`{"plugins":[{"id":"speer","source":"` + peerFetchSource + `","fetch":"peer"}]}`)
@@ -185,15 +187,24 @@ func TestPeerFetchLab(t *testing.T) {
 	if op := a.opDone(x, "up-c2", map[string]any{"op": "update", "entry": "managed:speer", "input": map[string]any{"to": "@"}}); op["phase"] != "done" {
 		t.Fatalf("a's update to c2: %v", op)
 	}
+	t2 := time.Now()
 	report("sync update", c2)
 	b.waitLong("b runs speer at c2", 2*time.Minute, func() bool {
 		return b.status("speer").Registered && strings.Contains(fmt.Sprint(b.managedEntry("speer")), c2)
 	})
+	if d := time.Since(t2); d > time.Minute {
+		t.Fatalf("b ran c2 %s after a's update, with a 600 s sync: the nudge did not start b's sync", d.Round(time.Second))
+	} else {
+		t.Logf("the nudge: b ran c2 %s after a's update (b syncs every 600 s)", d.Round(time.Millisecond))
+	}
 
 	// 3. A source cache entry that no longer verifies: while b is down, a moves to c3, and one file
 	// of a's c3 entry changes. a then refuses its whole pin document (hub.peer.plugins), so b's sync
 	// fetches nothing and b keeps running c2. A restart of a installs c3 again; b then takes c3.
 	b.stop()
+	// From here b syncs every 2 s, so steps 3 and 4 do not depend on the nudge. TestOfferConfirmLab
+	// has the step that only the timer can pass.
+	b.editConfig(func(c map[string]any) { c["test_peer_sync_every"] = 2 })
 	moveMain(c3)
 	if op := a.opDone(x, "up-c3", map[string]any{"op": "update", "entry": "managed:speer", "input": map[string]any{"to": "@"}}); op["phase"] != "done" {
 		t.Fatalf("a's update to c3: %v", op)

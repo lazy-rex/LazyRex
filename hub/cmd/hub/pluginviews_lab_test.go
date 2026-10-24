@@ -397,6 +397,12 @@ func TestOfferConfirmLab(t *testing.T) {
 		shown = fx.node("offer/")
 		return shown != nil && strings.Contains(shown.Label, "managed:x")
 	})
+	// The rename does not change a's pins, so a writes no lock and sends no nudge (lead-nudge): only
+	// b's sync timer (2 s) shows y. The lock file must stay the same file (a write renames a new one).
+	lockBefore, err := os.Stat(lockPath(a.cfg, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeA(`{"id":"gh","source":"`+src+`"},{"id":"y","source":"`+src2+`"}`, src, src2)
 	b.waitLong("the offer is y", 90*time.Second, func() bool {
 		var list struct {
@@ -406,6 +412,9 @@ func TestOfferConfirmLab(t *testing.T) {
 		json.Unmarshal(raw, &list)
 		return len(list.Offered) == 1 && list.Offered[0].ID == "y"
 	})
+	if lockAfter, err := os.Stat(lockPath(a.cfg, "")); err != nil || !os.SameFile(lockBefore, lockAfter) {
+		t.Fatalf("a wrote its lock at the rename (%v): this step no longer waits on the timer alone", err)
+	}
 	// The home plugin refuses the press itself (conflict); the hub's admission is the second check.
 	st := fx.action(shown.ID, "add", map[string]any{}, "offer-add-x")
 	if e, _ := json.Marshal(st["error"]); st["status"] != "failed" || !strings.Contains(string(e), "The offered code changed") {
