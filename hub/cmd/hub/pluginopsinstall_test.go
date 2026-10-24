@@ -46,6 +46,9 @@ func (c installStarts) want(t *testing.T, n int) {
 func runInstalls(t *testing.T, h *Hub, why string) map[string]*pluginOp {
 	t.Helper()
 	ctx := context.Background()
+	h.pops.installs.mu.Lock()
+	h.pops.installs.recovered = true // a running hub: its start recovery ended
+	h.pops.installs.mu.Unlock()
 	h.installScan(ctx, why)
 	h.pops.installs.mu.Lock()
 	ids := map[string]string{}
@@ -269,11 +272,12 @@ func TestPluginInstallFailedError(t *testing.T) {
 	}
 }
 
-// An install that a hub stop interrupted (lead-c22b item 1, lead-c22c): the new hub keeps the
-// database and loses the pending map. pluginOpsStart makes the open install pending before the
-// manager's first pass, so its end leads to the one normal start. With the manager, the install
-// ends before the scan (the start recovery) runs, and the start waits for the scan; with the scan
-// first (the reviewer's order), the pass after the scan ends it.
+// An install that a hub stop interrupted (lead-c22b item 1, lead-c22c, lead-c22e): the new hub
+// keeps the database and loses the pending map. pluginOpsStart makes the open install pending
+// before the manager's first pass, so its end leads to the one normal start, which waits for the
+// end of the start recovery (recoverPlugins): a reload scan before it opens nothing. With the
+// manager, the install ends before the start recovery runs; with the scan first (the reviewer's
+// order), the pass after the start recovery ends it.
 func TestPluginInstallRecovered(t *testing.T) {
 	for _, manager := range []bool{true, false} {
 		t.Run(fmt.Sprintf("manager %v", manager), func(t *testing.T) {
@@ -289,13 +293,15 @@ func TestPluginInstallRecovered(t *testing.T) {
 			h.installScan(ctx, "start")
 			id := mustLastOp(t, h)
 			h.pops.installs.mu.Lock()
-			h.pops.installs.pending, h.pops.installs.scanned = nil, false // a new hub
+			h.pops.installs.pending, h.pops.installs.recovered = nil, false // a new hub
 			h.pops.installs.mu.Unlock()
+			// The unit hub has no Rex: notes is desired stopped, so the start recovery spawns nothing.
+			mustExec(t, h, `INSERT INTO plugins (name, desired) VALUES ('notes', 'stopped') ON CONFLICT (name) DO UPDATE SET desired = 'stopped'`)
 			if !manager {
 				if err := h.installsRecover(ctx); err != nil {
 					t.Fatal(err)
 				}
-				h.installScan(ctx, "start")
+				h.recoverPlugins(ctx)
 				h.opsRun(ctx)
 			} else {
 				if err := h.pluginOpsStart(ctx); err != nil {
@@ -306,8 +312,9 @@ func TestPluginInstallRecovered(t *testing.T) {
 						t.Fatalf("the resumed install: %+v", opsOf(t, h, id))
 					}
 				}
-				starts.want(t, 0) // the start recovery has not run
-				h.installScan(ctx, "start")
+				h.installScan(ctx, "reload") // a reload before the start recovery
+				starts.want(t, 0)
+				h.recoverPlugins(ctx)
 			}
 			if op := opsOf(t, h, id); op.Phase != "done" {
 				t.Fatalf("the resumed install: %s %s", op.Phase, op.Error)
@@ -328,6 +335,7 @@ func TestPluginInstallEndsBeforeRecord(t *testing.T) {
 	}
 	opsLoadEntries(t, h)
 	ctx := context.Background()
+	h.pops.installs.recovered = true // a running hub
 	h.pops.kick = make(chan struct{}, 1)
 	old := installAdmitted
 	installAdmitted = func(h *Hub, ctx context.Context) {

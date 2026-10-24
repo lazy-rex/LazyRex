@@ -29,15 +29,15 @@ import (
 // pluginInstalls are the install ops that the scans admitted, and the ones that a hub stop
 // interrupted, that have not all ended.
 type pluginInstalls struct {
-	mu      sync.Mutex
-	pending map[string]string // op ID -> entry key
-	scanned bool              // a scan ran: the start recovery has visited every record
+	mu        sync.Mutex
+	pending   map[string]string // op ID -> entry key
+	recovered bool              // the start recovery ended (installsRecovered)
 }
 
 // installsRecover makes each open install op pending (lead-c22c). pluginOpsStart runs it before
 // the manager's first pass, so an install that a hub stop interrupted cannot end untracked. Its
-// normal start waits for the first scan (installsEnded): before the start recovery, a record does
-// not know its live instance.
+// normal start waits for the end of the start recovery (installsRecovered): before it, a record
+// does not know its live instance.
 func (h *Hub) installsRecover(ctx context.Context) error {
 	rows, err := h.db.QueryContext(ctx, `SELECT op_id, entry FROM plugin_ops WHERE kind = 'install' AND phase NOT IN ('done', 'failed', 'conflict', 'unknown')`)
 	if err != nil {
@@ -79,7 +79,15 @@ func (h *Hub) installScan(ctx context.Context, why string) {
 		h.pops.installs.pending = map[string]string{}
 	}
 	maps.Copy(h.pops.installs.pending, ids)
-	h.pops.installs.scanned = true
+	h.pops.installs.mu.Unlock()
+	h.kickOps()
+}
+
+// installsRecovered opens the normal start after the installs (lead-c22e): only the end of the
+// start recovery calls it, after its scan. A reload before the start recovery does not open it.
+func (h *Hub) installsRecovered() {
+	h.pops.installs.mu.Lock()
+	h.pops.installs.recovered = true
 	h.pops.installs.mu.Unlock()
 	h.kickOps()
 }
@@ -149,12 +157,12 @@ func (h *Hub) admitInstall(ctx context.Context, why string, r opRequest) (map[st
 }
 
 // installsEnded runs on the manager goroutine after each pass. When every pending install has
-// ended and a scan ran (the start recovery is over), it records each entry's install error and
-// runs the normal start once.
+// ended and the start recovery ended, it records each entry's install error and runs the normal
+// start once.
 func (h *Hub) installsEnded(ctx context.Context) {
 	h.pops.installs.mu.Lock()
 	pending := h.pops.installs.pending
-	if len(pending) == 0 || !h.pops.installs.scanned {
+	if len(pending) == 0 || !h.pops.installs.recovered {
 		h.pops.installs.mu.Unlock()
 		return
 	}
