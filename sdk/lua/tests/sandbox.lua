@@ -90,6 +90,7 @@ return function(sdk_dir, base, opts)
   if opts.frozen then rex_env = setmetatable({}, {__index = stub, __newindex = function() end}) end
   -- Own io and os tables: the SDK replaces io.open and the others in them, not in the test runner.
   local env = setmetatable({rex = rex_env, io = setmetatable({}, {__index = io}), os = setmetatable({exit = function(code) s.exited = code end}, {__index = os}), print = function(...) s.printed[#s.printed + 1] = table.concat({...}, ' ') end}, {__index = base})
+  s.env = env -- a test can set s.env.os.time (the peer clock)
   local sdk_chunk = assert(loadfile(sdk_dir .. '/lazyrex.lua'))
   setfenv(sdk_chunk, env)
   local sdk = sdk_chunk()

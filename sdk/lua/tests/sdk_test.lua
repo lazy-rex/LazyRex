@@ -20,7 +20,7 @@ local function plugin(source, opts) opts = opts or {}; opts.source = 'local app 
 
 test('the start migrates in one transaction, then registers the actions, the exports and the panel', function()
   local s = todo()
-  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.exec hub.sql.commit')
+  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
   expect(s.sql.state.user_version).to_be(1)
   expect(s.sql.state.tables.todos ~= nil, 'the table').to_be(true)
   expect(s.registered.plugin).to_be('todo')
@@ -74,14 +74,14 @@ local function tbl() return {columns = {'id'}, rows = {}, seq = 0} end
 test('base: a new database runs the base and the later steps, and sets the last version, in one transaction', function()
   local s = based()
   expect(s.exited, 'the plugin runs').to_be(nil)
-  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.exec hub.sql.exec hub.sql.exec hub.sql.commit')
+  expect(action_names(s)).to_be('hub.sql.begin hub.sql.query hub.sql.query hub.sql.exec hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
   expect(s.sql.state.user_version).to_be(6)
   expect(s.sql.state.tables.a ~= nil and s.sql.state.tables.b ~= nil, 'both tables').to_be(true)
 end)
 
 test('base: a database at the base or above runs only the steps above it', function()
   local s = based(function(db) db.user_version = 5; db.tables.a = tbl() end)
-  expect(action_names(s), 'no sqlite_master read; step 6 only').to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.exec hub.sql.commit')
+  expect(action_names(s), 'no base check; step 6, then the sdk_ check').to_be('hub.sql.begin hub.sql.query hub.sql.exec hub.sql.query hub.sql.exec hub.sql.commit')
   expect(s.sql.state.user_version).to_be(6)
   expect(s.sql.state.tables.b ~= nil, 'step 6').to_be(true)
   s = based(function(db) db.user_version = 6; db.tables.a = tbl(); db.tables.b = tbl() end)
@@ -1251,37 +1251,325 @@ app.action('p.seen', {}, function() return {generation = seen.generation, rows =
   expect(find(plain.keymap, function(k) return k.name == 'hub.prompt' end), 'no listener, no keymap entry').to_be(nil)
 end)
 
-test('app.on peer.receive: the reply is the listener result; a refusal is final; an error rolls back and reaches the hub', function()
-  local s = plugin([[
-app.db.migrate {'CREATE TABLE inbox (key TEXT PRIMARY KEY, from_hub TEXT NOT NULL, body TEXT NOT NULL)'}
-app.on('peer.receive', function(args)
-  if args.key == 'nobody' then return {refused = 'unknown_agent', message = 'no agent bob here'} end
-  if args.key == 'bool' then return {refused = true} end
-  app.db.exec('INSERT INTO inbox (key, from_hub, body) VALUES (?, ?, ?)', args.key, args.from_hub, args.body)
-  if args.key == 'badmsg' then return {refused = 'unknown_agent', message = {detail = 'no agent'}} end
-  if args.key == 'boom' then error('cannot store') end
-  if args.key == 'quiet' then return nil end
-  return {stored = args.key}
+-- Federation (app.peer, peer.lua) --------------------------------------------------------------
+
+-- peer_plugin: a plugin with app.peer. sent records each hub.peer.send; answer(args) gives its reply
+-- (default {seq = n}).
+local function peer_plugin(source, opts)
+  opts = opts or {}
+  local sent = {}
+  opts.hub = opts.hub or {}
+  opts.hub['hub.peer.send'] = function(a)
+    sent[#sent + 1] = a
+    if opts.answer then return opts.answer(a, #sent) end
+    return {seq = #sent, queued = true}
+  end
+  local s = plugin(source, opts)
+  s.sent = sent
+  return s
+end
+local function rows(s, t)
+  local out = {}
+  for _, r in ipairs((s.sql.state.tables[t] or {rows = {}}).rows) do out[#out + 1] = r end
+  table.sort(out, function(a, b) return (a.n or 0) < (b.n or 0) end)
+  return out
+end
+local SEND = [[
+local ANY = {type = 'object', additionalProperties = true}
+app.db.migrate {'CREATE TABLE notes (text TEXT)'}
+peer = app.peer{failed = function(r) app.db.exec('INSERT INTO notes (text) VALUES (?)', 'failed ' .. r.hub .. ' ' .. r.key .. ' ' .. r.code .. ' ' .. tostring(r.message) .. ' ' .. type(r.at)) end}
+app.action('p.send', ANY, function(ctx, a)
+  local r = peer.send(a.hub, a.k, a.body)
+  if a.boom then error('after the send') end
+  return r
 end)
-app.action('p.inbox', {}, function() return {keys = #app.db.query('SELECT key FROM inbox')} end, {store = false})]])
+app.action('p.loose', ANY, function(ctx, a) return peer.send(a.hub, a.k, a.body) end, {tx = false})
+app.action('p.retry', ANY, function(ctx, a) return peer.retry(a.hub, a.k) end)
+app.action('p.status', ANY, function() return peer.status() end, {store = false})]]
+
+test('peer.send: the call checks; a row is staged in the caller transaction and goes after the commit', function()
+  local s = peer_plugin(SEND)
+  local function send(a) return s:agent('p.send', a) end
+  local function err(a) local r = send(a); return r.error and (r.error.code .. ': ' .. r.error.message) end
+  expect(err({hub = 'Linux', k = 'k', body = {}}), 'a hub name').to_match('^invalid_input: peer.send: the hub must be a hub name')
+  expect(err({hub = 'linux', k = '', body = {}}), 'an empty key').to_match('^invalid_input: peer.send: the key must be a string of 1 to 512 bytes')
+  expect(err({hub = 'linux', k = string.rep('k', 513), body = {}}), 'a key over 512').to_match('the key must be a string of 1 to 512 bytes')
+  expect(err({hub = 'linux', k = 'k', body = {1, 2}}), 'an array body').to_match('the body must be a JSON object, not an array')
+  expect(err({hub = 'linux', k = 'k', body = {text = '\255'}}), 'invalid UTF-8').to_match('not valid UTF%-8')
+  local loose = s:agent('p.loose', {hub = 'linux', k = 'k', body = {}})
+  expect(loose.error and loose.error.message, 'no transaction').to_match('^peer.send runs in a write transaction')
+  -- A rollback leaves no row and sends nothing.
+  expect(send({hub = 'linux', k = 'gone', body = {x = 1}, boom = true}).error.message).to_be('after the send')
+  s:tick()
+  expect(#rows(s, 'sdk_peer_outbox'), 'no row after a rollback').to_be(0)
+  expect(#s.sent, 'no send after a rollback').to_be(0)
+  -- A committed send: the row is queued at the reply; the drain runs after it (a timer).
+  expect(send({hub = 'linux', k = 'm1', body = {text = 'hi', fyi = false}}).result).to_equal({key = 'm1', state = 'queued'})
+  expect(#s.sent, 'nothing goes before the reply').to_be(0)
+  expect(rows(s, 'sdk_peer_outbox')[1].state).to_be('queued')
+  s:tick()
+  expect(s.sent, 'the stored text, with false kept').to_equal({{hub = 'linux', key = 'm1', body = '{"fyi":false,"text":"hi"}'}})
+  local r = rows(s, 'sdk_peer_outbox')[1]
+  expect({r.state, r.hub_seq, r.body, type(r.sent_at)}, 'sent: the seq, no body').to_equal({'sent', 1, nil, 'number'})
+  -- The same key and body: the row's state; another body: operation_conflict at the call.
+  expect(send({hub = 'linux', k = 'm1', body = {fyi = false, text = 'hi'}}).result).to_equal({key = 'm1', state = 'sent', hub_seq = 1})
+  expect(err({hub = 'linux', k = 'm1', body = {text = 'other'}})).to_be('operation_conflict: peer.send: the key m1 to linux has another body')
+  -- The same key to another hub is another row.
+  expect(send({hub = 'mac', k = 'm1', body = {text = 'hi'}}).result.state).to_be('queued')
+end)
+
+test('peer.send: a failed commit sends nothing; a row of a commit with a lost reply goes at the next start', function()
+  local s = peer_plugin(SEND)
+  s.sql.fail_next['hub.sql.commit'] = {code = 'unavailable', message = 'the reply was lost'}
+  local r = s:agent('p.send', {hub = 'linux', k = 'm1', body = {}})
+  expect(r.error and r.error.message).to_be('the reply was lost')
+  s:tick()
+  expect({#rows(s, 'sdk_peer_outbox'), #s.sent}, 'no row, no send').to_equal({0, 0})
+  -- The commit can apply while its reply is lost: then the row is in the database, and no drain was
+  -- armed for it. The next drain takes it (a later send, or the next start: "peer drain at start").
+end)
+
+test('peer.send: the body text is canonical (sorted members), and its size is the hub measure', function()
+  local s = peer_plugin(SEND)
+  local enc = s.sdk._state.peer.encode_body
+  local a, b = {}, {}
+  a.z, a.a, a.m = 1, {y = true, b = {1, 'two', {k = 1.5}}}, 'x'
+  b.m, b.a, b.z = 'x', {b = {1, 'two', {k = 1.5}}, y = true}, 1
+  expect(enc(a), 'equal tables').to_be(enc(b))
+  expect(enc(a)).to_be('{"a":{"b":[1,"two",{"k":1.5}],"y":true},"m":"x","z":1}')
+  expect(enc({s = 'q"\\\n\1<'}), 'escapes').to_be('{"s":"q\\"\\\\\\n\\u0001<"}')
+  expect(enc({e = {}}), 'an empty table is an object').to_be('{"e":{}}')
+  local m = s.sdk._state.peer.measure
+  -- Go 1.27.2 json.Marshal of the text (claude-37, lead-sdkfed7).
+  expect(m(''), 'quotes').to_be(2)
+  expect(m('a'), 'a').to_be(3)
+  expect({m('"'), m('\\'), m('\n'), m('\r'), m('\t'), m('\b'), m('\f')}, 'two bytes').to_equal({4, 4, 4, 4, 4, 4, 4})
+  expect({m('\1'), m('\31'), m('<'), m('>'), m('&')}, 'six bytes').to_equal({8, 8, 8, 8, 8})
+  expect(m('\127'), 'DEL').to_be(3)
+  expect(m('\226\128\168'), 'U+2028').to_be(8)
+  expect(m('\226\128\169'), 'U+2029').to_be(8)
+  expect(m('\195\169'), 'é').to_be(4)
+  expect(m('\240\159\152\128'), 'an emoji').to_be(6)
+  expect(m('\255'), 'an invalid byte').to_be(5)
+  -- The hub measure: the text {"s":"<pad>"} has 4 quotes (2 bytes each), {, s, : and } (1 each), and
+  -- the 2 outer quotes: 14 + pad, so pad 65522 measures 65536.
+  local function body(n) return {s = string.rep('x', n)} end
+  expect(m(enc(body(65522)))).to_be(65536)
+  -- Rex encodes a string as Go's json.Marshal does (observed on Rex 0.0.1792158932-g88fd41: <, >, &,
+  -- U+2028, U+2029 and \1 give 6 bytes, \n and " give 2, DEL 1), so the Rex request rule below is
+  -- always the tighter one; the hub measure check stays, as the hub's contract.
+  local mixed = 'a<b>&"\\\n\t\1\127\226\128\168\195\169x'
+  expect(m(mixed), 'the hub measure is the Rex encoding').to_be(#rex.json.encode(mixed))
+  -- The Rex request rule: Rex sends the text as 14 + pad bytes; with hub linux (7, twice), key fit
+  -- (5, twice) and 1024, pad 64474 fits 65536. That row inserts and sends within the 64 KiB request
+  -- check of the SDK's hub calls; pad 64475 is too_large at the call.
+  local fit = s:agent('p.send', {hub = 'linux', k = 'fit', body = body(64474)})
+  expect(fit.result and fit.result.state, show(fit.error)).to_be('queued')
+  s:tick()
+  local sent = s.sent[#s.sent]
+  expect({sent.key, #sent.body}, table.concat(s.printed, '\n')).to_equal({'fit', 64474 + 8})
+  local big = s:agent('p.send', {hub = 'linux', k = 'fit', body = body(64475)})
+  expect(big.error and big.error.message).to_be('peer.send: the body is 64489 bytes as Rex sends it; with the key and the row it does not fit one Rex request (65536 bytes)')
+end)
+
+test('peer drain: one call at a time per peer in row order; a passing error stops that peer only; a final error fails the row', function()
+  local answers = {}
+  local s = peer_plugin(SEND, {answer = function(a, n)
+    local x = answers[a.key]
+    if x then return nil, x end
+    return {seq = n, queued = true}
+  end})
+  -- The clock is a field: a closure can see a detached copy of a local after a caught error (Rex Lua).
+  local clock = {t = 1000}
+  s.env.os.time = function() return clock.t end
+  for _, k in ipairs({'a1', 'a2', 'a3'}) do s:agent('p.send', {hub = 'mac', k = k, body = {k = k}}) end
+  s:agent('p.send', {hub = 'pi', k = 'b1', body = {k = 'b1'}})
+  answers.a2 = {code = 'timeout', message = 'no answer'}
+  s:tick()
+  local keys = {}
+  for _, c in ipairs(s.sent) do keys[#keys + 1] = c.hub .. ':' .. c.key end
+  expect(table.concat(keys, ' '), 'a1, then a2 fails and a3 waits; pi goes on').to_be('mac:a1 mac:a2 pi:b1')
+  local st = s:agent('p.status', {}).result.peers
+  expect({st.mac.queued, st.mac.failed, st.mac.last_error.code, st.mac.next_try_s}, 'the backoff').to_equal({2, 0, 'timeout', 2})
+  expect(st.pi, 'pi has no row waiting').to_be(nil)
+  -- Before the backoff ends, a tick sends nothing; after it, a2 and a3 go, in order.
+  answers.a2 = nil
+  s:tick()
+  expect(#s.sent, 'the backoff holds').to_be(3)
+  clock.t = clock.t + 2
+  s:agent('p.send', {hub = 'pi', k = 'b2', body = {}}) -- a trigger
+  s:tick()
+  keys = {}
+  for i = 4, #s.sent do keys[#keys + 1] = s.sent[i].hub .. ':' .. s.sent[i].key end
+  expect(table.concat(keys, ' '), table.concat(s.printed, '\n')).to_be('mac:a2 mac:a3 pi:b2')
+  -- Each final code fails the row, runs the failed listener in the same transaction, and the drain goes on.
+  for _, code in ipairs({'operation_conflict', 'not_plugin', 'unknown_hub', 'too_large', 'refused'}) do
+    answers['f-' .. code] = {code = code, message = 'no: ' .. code}
+    s:agent('p.send', {hub = 'mac', k = 'f-' .. code, body = {}})
+  end
+  s:agent('p.send', {hub = 'mac', k = 'after', body = {}})
+  s:tick()
+  local notes = {}
+  for _, r in ipairs(rows(s, 'notes')) do notes[#notes + 1] = r.text end
+  expect(table.concat(notes, '|')).to_be('failed mac f-operation_conflict operation_conflict no: operation_conflict number|failed mac f-not_plugin not_plugin no: not_plugin number|'
+    .. 'failed mac f-unknown_hub unknown_hub no: unknown_hub number|failed mac f-too_large too_large no: too_large number|failed mac f-refused refused no: refused number')
+  expect(s.sent[#s.sent].key, 'the drain goes on after a final error').to_be('after')
+  local failed = 0
+  for _, r in ipairs(rows(s, 'sdk_peer_outbox')) do if r.state == 'failed' then failed = failed + 1; expect(r.body ~= nil, 'a failed row keeps its text').to_be(true) end end
+  expect(failed).to_be(5)
+  st = s:agent('p.status', {}).result.peers.mac
+  expect({st.queued, st.failed, st.last_failed.code}).to_equal({0, 5, 'refused'})
+  -- retry: a failed row goes again with the same text.
+  answers['f-unknown_hub'] = nil
+  expect(s:agent('p.retry', {hub = 'mac', k = 'f-unknown_hub'}).result).to_equal({key = 'f-unknown_hub', state = 'queued'})
+  s:tick()
+  expect({s.sent[#s.sent].key, s.sent[#s.sent].body}).to_equal({'f-unknown_hub', '{}'})
+  expect(s:agent('p.retry', {hub = 'mac', k = 'a1'}).error.message, 'only a failed row').to_be('peer.retry: no failed row for a1 to mac')
+end)
+
+test('peer drain: a failed listener that raises is logged, and the row is failed without it', function()
+  local s = peer_plugin([[
+local ANY = {type = 'object', additionalProperties = true}
+peer = app.peer{failed = function(r) app.db.exec('INSERT INTO sdk_peer_seen (id) VALUES (?)', 'x'); error('listener broke') end}
+app.action('p.send', ANY, function(ctx, a) return peer.send('mac', a.k, {}) end)]], {answer = function() return nil, {code = 'unknown_hub', message = 'no mac'} end})
+  s:agent('p.send', {k = 'k'})
+  s:tick()
+  expect(rows(s, 'sdk_peer_outbox')[1].state).to_be('failed')
+  expect(#rows(s, 'sdk_peer_seen'), 'the listener write rolled back').to_be(0)
+  local seen = false
+  for _, p in ipairs(s.printed) do if p:find('the failed listener of k to mac failed: listener broke', 1, true) then seen = true end end
+  expect(seen, table.concat(s.printed, '\n')).to_be(true)
+end)
+
+local RECEIVE = [[
+app.db.migrate {'CREATE TABLE inbox (key TEXT PRIMARY KEY, from_hub TEXT NOT NULL, text TEXT)'}
+peer = app.peer{receive = function(msg)
+  app.db.exec('INSERT INTO inbox (key, from_hub, text) VALUES (?, ?, ?)', msg.key, msg.from_hub, msg.body.text)
+  if msg.body.text == 'nobody' then return peer.refuse('unknown_recipient', 'no agent bob here') end
+  if msg.body.text == 'boom' then error('cannot store') end
+  if msg.body.text == 'odd' then return 7 end
+  return {ignored = true}
+end}]]
+
+test('peer receive: one commit of the listener and its dedupe row; repeats, refusals and errors', function()
+  local s = peer_plugin(RECEIVE)
   expect(find(s.keymap, function(k) return k.name == 'peer.receive' end) ~= nil, 'the keymap lists peer.receive').to_be(true)
-  local function deliver(key, pid) return s:call('peer.receive', {from_hub = 'linux', key = key, body = '{"text":"hi"}'}, pid) end
-  expect(deliver('m1').result, 'the listener result is the reply').to_equal({stored = 'm1'})
-  expect(deliver('quiet').result, 'nil is {}').to_equal({})
-  expect(deliver('nobody').result, 'a refusal is a result').to_equal({refused = 'unknown_agent', message = 'no agent bob here'})
-  local boom = deliver('boom')
-  expect(boom.error and boom.error.message, 'the error reaches the hub').to_be('cannot store')
-  local bool = deliver('bool')
-  expect(bool.error and bool.error.message, 'a refusal that is not a code string fails').to_be('peer.receive refused must be a code string, not boolean')
-  local badmsg = deliver('badmsg')
-  expect(badmsg.error and badmsg.error.message, 'a refusal message that is not a string fails').to_be('peer.receive message must be a string, not table')
-  expect(s:agent('p.inbox', {}).result, 'only m1 and quiet are stored; boom and badmsg rolled back').to_equal({keys = 2})
-  expect(deliver('m2', 7).error.code, 'only the hub calls it').to_be('refused')
-  local plain = plugin([[app.action('p.x', {}, function() return {} end)]])
-  expect(find(plain.keymap, function(k) return k.name == 'peer.receive' end), 'no listener, no keymap entry').to_be(nil)
-  local two = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.on("peer.receive", function() end)\napp.on("peer.receive", function() end)'})
-  expect(two.loaded, 'a second listener fails at load').to_be(false)
-  expect(tostring(two.load_error):find('app.on("peer.receive") takes one listener', 1, true) ~= nil, tostring(two.load_error)).to_be(true)
+  local function deliver(key, body, pid) return s:call('peer.receive', {from_hub = 'linux', key = key, body = body}, pid) end
+  local function inbox() return #rows(s, 'inbox') end
+  expect(deliver('m1', '{"text":"hi"}').result, 'accepted: {}').to_equal({})
+  expect(inbox()).to_be(1)
+  expect(deliver('m1', '{"text":"hi"}').result, 'a repeat').to_equal({})
+  expect(inbox(), 'a repeat does not run the listener').to_be(1)
+  expect(deliver('m1', '{"text":"other"}').result).to_equal({refused = 'operation_conflict', message = 'The key m1 from linux came with another body'})
+  -- A refusal rolls back the listener's writes and is stored: a repeat gets the same refusal.
+  expect(deliver('m2', '{"text":"nobody"}').result).to_equal({refused = 'unknown_recipient', message = 'no agent bob here'})
+  expect(inbox(), 'the refusal rolled back the write').to_be(1)
+  expect(deliver('m2', '{"text":"nobody"}').result).to_equal({refused = 'unknown_recipient', message = 'no agent bob here'})
+  local seen = rows(s, 'sdk_peer_seen')
+  expect(#seen).to_be(2)
+  -- A raise rolls back the effects and the dedupe row, is the error reply, and is logged loudly.
+  local boom = deliver('m3', '{"text":"boom"}')
+  expect(boom.error and boom.error.message).to_be('cannot store')
+  expect({inbox(), #rows(s, 'sdk_peer_seen')}, 'nothing of m3 stays').to_equal({1, 2})
+  local loud = false
+  for _, p in ipairs(s.printed) do if p:find('THE RECEIVE LISTENER FAILED for m3 from linux: cannot store', 1, true) then loud = true end end
+  expect(loud, table.concat(s.printed, '\n')).to_be(true)
+  expect(deliver('m4', '{"text":"odd"}').error.message).to_be('The peer receive listener must return nil, a table or peer.refuse(...), not a number')
+  -- A malformed envelope is refused before the listener and stores nothing.
+  expect(deliver('m5', 'not json').result).to_equal({refused = 'invalid_envelope', message = 'The body is not a JSON object'})
+  expect(deliver('m6', '[1]').result).to_equal({refused = 'invalid_envelope', message = 'The body is not a JSON object'})
+  expect(s:call('peer.receive', {from_hub = 'Bad Hub', key = 'm7', body = '{}'}).result.refused).to_be('invalid_envelope')
+  expect({inbox(), #rows(s, 'sdk_peer_seen')}).to_equal({1, 2})
+  expect(deliver('m8', '{}', 7).error.code, 'only the hub calls it').to_be('refused')
+end)
+
+test('app.peer: one declaration; no receive, no keymap entry; app.on("peer.receive") is gone', function()
+  local plain = peer_plugin([[peer = app.peer{}
+app.action('p.x', {}, function() return {} end)]])
+  expect(find(plain.keymap, function(k) return k.name == 'peer.receive' end), 'no receive, no keymap entry').to_be(nil)
+  local function load_error(src)
+    local x = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\n' .. src})
+    expect(x.loaded, src).to_be(false)
+    return tostring(x.load_error)
+  end
+  expect(load_error('app.peer{}; app.peer{}')).to_match('app.peer is called once')
+  expect(load_error('app.peer{recieve = function() end}')).to_match('app.peer: unknown field recieve')
+  expect(load_error('app.peer{receive = 1}')).to_match('app.peer: receive must be a function')
+  expect(load_error('app.on("peer.receive", function() end)')).to_match('app.on%("peer.receive"%) is gone: use app.peer{receive = fn}')
+end)
+
+test('peer addresses: split, join, sender, received_id and origin_id', function()
+  local s = peer_plugin([[peer = app.peer{}]])
+  local env_peer = s.env.peer -- the global of the main file
+  local a, h = env_peer.split('claude:x@linux')
+  expect({a, h}).to_equal({'claude:x', 'linux'})
+  expect(env_peer.split('claude:x'), 'a local ID').to_be(nil)
+  expect(env_peer.split('x@Linux'), 'not a hub name').to_be(nil)
+  expect(env_peer.join('claude:x', 'mac')).to_be('claude:x@mac')
+  expect(env_peer.sender({from_hub = 'mac'}, 'claude:y')).to_be('claude:y@mac')
+  local id = env_peer.received_id('mac', 'send/8:claude:x9:twohost-1')
+  expect(id, "Messaging's form").to_be('peer/3:mac26:send/8:claude:x9:twohost-1')
+  expect(env_peer.origin_id(id, 'mac')).to_be('send/8:claude:x9:twohost-1')
+  expect(env_peer.origin_id(id, 'linux'), 'another hub').to_be(nil)
+  expect(env_peer.origin_id('send/1', 'mac'), 'a local ID').to_be(nil)
+end)
+
+test('peer schema: the SDK tables come first, a newer peer schema fails the start, sdk_ is the SDK\'s, old rows are pruned', function()
+  local s = peer_plugin([[app.db.migrate {base = 2, 'CREATE TABLE notes (text TEXT)'}
+peer = app.peer{}]])
+  expect(s.sql.state.user_version, 'the base ran: the sdk_ tables are not plugin tables').to_be(2)
+  local meta = rows(s, 'sdk_meta')
+  expect({meta[1].part, meta[1].version}).to_equal({'peer', 1})
+  -- A newer peer schema: the start fails.
+  local newer = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\npeer = app.peer{}', hub = {}})
+  newer.sql.state.tables.sdk_meta = {columns = {'part', 'version'}, rows = {{part = 'peer', version = 2}}, seq = 1}
+  newer:start()
+  expect(newer.exited, 'the start fails').to_be(1)
+  local said = false
+  for _, p in ipairs(newer.printed) do if p:find('The database has SDK peer schema 2; this SDK knows 1. Update the plugin or delete its database.', 1, true) then said = true end end
+  expect(said, table.concat(newer.printed, '\n')).to_be(true)
+  -- A plugin migration that makes an sdk_ table fails the start.
+  local own = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\napp.db.migrate {"CREATE TABLE sdk_mine (x TEXT)"}'})
+  own:start()
+  expect(own.exited).to_be(1)
+  said = false
+  for _, p in ipairs(own.printed) do if p:find("A plugin migration made sdk_mine: the names that start with sdk_ are the SDK's", 1, true) then said = true end end
+  expect(said, table.concat(own.printed, '\n')).to_be(true)
+  -- Pruning at start: sent and seen rows older than 30 days go; queued and failed rows stay.
+  local old = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\npeer = app.peer{}', hub = {['hub.peer.send'] = function() return nil, {code = 'timeout', message = 'x'} end}})
+  local T = 100 * 86400
+  old.env.os.time = function() return T end
+  local P = 'n, id, hub, key, digest, body, state, hub_seq, code, message, created, sent_at, failed_at'
+  local cols = {}
+  for c in P:gmatch('[%w_]+') do cols[#cols + 1] = c end
+  old.sql.state.tables.sdk_meta = {columns = {'part', 'version'}, rows = {{part = 'peer', version = 1}}, seq = 1}
+  old.sql.state.tables.sdk_peer_outbox = {columns = cols, seq = 4, rows = {
+    {n = 1, id = 'old-sent', state = 'sent', created = 0, sent_at = T - 31 * 86400},
+    {n = 2, id = 'new-sent', state = 'sent', created = 0, sent_at = T - 29 * 86400},
+    {n = 3, id = 'old-failed', state = 'failed', created = 0, failed_at = T - 40 * 86400},
+    {n = 4, id = 'old-queued', hub = 'mac', key = 'q', body = '{}', state = 'queued', created = T - 40 * 86400}}}
+  old.sql.state.tables.sdk_peer_seen = {columns = {'id', 'from_hub', 'key', 'digest', 'refused', 'message', 'at'}, seq = 2, rows = {
+    {id = 'old-seen', at = T - 31 * 86400}, {id = 'new-seen', at = T - 1}}}
+  old:start()
+  local ids = {}
+  for _, r in ipairs(rows(old, 'sdk_peer_outbox')) do ids[#ids + 1] = r.id end
+  expect(table.concat(ids, ' ')).to_be('new-sent old-failed old-queued')
+  ids = {}
+  for _, r in ipairs(old.sql.state.tables.sdk_peer_seen.rows) do ids[#ids + 1] = r.id end
+  expect(table.concat(ids, ' ')).to_be('new-seen')
+end)
+
+test('peer drain at start: queued rows of an earlier run go after the start functions', function()
+  local s = sandbox(sdk_dir, base, {source = 'local app = require("lazyrex").plugin("p")\npeer = app.peer{}', hub = {['hub.peer.send'] = function(a) return {seq = 9} end}})
+  local cols = {}
+  for c in ('n, id, hub, key, digest, body, state, hub_seq, code, message, created, sent_at, failed_at'):gmatch('[%w_]+') do cols[#cols + 1] = c end
+  s.sql.state.tables.sdk_meta = {columns = {'part', 'version'}, rows = {{part = 'peer', version = 1}}, seq = 1}
+  s.sql.state.tables.sdk_peer_outbox = {columns = cols, seq = 1, rows = {{n = 1, id = 'x', hub = 'mac', key = 'k', body = '{"a":1}', digest = 'd', state = 'queued', created = os.time()}}}
+  s.sql.state.tables.sdk_peer_seen = {columns = {'id', 'from_hub', 'key', 'digest', 'refused', 'message', 'at'}, rows = {}, seq = 0}
+  s:start() -- the registration; it arms the drain
+  s:tick() -- the drain
+  expect(s.sql.state.tables.sdk_peer_outbox.rows[1].state, table.concat(s.printed, '\n')).to_be('sent')
+  expect(s.sql.state.tables.sdk_peer_outbox.rows[1].hub_seq).to_be(9)
 end)
 
 test('app.notice in a render fails clearly and opens no transaction (a render only reads)', function()

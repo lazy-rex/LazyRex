@@ -16,6 +16,11 @@ local S = {app = nil, frame = nil}
 
 local MAX_REQUEST = 64 * 1024 -- Rex refuses a larger client.perform request (observed, docs/sql.md section 6).
 local TWO53 = 9007199254740992
+-- The SDK directory: peer.lua is loaded from it (app.peer).
+local SDK_DIR = debug.getinfo(1, 'S').source:match('^@?(.*)/[^/]*$')
+-- The SDK's own tables (peer.lua). The names that start with sdk_ are the SDK's: a plugin migration
+-- cannot make one (hub lead, lead-sdkfed3 a).
+local SDK_TABLES = {sdk_meta = true, sdk_peer_outbox = true, sdk_peer_seen = true}
 
 -- fail raises a structured error. The SDK replies with its code and message.
 function M.fail(code, message) error({code = code, message = message or code}, 0) end
@@ -449,6 +454,8 @@ local function run(spec, fn, ...)
       pcall(hub, 'hub.sql.rollback', {tx = f.token})
       error(cerr, 0)
     end
+    -- A committed peer.send row: the outbox drains after this call (peer.lua).
+    if f.peer_queued and S.peer then S.peer.committed() end
     return out.result
   end
   return result
@@ -839,20 +846,24 @@ function M.plugin(name)
   -- app.on(event, fn): a Rex event (fn(ev, ctx): ctx is the Rex event context, with block_id and
   -- session_id) or the hub calls hub.changed, hub.prompt and view.seen (fn(args)). An error in a hub
   -- call listener reaches the hub as the error reply (the hub then calls again).
-  -- peer.receive (federation, lead-fed-sdk3) has one listener, fn(args) with {from_hub, key, body}.
-  -- Its return value is the reply; {refused = "<code>", message = "<text>"} is a final refusal.
+  -- Federation is app.peer, not app.on (docs/plugin-sdk.md, "Federation").
   function app.on(event, fn, opts)
-    if event == 'peer.receive' then
-      if listeners[event] then error('app.on("peer.receive") takes one listener', 2) end
-      listeners[event] = {{fn = fn, opts = opts or {}}}
-      return
-    end
+    if event == 'peer.receive' then error('app.on("peer.receive") is gone: use app.peer{receive = fn} (docs/plugin-sdk.md, "Federation")', 2) end
     if event == 'hub.changed' or event == 'hub.prompt' or event == 'view.seen' then
       listeners[event] = listeners[event] or {}
       table.insert(listeners[event], {fn = fn, opts = opts or {}})
       return
     end
     rex.on(event, function(ctx, ev) callback(event, fn, opts, ev, ctx) end)
+  end
+  -- app.peer{receive = fn, failed = fn}: federation (peer.lua; docs/plugin-sdk.md, "Federation").
+  -- Once, at load. It answers the peer API: send, retry, refuse, status and the address helpers.
+  function app.peer(spec)
+    if S.peer then error('app.peer is called once', 2) end
+    local chunk = assert(loadfile(SDK_DIR .. '/peer.lua'))
+    setfenv(chunk, getfenv(1))
+    S.peer = chunk()({db = db, run = run, frame = frame, hub = hub, fail = fail, part = part, digest = digest, normalize = normalize, concat = concat, MAX_REQUEST = MAX_REQUEST})
+    return S.peer.declare(spec)
   end
   function app.after(seconds, fn, opts) rex.after(seconds, function() callback('timer', fn, opts) end) end
   function app.every(seconds, fn, opts)
@@ -1168,22 +1179,7 @@ function M.plugin(name)
       for _, l in ipairs(listeners[ev.action] or {}) do run({tx = l.opts.tx ~= false}, l.fn, a) end
       return {}
     end
-    if ev.action == 'peer.receive' and listeners['peer.receive'] then
-      -- The check runs before the commit: a refusal that the hub cannot read fails and rolls back.
-      local l = listeners['peer.receive'][1]
-      return run({tx = l.opts.tx ~= false}, function(args)
-        local r = l.fn(args)
-        if r == nil then return {} end
-        if type(r) ~= 'table' then fail('internal', 'peer.receive must return a table or nil') end
-        if r.refused ~= nil and (type(r.refused) ~= 'string' or r.refused == '') then
-          fail('internal', 'peer.receive refused must be a code string, not ' .. type(r.refused))
-        end
-        if r.refused ~= nil and r.message ~= nil and type(r.message) ~= 'string' then
-          fail('internal', 'peer.receive message must be a string, not ' .. type(r.message))
-        end
-        return r
-      end, a)
-    end
+    if ev.action == 'peer.receive' and S.peer and S.peer.receives() then return S.peer.receive(a) end
     if a.user ~= 'user' then fail('refused', 'Unknown user') end
     if actions[ev.action] then return call_action(actions[ev.action], user_ctx(a), a.args or {}) end -- user_only
     if ev.action == 'view.seen' then
@@ -1220,12 +1216,25 @@ function M.plugin(name)
 
   -- register runs after the main file.
   -- user_objects answers whether the database has a schema object that is not SQLite's or the hub's
-  -- (the names that start with lazyrex_, any case: docs/sql.md).
+  -- (the names that start with lazyrex_, any case: docs/sql.md) or the SDK's (sdk_).
+  local function schema_names()
+    local out = {}
+    for _, row in ipairs(db.query("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite!_%' ESCAPE '!'")) do out[#out + 1] = tostring(row.name) end
+    return out
+  end
   local function user_objects()
-    for _, row in ipairs(db.query("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite!_%' ESCAPE '!'")) do
-      if tostring(row.name):lower():sub(1, 8) ~= 'lazyrex_' then return true end
+    for _, n in ipairs(schema_names()) do
+      local low = n:lower()
+      if low:sub(1, 8) ~= 'lazyrex_' and low:sub(1, 4) ~= 'sdk_' then return true end
     end
     return false
+  end
+  -- foreign_sdk_object answers the name of an sdk_ object that is not the SDK's, or nil.
+  local function foreign_sdk_object()
+    for _, n in ipairs(schema_names()) do
+      if n:lower():sub(1, 4) == 'sdk_' and not SDK_TABLES[n] then return n end
+    end
+    return nil
   end
   local function migrate()
     if #migrations == 0 then return end
@@ -1246,6 +1255,8 @@ function M.plugin(name)
         local step = migrations[v - migrate_base + 1]
         if type(step) == 'function' then step(db) else db.exec(step) end
       end
+      local foreign = have < last and foreign_sdk_object()
+      if foreign then M.fail('internal', 'A plugin migration made ' .. foreign .. ': the names that start with sdk_ are the SDK\'s (docs/plugin-sdk.md, "Federation")') end
       if have < last then db.exec('PRAGMA user_version = ' .. last) end
     end)
   end
@@ -1264,7 +1275,7 @@ function M.plugin(name)
     -- hub.prompt: only a plugin that listens (the hub sends it to a plugin with the prompts grant).
     if listeners['hub.prompt'] then hub_call('hub.prompt') end
     -- peer.receive: only a plugin that listens (federation: the hub delivers envelopes of peer hubs).
-    if listeners['peer.receive'] then hub_call('peer.receive') end
+    if S.peer and S.peer.receives() then hub_call('peer.receive') end
     -- Each view.* handler name of an app.view (for example view.open, view.rename).
     for _, v in ipairs(views) do
       local names = {}
@@ -1305,9 +1316,12 @@ function M.plugin(name)
       fail('internal', 'The hub.register reply has no valid limits: inline_max is over max_total' .. hint)
     end
     raw.call('client.set_label', {label = 'lazyrex-plugin:' .. name})
+    -- The SDK tables come before the plugin migrations; the drain starts after the start functions.
+    if S.peer then S.peer.setup() end
     migrate()
     for _, s in ipairs(starts) do if not s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
     for _, s in ipairs(starts) do if s.opts.after_register then run({tx = s.opts.tx ~= false}, s.fn) end end
+    if S.peer then S.peer.arm(0) end
   end
   rex.after(0, function()
     local ok, err = pcall(S.register)

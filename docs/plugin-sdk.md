@@ -342,7 +342,8 @@ errors and the transaction rules above.
 | `app.hub(action, args)`, `app.rex(method, args)` | A raw hub or Rex call. An error raises `{code, message}`; only a lost call is `unavailable`. In a render, a `hub.sql.*` call through `app.hub` carries the render ID, as `app.db` calls do. |
 | `app.view(route, handlers, opts)` | A raw view: `render(ctx, args)` answers the whole tree; `['view.action']`, `['view.send']`, ... get `(ctx, args)`. The keymap lists each `view.*` name of the table (for example `view.open`). A route that ends with `*` is a prefix. opts: `tx = false`, `store = false`, as for actions. |
 | `app.command(spec)` | An extra palette command (`hub.register` commands). |
-| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. `app.on('peer.receive', fn)` (one listener) gets an envelope of a peer hub, `{from_hub, key, body}` (docs/hub.md "Peer hubs"): its return value is the reply, and `{refused = '<code>', message = '<text>'}` is a final refusal. An error rolls back, and the hub delivers the envelope again. The same key can come again, so the listener must accept a repeat. Each run is one transaction. Start code runs after `hub.register` and the migrations; `{after_register = true}` runs it after the other start code. |
+| `app.on(event, fn)`, `app.after(s, fn)`, `app.every(s, fn)`, `app.start(fn, opts)` | A Rex event (or the hub calls `hub.changed`, `hub.prompt`, `view.seen`: `fn(args)`; an error goes back to the hub, which calls again), a timer, start code. Federation is `app.peer` (below), not `app.on`. Start code runs after `hub.register` and the migrations; `{after_register = true}` runs it after the other start code. |
+| `app.peer{receive = fn, failed = fn}` | Federation: send to and receive from peer hubs ("Federation" below). |
 | `app.db.transaction(fn)`, `app.db.batch(statements)` | Several statements all or nothing, for `{tx = false}` code. |
 | `app.db.first(sql, ...)` | The first row, or nil. It reads one reply only, so a big result does not fail. |
 | `app.notice(agent, pending, opts)`, `app.notice_read(agent)` | Wake an agent at the commit. `{once = true}` (with `pending = true`) nudges again only after the agent read. `app.notice_read` records that the agent read. Both need a hub with notice v2 (release 4): an older hub ignores `once` and refuses a read. |
@@ -377,6 +378,128 @@ and the SDK directory in `package.path`, so `require('lazyrex')` and sibling fil
 
 SDK tests: `rex -S unix:///tmp/rexlab-<team>-<you>/rex.sock --autostart=false do <hub>/sdk/lua/tests/run.lua`
 (a lab server; no hub). `pattern=<Lua pattern>` runs some tests.
+
+## Federation
+
+A plugin on one hub sends to the same plugin on a peer hub (docs/hub.md "Peer hubs"). The SDK
+keeps the outbox, the retries and the dedupe, so a plugin does not build them again. The code is
+`sdk/lua/peer.lua`.
+
+```lua
+local peer = app.peer{
+  receive = function(msg) -- {from_hub, key, body}: body is the sender's table
+    if not known(msg.body.to) then return peer.refuse('unknown_recipient', 'no such agent here') end
+    app.db.exec('INSERT INTO inbox (id, text) VALUES (?, ?)', peer.received_id(msg.from_hub, msg.key), msg.body.text)
+  end,
+  failed = function(row) -- {hub, key, code, message, at}: a row that can never go
+    app.db.exec('UPDATE sent SET failed = ? WHERE id = ?', row.code, row.key)
+  end,
+}
+app.action('notes.send', {to = 'string', text = 'string'}, function(ctx, a)
+  local id = 'note/' .. ctx.key
+  local remote, hub = peer.split(a.to)
+  if hub then peer.send(hub, id, {to = remote, text = a.text}) end
+  return {id = id}
+end)
+```
+
+Call `app.peer` once, at load. Both fields are optional. A plugin without `app.peer` gets no SDK
+tables and no `peer.receive`.
+
+### Send
+
+`peer.send(hub, key, body)` stages a row in the caller's transaction. The commit of that
+transaction makes it durable; a rollback leaves no row and sends nothing. It answers
+`{key, state}`: `queued` for a new row, or the state of the existing row (`sent` with `hub_seq`,
+or `failed` with `code` and `message`).
+
+- It runs only in a write transaction: an action, a view handler, a callback, or
+  `app.db.transaction`.
+- `hub` is a peer name (`[a-z0-9][a-z0-9-]`, at most 63 bytes). The SDK does not check the hub
+  config: an unknown peer fails the row later (`unknown_hub`).
+- `key` is 1 to 512 bytes. Use the sender's own ID of the message. One key is for one body for
+  ever: the same hub, key and body is the same row (a no-op); another body is
+  `operation_conflict` at the call. The same key to another hub is another row.
+- `body` is a Lua table (a JSON object). The SDK encodes it once, with the object members sorted,
+  so two equal tables give the same text, and each retry sends the same bytes. `false` stays
+  `false`; a nil field is absent. A table with the keys 1 to n is an array; an empty table is an
+  object. Strings must be valid UTF-8.
+- Size, checked at the call (`too_large`): the hub limit is 65536 bytes of Go's `json.Marshal` of
+  the body text (docs/hub.md "Size"). The row insert must also fit one Rex request (64 KiB): the
+  body text, the hub and the key as Rex encodes them (the hub and the key twice), plus 1024 bytes,
+  at most 65536. Rex encodes a string as Go does, so this second rule is the tighter one. The hub
+  can still answer `too_large` at the drain when the envelope does not fit one pull reply; that is
+  final.
+
+After the commit, and after the reply to the caller, the SDK drains the outbox:
+
+- One `hub.peer.send` at a time per peer, in row order. The hub assigns its seq in that order, and
+  the receiver delivers in seq order. So delivery is in send order per peer, end to end, except a
+  row that ends final: it is dropped, and the later rows go on. A plugin needs its own sequence in
+  the body only to detect such a gap.
+- Final answers: `operation_conflict`, `not_plugin`, `unknown_hub`, `too_large`, `refused`. The row
+  becomes `failed` (it keeps its text, code and message), and `failed(row)` runs in the same
+  transaction. An error in `failed` is logged, and the row becomes `failed` without it.
+  `peer.retry(hub, key)` makes a failed row `queued` again with the same text (for example after
+  a fix of the hub config).
+- Any other error, also a timeout (the outcome is unknown), stops that peer and keeps the row. The
+  next try is 2 s later, then 4, 8 and up to 60 s; a success resets the wait. The other peers go
+  on. A retry sends the same key and the same text, and the hub answers the first seq, so nothing
+  goes twice.
+- The drain also runs at start (rows of an earlier run), and on a timer only while a row waits.
+- `sent` means that this hub took the row: the hub ack is hub to hub. Nothing proves that the
+  remote plugin ran. A receiver without the plugin, or with the plugin stopped, drops the envelope
+  with a log line, and the sender sees no error. A plugin that needs proof sends its own reply.
+
+### Receive
+
+`receive(msg)` gets `{from_hub, key, body}`; `body` is the decoded table.
+
+- The listener and the SDK's dedupe row commit in one transaction. So the listener's database
+  effects happen once for each `(from_hub, key)`. A repeat (the hub gives an envelope again after
+  a lost reply or a restart) gets the stored answer, and the listener does not run. The same key
+  with another body is refused `operation_conflict`.
+- Once means committed database effects. A listener that raises can run again; a hub call or a
+  Rex call in it is not rolled back.
+- Return nil or a table to accept. Return `peer.refuse(code, message)` for a permanent problem: the
+  refusal is final, the listener's writes roll back, and a repeat gets the same refusal.
+- An error rolls back the listener and its dedupe row, and the hub gives the envelope again. Use an
+  error only for a passing problem (for example a hub call that timed out). The hub retries an
+  envelope for at most 5 minutes per hub process, then logs it and moves on. While it retries,
+  every later envelope from that hub waits, also for other plugins. The SDK logs each listener
+  error and each listener run over 2 s.
+- A hub call in the listener is allowed (for example `hub.agents.resolve`). Refuse only on a
+  definite answer; raise on a passing one.
+- A body that is not a JSON object is refused `invalid_envelope` before the listener.
+- `from_hub` is this hub's own config name of the peer that it pulled from. The peer check is a
+  name check, not authentication (docs/hub.md "Trust limit"): it is not proof of the sender. A
+  hub name inside the body is data, not a sender.
+
+### Addresses and status
+
+- `peer.split(id)` answers `local_id, hub` for `<id>@<hub>`, or nil for a local ID.
+  `peer.join(id, hub)` answers `<id>@<hub>`. `peer.sender(msg, id)` answers `<id>@<msg.from_hub>`.
+  The hub resolves `<id>@<this hub>` to the local ID, so a stored ID with `@` is always remote.
+- `peer.received_id(from_hub, id)` answers `peer/<len:hub><len:id>` (each part is
+  `<byte length>:<value>`): a local ID for a received message that never matches a local one.
+  `peer.origin_id(local_id, hub)` answers the origin ID back, or nil (for a `reply_to`).
+- `peer.status()` answers `{peers = {[hub] = {queued, failed, oldest_queued_age_s, last_error,
+  next_try_s, last_failed}}}` for the rows that this hub has not taken (`queued`) and the failed
+  rows. `last_error` is the last passing error of this process. The hub's `hub.peer.status` is
+  the second queue: the envelopes that the hub took and the peer has not acked yet.
+
+### Storage
+
+The SDK tables are `sdk_meta`, `sdk_peer_outbox` and `sdk_peer_seen` in the plugin database. The
+names that start with `sdk_` are the SDK's: a plugin migration that makes one fails the start. The
+SDK makes its tables before the plugin migrations, and the base-step check does not count them.
+`sdk_meta` part `peer` has the version (1); a newer version fails the start ("The database has SDK
+peer schema N; this SDK knows M. Update the plugin or delete its database.").
+
+At start, the SDK deletes sent rows and seen rows older than 30 days; queued and failed rows stay.
+After that, the same key and body to the same peer is a success at the hub (the hub keeps every
+key while its hub.db lives), and another body is `operation_conflict`. If the hub.db is deleted,
+the hub forgets its keys.
 
 ## More
 

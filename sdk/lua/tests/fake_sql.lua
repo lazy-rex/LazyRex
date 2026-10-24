@@ -36,21 +36,23 @@ return function()
     if up:match('^PRAGMA USER_VERSION$') then return {columns = {'user_version'}, rows = {{db.user_version}}, complete = true} end
     local v = up:match('^PRAGMA USER_VERSION = (%d+)$')
     if v then db.user_version = tonumber(v); return {changes = 0, id = 0} end
-    local cname, cols = sql:match('^CREATE TABLE (%w+) %((.*)%)$')
+    local cname, cols = sql:match('^CREATE TABLE ([%w_]+) %((.*)%)$')
     if cname then
       if db.tables[cname] then return err('sql_error', 'SQLITE_ERROR: table ' .. cname .. ' already exists') end
       local t = {columns = {}, rows = {}, seq = 0}
-      for def in (cols .. ','):gmatch('%s*([^,]+),') do t.columns[#t.columns + 1] = def:match('^(%w+)') end
+      for def in (cols .. ','):gmatch('%s*([^,]+),') do t.columns[#t.columns + 1] = def:match('^([%w_]+)') end
       db.tables[cname] = t
       return {changes = 0, id = 0}
     end
-    local tname, icols = sql:match('^INSERT INTO (%w+) %(([^)]*)%) VALUES')
+    local tname, icols = sql:match('^INSERT INTO ([%w_]+) %(([^)]*)%) VALUES')
     if tname then
       local t = db.tables[tname]
       if not t then return err('sql_error', 'SQLITE_ERROR: no such table: ' .. tname) end
       t.seq = t.seq + 1
       local row = {id = t.seq, done = 0}
-      for c in icols:gmatch('%w+') do row[c] = nextp() end
+      for c in icols:gmatch('[%w_]+') do row[c] = nextp() end
+      -- n INTEGER PRIMARY KEY: SQLite gives the row number when the insert names no n.
+      for _, c in ipairs(t.columns) do if c == 'n' and row.n == nil then row.n = t.seq end end
       if row.text == nil and tname == 'todos' then return err('sql_error', 'SQLITE_CONSTRAINT_NOTNULL: NOT NULL constraint failed: todos.text') end
       t.rows[#t.rows + 1] = row
       return {changes = 1, id = t.seq}
@@ -62,13 +64,13 @@ return function()
       table.sort(rows, function(a, b) return a[1] < b[1] end)
       return {columns = {'name'}, rows = rows, complete = true}
     end
-    local sel, from = sql:match('^SELECT (.-) FROM (%w+)')
+    local sel, from = sql:match('^SELECT (.-) FROM ([%w_]+)')
     if sel then
       local t = db.tables[from]
       if not t then return err('sql_error', 'SQLITE_ERROR: no such table: ' .. from) end
       local names = {}
       if sel == '*' then names = copy(t.columns) else for c in sel:gmatch('[^,%s]+') do names[#names + 1] = c end end
-      local where = sql:match('WHERE (%w+) = %?')
+      local where = sql:match('WHERE ([%w_]+) = %?')
       local want = where and nextp()
       local out = {}
       for _, row in ipairs(t.rows) do
@@ -80,27 +82,36 @@ return function()
       end
       return {columns = names, rows = out, complete = true}
     end
-    local utab, set, ucol = sql:match('^UPDATE (%w+) SET (.-) WHERE (%w+) = %?$')
+    local utab, set, ucol = sql:match('^UPDATE ([%w_]+) SET (.-) WHERE ([%w_]+) = %?$')
     if utab then
       local t = db.tables[utab]
       if not t then return err('sql_error', 'SQLITE_ERROR: no such table: ' .. utab) end
-      local col, expr = set:match('^(%w+) = (.*)$')
-      local p = expr == '?' and nextp() or nil
+      -- SET col = expr, or a list of col = ? (the SDK's own tables).
+      local sets = {}
+      for col, expr in (set .. ','):gmatch('%s*([%w_]+) = ([^,]+),') do sets[#sets + 1] = {col = col, expr = trim(expr)} end
+      for _, s in ipairs(sets) do if s.expr == '?' then s.p = nextp() end end
       local want = nextp()
       local changes = 0
       for _, row in ipairs(t.rows) do
         if row[ucol] == want then
           changes = changes + 1
-          if expr == '1 - ' .. col then row[col] = 1 - row[col] elseif expr == '?' then row[col] = p else row[col] = tonumber(expr) or expr end
+          for _, s in ipairs(sets) do
+            local col, expr = s.col, s.expr
+            if expr == '1 - ' .. col then row[col] = 1 - row[col] elseif expr == '?' then row[col] = s.p else row[col] = tonumber(expr) or expr end
+          end
         end
       end
       return {changes = changes, id = 0}
     end
-    local dtab, dcol = sql:match('^DELETE FROM (%w+) WHERE (%w+) = %?$')
+    -- DELETE ... WHERE col = ? or col < ? (a NULL is never less: SQLite).
+    local dtab, dcol, dop = sql:match('^DELETE FROM ([%w_]+) WHERE ([%w_]+) ([=<]) %?$')
     if dtab then
       local t = db.tables[dtab]
       local want, keep, changes = nextp(), {}, 0
-      for _, row in ipairs(t.rows) do if row[dcol] == want then changes = changes + 1 else keep[#keep + 1] = row end end
+      for _, row in ipairs(t.rows) do
+        local hit = (dop == '=' and row[dcol] == want) or (dop == '<' and row[dcol] ~= nil and row[dcol] < want)
+        if hit then changes = changes + 1 else keep[#keep + 1] = row end
+      end
       t.rows = keep
       return {changes = changes, id = 0}
     end
