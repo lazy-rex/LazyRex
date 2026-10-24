@@ -1394,7 +1394,10 @@ two clients"). So when more than one connected app shows the session, a palette 
 command or a restart form) opens its form or panel in a new tab of its own, without focus, with no
 source view, and without the delayed refocus. `select` names that tab, and the palette Lua selects
 it on the calling client only; the other device keeps its tab. With one app, the run opens the side
-slot of the window of `ctx.block_id`, as before. Test: `TestPaletteTwoAppsOwnTabLab`.
+slot of the window of `ctx.block_id`, as before. A panel in a tab of its own (`own_tab` in its
+form context) is not its tab's slot occupant: a form or panel that it opens goes beside it, and the
+panel stays. So the tab never ends with a child form whose close (Escape) would remove the tab and
+the panel's return with it. Tests: `TestPaletteTwoAppsOwnTabLab`, `TestOwnTabPanelKeepsItsTabLab`.
 Limits: a form that a view opens goes to the side slot of the source view's tab, the tab that the
 tapping device shows, with focus. No Rex signal tells which device tapped, so `hub.view.app_action`
 still refuses with `ambiguous_app`. A lost answer to the new tab's `session.new_window` leaves the

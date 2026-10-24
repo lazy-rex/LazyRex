@@ -126,10 +126,13 @@ func (h *Hub) slotRow(ctx context.Context, q querier, id string) (*slotRow, erro
 }
 
 // slotOccupant is the open (or opening) side view of a window, if any. New views of unresolved
-// replacements do not count: they are not known to exist.
+// replacements do not count: they are not known to exist. The panel of a tab of its own does not
+// count either (formContext.OwnTab): it stays when its tab's slot changes.
 func (h *Hub) slotOccupant(ctx context.Context, window string) (id, block, raw string, err error) {
 	err = h.db.QueryRowContext(ctx, `SELECT view_id, block_id, context FROM views
-		WHERE tab = ? AND status = 'open' AND json_extract(context, '$.window_id') = ? ORDER BY rowid DESC LIMIT 1`, formTab, window).Scan(&id, &block, &raw)
+		WHERE tab = ? AND status = 'open' AND json_extract(context, '$.window_id') = ?
+		AND NOT (COALESCE(json_extract(context, '$.own_tab'), 0) = 1 AND COALESCE(json_extract(context, '$.panel'), 0) = 1)
+		ORDER BY rowid DESC LIMIT 1`, formTab, window).Scan(&id, &block, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", "", nil
 	}

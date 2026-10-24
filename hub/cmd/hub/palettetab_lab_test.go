@@ -132,3 +132,59 @@ func TestPaletteTwoAppsOwnTabLab(t *testing.T) {
 		t.Fatalf("one app: %d windows, want no new tab", n)
 	}
 }
+
+// A panel in a tab of its own opens a form through the form effect's slot request, and the form
+// ends with Escape (its pane closes). The panel stays open beside the form, so the tab keeps a
+// pane and needs no return. On dada9d52 the form replaced the panel, and the form's close removed
+// the whole tab (codex-25's probe). Split and layer. Lab only: LAZYREX_LAB=1.
+func TestOwnTabPanelKeepsItsTabLab(t *testing.T) {
+	for _, mode := range []string{"split", "layer"} {
+		t.Run(mode, func(t *testing.T) {
+			h, r, sess, _ := panelsLabHub(t)
+			h.cfg.UISlot = mode
+			ctx := context.Background()
+			opened, err := h.openFormTab(ctx, "p", "/panels/a", "Panel", formContext{SessionID: sess, Panel: true})
+			if err != nil || opened["status"] != "opened" {
+				t.Fatalf("open the panel: %+v %v", opened, err)
+			}
+			panelID, window := opened["view_id"].(string), opened["window_id"].(string)
+			fc, ok := h.formOf(ctx, panelID)
+			if !ok || fc.WindowID != window {
+				t.Fatalf("the panel's context: %+v (ok %v), want window %s", fc, ok, window)
+			}
+			child, err := h.openSlot(ctx, slotRequest{ReplID: "own-tab-child", Plugin: "p", Route: "/forms/a", Ctx: childContext(fc, false), Focus: true})
+			if err != nil || child["status"] != "opened" {
+				t.Fatalf("open the form: %+v %v", child, err)
+			}
+			formID := child["view_id"].(string)
+			if h.viewBlock(panelID) == "" {
+				t.Fatal("the form's open closed the panel: the tab now ends with the form")
+			}
+			cc, _ := h.formOf(ctx, formID)
+			if err := h.closeForm(ctx, formID, "Escape"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.formEnded(ctx, formID, cc, false, ""); err != nil {
+				t.Fatal(err)
+			}
+			if h.viewBlock(panelID) == "" {
+				t.Fatal("after Escape the panel is closed")
+			}
+			var sv struct {
+				Windows []struct {
+					WindowID string `json:"window_id"`
+				} `json:"windows"`
+			}
+			if err := r.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv); err != nil {
+				t.Fatal(err)
+			}
+			alive := false
+			for _, w := range sv.Windows {
+				alive = alive || w.WindowID == window
+			}
+			if !alive {
+				t.Fatal("after Escape the panel's tab is gone")
+			}
+		})
+	}
+}

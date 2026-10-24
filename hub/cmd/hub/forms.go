@@ -83,6 +83,10 @@ type formContext struct {
 	// UnderBlock (ui_slot "layer") is the window's focused tiled block before the slot's first
 	// layer opened; a replacement keeps it. A closed form's return takes the focus only from it.
 	UnderBlock string `json:"under_block_id,omitempty"`
+	// OwnTab marks the first view of a tab of its own (openFormTab). Such a panel is not its
+	// tab's slot occupant (slotOccupant): a form that it opens goes beside it, so the tab never
+	// ends with a form whose close would remove it.
+	OwnTab bool `json:"own_tab,omitempty"`
 }
 
 func formsStart(ctx context.Context, db *DB) error {
@@ -568,6 +572,7 @@ func (h *Hub) openFormTab(ctx context.Context, plugin, route, title string, fc f
 		title = h.commandTitle(ctx, plugin, route)
 	}
 	v := &view{ID: randomID("view-form-"), Plugin: plugin, Tab: formTab, Route: route}
+	fc.OwnTab = true
 	b, _ := json.Marshal(fc)
 	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never')`,
 		v.ID, plugin, formTab, route, string(b), fc.SessionID); err != nil {
@@ -974,8 +979,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 			fc = formContext{SessionID: src.Session, WindowID: window, SourceViewID: viewID, SourceRoute: src.Route, SourceBlock: src.Block}
 			h.freezeSourcePwd(ctx, &fc)
 		}
-		sc := fc
-		sc.Panel, sc.Return = panel, nil
+		sc := childContext(fc, panel)
 		// The new view takes the source form's place. The source is still asked to release, so
 		// input typed after the submit is not lost.
 		req := slotRequest{ReplID: formEffectID(plugin, key), Plugin: target, Route: route, Ctx: sc, Focus: true, NextTitle: title}
@@ -1009,6 +1013,13 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 	}
 	h.notifyView(plugin, viewID)
 	return false
+}
+
+// childContext is the context of a form or panel that a view's action opens from fc.
+func childContext(fc formContext, panel bool) formContext {
+	sc := fc
+	sc.Panel, sc.Return, sc.OwnTab = panel, nil, false
+	return sc
 }
 
 // formEffectID is the view ID of the form that operation key opens.
