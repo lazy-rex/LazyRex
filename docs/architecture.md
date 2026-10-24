@@ -4,9 +4,6 @@
 > refer to the original research repository. In this repository, that code is at the root
 > (`hub/`, `view/`, `plugins/`, `tests/`), and each plugin has its own repository.
 
-
-Status: **proposed**. Spike 0 is done. Nothing below is built yet.
-
 ## One sentence
 
 Rex runs every process and draws every terminal. LazyRex is a Rex client that adds agents, plugins, MCP, messaging and a web client on top.
@@ -45,8 +42,6 @@ browser (restty) ---- rex.control.v1 / rex.data.terminal.v1 (direct, or via gate
 - Optional: a small, stable Rex block plugin that forwards palette actions to the hub. Rex finds block plugins only at server start, so individual LazyRex plugins must NOT be Rex block plugins.
 
 ## Hub restart and plugin reattach
-
-Proposed by Claude and Codex, 2026-10-15. Not tested.
 
 **State.** The hub stores, for each plugin instance: an instance ID, the package identity, the intended state (running or stopped), and the Rex session and block IDs. **Spawn.** The hub saves a spawn intent with a stable instance ID **before** it calls Rex. Then it creates the block and records the block ID. If the hub stops between the two steps, the intent tells it that a block may exist. The hub also labels the block `lazyrex:<kind>:<id>`. A label is only a discovery hint, not proof of identity: any client can copy or change it.
 
@@ -96,7 +91,7 @@ This is attribution, not security: all agents run as the same uid. To stop agent
 
 ## Web client
 
-Proposed (2026-10-15), after a lab test in Chrome. See "Browser access" in `rex-protocol.md`.
+See "Browser access" in `rex-protocol.md`.
 
 Two access options. Neither is chosen.
 
@@ -111,9 +106,9 @@ In both options:
 - `session.open_on_web` apparently targets Rex's hosted client (`rex.superlogical.com`). Its exact behavior and transport are not observed (the site is behind SSO).
 - Fallback: a protocol-aware relay, as first proposed. A ticket works only for the principal that requested it, so a relay on a different principal must open its own data channel.
 
-## UI framework (proposed, 2026-10-16)
+## UI framework
 
-The maintainer's direction, with design review by Claude and Codex. Not built. See the proposed decision "the LazyRex UI is TUIs in Rex, and the hub drives the app's view" and `rex-protocol.md`, "Driving the Rex app". Check the Rex agent guide (`rex __internal skill`) for documented layout and app features.
+The maintainer's direction. See the proposed decision "the LazyRex UI is TUIs in Rex, and the hub drives the app's view" and `rex-protocol.md`, "Driving the Rex app". Check the Rex agent guide (`rex __internal skill`) for documented layout and app features.
 
 ### Model: Rex is the navigation, TUIs are the interaction
 
@@ -167,55 +162,35 @@ The maintainer's direction, with design review by Claude and Codex. Not built. S
 - A registered renderer acts in the user's context (`user`). The hub binds it to that context and checks which actions it may call. Plugin-generated actions and agent calls keep their own origin.
 - This is attribution, not security: all processes run as the same uid, and another Rex client can inject terminal input.
 
-### First proof (lab)
-
-The messaging home and two thread tabs. Checks: duplicate open, native close, renderer crash, hub restart during a spawn and during a send, draft restore, continuous layout drift, two apps with different sizes.
-
 ## Dependencies
 
 LazyRex is a new Rex platform, designed from first principles.
 
 - **Used as a library:** restty (`~/Projects/restty`) for the browser terminal. Spike 0 shows that it imports Rex snapshots.
 
-## Rex ownership audit — 2026-10-16
+## Rex ownership
 
-This audit compares the spike 3 source with the saved Rex `0.0.1792158932-g88fd41` API reference.
-It does not authorize a subsystem replacement. The related proposed Rex requests are in `roadmap.md`. Recommendations below are proposed.
 Rex's [server API guide](https://www.superlogical.com/rex/docs/automate/server-api.md) explains how to inspect the current server contract.
-The exact schemas used here are in `docs/reference/rex-0.0.1792158932-g88fd41/llms.txt`.
-
-| Area | Rex owns | LazyRex adds | Recommendation |
-| --- | --- | --- | --- |
-| Events | Session events, block events, subscriptions, and Lua event handlers. | `events.jsonl` records hub decisions and lab fault markers. `eventLog.emit` also writes the same record to the standard log. | Keep diagnostic evidence separate from event delivery. Do not add a hub event socket. Use Rex events for live delivery after the emission path is verified. Decide whether a separate durable diagnostic file is still needed. |
-| Program status | Terminal status records and `program_status_changed` / `program_status_removed`. | The hub caches the configured record's state and decides whether a message can wake the agent. | Keep. The hub reads Rex's status. It does not produce a competing status protocol. The readiness rule belongs to messaging. |
-| Agent binding | Peer PID, terminal process information, labels, and block ownership events. | The hub proves PID ancestry and binds the conversation identity that a hook reports to its pane. | Keep identity checks. A label is not an authenticated agent name. `session.own_block` tracks a connected client's block claim, not the terminal process's agent identity. Ask Rex for a direct peer-PID-to-block lookup to replace repeated pane scans. |
-| Detached panes and restoration | `session.detach_block`, `session.move_block`, splits, floating layers, focus, and zoom. | The hub records the workspace it hides. It creates temporary anchor panes because restoration needs an existing anchor. | Keep the current recovery records. Ask Rex for a new window that accepts existing detached blocks, or an atomic layout operation. Replace the anchor workaround when that primitive exists. |
-| Keyboard actions | `client.keymap`, `client.set_script`, account configuration, and keymap change events. | The renderer handles form editing, focus, and local shortcuts in its terminal. Hub and renderer actions are already declared through `client.keymap`. | Keep local editing in the renderer. Use native Rex actions for future workspace shortcuts. `client.set_script` affects the caller's connection; it does not install keys in another application client. |
-| Agent tool transport | `client.inspect` exposes action schemas. `client.perform` invokes typed actions. `rex -C … do` invokes the same actions. | Agents call these native actions with `rex -C … do`. No adapter sits between them. | Keep business rules in hub or plugin actions. |
-| Worktrees and directories | Rex starts terminal processes with `options.cwd` and reports live terminal process directories. | Git owns worktrees. The plugin owns naming and retry records. The hub prevents new workers during removal and checks live terminal directories. | Keep this split. The plugin uses Rex blocks for long Git mutations. Do not add a separate PID or process-outcome journal. Ask Rex for idempotent resource creation to reduce unknown spawn handling. |
+The exact schemas are in `docs/reference/rex-0.0.1792158932-g88fd41/llms.txt`.
 
 The event log is not a replay log for the hub's application state. SQLite stores operation and recovery state.
-The source reads `events.jsonl` in lab tooling. Production behavior emits events but does not recover state by replaying that file.
-Removing the file is a separate diagnostic decision. Rex's live stream alone does not establish durable historical retention.
+Lab tooling reads `events.jsonl`. Production behavior emits events but does not recover state by replaying that file.
 
 The status source is `com.superlogical.terminal.program_status`, as described by Rex's
 [program status protocol](https://www.superlogical.com/rex/docs/build/program-status.md).
 The hub subscribes to changes and reads the current record when an agent joins or rebinds.
 The hub treats a removed record as unknown readiness. This cache preserves the application's wake policy.
 
-The saved `session.own_block` contract says that ownership moves between connected client candidates.
+The `session.own_block` contract (Rex `0.0.1792158932-g88fd41` reference) says that ownership moves between connected client candidates.
 An ownership change can refresh a client view. It cannot prove which agent owns a terminal process.
 The hub's identity scan therefore cannot be replaced with `block_owner_changed` alone.
 
-The saved `session.new_window` schema creates block templates. It does not accept an existing block ID as a layout leaf.
-The saved `session.move_block` operation requires an anchor block.
-No atomic layout restoration method appears in this reference. This is a documentation finding, not a claim about future Rex builds.
+In that reference, the `session.new_window` schema creates block templates. It does not accept an existing block ID as a layout leaf.
+`session.move_block` requires an anchor block.
+No atomic layout restoration method appears in that reference.
 
 Rex documents action and keyboard ownership in its
 [custom action guide](https://www.superlogical.com/rex/docs/customize/actions.md) and
 [keyboard shortcut guide](https://www.superlogical.com/rex/docs/customize/keyboard-shortcuts.md).
 The renderer's local editor state is outside Rex's workspace keymap.
-Changing a user's application keymap requires a separate scoped change; this audit does not install one.
-
-Source locations: `hub/cmd/hub/events.go`, `agents.go`, `main.go`, `ui.go`, `appmodestate.go`, and `workers.go`;
-`hub/cmd/mcp/main.go`; and `view/client.go` and `view/model.go`, all beneath `spikes/03-ui-framework`.
+`client.set_script` affects the caller's connection; it does not install keys in another application client.
