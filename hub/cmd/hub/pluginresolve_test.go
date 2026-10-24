@@ -137,10 +137,10 @@ func TestResolveLockFileErrors(t *testing.T) {
 			t.Errorf("%s: the local entry: %v", what, c.entries[0].err)
 		}
 	}
-	os.WriteFile(lockFile, []byte(`{"version":1,"plugins":{`), 0o600)
+	os.WriteFile(lockFile, []byte(`{"version":2,"plugins":{`), 0o600)
 	check("malformed JSON", "the lock file "+lockFile+" is not valid: unexpected EOF; repair the file or restore it from a backup")
 	os.WriteFile(lockFile, []byte(`{"version":3,"plugins":{}}`), 0o600)
-	check("another version", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads versions 1 and 2); repair the file or restore it from a backup")
+	check("another version", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads version 2); repair the file or restore it from a backup")
 	os.Remove(lockFile)
 	if err := os.Mkdir(lockFile, 0o700); err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestResolveLockFileErrors(t *testing.T) {
 	check("a directory", "cannot read the lock file "+lockFile+": is a directory")
 	os.Remove(lockFile)
 	if os.Geteuid() != 0 {
-		os.WriteFile(lockFile, []byte(`{"version":1,"plugins":{}}`), 0o000)
+		os.WriteFile(lockFile, []byte(`{"version":2,"plugins":{}}`), 0o000)
 		check("no permission", "cannot read the lock file "+lockFile+": permission denied")
 	}
 }

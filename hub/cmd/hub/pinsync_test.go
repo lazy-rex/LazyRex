@@ -24,11 +24,11 @@ func testPin() pinEntry {
 func TestPinDocRoundTrip(t *testing.T) {
 	a, b := testPin(), testPin()
 	b.Source, b.Subdir, b.Ref, b.RefKind = "github:o/r/plugins/x@refs/tags/v1", "plugins/x", "refs/tags/v1", "tag"
-	one, err := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{a, b}})
+	one, err := encodePinDoc(&pinDoc{Version: pinDocVersion, Entries: []pinEntry{a, b}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, _ := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{b, a}})
+	two, _ := encodePinDoc(&pinDoc{Version: pinDocVersion, Entries: []pinEntry{b, a}})
 	if !bytes.Equal(one, two) {
 		t.Fatalf("the entry order changed the bytes:\n%s\n%s", one, two)
 	}
@@ -60,19 +60,19 @@ func TestPinDocRefused(t *testing.T) {
 	entry := func(f func(e *pinEntry)) string {
 		e := testPin()
 		f(&e)
-		b, _ := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{e}})
+		b, _ := encodePinDoc(&pinDoc{Version: pinDocVersion, Entries: []pinEntry{e}})
 		return string(b)
 	}
 	good := entry(func(*pinEntry) {})
 	for doc, want := range map[string]string{
 		`{"entries":[]}`:             "version is missing",
-		`{"version":3,"entries":[]}`: "pin document version 3 is not supported by this hub (it reads versions 1 and 2)",
+		`{"version":3,"entries":[]}`: "pin document version 3 is not supported by this hub (it reads version 2)",
 		// The pull identity of a hub before the identity was removed: an unknown field.
-		`{"version":1,"hub":"00112233445566778899aabbccddeeff","entries":[]}`: `unknown field "hub"`,
-		`{"version":1}`:                                                   "entries must be an array",
-		`{"version":1,"entries":null}`:                                    "entries must be an array",
-		`{"version":1,"entries":[],"x":1}`:                                `unknown field "x"`,
-		`{"version":1,"entries":[]} {}`:                                   "data after the object",
+		`{"version":2,"hub":"00112233445566778899aabbccddeeff","entries":[]}`: `unknown field "hub"`,
+		`{"version":2}`:                                                   "entries must be an array",
+		`{"version":2,"entries":null}`:                                    "entries must be an array",
+		`{"version":2,"entries":[],"x":1}`:                                `unknown field "x"`,
+		`{"version":2,"entries":[]} {}`:                                   "data after the object",
 		strings.Replace(good, `"digest"`, `"extra": 1, "digest"`, 1):      `entry 1: json: unknown field "extra"`,
 		entry(func(e *pinEntry) { e.Source, e.Owner = "/local/dir", "" }): "entry 1 (/local/dir): not a GitHub source",
 		entry(func(e *pinEntry) { e.Owner = "x" }):                        "owner does not match the source",
@@ -105,11 +105,11 @@ func TestPinDocRefused(t *testing.T) {
 
 // A document without entries is an empty array, also from a new pinDoc and after a decode.
 func TestPinDocEmpty(t *testing.T) {
-	b, err := encodePinDoc(&pinDoc{Version: 1})
+	b, err := encodePinDoc(&pinDoc{Version: pinDocVersion})
 	if err != nil || !strings.Contains(string(b), `"entries": []`) {
 		t.Fatalf("a new empty document: %s %v", b, err)
 	}
-	d, err := decodePinDoc([]byte(`{"version":1,"entries":[]}`))
+	d, err := decodePinDoc([]byte(`{"version":2,"entries":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestExportRefused(t *testing.T) {
 	env.config("loc")
 	os.Remove(filepath.Join(env.state, "plugins.json"))
 	os.WriteFile(lockFile, []byte(`{"version":3,"plugins":{}}`), 0o600)
-	check("malformed lock", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads versions 1 and 2); repair the file or restore it from a backup")
+	check("malformed lock", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads version 2); repair the file or restore it from a backup")
 }
 
 // failWriter fails each write.

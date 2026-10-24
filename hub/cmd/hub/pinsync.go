@@ -17,13 +17,10 @@ import (
 	"sort"
 )
 
-// pinDocVersion is the version of a pin document without a release tag, and pinDocVersionLatest
-// the version with one (section 6a). A document takes its version from its own content. Both ends are hubs of the user, which the user updates; another version is an error,
-// not a format to tolerate.
-const (
-	pinDocVersion       = 1
-	pinDocVersionLatest = 2
-)
+// pinDocVersion is the version of every pin document (the hub lead, lead-b5): the writer always
+// writes it, and the reader reads only it. Both ends are hubs of the user, which the user updates;
+// another version is an error, not a format to tolerate.
+const pinDocVersion = 2
 
 // pinDoc is a pin document: the pins of one lock, sorted by source.
 type pinDoc struct {
@@ -38,18 +35,12 @@ type pinEntry struct {
 }
 
 // encodePinDoc gives the bytes of a document: entries sorted by source, two-space indent, and a
-// final newline. The same pins give the same bytes. The version is
-// pinDocVersionLatest when an entry has a latest form, else pinDocVersion.
+// final newline. The same pins give the same bytes. The version is always pinDocVersion.
 func encodePinDoc(d *pinDoc) ([]byte, error) {
 	sorted := *d
 	sorted.Entries = append([]pinEntry{}, d.Entries...) // never null: an empty document has []
 	sort.Slice(sorted.Entries, func(i, j int) bool { return sorted.Entries[i].Source < sorted.Entries[j].Source })
 	sorted.Version = pinDocVersion
-	for _, e := range sorted.Entries {
-		if e.latestForm() {
-			sorted.Version = pinDocVersionLatest
-		}
-	}
 	b, err := json.MarshalIndent(&sorted, "", "  ")
 	if err != nil {
 		return nil, err
@@ -70,8 +61,8 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 	switch {
 	case top.Version == nil:
 		return nil, errors.New("version is missing")
-	case *top.Version != pinDocVersion && *top.Version != pinDocVersionLatest:
-		return nil, fmt.Errorf("pin document version %d is not supported by this hub (it reads versions %d and %d)", *top.Version, pinDocVersion, pinDocVersionLatest)
+	case *top.Version != pinDocVersion:
+		return nil, fmt.Errorf("pin document version %d is not supported by this hub (it reads version %d)", *top.Version, pinDocVersion)
 	}
 	var raws []json.RawMessage
 	if err := json.Unmarshal(top.Entries, &raws); err != nil || raws == nil {
@@ -90,9 +81,6 @@ func decodePinDoc(b []byte) (*pinDoc, error) {
 		seen[e.Source] = true
 		if err := e.check(); err != nil {
 			return nil, fmt.Errorf("entry %d (%s): %w", i+1, e.Source, err)
-		}
-		if d.Version == pinDocVersion && e.latestForm() {
-			return nil, fmt.Errorf("entry %d (%s): a latest entry needs pin document version %d", i+1, e.Source, pinDocVersionLatest)
 		}
 		d.Entries = append(d.Entries, e)
 	}

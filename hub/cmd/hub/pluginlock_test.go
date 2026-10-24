@@ -47,7 +47,7 @@ func TestLockPath(t *testing.T) {
 // A missing lock file is an empty lock (section 11: each GitHub entry is then "not installed").
 func TestReadLockMissing(t *testing.T) {
 	l, err := readLock(filepath.Join(t.TempDir(), "none", "hub.lock.json"))
-	if err != nil || l.Version != 1 || len(l.Plugins) != 0 {
+	if err != nil || l.Version != lockVersion || len(l.Plugins) != 0 {
 		t.Fatalf("got %+v, %v", l, err)
 	}
 }
@@ -57,19 +57,19 @@ func TestReadLockMissing(t *testing.T) {
 func TestReadLockInvalid(t *testing.T) {
 	entry := `{"name":"m","owner":"o","repo":"r","ref":"main","ref_kind":"branch","commit":"` + testCommit + `","digest":"d","dir":"x"}`
 	bad := map[string]string{
-		`{"version":1,"plugins":{}`:                                "unexpected EOF",
-		`{"version":1,"plugins":{}} {}`:                            "data after the object",
-		`{"version":1,"plugins":{},"extra":1}`:                     `unknown field "extra"`,
+		`{"version":2,"plugins":{}`:                                "unexpected EOF",
+		`{"version":2,"plugins":{}} {}`:                            "data after the object",
+		`{"version":2,"plugins":{},"extra":1}`:                     `unknown field "extra"`,
 		`{"plugins":{}}`:                                           "version is missing",
 		`{"version":3,"plugins":{}}`:                               "version 3 is not supported",
 		`{"version":"1","plugins":{}}`:                             "cannot unmarshal string",
-		`{"version":1}`:                                            "plugins must be an object",
-		`{"version":1,"plugins":null}`:                             "plugins must be an object",
-		`{"version":1,"plugins":[]}`:                               "plugins must be an object",
-		`{"version":1,"plugins":{"github:o/r@main":null}}`:         "the entry for github:o/r@main must be an object",
-		`{"version":1,"plugins":{"github:o/r@main":"x"}}`:          "the entry for github:o/r@main must be an object",
-		`{"version":1,"plugins":{"github:o/r@main":{"commit":7}}}`: "cannot unmarshal number",
-		`{"version":1,"plugins":{"github:o/r@main":` + strings.Replace(entry, `"dir":"x"`, `"dir":"x","more":1`, 1) + `}}`: `unknown field "more"`,
+		`{"version":2}`:                                            "plugins must be an object",
+		`{"version":2,"plugins":null}`:                             "plugins must be an object",
+		`{"version":2,"plugins":[]}`:                               "plugins must be an object",
+		`{"version":2,"plugins":{"github:o/r@main":null}}`:         "the entry for github:o/r@main must be an object",
+		`{"version":2,"plugins":{"github:o/r@main":"x"}}`:          "the entry for github:o/r@main must be an object",
+		`{"version":2,"plugins":{"github:o/r@main":{"commit":7}}}`: "cannot unmarshal number",
+		`{"version":2,"plugins":{"github:o/r@main":` + strings.Replace(entry, `"dir":"x"`, `"dir":"x","more":1`, 1) + `}}`: `unknown field "more"`,
 		`[]`: "cannot unmarshal array",
 		``:   "EOF",
 	}
@@ -99,7 +99,7 @@ func TestReadLockUnreadable(t *testing.T) {
 		t.Skip("root reads a 0000 file")
 	}
 	p := filepath.Join(t.TempDir(), "hub.lock.json")
-	if err := os.WriteFile(p, []byte(`{"version":1,"plugins":{}}`), 0o000); err != nil {
+	if err := os.WriteFile(p, []byte(`{"version":2,"plugins":{}}`), 0o000); err != nil {
 		t.Fatal(err)
 	}
 	_, err := readLock(p)
@@ -127,7 +127,7 @@ func TestLockDerivedFieldsMissing(t *testing.T) {
 			default:
 				fields[field] = nil // a JSON null in a string field is a missing value
 			}
-			body, _ := json.Marshal(map[string]any{"version": 1, "plugins": map[string]any{src: fields}})
+			body, _ := json.Marshal(map[string]any{"version": 2, "plugins": map[string]any{src: fields}})
 			l, err := decodeLock(body)
 			if err != nil {
 				t.Fatalf("%s %s: %v\n%s", field, mode, err, body)
@@ -230,7 +230,7 @@ func TestEncodeLockDeterministic(t *testing.T) {
 		t.Fatalf("round trip: %v\n%+v", err, got)
 	}
 	empty, _ := encodeLock(&pluginLock{})
-	if string(empty) != "{\n  \"version\": 1,\n  \"plugins\": {}\n}\n" {
+	if string(empty) != "{\n  \"version\": 2,\n  \"plugins\": {}\n}\n" {
 		t.Fatalf("empty lock: %q", empty)
 	}
 }

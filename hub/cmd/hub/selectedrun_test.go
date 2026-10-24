@@ -70,7 +70,7 @@ func p1Publish(t *testing.T, state, repo, subdir, name, commit string, tree map[
 func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]string) (*Hub, *fakeClock) {
 	t.Helper()
 	dir := cacheTemp(t)
-	lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{}}
+	lock := &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{}}
 	var entries, managed []string
 	names := make([]string, 0, len(github))
 	for n := range github {
@@ -369,7 +369,7 @@ func TestSelectedRunSubdir(t *testing.T) {
 		tree := p1Manifest("p")
 		tree = map[string]string{"p/lazyrex.json": tree["lazyrex.json"], "p/main.lua": tree["main.lua"], "lib/x.lua": "return 2\n"}
 		le := p1Publish(t, h.cfg.State, "home", "p", "p", p1A, tree)
-		writeTestLock(t, h, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{src: le}})
+		writeTestLock(t, h, &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{src: le}})
 		writeManaged(t, h.cfg.State, `{"plugins":[{"id":"p","source":"`+src+`"}]}`)
 		c, err := writeConfig(t, h.cfg.State, `[]`)
 		if err != nil {

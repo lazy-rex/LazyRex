@@ -110,12 +110,12 @@ The file is one JSON object; data after the object is refused.
 ## 3. Lock
 
 ```json
-{"version": 1, "plugins": {"<exact source string>": {
+{"version": 2, "plugins": {"<exact source string>": {
   "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "branch|tag|commit",
   "commit": "<40 hex>", "digest": "sha256:<hex>", "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
 ```
 
-A lock with a latest entry is version 2. Its other entries keep the form above.
+A latest entry also has `tag`:
 
 ```json
 {"version": 2, "plugins": {"github:<owner>/<repo>@latest": {
@@ -124,20 +124,17 @@ A lock with a latest entry is version 2. Its other entries keep the form above.
   "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
 ```
 
-- `version` follows the content of the file. A lock with a latest entry (`ref_kind` `latest`, or
-  a `tag` field) is version 2. Every other lock is version 1, with the bytes of a hub before
-  `@latest`: no `tag` field. When the last latest entry goes, the lock is version 1 again. A hub
-  reads versions 1 and 2. A version 1 lock with a latest form is refused: `the entry for <source>:
-  a latest entry needs version 2`. Another version: `version N is not supported (this hub reads
-  versions 1 and 2)`.
+- `version` is always 2 (the hub lead, lead-b5): the hub writes version 2, also for a lock with no
+  latest entry, and reads only version 2. Another version, also 1: `version N is not supported
+  (this hub reads version 2)`. A hub that finds a version 1 lock refuses every GitHub entry with
+  the lock text of section 11; move the file aside, and the hub installs each managed entry again.
 - `tag` is the release tag that `@latest` selected (section 5). Only a latest entry has it; it is
   absent, never empty or null, on every other entry.
 - The key is the source string exactly as the config writes it. A changed source string (for
   example `@main` to `@v2`) is a new key: the hub installs it. It is not an update of the old key.
 - `dir` is relative to `<state>/plugins`.
-- `subdir` is the subdir of the source, or "" without one. A version 1 lock entry without the
-  field decodes as "": the version stays 1. The same repository at two subdirs gives two keys and
-  two cache entries.
+- `subdir` is the subdir of the source, or "" without one. An entry without the field decodes as
+  "". The same repository at two subdirs gives two keys and two cache entries.
 
 **Agreement check.** The hub checks a lock entry before it uses it:
 
@@ -375,11 +372,11 @@ the hub, and a source name can name a private repository.
 **The pin document.**
 
 ```json
-{"version": 1, "entries": [{"source": "<exact source>",
+{"version": 2, "entries": [{"source": "<exact source>",
   "name": "", "owner": "", "repo": "", "subdir": "", "ref": "", "ref_kind": "", "commit": "", "digest": ""}]}
 ```
 
-A document with a latest entry is version 2. Its other entries keep the form above.
+A latest entry also has `tag`:
 
 ```json
 {"version": 2, "entries": [{"source": "github:<owner>/<repo>@latest",
@@ -387,10 +384,10 @@ A document with a latest entry is version 2. Its other entries keep the form abo
   "tag": "v1.2.0", "commit": "", "digest": ""}]}
 ```
 
-- `version` follows the content, as for the lock (section 3): 2 when an entry is a latest entry,
-  else 1, with no `tag` field. A hub reads 1 and 2. A version 1 document with a latest entry is
-  refused: `entry N (<source>): a latest entry needs pin document version 2`. Another version:
-  `pin document version N is not supported by this hub (it reads versions 1 and 2)`.
+- `version` is always 2, as for the lock (section 3). Another version, also 1: `pin document
+  version N is not supported by this hub (it reads version 2)`. So a receiver refuses the document
+  of a hub before this rule (version 1 without a latest entry) at the sync, with no file change,
+  until both hubs run it.
 - `tag`: only on a latest entry, and required there. Texts: `tag is missing`, `tag "<t>" is not a
   version tag vX.Y.Z`, `tag is set, but ref_kind is <kind>`.
 - The entries are sorted by source. The same pins give the same bytes. The document has no path,
@@ -720,7 +717,7 @@ U = Go unit test, L = Go lab test, H = Lua harness test.
 | A release tag: each form; the order (`v1.10.0` > `v1.9.0`, no length limit) | only `vX.Y.Z` without a leading zero; decimal order | U |
 | @latest resolution: higher tags to a tree or a blob; no release; a failed fetch or ls-remote; a tag that moves before the fetch | skipped and named; refused, no branch fallback; the resolution fails, no older release; refused | U |
 | The install of a latest source: first; no release; a lock entry with no tag | the highest release; refused; refused | U (`TestLatestInstall`, `TestLatestInstallNoRelease`, `TestLatestInstallRefusesMissingTag`) |
-| The lock and pin document versions | version 2 only with a latest form, else the bytes before `@latest`; a version 1 file with a latest form refused; back to version 1 when the last latest entry goes | U |
+| The lock and pin document versions | always version 2, also with no latest entry; a version 1 or 3 file refused with the version text | U (`TestLockVersion2`, `TestPinDocLatest`, `TestPinDocRefused`) |
 | A GitHub run with a local candidate; a local run with a GitHub candidate | `"commit": null` and the dir; the locked commit and the dir, with no top-level commit | U |
 | An install of a new entry; a missing cache; an update that moves a branch | the lock gets the entry; a new dir at the locked commit; a new commit in the lock | U (`TestCmdEnvInstallAndUpdate`), L (`TestPluginInstallCacheLab`) |
 | A suffix-only ref match; branch and tag; annotated tag through the real fetch path; invalid ref; 40-hex that is not a commit; unavailable commit | refused, or peeled as specified | U |

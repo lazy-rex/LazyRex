@@ -100,6 +100,10 @@ func TestPluginInstallFreshLab(t *testing.T) {
 	if lock.Plugins["github:lab/a@main"] == nil || lock.Plugins["github:lab/a@main"].Commit != ca || lock.Plugins["github:lab/b@main"] == nil || lock.Plugins["github:lab/b@main"].Commit != cb {
 		t.Fatalf("the lock: %+v", lock.Plugins)
 	}
+	// The hub writes version 2 also for a lock of branch entries only (the hub lead, lead-b5).
+	if b, err := os.ReadFile(lockPath(s.cfg, "")); err != nil || !strings.HasPrefix(string(b), "{\n  \"version\": 2,") || strings.Contains(string(b), `"tag"`) {
+		t.Errorf("the lock file: %v\n%s", err, b)
+	}
 }
 
 // b's install fails (its repository is offline): b's row reports "install failed: <op error>",

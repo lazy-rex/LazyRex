@@ -73,7 +73,7 @@ func lockFor(commit, rel, digest string) (*pluginLock, *configEntry) {
 	src := "github:lazy-rex/Messaging@main"
 	le := &lockEntry{lockPin: lockPin{Name: "messaging", Owner: "lazy-rex", Repo: "Messaging", Ref: "main", RefKind: "branch",
 		Commit: commit, Digest: digest}, Dir: rel}
-	return &pluginLock{Version: 1, Plugins: map[string]*lockEntry{src: le}}, &configEntry{Source: src, github: true, owner: "lazy-rex", repo: "Messaging", gitRef: "main"}
+	return &pluginLock{Version: lockVersion, Plugins: map[string]*lockEntry{src: le}}, &configEntry{Source: src, github: true, owner: "lazy-rex", repo: "Messaging", gitRef: "main"}
 }
 
 // A published entry has the published modes (section 4): files 0444, executable files 0555,

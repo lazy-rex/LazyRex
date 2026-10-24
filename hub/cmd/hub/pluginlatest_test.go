@@ -191,20 +191,23 @@ func latestLockEntry() *lockEntry {
 	return e
 }
 
-// The lock is version 2 only while it has a latest entry. Without one, its bytes are those of a
-// lock before @latest: version 1 and no tag field. The last latest entry gone, the lock is version 1
-// again.
-func TestLockVersionFollowsContent(t *testing.T) {
+// The lock is always version 2 (the hub lead, lead-b5): also a lock with no latest entry, and also
+// after its last latest entry goes. Only a latest entry has a tag field. A version 1 lock is
+// refused, at decodeLock and with the final text of readLock.
+func TestLockVersion2(t *testing.T) {
 	const src, latest = "github:lazy-rex/Messaging@main", "github:lazy-rex/Messaging@latest"
-	v1 := "{\n  \"version\": 1,\n  \"plugins\": {\n    \"" + src + "\": {\n" +
+	v2 := "{\n  \"version\": 2,\n  \"plugins\": {\n    \"" + src + "\": {\n" +
 		"      \"name\": \"messaging\",\n      \"owner\": \"lazy-rex\",\n      \"repo\": \"Messaging\",\n      \"subdir\": \"\",\n" +
 		"      \"ref\": \"main\",\n      \"ref_kind\": \"branch\",\n      \"commit\": \"" + testCommit + "\",\n" +
 		"      \"digest\": \"" + testDigest + "\",\n      \"dir\": \"github/lazy-rex/Messaging/" + testCommit + ".0123456789abcdef\"\n" +
 		"    }\n  }\n}\n"
-	l := &pluginLock{Version: lockVersionLatest, Plugins: map[string]*lockEntry{src: goodLockEntry()}}
+	l := &pluginLock{Plugins: map[string]*lockEntry{src: goodLockEntry()}}
 	b, err := encodeLock(l)
-	if err != nil || string(b) != v1 {
-		t.Fatalf("no latest entry:\n%s\nwant\n%s", b, v1)
+	if err != nil || string(b) != v2 {
+		t.Fatalf("no latest entry:\n%s\nwant\n%s", b, v2)
+	}
+	if b, err := encodeLock(&pluginLock{}); err != nil || string(b) != "{\n  \"version\": 2,\n  \"plugins\": {}\n}\n" {
+		t.Fatalf("an empty lock: %v\n%s", err, b)
 	}
 
 	l.Plugins[latest] = latestLockEntry()
@@ -217,39 +220,29 @@ func TestLockVersionFollowsContent(t *testing.T) {
 		t.Fatalf("a tag on a branch entry:\n%s", b)
 	}
 	got, err := decodeLock(b)
-	if err != nil || got.Version != lockVersionLatest || !reflect.DeepEqual(got.Plugins, l.Plugins) {
+	if err != nil || got.Version != 2 || !reflect.DeepEqual(got.Plugins, l.Plugins) {
 		t.Fatalf("decode: %+v %v", got, err)
 	}
-
 	delete(l.Plugins, latest)
-	if b, err = encodeLock(l); err != nil || string(b) != v1 {
+	if b, err = encodeLock(l); err != nil || string(b) != v2 {
 		t.Fatalf("after the latest entry:\n%s", b)
 	}
-	// A version 2 lock without a latest entry reads; its next write is version 1.
-	got, err = decodeLock([]byte(strings.Replace(v1, `"version": 1`, `"version": 2`, 1)))
-	if err != nil || got.Version != lockVersionLatest {
-		t.Fatalf("version 2 without a latest entry: %+v %v", got, err)
-	}
-	if b, err = encodeLock(got); err != nil || string(b) != v1 {
-		t.Fatalf("rewrite:\n%s", b)
-	}
-}
 
-// A version 1 lock has no latest form: an old hub would not read it as the new hub does.
-func TestLockVersion1RefusesLatest(t *testing.T) {
-	for name, f := range map[string]func(e *lockEntry){
-		"ref_kind latest": func(e *lockEntry) { e.Tag = "" },
-		"tag":             func(e *lockEntry) { e.RefKind = "branch" },
-		"both":            func(e *lockEntry) {},
+	// A version 1 lock, with or without a latest entry, is refused.
+	raw, _ := json.Marshal(latestLockEntry())
+	for name, doc := range map[string]string{
+		"no latest entry": strings.Replace(v2, `"version": 2`, `"version": 1`, 1),
+		"a latest entry":  `{"version":1,"plugins":{"` + latest + `":` + string(raw) + `}}`,
 	} {
-		e := latestLockEntry()
-		f(e)
-		raw, _ := json.Marshal(e)
-		b := `{"version":1,"plugins":{"github:lazy-rex/Messaging@latest":` + string(raw) + `}}`
-		_, err := decodeLock([]byte(b))
-		if want := "the entry for github:lazy-rex/Messaging@latest: a latest entry needs version 2"; err == nil || err.Error() != want {
+		if _, err := decodeLock([]byte(doc)); err == nil || err.Error() != "version 1 is not supported (this hub reads version 2)" {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+	p := filepath.Join(t.TempDir(), "hub.lock.json")
+	os.WriteFile(p, []byte(strings.Replace(v2, `"version": 2`, `"version": 1`, 1)), 0o600)
+	want := "the lock file " + p + " is not valid: version 1 is not supported (this hub reads version 2); repair the file or restore it from a backup"
+	if _, err := readLock(p); err == nil || err.Error() != want {
+		t.Errorf("readLock of a version 1 lock: %v\nwant %s", err, want)
 	}
 }
 
@@ -302,14 +295,16 @@ func testLatestPin() pinEntry {
 	return p
 }
 
-// The pin document is version 2 only with a latest entry, and a version 1 document has no latest
-// form. Each malformed tag is refused with its own text.
+// The pin document is always version 2 (the hub lead, lead-b5), also with no latest entry; only a
+// latest entry has a tag field. A version 1 document is refused, with or without a latest entry.
+// Each malformed tag is refused with its own text.
 func TestPinDocLatest(t *testing.T) {
-	b, err := encodePinDoc(&pinDoc{Version: 2, Entries: []pinEntry{testPin()}})
-	if err != nil || !strings.HasPrefix(string(b), "{\n  \"version\": 1,") || strings.Contains(string(b), "\"tag\"") {
+	b, err := encodePinDoc(&pinDoc{Version: 1, Entries: []pinEntry{testPin()}})
+	if err != nil || !strings.HasPrefix(string(b), "{\n  \"version\": 2,") || strings.Contains(string(b), "\"tag\"") {
 		t.Fatalf("no latest entry: %v\n%s", err, b)
 	}
-	d := &pinDoc{Version: 1, Entries: []pinEntry{testLatestPin(), testPin()}}
+	noLatest := string(b)
+	d := &pinDoc{Entries: []pinEntry{testLatestPin(), testPin()}}
 	if b, err = encodePinDoc(d); err != nil || !strings.HasPrefix(string(b), "{\n  \"version\": 2,") {
 		t.Fatalf("a latest entry: %v\n%s", err, b)
 	}
@@ -317,9 +312,11 @@ func TestPinDocLatest(t *testing.T) {
 	if err != nil || got.Version != 2 || len(got.Entries) != 2 || got.Entries[0] != testLatestPin() {
 		t.Fatalf("decode: %+v %v", got, err)
 	}
-	v1 := strings.Replace(string(b), `"version": 2`, `"version": 1`, 1)
-	if _, err := decodePinDoc([]byte(v1)); err == nil || err.Error() != "entry 1 (github:o/r@latest): a latest entry needs pin document version 2" {
-		t.Errorf("version 1: %v", err)
+	for name, doc := range map[string]string{"no latest entry": noLatest, "a latest entry": string(b)} {
+		v1 := strings.Replace(doc, `"version": 2`, `"version": 1`, 1)
+		if _, err := decodePinDoc([]byte(v1)); err == nil || err.Error() != "pin document version 1 is not supported by this hub (it reads version 2)" {
+			t.Errorf("version 1, %s: %v", name, err)
+		}
 	}
 
 	for name, c := range map[string]struct {

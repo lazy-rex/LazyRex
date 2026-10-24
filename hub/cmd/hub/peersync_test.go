@@ -364,7 +364,7 @@ func TestPeerPluginsSyncOldDocument(t *testing.T) {
 	b.peers = newPeerSet(b.cfg)
 	// A pin at another commit: the new document would admit an update op for it.
 	p := pinEntry{Source: "github:acme/notes@v1.1.0", lockPin: lockPin{Name: "notes", Owner: "acme", Repo: "notes", Ref: "v1.1.0", RefKind: "tag", Commit: strings.Repeat("c", 40), Digest: "sha256:" + strings.Repeat("d", 64)}}
-	pins, err := json.Marshal(map[string]any{"version": 1, "hub": "00112233445566778899aabbccddeeff", "entries": []pinEntry{p}})
+	pins, err := json.Marshal(map[string]any{"version": 2, "hub": "00112233445566778899aabbccddeeff", "entries": []pinEntry{p}})
 	if err != nil {
 		t.Fatal(err)
 	}

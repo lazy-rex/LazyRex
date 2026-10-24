@@ -24,14 +24,10 @@ import (
 	"strings"
 )
 
-// lockVersion is the version of a lock without a latest entry, and lockVersionLatest the version
-// of a lock with one (section 6a). The version follows the content of the file, so a lock without
-// a latest entry stays byte-identical to the lock of a hub before @latest. The lock file is written
-// and read by the same binary, so another version is an error, not a newer format to tolerate.
-const (
-	lockVersion       = 1
-	lockVersionLatest = 2
-)
+// lockVersion is the version of every lock file (the hub lead, lead-b5): the writer always writes
+// it, and the reader reads only it. The lock file is written and read by the same binary, so
+// another version is an error, not a format to tolerate.
+const lockVersion = 2
 
 // pluginLock is the decoded lock file. Plugins is keyed by the exact source string of the config.
 type pluginLock struct {
@@ -141,8 +137,8 @@ func decodeLock(b []byte) (*pluginLock, error) {
 	if top.Version == nil {
 		return nil, errors.New("version is missing")
 	}
-	if v := *top.Version; v != lockVersion && v != lockVersionLatest {
-		return nil, fmt.Errorf("version %d is not supported (this hub reads versions %d and %d)", v, lockVersion, lockVersionLatest)
+	if v := *top.Version; v != lockVersion {
+		return nil, fmt.Errorf("version %d is not supported (this hub reads version %d)", v, lockVersion)
 	}
 	if !isObject(top.Plugins) {
 		return nil, errors.New("plugins must be an object")
@@ -159,9 +155,6 @@ func decodeLock(b []byte) (*pluginLock, error) {
 		e := &lockEntry{}
 		if err := decodeStrict(raw, e); err != nil {
 			return nil, fmt.Errorf("the entry for %s: %w", src, err)
-		}
-		if l.Version == lockVersion && e.latestForm() {
-			return nil, fmt.Errorf("the entry for %s: a latest entry needs version %d", src, lockVersionLatest)
 		}
 		l.Plugins[src] = e
 	}
@@ -188,15 +181,9 @@ func isObject(raw json.RawMessage) bool {
 }
 
 // encodeLock gives the bytes of a lock file. Equal lock values give equal bytes: the fields have
-// a fixed order, map keys are sorted, and the file ends with a newline. The version is
-// lockVersionLatest when an entry has a latest form, else lockVersion.
+// a fixed order, map keys are sorted, and the file ends with a newline. The version is always lockVersion.
 func encodeLock(l *pluginLock) ([]byte, error) {
 	out := pluginLock{Version: lockVersion, Plugins: l.Plugins}
-	for _, e := range l.Plugins {
-		if e.latestForm() {
-			out.Version = lockVersionLatest
-		}
-	}
 	if out.Plugins == nil {
 		out.Plugins = map[string]*lockEntry{}
 	}
@@ -314,10 +301,4 @@ func lockMismatch(source string, e *lockEntry, r githubRef, field string) error 
 // untrustedCommit is the text of a locked commit that the hub does not run (section 3).
 func untrustedCommit(source, why string) error {
 	return fmt.Errorf("the locked commit for %s cannot be trusted: %s; update the plugin in LazyRex: Plugins…", source, why)
-}
-
-// latestForm reports whether the pin has the form of a latest entry: the ref kind latest, or a
-// tag. Such a pin needs version 2 of the lock and of the pin document.
-func (p *lockPin) latestForm() bool {
-	return p.RefKind == "latest" || p.Tag != ""
 }
