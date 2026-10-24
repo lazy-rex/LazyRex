@@ -353,6 +353,31 @@ type hubControls struct {
 	err    string
 }
 
+// setupAutostartConfig refuses an autostart that cannot start the hub (the coordinator, 2026-10-24:
+// an old hub.json with "session" made each autostart exit 2, and setup had reported success). The
+// autostart runs lazyrex-hub autostart -config <hub.json>, so an existing hub.json must pass the
+// hub's own load (loadConfig), and its server must be the server that setup targets. A new hub.json
+// names that server.
+func setupAutostartConfig(e setupEnv, hub *setupFile, ctl hubControls, server string) error {
+	if ctl.err != "" {
+		return errors.New(ctl.err)
+	}
+	if !hub.exists {
+		return nil
+	}
+	if _, err := loadConfig(hub.path); err != nil {
+		return err
+	}
+	ep, err := e.endpoint(ctl.server)
+	if err != nil {
+		return fmt.Errorf("the server %s of %s did not answer: %v", ctl.server, hub.path, err)
+	}
+	if ep != server {
+		return fmt.Errorf("%s names the server %s (%s), not the server that setup targets (%s)", hub.path, ctl.server, ep, server)
+	}
+	return nil
+}
+
 // configServer is the server of an existing hub.json, or why setup cannot read it.
 func configServer(b []byte) (string, string) {
 	var c struct {
@@ -576,6 +601,13 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	if ctl.err == "" {
 		ctl.real = e.isReal(ctl.server)
 	}
+	if e.autostart != nil {
+		if err := setupAutostartConfig(e, hub, ctl, server); err != nil {
+			say("setup: -autostart: %v", err)
+			say("  Fix %s, or run setup without the autostart flags. Setup writes nothing.", hub.path)
+			return 1
+		}
+	}
 
 	agents := e.agents()
 	prof := snapshotFile(filepath.Join(dir, "profiles.json"), 0o600)
@@ -594,9 +626,6 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		boot.next = []byte(setupBootLua(e.exe, dir, e.server, ctl, e.autostart))
 		if ctl.err != "" {
 			boot.notes = append(boot.notes, "Start Hub, Stop Hub and Hub Status are left out: "+ctl.err)
-			if e.autostart != nil {
-				boot.notes = append(boot.notes, "The autostart is left out: "+ctl.err)
-			}
 		}
 	}
 	init := snapshotFile(e.rexConfigFile(), 0o644)
