@@ -465,7 +465,7 @@ type peerDrop struct {
 	Plugin     string `json:"plugin"` // the target
 	FromPlugin string `json:"from_plugin"`
 	Key        string `json:"key"`
-	Reason     string `json:"reason"` // not_installed, stopped or no_listener
+	Reason     string `json:"reason"` // not_installed, stopped, no_listener or blocked (skipped after peerBlockMax)
 	At         string `json:"at"`
 }
 
@@ -473,15 +473,18 @@ type peerDrop struct {
 // peer: hub.test.peer.deliver may name another hub).
 func (h *Hub) peerDropped(fromHub string, d peerDrop) {
 	log.Printf("peer %s: %s key %q from %s dropped: %s", fromHub, d.Plugin, d.Key, d.FromPlugin, d.Reason)
-	l := h.peerLink(fromHub)
-	if l == nil {
-		return
+	if l := h.peerLink(fromHub); l != nil {
+		l.countDrop(d)
 	}
+}
+
+// countDrop counts a drop in hub.peer.status "dropped".
+func (l *peerLink) countDrop(d peerDrop) {
 	d.At = time.Now().UTC().Format(time.RFC3339)
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.dropped++
 	l.lastDrop = &d
-	l.mu.Unlock()
 }
 
 // peerReceive gives one envelope from plugin fromPlugin on peer fromHub to the local plugin's
@@ -537,7 +540,8 @@ func (l *peerLink) peerBlocked(seq int64, plugin string) bool {
 // cursor moves past an envelope only after the plugin answered: accepted, or refused with a result
 // {"refused": code}. An envelope that no plugin here can take is dropped (peerReceive). An envelope that was not
 // processed (peerReceive's error: the plugin does not run, an error reply, a lost reply) stops the
-// pull and comes again, for at most peerBlockMax per hub process; then it is logged and skipped.
+// pull and comes again, for at most peerBlockMax per hub process; then it is logged, skipped and
+// counted as a drop (reason blocked).
 // Delivery is in seq order, so a retry blocks every later envelope from that peer. A failed peer
 // call stops the pull with no bound: nothing was delivered. A reply with another outbox identity
 // (the peer's hub.db is new, so its seqs start again) resets the cursor to 0 and clears the block
@@ -596,6 +600,7 @@ func (h *Hub) peerPull(ctx context.Context, l *peerLink) (more bool, err error) 
 			return false, fmt.Errorf("envelope %d: %v", e.Seq, err)
 		case err != nil:
 			log.Printf("peer %s: envelope %d (%s from %s, key %q) skipped after %s: %v", l.cfg.Name, e.Seq, target, e.Plugin, e.Key, peerBlockMax, err)
+			l.countDrop(peerDrop{Plugin: target, FromPlugin: e.Plugin, Key: e.Key, Reason: "blocked"})
 		}
 		// The cursor never moves back: a late reply to an older pull cannot lower it.
 		if _, err := h.db.ExecContext(ctx, `INSERT INTO peer_inbox (peer, after) VALUES (?, ?)
