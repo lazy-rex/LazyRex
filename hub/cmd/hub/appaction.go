@@ -91,6 +91,22 @@ func (h *Hub) userApp(ctx context.Context, sess, block string) (string, error) {
 	if focused != block {
 		return "", refuse("not_focused", "the form does not have the focus")
 	}
+	apps, err := h.sessionApps(ctx, sess)
+	if err != nil {
+		return "", err
+	}
+	switch len(apps) {
+	case 0:
+		return "", refuse("no_app", "no Rex app shows this session")
+	case 1:
+		return apps[0], nil
+	default:
+		return "", refuse("ambiguous_app", "more than one Rex app shows this session")
+	}
+}
+
+// sessionApps lists the connected app clients that show sess.
+func (h *Hub) sessionApps(ctx context.Context, sess string) ([]string, error) {
 	var cl struct {
 		Clients []struct {
 			ClientID   string          `json:"client_id"`
@@ -100,7 +116,7 @@ func (h *Hub) userApp(ctx context.Context, sess, block string) (string, error) {
 		} `json:"clients"`
 	}
 	if err := appCall(h, ctx, "client.list", map[string]any{}, &cl); err != nil {
-		return "", err
+		return nil, err
 	}
 	var apps []string
 	for _, c := range cl.Clients {
@@ -118,14 +134,7 @@ func (h *Hub) userApp(ctx context.Context, sess, block string) (string, error) {
 			}
 		}
 	}
-	switch len(apps) {
-	case 0:
-		return "", refuse("no_app", "no Rex app shows this session")
-	case 1:
-		return apps[0], nil
-	default:
-		return "", refuse("ambiguous_app", "more than one Rex app shows this session")
-	}
+	return apps, nil
 }
 
 // hub.app.select_session {view_id, session_id, window_id} switches the app to a session, for

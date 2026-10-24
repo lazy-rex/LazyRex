@@ -90,25 +90,16 @@ func (h *Hub) adminRestartForm(ctx context.Context, p perform, args map[string]a
 	if sess == "" {
 		return nil, bad("run this command from the Rex palette or a key binding: it needs a session")
 	}
-	window, err := h.formWindow(ctx, sess, block)
-	if err != nil {
+	if _, err := h.formWindow(ctx, sess, block); err != nil {
 		return nil, err
 	}
 	targets, err := h.restartSnapshot(ctx, kind)
 	if err != nil {
 		return nil, err
 	}
-	fc := formContext{SessionID: sess, WindowID: window, SourceBlock: block,
+	fc := formContext{SessionID: sess, SourceBlock: block,
 		Restart: &restartForm{Kind: kind, Revision: 1, Key: randomID("restart-form-"), Targets: targets}}
-	out, err := h.openSlot(ctx, slotRequest{Plugin: restartFormOwner, Route: "restart", Ctx: fc, Focus: true, NextTitle: "Restart " + title + " agents"})
-	if err != nil {
-		return nil, err
-	}
-	if out["status"] == "opened" {
-		go h.refocusForm(sess, window, h.viewBlock(out["view_id"].(string)), block)
-	}
-	out["select"] = map[string]any{"session_id": sess, "window_id": window}
-	return out, nil
+	return h.paletteOpen(ctx, restartFormOwner, "restart", "Restart "+title+" agents", fc, false)
 }
 
 // restartSnapshot takes the snapshot for a kind. It only reads: the hub's rows and the live pane

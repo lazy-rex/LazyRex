@@ -641,6 +641,16 @@ Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `f
 - Inferred: the app sends the session that it shows, because block actions from the palette must run on the pane the user is in. Not observed.
 - `client.perform` passes `origin`, `session_id` and `block_id` through unchecked. The lab hub received `origin: "palette"`, the session and the block, plus the attested `requester` with `info.kind: "app"`.
 
+### Palette runs with two clients (Rex 0.0.1792158932-g88fd41, lab)
+
+Two long-lived control clients A and B on one session, window 1 (block X) and window 2 (block Y). A focuses X, then B focuses Y (`session.focus_block`).
+
+- A runs `client.action {action, origin: "palette", session_id}` without `block_id`: `ctx.block_id` is Y, B's focus. `ctx.client_id` is A. So a run without `block_id` carries the session's last focus by any client, not the caller's.
+- With `block_id` X: `ctx.block_id` is X. `ctx.client_id` is always the caller.
+- Input has no sender: A and B each sent `com.superlogical.terminal.write` and `client.key` into X. The pane got the bytes only. The event streams (`--all` and the session's) had no event for the input. `active_window_changed` carries only `window_id`. `client.list` has no per-client active window or last input (also on Rex 0.0.1792593189-g3f4a0a, Linux lab).
+- The user's report on the real app (2026-10-23: a palette run on the phone opened the form where the Mac was) matches a run without `block_id`. Inferred: the app sends no `block_id`. Not observed in the app.
+- So with two devices on one session, nothing tells the hub which device a tap in a view pane or a palette run came from. The hub's answer: "Palette forms and thread menus" in docs/hub.md.
+
 ### Arguments and forms
 
 - **The server does not enforce a config action's required args on `client.action`.** `lazyrex_form` declares `need = "string"` (required). A palette-style call with no `args` ran with `args = {}`. Only the CLI checks args (it refuses unknown names). So a palette entry can always run, and the action must handle missing args itself.
@@ -652,7 +662,7 @@ Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `f
 - The server's `session.view.active_window_id` is per session and shared by all clients. It does not follow the app: the app keeps its own tab (see "Driving the Rex app").
 - `client.list` lists the sessions a client attached (`session_ids`). The real app attached 4 sessions at once. So it does not show the viewed session.
 - No app action returns the current session or tab (read-only `client inspect` of the real app).
-- The best signal is a palette run: a config action's `ctx.session_id` / `ctx.block_id`, sent by the app (inferred). Focus reporting (DECSET 1004) tells a pane program that its own pane got focus. It does not tell the hub about other panes.
+- The best signal is a palette run: a config action's `ctx.session_id` / `ctx.block_id`, sent by the app (inferred). With two clients on one session, a run without `block_id` carries the other client's focus ("Palette runs with two clients"). Focus reporting (DECSET 1004) tells a pane program that its own pane got focus. It does not tell the hub about other panes.
 
 ### Floating form layer
 

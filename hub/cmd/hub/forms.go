@@ -497,31 +497,114 @@ func (h *Hub) paletteRun(ctx context.Context, p perform, args map[string]any) (a
 	if sess == "" {
 		return nil, bad("run this command from the Rex palette or a key binding: it needs a session")
 	}
-	window, err := h.formWindow(ctx, sess, block)
+	return h.paletteOpen(ctx, plugin, route, title, formContext{SessionID: sess, Panel: panel, SourceBlock: block}, true)
+}
+
+// paletteOpen opens the form or panel of a palette run, and names in select the tab that the
+// palette Lua selects on the calling client only (rex.client.queue).
+//   - One app shows the session: the side slot of the window of fc.SourceBlock (ctx.block_id), with
+//     focus. A view there is replaced (panels.go).
+//   - More than one: Rex gives a run without block_id the session's last focus, which can be
+//     another device's (docs/rex-protocol.md, "Palette runs with two clients"). So the form opens
+//     in a tab of its own, without focus and without a source; the other device keeps its tab.
+//
+// withSource takes the source view and its cwd from fc.SourceBlock (a plugin command).
+func (h *Hub) paletteOpen(ctx context.Context, plugin, route, title string, fc formContext, withSource bool) (map[string]any, error) {
+	apps, err := h.sessionApps(ctx, fc.SessionID)
 	if err != nil {
 		return nil, err
 	}
-	fc := formContext{SessionID: sess, WindowID: window, Panel: panel, SourceBlock: block}
-	if src, err := h.viewByBlock(ctx, block); err == nil && src != nil && src.Tab != formTab {
-		fc.SourceViewID, fc.SourceRoute = src.ID, src.Route
-	} else if err == nil && src != nil {
-		// Run from a side panel or form: the source is that view's own source, not the side pane
-		// (its cwd is the renderer's, and the replacement closes it).
-		if prev, ok := h.formOf(ctx, src.ID); ok {
-			fc.SourceViewID, fc.SourceRoute, fc.SourceBlock = prev.SourceViewID, prev.SourceRoute, prev.SourceBlock
+	block := fc.SourceBlock
+	if len(apps) > 1 {
+		fc.SourceBlock = ""
+		out, err := h.openFormTab(ctx, plugin, route, title, fc)
+		if err != nil {
+			return nil, err
 		}
+		if w, _ := out["window_id"].(string); w != "" {
+			out["select"] = map[string]any{"session_id": fc.SessionID, "window_id": w}
+		}
+		return out, nil
 	}
-	h.freezeSourcePwd(ctx, &fc)
-	// The form or panel takes the window's side slot; a view there is replaced (panels.go).
+	window, err := h.formWindow(ctx, fc.SessionID, block)
+	if err != nil {
+		return nil, err
+	}
+	fc.WindowID = window
+	if withSource {
+		if src, err := h.viewByBlock(ctx, block); err == nil && src != nil && src.Tab != formTab {
+			fc.SourceViewID, fc.SourceRoute = src.ID, src.Route
+		} else if err == nil && src != nil {
+			// Run from a side panel or form: the source is that view's own source, not the side pane
+			// (its cwd is the renderer's, and the replacement closes it).
+			if prev, ok := h.formOf(ctx, src.ID); ok {
+				fc.SourceViewID, fc.SourceRoute, fc.SourceBlock = prev.SourceViewID, prev.SourceRoute, prev.SourceBlock
+			}
+		}
+		h.freezeSourcePwd(ctx, &fc)
+	}
 	out, err := h.openSlot(ctx, slotRequest{Plugin: plugin, Route: route, Ctx: fc, Focus: true, NextTitle: title})
 	if err != nil {
 		return nil, err
 	}
 	if out["status"] == "opened" {
-		go h.refocusForm(sess, window, h.viewBlock(out["view_id"].(string)), block)
+		go h.refocusForm(fc.SessionID, window, h.viewBlock(out["view_id"].(string)), block)
 	}
-	out["select"] = map[string]any{"session_id": sess, "window_id": window}
+	out["select"] = map[string]any{"session_id": fc.SessionID, "window_id": window}
 	return out, nil
+}
+
+// openFormTab opens plugin's route as a form in a new tab of its own, without focus. It answers
+// {status, view_id, window_id}: opened, or opening when Rex's answer was lost (formsSweep then
+// finds the pane by its label, and adoptForm reads its window).
+func (h *Hub) openFormTab(ctx context.Context, plugin, route, title string, fc formContext) (map[string]any, error) {
+	if h.cfg.View == "" {
+		return nil, errors.New("no renderer: set \"view\" in the hub config")
+	}
+	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": fc.SessionID, "event_scope": "session"}, nil); err != nil {
+		return nil, bad("session %s: %v", fc.SessionID, err)
+	}
+	if title == "" {
+		title = h.commandTitle(ctx, plugin, route)
+	}
+	v := &view{ID: randomID("view-form-"), Plugin: plugin, Tab: formTab, Route: route}
+	b, _ := json.Marshal(fc)
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never')`,
+		v.ID, plugin, formTab, route, string(b), fc.SessionID); err != nil {
+		return nil, err
+	}
+	req := map[string]any{"session_id": fc.SessionID, "window_label": title, "focus": false,
+		"layout": map[string]any{"block": map[string]any{
+			"flavor": "com.superlogical.terminal.shell",
+			"label":  "lazyrex-form:" + v.ID,
+			"options": map[string]any{
+				"command": h.viewCommand(v.ID, plugin, route),
+				"login":   false,
+				"exit":    map[string]any{"on_completion": true},
+			},
+		}}}
+	var out struct {
+		WindowID string   `json:"window_id"`
+		BlockIDs []string `json:"block_ids"`
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := viewNewWindow(h, cctx, req, &out)
+	cancel()
+	if err != nil {
+		var re *rex.RexError
+		if errors.As(err, &re) && re.Code != "disconnected" && !transient(err) {
+			h.closeViewRow(ctx, v.ID, "abandoned") // Rex answered: nothing was created
+			return nil, err
+		}
+		return map[string]any{"status": "opening", "view_id": v.ID}, nil
+	}
+	if len(out.BlockIDs) != 1 {
+		return nil, fmt.Errorf("form tab %s: %d blocks", v.ID, len(out.BlockIDs))
+	}
+	if err := h.adoptForm(ctx, v, fc, out.BlockIDs[0]); err != nil {
+		return map[string]any{"status": "opening", "view_id": v.ID}, nil // the pane exists; the sweep adopts it
+	}
+	return map[string]any{"status": "opened", "view_id": v.ID, "window_id": out.WindowID}, nil
 }
 
 // formWindow checks that sess exists and returns the window of block, or the active window when
@@ -617,6 +700,18 @@ func (h *Hub) refocusForm(sess, window, block, anchor string) {
 }
 
 func (h *Hub) adoptForm(ctx context.Context, v *view, fc formContext, block string) error {
+	if fc.WindowID == "" {
+		// A form in a tab of its own (openFormTab): Rex made the window with the pane.
+		w, err := h.formWindow(ctx, fc.SessionID, block)
+		if err != nil {
+			return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
+		}
+		fc.WindowID = w
+		b, _ := json.Marshal(fc)
+		if _, err := h.db.ExecContext(ctx, `UPDATE views SET context = ? WHERE view_id = ?`, string(b), v.ID); err != nil {
+			return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
+		}
+	}
 	if err := h.adoptView(ctx, v, fc.SessionID, rexBlock{BlockID: block, WindowID: fc.WindowID}); err != nil {
 		return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
 	}

@@ -1388,6 +1388,18 @@ its layer goes with it.
 The key goes away when the user decides. Tests: `TestUISlotConfig`, `TestSlotPaneLayer`,
 `TestSlotLayerLab` (`LAZYREX_LAB=1`).
 
+Two devices on one session (the user, 2026-10-23). A palette run without `block_id` carries the
+session's last focus, which can be the other device's (docs/rex-protocol.md, "Palette runs with
+two clients"). So when more than one connected app shows the session, a palette run (a plugin
+command or a restart form) opens its form or panel in a new tab of its own, without focus, with no
+source view, and without the delayed refocus. `select` names that tab, and the palette Lua selects
+it on the calling client only; the other device keeps its tab. With one app, the run opens the side
+slot of the window of `ctx.block_id`, as before. Test: `TestPaletteTwoAppsOwnTabLab`.
+Limits: a form that a view opens goes to the side slot of the source view's tab, the tab that the
+tapping device shows, with focus. No Rex signal tells which device tapped, so `hub.view.app_action`
+still refuses with `ambiguous_app`. A lost answer to the new tab's `session.new_window` leaves the
+form `sending` until the next hub start (`formsSweep` finds it by its label).
+
 The return of a closed form in layer mode (contract v2.1, 2026-10-22). When a form closes without
 an action (Esc, its exit, the user's close of its pane, a hub close), the hub opens the panel that
 the form replaced again. In layer mode an unfocused layer would cover the user's pane, and a
