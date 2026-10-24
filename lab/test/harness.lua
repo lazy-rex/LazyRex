@@ -338,6 +338,50 @@ end
 -- peer_status is hub.peer.status: {hub_name, peers = {{name, state, outbox, ...}}}.
 function H.peer_status() return hub('hub.peer.status', {}) end
 
+-- peer_wait waits for the SDK outbox rows (app.peer, docs/plugin-sdk.md "Federation") of plugin to
+-- peer hub_name that are queued at the call. Later rows do not count. stage:
+--   'taken': none of those rows is queued: the hub took each one (sent).
+--   'acked': also hub.peer.status outbox 0 for that peer: the peer acked every envelope to it, from
+--     ANY plugin. An ack does not prove that the listener ran: a receiver with the plugin absent or
+--     stopped acks and drops it. A test that needs the listener's effect reads the receiver's
+--     database after the wait.
+-- A row that becomes failed raises at once with its code and message. It returns the row count.
+function H.peer_wait(plugin, hub_name, stage, timeout)
+  if stage ~= 'taken' and stage ~= 'acked' then error('peer_wait: stage must be taken or acked', 2) end
+  plugin = plugin or A.plugin
+  local q = 'SELECT n, key, state, code, message FROM sdk_peer_outbox WHERE hub = ? AND state = ?'
+  local want = {}
+  local count = 0
+  for _, r in ipairs(H.sql(q, {hub_name, 'queued'}, plugin)) do want[tostring(r.n)] = true; count = count + 1 end
+  local function check()
+    local open = 0
+    for _, state in ipairs({'queued', 'failed'}) do
+      for _, r in ipairs(H.sql(q, {hub_name, state}, plugin)) do
+        if want[tostring(r.n)] then
+          if state == 'failed' then return {failed = r} end
+          open = open + 1
+        end
+      end
+    end
+    return open == 0 and {}
+  end
+  local function raise_failed(r)
+    error(setmetatable({code = 'peer_failed', message = 'peer_wait: the row ' .. tostring(r.key) .. ' to ' .. hub_name
+      .. ' failed: ' .. tostring(r.code) .. ': ' .. tostring(r.message)}, Err), 2)
+  end
+  local r = wait('the SDK rows of ' .. plugin .. ' to ' .. hub_name .. ' to be taken', check, timeout)
+  if r.failed then raise_failed(r.failed) end
+  if stage == 'acked' then
+    wait('the peer ' .. hub_name .. ' to ack every envelope', function()
+      for _, p in ipairs(H.peer_status().peers or {}) do
+        if p.name == hub_name then return p.outbox == 0 end
+      end
+      error('peer_wait: no peer ' .. hub_name .. ' in hub.peer.status', 0)
+    end, timeout)
+  end
+  return count
+end
+
 -- invalidates counts the plugin's hub.ui.invalidate calls. A count that stays the same over an
 -- interval proves only that the plugin made no such call in that interval.
 function H.invalidates(plugin) return hub('hub.test.stats', {plugin = plugin or A.plugin}).invalidates end

@@ -1,0 +1,9 @@
+{
+ "name": "speer",
+ "main": "main.lua",
+ "sdk": "0",
+ "test": {
+  "hub_name": "lab",
+  "peers": [{"name": "away", "server": "unix:///nonexistent/speer/rex.sock"}]
+ }
+}
