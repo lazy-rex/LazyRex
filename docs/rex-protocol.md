@@ -649,7 +649,7 @@ Two long-lived control clients A and B on one session, window 1 (block X) and wi
 - With `block_id` X: `ctx.block_id` is X. `ctx.client_id` is always the caller.
 - Input has no sender: A and B each sent `com.superlogical.terminal.write` and `client.key` into X. The pane got the bytes only. The event streams (`--all` and the session's) had no event for the input. `active_window_changed` carries only `window_id`. `client.list` has no per-client active window or last input (also on Rex 0.0.1792593189-g3f4a0a, Linux lab).
 - The user's report on the real app (2026-10-23: a palette run on the phone opened the form where the Mac was) matches a run without `block_id`. Inferred: the app sends no `block_id`. Not observed in the app.
-- So with two devices on one session, nothing tells the hub which device a tap in a view pane or a palette run came from. The hub's answer: "Palette forms and thread menus" in docs/hub.md.
+- So with two devices on one session, a palette run names its device (`ctx.client_id`), but not the window that device shows. A tap or key in a view pane names neither. The hub's answer: "Palette forms and thread menus" in docs/hub.md.
 
 ### Arguments and forms
 
