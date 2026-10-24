@@ -163,8 +163,9 @@ func TestPeerSDKLab(t *testing.T) {
 	got := func(k string) []string { return b.speerSQL("SELECT text FROM got WHERE key = ?", k) }
 	once := func(k, want string) {
 		t.Helper()
-		// After a kill, the dead hub's Rex client can keep the label lazyrex-hub for a while: a peer's
-		// pull is then "ambiguous" and backs off (up to 30 s).
+		// After a kill, the dead hub's Rex client keeps the label lazyrex-hub for about a minute: a
+		// peer's pull is then "ambiguous", and it tries again every 2 s until Rex drops that client
+		// (docs/hub.md "Peer hubs").
 		t0 := time.Now()
 		b.waitLong("b's listener got "+k, 120*time.Second, func() bool { return len(got(k)) > 0 })
 		t.Logf("%s reached b's listener in %s", k, time.Since(t0).Round(time.Millisecond))
