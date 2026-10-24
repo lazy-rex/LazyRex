@@ -899,7 +899,8 @@ func TestPeerSendTarget(t *testing.T) {
 // TestPeerPullDrops (lead-fedxp item 5): an envelope whose target cannot take it is dropped at once,
 // the cursor moves on, and hub.peer.status counts it (dropped: count and the last one): a target
 // that is not installed, one that is desired stopped, and one that does not offer peer.receive (Rex
-// refuses the perform with not_supported). A target that does not run now is not dropped: it blocks.
+// refuses the perform with not_supported). A desired-running target with no client now (starting,
+// restarting) is not dropped: it holds the cursor, for at most peerBlockMax (TestPeerPullPluginWait).
 func TestPeerPullDrops(t *testing.T) {
 	var mu sync.Mutex
 	var got []string
