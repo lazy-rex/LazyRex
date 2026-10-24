@@ -194,16 +194,37 @@ return function()
       -- SET col = expr, or a list of col = ? (the SDK's own tables).
       local sets = {}
       for col, expr in (set .. ','):gmatch('%s*([%w_]+) = ([^,]+),') do sets[#sets + 1] = {col = col, expr = trim(expr)} end
-      for _, s in ipairs(sets) do if s.expr == '?' then s.p = nextp() end end
+      -- An expr can also be a || list of ?, 'text', a column and length(CAST(col AS BLOB)).
+      for _, s in ipairs(sets) do
+        if s.expr == '?' then s.p = nextp()
+        elseif s.expr:find('||', 1, true) then
+          s.cat = {}
+          for item in (s.expr .. ' || '):gmatch('(.-) || ') do
+            item = trim(item)
+            local lit, len = item:match("^'(.*)'$"), item:match('^length%(CAST%(([%w_]+) AS BLOB%)%)$')
+            if item == '?' then s.cat[#s.cat + 1] = {v = nextp()}
+            elseif lit then s.cat[#s.cat + 1] = {v = lit}
+            elseif len then s.cat[#s.cat + 1] = {len = len}
+            else s.cat[#s.cat + 1] = {col = item} end
+          end
+        end
+      end
       local want = nextp()
       local changes = 0
       for _, row in ipairs(t.rows) do
         if row[ucol] == want then
           changes = changes + 1
-          for _, s in ipairs(sets) do
+          -- Every expr reads the row before the update, as in SQL.
+          local new = {}
+          for i, s in ipairs(sets) do
             local col, expr = s.col, s.expr
-            if expr == '1 - ' .. col then row[col] = 1 - row[col] elseif expr == '?' then row[col] = s.p else row[col] = tonumber(expr) or expr end
+            if s.cat then
+              local out = {}
+              for _, c in ipairs(s.cat) do out[#out + 1] = c.v or (c.len and #row[c.len]) or row[c.col] end
+              new[i] = table.concat(out)
+            elseif expr == '1 - ' .. col then new[i] = 1 - row[col] elseif expr == '?' then new[i] = s.p else new[i] = tonumber(expr) or expr end
           end
+          for i, s in ipairs(sets) do row[s.col] = new[i] end
         end
       end
       return {changes = changes, id = 0}
