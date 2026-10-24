@@ -222,6 +222,14 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 		// The form that ran the action is gone and another view holds the slot: leave it.
 		return nil, refuse("conflict", "the side panel of this tab holds another view")
 	}
+	// The root role of a tab of its own goes to the view that replaces the root (a form that
+	// becomes a panel, form -> form -> panel), never to a view that opens beside a root panel.
+	req.Ctx.OwnTab = false
+	if old != "" {
+		var prev formContext
+		json.Unmarshal([]byte(raw), &prev)
+		req.Ctx.OwnTab = prev.OwnTab
+	}
 	if old != "" && !req.Ctx.Panel {
 		// A form replaces a panel: the form's end opens the panel again. A form that replaces a
 		// form keeps that form's return.

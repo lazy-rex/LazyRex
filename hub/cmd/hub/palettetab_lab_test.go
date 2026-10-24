@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,58 +134,74 @@ func TestPaletteTwoAppsOwnTabLab(t *testing.T) {
 	}
 }
 
-// A panel in a tab of its own opens a form through the form effect's slot request, and the form
-// ends with Escape (its pane closes). The panel stays open beside the form, so the tab keeps a
-// pane and needs no return. On dada9d52 the form replaced the panel, and the form's close removed
-// the whole tab (codex-25's probe). Split and layer. Lab only: LAZYREX_LAB=1.
+// The panel of a tab of its own opens a form through the form effect's slot request, and the form
+// ends with Escape (its pane closes). The panel stays open beside the form, so the tab keeps a pane
+// and needs no return. The panel is the tab's first view, or it replaced the first view (a form,
+// or a form that a form replaced): a view that replaces the tab's root takes the root role. On
+// dada9d52 and 93c99d0d the form replaced the panel, and the form's close removed the whole tab
+// (codex-25's probes; Tunnels: Forward Port -> the tunnels panel -> New). Split and layer. Lab
+// only: LAZYREX_LAB=1.
 func TestOwnTabPanelKeepsItsTabLab(t *testing.T) {
 	for _, mode := range []string{"split", "layer"} {
-		t.Run(mode, func(t *testing.T) {
-			h, r, sess, _ := panelsLabHub(t)
-			h.cfg.UISlot = mode
-			ctx := context.Background()
-			opened, err := h.openFormTab(ctx, "p", "/panels/a", "Panel", formContext{SessionID: sess, Panel: true})
-			if err != nil || opened["status"] != "opened" {
-				t.Fatalf("open the panel: %+v %v", opened, err)
-			}
-			panelID, window := opened["view_id"].(string), opened["window_id"].(string)
-			fc, ok := h.formOf(ctx, panelID)
-			if !ok || fc.WindowID != window {
-				t.Fatalf("the panel's context: %+v (ok %v), want window %s", fc, ok, window)
-			}
-			child, err := h.openSlot(ctx, slotRequest{ReplID: "own-tab-child", Plugin: "p", Route: "/forms/a", Ctx: childContext(fc, false), Focus: true})
-			if err != nil || child["status"] != "opened" {
-				t.Fatalf("open the form: %+v %v", child, err)
-			}
-			formID := child["view_id"].(string)
-			if h.viewBlock(panelID) == "" {
-				t.Fatal("the form's open closed the panel: the tab now ends with the form")
-			}
-			cc, _ := h.formOf(ctx, formID)
-			if err := h.closeForm(ctx, formID, "Escape"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := h.formEnded(ctx, formID, cc, false, ""); err != nil {
-				t.Fatal(err)
-			}
-			if h.viewBlock(panelID) == "" {
-				t.Fatal("after Escape the panel is closed")
-			}
-			var sv struct {
-				Windows []struct {
-					WindowID string `json:"window_id"`
-				} `json:"windows"`
-			}
-			if err := r.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv); err != nil {
-				t.Fatal(err)
-			}
-			alive := false
-			for _, w := range sv.Windows {
-				alive = alive || w.WindowID == window
-			}
-			if !alive {
-				t.Fatal("after Escape the panel's tab is gone")
-			}
-		})
+		for _, chain := range [][]string{{"/panels/a"}, {"/forms/root", "/panels/a"}, {"/forms/root", "/forms/next", "/panels/a"}} {
+			t.Run(mode+":"+strings.Join(chain, ">"), func(t *testing.T) {
+				h, r, sess, _ := panelsLabHub(t)
+				h.cfg.UISlot = mode
+				ctx := context.Background()
+				opened, err := h.openFormTab(ctx, "p", chain[0], "Root", formContext{SessionID: sess, Panel: strings.HasPrefix(chain[0], "/panels/")})
+				if err != nil || opened["status"] != "opened" {
+					t.Fatalf("open the root: %+v %v", opened, err)
+				}
+				viewID, window := opened["view_id"].(string), opened["window_id"].(string)
+				for i, route := range chain[1:] {
+					// A form's action opens the next view in the form's place (the form effect).
+					fc, _ := h.formOf(ctx, viewID)
+					out, err := h.openSlot(ctx, slotRequest{ReplID: fmt.Sprintf("own-tab-step-%d", i), Plugin: "p", Route: route,
+						Ctx: childContext(fc, strings.HasPrefix(route, "/panels/")), Focus: true, ExpectOld: viewID})
+					if err != nil || out["status"] != "opened" {
+						t.Fatalf("open %s: %+v %v", route, out, err)
+					}
+					viewID = out["view_id"].(string)
+				}
+				panelID := viewID
+				fc, ok := h.formOf(ctx, panelID)
+				if !ok || fc.WindowID != window || !fc.Panel {
+					t.Fatalf("the panel's context: %+v (ok %v), want a panel in window %s", fc, ok, window)
+				}
+				child, err := h.openSlot(ctx, slotRequest{ReplID: "own-tab-child", Plugin: "p", Route: "/forms/a", Ctx: childContext(fc, false), Focus: true})
+				if err != nil || child["status"] != "opened" {
+					t.Fatalf("open the form: %+v %v", child, err)
+				}
+				formID := child["view_id"].(string)
+				if h.viewBlock(panelID) == "" {
+					t.Fatal("the form's open closed the panel: the tab now ends with the form")
+				}
+				cc, _ := h.formOf(ctx, formID)
+				if err := h.closeForm(ctx, formID, "Escape"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.formEnded(ctx, formID, cc, false, ""); err != nil {
+					t.Fatal(err)
+				}
+				if h.viewBlock(panelID) == "" {
+					t.Fatal("after Escape the panel is closed")
+				}
+				var sv struct {
+					Windows []struct {
+						WindowID string `json:"window_id"`
+					} `json:"windows"`
+				}
+				if err := r.Call(ctx, "session.view", map[string]any{"session_id": sess}, &sv); err != nil {
+					t.Fatal(err)
+				}
+				alive := false
+				for _, w := range sv.Windows {
+					alive = alive || w.WindowID == window
+				}
+				if !alive {
+					t.Fatal("after Escape the panel's tab is gone")
+				}
+			})
+		}
 	}
 }

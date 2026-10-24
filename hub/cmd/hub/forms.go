@@ -83,9 +83,10 @@ type formContext struct {
 	// UnderBlock (ui_slot "layer") is the window's focused tiled block before the slot's first
 	// layer opened; a replacement keeps it. A closed form's return takes the focus only from it.
 	UnderBlock string `json:"under_block_id,omitempty"`
-	// OwnTab marks the first view of a tab of its own (openFormTab). Such a panel is not its
-	// tab's slot occupant (slotOccupant): a form that it opens goes beside it, so the tab never
-	// ends with a form whose close would remove it.
+	// OwnTab marks the root view of a tab of its own: the first view (openFormTab), or a view
+	// that replaced the root (newSlotRow). A root panel is not its tab's slot occupant
+	// (slotOccupant): a form that it opens goes beside it, so the tab never ends with a form whose
+	// close would remove it.
 	OwnTab bool `json:"own_tab,omitempty"`
 }
 
@@ -1018,7 +1019,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 // childContext is the context of a form or panel that a view's action opens from fc.
 func childContext(fc formContext, panel bool) formContext {
 	sc := fc
-	sc.Panel, sc.Return, sc.OwnTab = panel, nil, false
+	sc.Panel, sc.Return = panel, nil // newSlotRow sets OwnTab
 	return sc
 }
 
