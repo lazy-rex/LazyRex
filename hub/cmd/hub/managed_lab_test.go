@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Lab tests of managed entries (docs/plugin-sources.md, section 13). Lab only: HARNESS_LAB=1.
+// Lab tests of managed entries (docs/plugin-sources.md, section 13). Lab only: LAZYREX_LAB=1.
 
 // writeManagedFile writes the default managed file <state>/plugins.json of the lab hub.
 func (s *startLab) writeManagedFile(body string) {

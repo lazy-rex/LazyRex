@@ -12,11 +12,9 @@ import (
 )
 
 // lazyrex-hub stop and status with the real binary, a restart wrapper and its own lab server
-// (docs/hub.md, "Stop and status"). Lab only: SHUTDOWN_LAB=1.
+// (docs/hub.md, "Stop and status"). Lab only: LAZYREX_LAB=1.
 func TestStopStatusLab(t *testing.T) {
-	if os.Getenv("SHUTDOWN_LAB") != "1" {
-		t.Skip("set SHUTDOWN_LAB=1 to run the stop and status lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

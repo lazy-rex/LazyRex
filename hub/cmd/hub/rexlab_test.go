@@ -11,8 +11,17 @@ import (
 	"time"
 )
 
+// needLab skips a lab test unless LAZYREX_LAB=1 (docs/testing.md, "Go lab tests"). Every lab test of the
+// hub calls it; a gate for a documented exception (a known limit, a diagnostic) is separate.
+func needLab(t *testing.T) {
+	t.Helper()
+	if os.Getenv("LAZYREX_LAB") != "1" {
+		t.Skip("set LAZYREX_LAB=1 to run the lab tests (each starts its own lab server)")
+	}
+}
+
 // rexLab starts a lab with only its Rex server (o.startLab, no hub) for a Go lab test that runs an
-// in-process Hub against a real server. Lab only: HARNESS_LAB=1 and the rex CLI. The test binary
+// in-process Hub against a real server. Lab only: LAZYREX_LAB=1 and the rex CLI. The test binary
 // is the keeper (TestMain, labKeeperEnv), so nothing is built. The cleanup stops the server and
 // ends the lab dir with endGoLab: a passed test removes it, a failed one keeps it.
 //
@@ -21,9 +30,7 @@ import (
 // cfg.Server to l.server.
 func rexLab(t *testing.T) *lab {
 	t.Helper()
-	if os.Getenv("HARNESS_LAB") != "1" {
-		t.Skip("set HARNESS_LAB=1 to run the lab tests")
-	}
+	needLab(t)
 	rexBin, err := exec.LookPath("rex")
 	if err != nil {
 		t.Skip("no rex CLI")

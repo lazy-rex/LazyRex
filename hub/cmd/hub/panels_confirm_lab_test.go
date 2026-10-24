@@ -11,7 +11,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// The confirm step of a side-slot replacement, against a real Rex lab (rexLab: HARNESS_LAB=1):
+// The confirm step of a side-slot replacement, against a real Rex lab (rexLab: LAZYREX_LAB=1):
 // cases B, C, E and F of the former tests/panels-lab.mjs (its case A is
 // TestSlotReturnOccupiedAndNoFocusLab). The old panel's renderer is a lab client that answers
 // view.release with confirm; the user's choice is the call that the real renderer sends,

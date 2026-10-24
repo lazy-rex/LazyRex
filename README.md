@@ -193,5 +193,5 @@ Plugin tests are Lua files that run against the real hub on an isolated lab serv
 `lazyrex-hub test` in the plugin repository (see [docs/testing.md](docs/testing.md)).
 
 - `cd hub && go test ./...` and `cd view && go test ./...`
-- The lab tests start their own lab servers (`HARNESS_LAB=1` and the other gates in
+- The lab tests start their own lab servers (`LAZYREX_LAB=1`; the exceptions are in
   [docs/testing.md](docs/testing.md)). Never point tests at your own Rex server.

@@ -9,4 +9,4 @@
 - `hub.peer.send` to the peer `away` (manifest `test.peers`, a server that does not exist) queues
   the envelope; `hub.peer.status` (harness `H.peer_status`) shows it in the outbox.
 
-Not covered here: delivery between two real hubs. `TestPeerHubsLab` (HARNESS_LAB=1) covers that.
+Not covered here: delivery between two real hubs. `TestPeerHubsLab` (LAZYREX_LAB=1) covers that.

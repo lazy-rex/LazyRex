@@ -12,7 +12,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// worktreeLab starts a lab Rex server (rexLab: HARNESS_LAB=1) and returns a 45 s context and the
+// worktreeLab starts a lab Rex server (rexLab: LAZYREX_LAB=1) and returns a 45 s context and the
 // lab. worktreeDial opens one more connection to it.
 func worktreeLab(t *testing.T) (context.Context, *lab) {
 	t.Helper()

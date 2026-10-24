@@ -15,8 +15,17 @@ import (
 	"time"
 )
 
+// needLab skips a lab test unless LAZYREX_LAB=1 (docs/testing.md, "Go lab tests"). RESIZE_BURST_LAB (a
+// known limit) and TEAPROBE_LAB (a diagnostic) are separate gates.
+func needLab(t *testing.T) {
+	t.Helper()
+	if os.Getenv("LAZYREX_LAB") != "1" {
+		t.Skip("set LAZYREX_LAB=1 to run the lab tests (each starts its own lab server)")
+	}
+}
+
 // chunkLab is a lab server and a hub (-test) with one plugin, and real renderer panes (docs/hub.md
-// "Reply parts"). Lab only: CHUNK_LAB=1.
+// "Reply parts"). Lab only: LAZYREX_LAB=1.
 type chunkLab struct {
 	t       *testing.T
 	lab     string
@@ -30,9 +39,7 @@ type chunkLab struct {
 }
 
 func newChunkLab(t *testing.T, plugin, source string) *chunkLab {
-	if os.Getenv("CHUNK_LAB") != "1" {
-		t.Skip("set CHUNK_LAB=1 to run the reply parts lab tests (they start their own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)

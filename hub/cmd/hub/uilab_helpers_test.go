@@ -11,7 +11,7 @@ import (
 )
 
 // uiLabHub is a hub on a real Rex lab with the UI worker's state and no plugin. Lab only (rexLab:
-// HARNESS_LAB=1). The "renderer" is a shell loop that keeps its arguments (the view ID), so the
+// LAZYREX_LAB=1). The "renderer" is a shell loop that keeps its arguments (the view ID), so the
 // hub's process proofs work.
 func uiLabHub(t *testing.T) *Hub {
 	t.Helper()

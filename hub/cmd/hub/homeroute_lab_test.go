@@ -15,7 +15,7 @@ import (
 // view, so the test makes one: a form of the home plugin at route "/" in the LazyRex session,
 // whose pane request had an unknown outcome when the hub stopped. At start the hub adopts it, and
 // the renderer gets the hub's error tree. The hub log names the plugin's reason.
-// Lab only: HARNESS_LAB=1.
+// Lab only: LAZYREX_LAB=1.
 func TestHomeRouteRefusedLab(t *testing.T) {
 	bin, root := harnessBinary(t)
 	rexBin, err := exec.LookPath("rex")

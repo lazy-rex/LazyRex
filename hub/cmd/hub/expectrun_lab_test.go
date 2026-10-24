@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Lab tests of expect_run (docs/plugin-sources.md, section 14). Lab only: HARNESS_LAB=1.
+// Lab tests of expect_run (docs/plugin-sources.md, section 14). Lab only: LAZYREX_LAB=1.
 
 // expectEntry returns the hub.plugins entry of the plugin name.
 func (s *startLab) expectEntry(name string) map[string]any {

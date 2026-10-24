@@ -525,7 +525,7 @@ It is for labs only: the hub refuses it with `-real-server`. The valid points ar
 - `point=palette-start,mode=fail`: the hub start waits for the first palette write attempt (a
   failed write also counts), then runs the palette stop. The stop write follows the ownership and
   failure rules in docs/hub.md, "Stop and exit status". The start then fails, and the hub exits 1.
-  Test: `TestHubPaletteStartFailsLab` (`PALETTE_LAB=1`).
+  Test: `TestHubPaletteStartFailsLab` (`LAZYREX_LAB=1`).
 
 ### Waiting
 
@@ -653,7 +653,7 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
   temporary dir (never the real home) that hold a sentinel, and an outer secret variable. No lab
   process finds the sentinel through `HOME` or `XDG_CONFIG_HOME` or gets the secret. The outer
   `HOME` does not change, and no lab file contains the secret.
-- `HARNESS_LAB=1 go test -run TestHarness ./cmd/hub` (in `hub/`) runs both, and also checks an
+- `LAZYREX_LAB=1 go test -run TestHarness ./cmd/hub` (in `hub/`) runs both, and also checks an
   empty `-run` match and an interrupt. It checks that no lab process survives.
 
 ## Go lab tests
@@ -661,35 +661,32 @@ missed it. Observed on Rex `0.0.1792158932-g88fd41`: with no default server, `se
 A Go lab test of the hub (`hub/cmd/hub/*_lab_test.go`) starts its own lab Rex server. No lab test
 reads a socket from an env var.
 
-`HARNESS_LAB=1 go test ./cmd/hub` runs the tests gated on `HARNESS_LAB` (rexLab,
-harnessBinary). The tests behind their own gates (`PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and
-`HUBCTL_LAB`) also start their own servers, but they skip unless their gate is set.
+One gate, `LAZYREX_LAB=1`, runs every lab test of the hub (`needLab`, `rexlab_test.go`) and of the view
+(`needLab`, `view/chunk_lab_test.go`). Without it they skip. It replaces the old gates
+`HARNESS_LAB`, `SHUTDOWN_LAB`, `PALETTE_LAB`, `SETUP_LAB`, `HUBCTL_LAB`, `MODE_LAB`, `CHUNK_LAB`
+and `HUBUNAVAIL_LAB`: a run with only an old name skips the labs. Commands: `LAZYREX_LAB=1 go test
+./cmd/hub` in `hub/`, and `LAZYREX_LAB=1 go test -count=1 -v -run 'Lab$' .` in `view/`.
 
 The thread view's lab tests (`view/*_lab_test.go`) build the view and the hub and start their own
-lab server too:
+lab server too. Named exceptions, each with its own variable:
 
-| Gate | Command (in `view/`) | What it runs |
+| Variable | Command (in `view/` or `hub/`) | Why it is separate |
 | --- | --- | --- |
-| `MODE_LAB=1` | `go test -count=1 -v -run 'Lab$' .` | The thread-view labs on a real pane: FocusWindow, ShortPane, Print, ReloadLeavesNoLiveRows, OpenWindow, NewlineKeys, Resize, LateMessage, LiveRegionResize and ComposerGrow (lead-labenv2: part of the main lab). |
-| `CHUNK_LAB=1` | `go test -count=1 -v -run 'Lab$' .` | The reply parts labs (TestReplyPartsHoldLab, TestReplyPartsTimingLab); not in the main lab. |
-| `HUBUNAVAIL_LAB=1` | `go test -count=1 -v -run 'TestNoHubTextLab$' .` | The view text when no hub answers; not in the main lab. |
-| `RESIZE_BURST_LAB=1` (with `MODE_LAB=1`) | `go test -count=1 -v -run 'TestLiveRegionResizeBurstLab$' .` | The no-wait resize burst, a known limit (view/README.md); off in the main lab. |
-| `TEAPROBE_LAB=1` | `go test -count=1 -v -run 'TestTeaProbe' .` | The Bubble Tea and Rex facts (docs/rex-protocol.md); it records, and fails only when the lab fails. |
-| `VIEW_TEA_TRACE=1` (with a gate above) | | Each view process logs its renderer writes to `<lab>/tea-<pid>.log`. |
+| `RESIZE_BURST_LAB=1` (with `LAZYREX_LAB=1`) | `go test -count=1 -v -run 'TestLiveRegionResizeBurstLab$' .` | The no-wait resize burst, a known limit (view/README.md); off in the main lab. |
+| `TEAPROBE_LAB=1` | `go test -count=1 -v -run 'TestTeaProbe' .` | The Bubble Tea and Rex facts (docs/rex-protocol.md), a diagnostic: it records, and fails only when the lab fails. Not a `*Lab` test. |
+| `VIEW_TEA_TRACE=1` (with `LAZYREX_LAB=1`) | | A trace: each view process logs its renderer writes to `<lab>/tea-<pid>.log`. |
+| `MESSAGING_DIR`, `TWOHOST_*` | | Inputs of `TestPeerMessagingLab` and `TestTwoHostLab`, not gates. |
 
-The main lab is the full lab that runs on hub main after each push. It sets `HARNESS_LAB`,
-`PALETTE_LAB`, `SHUTDOWN_LAB`, `SETUP_LAB` and `HUBCTL_LAB` (together about 40 s more on Linux).
-Then it runs the view labs: `MODE_LAB=1 CHUNK_LAB=1 HUBUNAVAIL_LAB=1 go test . -count=1 -v -run
-'Lab$'` in `view/`, with its own log and summary line. Every gate of a test that this command
-selects is on, except a gate for a documented known limit: `RESIZE_BURST_LAB` stays off. The
-`TEAPROBE_LAB` diagnostics are not `*Lab` tests, and the main lab does not run them. A red view
-step is a red main, as a red hub step is. The first lines of each main lab log name the tip and the
-envs.
+The main lab is the full lab that runs on hub main after each push. It runs `LAZYREX_LAB=1 go test
+./cmd/hub` in `hub/`, then `LAZYREX_LAB=1 go test . -count=1 -v -run 'Lab$'` in `view/` (the thread-view
+labs, the reply parts labs and the no-hub text lab), with its own log and summary line. Only the
+named exceptions stay off. A red view step is a red main, as a red hub step is. The first lines of
+each main lab log name the tip and the envs.
 
 - A test that runs the hub binary uses `o.startLab` and `o.startHub` (`TestSessionRenameKeptLab`).
 - A test that runs an in-process `Hub` uses `rexLab(t)` (`rexlab_test.go`). It starts only the lab
   Rex server (`o.startLab`, no hub), with the test binary as the keeper. It skips without
-  `HARNESS_LAB=1` or the rex CLI. It fails if the socket is not inside the lab dir, and it sets
+  `LAZYREX_LAB=1` or the rex CLI. It fails if the socket is not inside the lab dir, and it sets
   the test's `REX_SERVER` to the lab server. The test sets its Hub's `cfg.Server` to `l.server`.
   The cleanup stops the server and ends the lab dir with `endGoLab`.
 - Each test gets a new server. An in-process hub claims state for the whole server (the UI

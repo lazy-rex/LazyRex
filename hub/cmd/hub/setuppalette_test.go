@@ -59,11 +59,9 @@ func TestSetupBootAndHubPaletteNames(t *testing.T) {
 
 // One lab server loads init.lua as setup writes it, the boot file and the hub's full file, then
 // the hub's stop file: each config load succeeds, and the palette has the boot entries every time.
-// Lab only: PALETTE_LAB=1.
+// Lab only: LAZYREX_LAB=1.
 func TestSetupBootAndHubPaletteLab(t *testing.T) {
-	if os.Getenv("PALETTE_LAB") != "1" {
-		t.Skip("set PALETTE_LAB=1 to run the palette lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

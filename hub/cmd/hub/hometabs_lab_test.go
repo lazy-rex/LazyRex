@@ -14,7 +14,7 @@ import (
 	"github.com/lazy-rex/LazyRex/hub/rex"
 )
 
-// Home-session tabs (hometabs.go) against a real Rex lab. Lab only (rexLab: HARNESS_LAB=1). The
+// Home-session tabs (hometabs.go) against a real Rex lab. Lab only (rexLab: LAZYREX_LAB=1). The
 // hub runs in the test process with no UI worker: each pass feeds the Rex events that arrived, in
 // the order they arrived, to handleEvent, then runs one reconcile. So these tests check the rows
 // and the panes that Rex reports, not the worker's scheduling. The "renderer" is a shell loop that

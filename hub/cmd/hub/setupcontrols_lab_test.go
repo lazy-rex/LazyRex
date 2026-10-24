@@ -15,7 +15,7 @@ import (
 // writes, and the test runs each entry as the palette does (rex do <action> in a session). Each
 // entry opens a pane; the test reads the pane's screen and the exit code of its command (Rex shows
 // the output in the kept pane, not the exit status: block process last_exit). Lab only:
-// HUBCTL_LAB=1. The hub.json names the lab server, so no command gets -real-server.
+// LAZYREX_LAB=1. The hub.json names the lab server, so no command gets -real-server.
 func TestHubControlsLab(t *testing.T) {
 	hubControlsLab(t, false)
 }
@@ -28,9 +28,7 @@ func TestHubControlsLabUnknownPlugins(t *testing.T) {
 }
 
 func hubControlsLab(t *testing.T, failPlugins bool) {
-	if os.Getenv("HUBCTL_LAB") != "1" {
-		t.Skip("set HUBCTL_LAB=1 to run the hub controls lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

@@ -12,11 +12,9 @@ import (
 )
 
 // The hub's own palette entries through Rex: a lab server's config loads the generated file, and each
-// entry reaches its admin action on the hub (docs/hub.md, "Agent resume"). Lab only: PALETTE_LAB=1.
+// entry reaches its admin action on the hub (docs/hub.md, "Agent resume"). Lab only: LAZYREX_LAB=1.
 func TestHubPaletteLab(t *testing.T) {
-	if os.Getenv("PALETTE_LAB") != "1" {
-		t.Skip("set PALETTE_LAB=1 to run the hub palette lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)
@@ -95,9 +93,7 @@ func TestHubPaletteLab(t *testing.T) {
 // A start that fails after the first palette write (the lab fault palette-start) runs the stop
 // write too: the file is the header alone, and the hub exits 1.
 func TestHubPaletteStartFailsLab(t *testing.T) {
-	if os.Getenv("PALETTE_LAB") != "1" {
-		t.Skip("set PALETTE_LAB=1 to run the hub palette lab test (it starts its own lab server)")
-	}
+	needLab(t)
 	root, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatal(err)

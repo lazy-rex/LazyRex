@@ -11,12 +11,9 @@ import (
 )
 
 // newModeLab is a chunk lab (lab server, hub -test, real renderer panes) with the plugin
-// testdata/modelab. Lab only: MODE_LAB=1.
+// testdata/modelab. Lab only: LAZYREX_LAB=1.
 func newModeLab(t *testing.T) *chunkLab {
-	if os.Getenv("MODE_LAB") != "1" {
-		t.Skip("set MODE_LAB=1 to run the thread view mode labs (they start their own lab server)")
-	}
-	t.Setenv("CHUNK_LAB", "1") // newChunkLab's own gate
+	needLab(t)
 	l := newChunkLab(t, "modelab", "view/testdata/modelab")
 	b, _ := json.Marshal(map[string]any{"plugin": "modelab", "sql": "SELECT count(*) FROM clicked", "params": []any{}})
 	f := filepath.Join(l.lab, "tables.json")
@@ -667,7 +664,7 @@ func TestLiveRegionResizeLab(t *testing.T) {
 // TestLiveRegionResizeBurstLab: the same pane gets two sizes with no wait between them, as an app
 // does when it lays out a pane that it shows. It is a known limit (view/README.md, "Known
 // limits"): one run at 027b8718 left 2 copies of the actions after 120x40 then 70x18. Lab only:
-// RESIZE_BURST_LAB=1 with MODE_LAB=1; VIEW_TEA_TRACE=1 keeps each view's renderer writes.
+// RESIZE_BURST_LAB=1 with LAZYREX_LAB=1; VIEW_TEA_TRACE=1 keeps each view's renderer writes.
 func TestLiveRegionResizeBurstLab(t *testing.T) {
 	if os.Getenv("RESIZE_BURST_LAB") != "1" {
 		t.Skip("known defect: resize burst leaves stale rows (lead-tvburst); set RESIZE_BURST_LAB=1 to run it")

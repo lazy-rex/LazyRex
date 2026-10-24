@@ -11,7 +11,7 @@ import (
 )
 
 // hub.cwd.lock asks Rex for every terminal pane's live cwd, in every session: a shell that ran cd
-// into the path refuses the lock, though no hub record names it. Lab only (rexLab: HARNESS_LAB=1).
+// into the path refuses the lock, though no hub record names it. Lab only (rexLab: LAZYREX_LAB=1).
 func TestCwdLockLivePanesLab(t *testing.T) {
 	l := rexLab(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

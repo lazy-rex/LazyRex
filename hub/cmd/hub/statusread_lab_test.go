@@ -10,7 +10,7 @@ import (
 
 // TestStatusReadNeedsAttach records a Rex fact on a lab server: a connection reads a pane's
 // program status (com.superlogical.terminal.program_status) only after it attaches the pane's
-// session. Lab only (rexLab: HARNESS_LAB=1).
+// session. Lab only (rexLab: LAZYREX_LAB=1).
 func TestStatusReadNeedsAttach(t *testing.T) {
 	socket := rexLab(t).socket
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
