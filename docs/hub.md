@@ -2567,7 +2567,7 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
     byte calls, <n> bytes in <d>s`.
   - Observed on Rex 0.0.1792158932-g88fd41 (`TestPeerFetchLab`, two lab hubs on one Mac): with a
     64 KiB source reply limit (`test_reply_limit`), a tree of 575 files and about 5.5 MB took 2
-    tree calls and 117 to 118 byte calls, in 5.3 to 5.4 s. The 120 s bound fits; at 16 MiB the
+    tree calls and 117 to 119 byte calls, in 5.1 to 5.7 s (two runs, six fetches). The 120 s bound fits; at 16 MiB the
     same rate gives about 16 s.
   - A source cache entry that no longer verifies makes the source hub refuse its whole pin
     document (`hub.peer.plugins`, "Read"), not only that plugin. So the receiver updates no entry
