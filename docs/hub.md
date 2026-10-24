@@ -655,7 +655,7 @@ Each plugin row records the session of its instance (`plugins.session_id`, and `
 - The admin guard (`hub.admin.*`, and `hub.plugins.reload` from a caller that is not a registered instance) refuses a caller in an agent or plugin pane. It walks the caller's process ancestry from the Rex-attested pid. Three outcomes: a match (refused), a complete walk to pid 1 without a match (allowed: an operator), and an incomplete walk (refused): the caller has no pid (a missing pid, or a TCP caller: TCP has no pid), a process information read failed, a process in the chain ended, a parent is 0 before pid 1, or the walk passed 64 processes. Only a walk that reaches pid 1 is complete. Text: `cannot check the caller's process ancestry: <error>; admin actions need a verified caller`. A match found before the walk fails still counts. The guard checks the call, not the keys in a view: an action that a view offers runs from its renderer pane (residual risk: "Restart form"). Checks that allow only on a match (registration, view ownership, `hub.identify`) treat an incomplete walk as no match, so they refuse too.
 - Plugin operations (option C, the user's decision of 2026-10-19).
   - Status (checkpoint 1, the hub lead's condition 4): main has the op service, the lock writer, the update and remove phases, and the tags and log loads. C8 adds the manager views (the home plugin's "Plugins…", below). The real GitHub add and update labs with mirrors (C6) and the legacy sweep (C9) come after it.
-  - Agents do not pass the admin guard. They start, stop, restart, remove, update and change the settings of plugin entries through `hub.plugins.op {key, op, entry, input?, expect?}` on the agent face (`lazyrex`) only. The caller must be a current conversation, so a plugin process is refused. `entry` is `managed:<id>` or the exact source of a config entry; `settings` (`input {args, watch_roots}`) and `remove` change only managed entries. `settings` takes an optional `expect {args, watch_roots}` (from an agent or the user's panel): the values that the caller read. If the managed entry has other values at admission, the hub refuses with code `conflict` and the text "the settings changed since they were shown", and stores nothing. An input equal to the current values ends the op at admission: `done`, result `no change`, with no write and no reload. A missing field and an empty one are equal. Only `start` and `settings` have `expect`; an agent gives it for `settings` only. The home plugin entry cannot be stopped or removed. The same key with another request is `operation_conflict`; the same request returns the existing op. An agent's `add` is refused with code `user_only` and the text "add needs the user: ask the user to open LazyRex: Plugins…": the user confirms a new source. B9 removed for update by user decision (2026-10-23): an agent's `update` (a managed GitHub entry, `input {to}`) is admitted as the user's is. `to` is `"@"`, `"latest"` or a tag name. `"@"` is a refresh: the source stays, and `resolving` resolves the entry's own ref again, so a branch gives its tip, `latest` the newest release, and a tag the commit the tag names now (no change unless the tag was moved; with no change the op ends `done`, "already at <source> <commit>"). It is the same path as an explicit update to that ref, with no tag rule of its own (lead-c2t). The lock base of a refresh is the old key only. `latest` and a tag move the entry to that ref. The outcome is the op: read `hub.plugins.ops {op_id}` until the phase is final (`done`, also with "already at", `failed`, `conflict` or `unknown`).
+  - Agents do not pass the admin guard. They start, stop, restart, remove, update and change the settings of plugin entries through `hub.plugins.op {key, op, entry, input?, expect?}` on the agent face (`lazyrex`) only. The caller must be a current conversation, so a plugin process is refused. `entry` is `managed:<id>` or the exact source of a config entry; `settings` (`input {args, watch_roots, fetch}`) and `remove` change only managed entries. `settings` takes an optional `expect {args, watch_roots, fetch}` (from an agent or the user's panel): the values that the caller read. If the managed entry has other values at admission, the hub refuses with code `conflict` and the text "the settings changed since they were shown", and stores nothing. An input equal to the current values ends the op at admission: `done`, result `no change`, with no write and no reload. A missing field and an empty one are equal. Only `start` and `settings` have `expect`; an agent gives it for `settings` only. The home plugin entry cannot be stopped or removed. The same key with another request is `operation_conflict`; the same request returns the existing op. An agent's `add` is refused with code `user_only` and the text "add needs the user: ask the user to open LazyRex: Plugins…": the user confirms a new source. B9 removed for update by user decision (2026-10-23): an agent's `update` (a managed GitHub entry, `input {to}`) is admitted as the user's is. `to` is `"@"`, `"latest"` or a tag name. `"@"` is a refresh: the source stays, and `resolving` resolves the entry's own ref again, so a branch gives its tip, `latest` the newest release, and a tag the commit the tag names now (no change unless the tag was moved; with no change the op ends `done`, "already at <source> <commit>"). It is the same path as an explicit update to that ref, with no tag rule of its own (lead-c2t). The lock base of a refresh is the old key only. The refresh and every other `update` do not apply to an entry with `"fetch": "peer"`: the hub refuses them, and the plugin sync updates that entry. To update it from GitHub, first set `fetch` to `"github"` ("Plugin sync", "Fetch from the peer"; lead-plugsrc5). `latest` and a tag move the entry to that ref. The outcome is the op: read `hub.plugins.ops {op_id}` until the phase is final (`done`, also with "already at", `failed`, `conflict` or `unknown`).
   - Exception for new GitHub code (the user's decision of 2026-10-21): every start passes `expect_run`. An agent's start of a GitHub entry is admitted only when the candidate is the plugin's last run, and only that run starts. A new candidate, or no run, is `user_confirmation_required`: the user confirms it in the plugins panel. The panel's start names the run that it showed.
   - The add of an offer (the same rule for new code from a peer hub; the hub lead's lead-offer4): a user's `add` with `input {source, id}` and `target` = the complete offer `{peer, id, source, pin}` of `hub.plugins` `offered`. The input source and id must be the offer's, and the id must not be `""`. Admission compares the complete offer with the current offers of the `plugins_from` peer: any other value (another id at the same pin, another commit, ref, tag, digest or peer, or no offer) is `candidate_changed` ("the offered code changed since it was shown"), and nothing starts. The admitted pin is the op's stored target, as for a peer update: `resolving` resolves nothing, and `fetching` fetches the commit by its ID and must get the pin's digest, else `failed`. A change of the offer after admission does not change what the op starts. Only a user's add of an offer and a peer update give `target`; the other add rules (a free id, no entry of the same repository) stay.
   - A peer update (multi-hub plugin sync, `peersync.go`; the hub lead's lead-fed-r1 item 4): origin `{kind: "peer", id: <peer hub name>}`, an `update` of a managed entry with `target`, a pin document entry of the peer (plugin-sources.md, section 6a), and no `input`. Only a peer gives `target`, and a peer gives nothing else. The target must be the same repository and subdir; its ref can differ. It is the stored target, so `resolving` resolves nothing; `fetching` fetches the commit by its ID and must get the peer's digest, else `failed` with the lock and the managed file unchanged. The other phases are those of an update. Limit: the release tag of a latest target is the peer's claim; the fetch checks only that the commit's tree gives the peer's digest. A peer update needs no user confirm (the user's own peer config is the grant); a source that the hub does not have is not added by a peer.
@@ -2318,6 +2318,8 @@ Each hub pulls from its peers. A hub never pushes data.
 | `hub.peer.nudge` | a peer hub | `hub` | `{}` |
 | `hub.peer.plugins` | a peer hub | `hub` | `{pins, managed: [{id, source}]}` ("Plugin sync") |
 | `hub.peer.agents` | a peer hub | `hub` | `{agents: [{id, name, kind, state, joined}]}` ("Peer agents") |
+| `hub.peer.plugin_tree` | a peer hub | `hub`, `source`, `commit`, `digest`, `from` | `{files: [{path, exec, size, sha256}], from, next, count, size}` ("Plugin sync", "Fetch from the peer") |
+| `hub.peer.plugin_bytes` | a peer hub | `hub`, `source`, `commit`, `digest`, `offset` | `{data, offset, end}` ("Plugin sync", "Fetch from the peer") |
 | `hub.peer.status` | any client, agent face | none | `{hub_name, peers: [...]}` |
 
 - **Target.** `plugin` names the plugin on the peer that gets the envelope. It must match the
@@ -2461,7 +2463,7 @@ an unknown agent on B is dropped on B with a log line; A gets no bounce in v1.
 v1 has no puller authentication. Any client that reaches the Rex server of hub A can call
 `hub.peer.pull` with any peer name. That client can read the envelopes for that peer, and can ack
 them, which removes their bodies. The same client can call `hub.peer.plugins` with any peer name
-and read the hub's plugin sources and pins ("Plugin sync"), and `hub.peer.agents` to read its
+and read the hub's plugin sources and pins ("Plugin sync"), `hub.peer.plugin_tree` and `hub.peer.plugin_bytes` to read the files of its pinned plugins, and `hub.peer.agents` to read its
 agents ("Peer agents"). The peer check of these actions is a
 name check, not authentication. The network (the tailnet) is the boundary. Connect only Rex
 servers on a network that you trust.
@@ -2520,9 +2522,65 @@ hub). The code is in `hub/cmd/hub/peersync.go`. The rules are the hub lead's lea
   is down, or the reply does not decode), the lists stay. Other rows have no `plugin_sync`.
 - **Limit.** The release tag of a latest pin is the source hub's claim; the fetch checks only that
   the commit's tree gives the pin's digest.
+- **Fetch from the peer.** A managed GitHub entry can take its files from the `plugins_from` peer,
+  not from GitHub (user decision 1; lead-plugsrc to lead-plugsrc5; `peerfetch.go`). Use it on a hub
+  with no GitHub access.
+  - The choice is the managed entry's field `"fetch"`: `"github"` (the default) or `"peer"`
+    (plugin-sources.md, section 13). Set it with `hub.plugins.op` `settings` (`input {fetch}`,
+    also in `expect`), or in the confirm form of an offer (the add of an offer takes `fetch`). Only
+    a hub with a `plugins_from` peer can set `"peer"`; else `invalid: fetch peer needs a
+    plugins_from peer`. The choice changes only where the bytes come from: the pin, the lock
+    entry, the cache path and every phase after `fetching` are the same. A change of `fetch` alone
+    fetches nothing; the reload takes the new value.
+  - The plugin sync updates a peer entry. A user or agent `update` of it is refused: `invalid:
+    managed:<id> fetches from the peer; the plugin sync updates it (set fetch github to update it
+    from GitHub)`.
+  - An install of a peer entry (no cache entry on this hub) fetches its locked commit from the
+    peer. With no lock entry, the target is the peer's pin of the exact source (`hub.peer.plugins`);
+    with no such pin, the install fails (`the peer <p> has no pin for <source>`). No git runs.
+  - The source hub serves two read-only actions. Each one checks `hub` as the other peer actions
+    do (a name check, "Trust limit"), then serves only a pin that its lock has at that commit with
+    that digest and whose cache entry verifies. Each call verifies again. Else it refuses
+    `not_cached` ("<source> at <commit> is not in this hub's verified cache"). It never serves a
+    local source or a working checkout.
+    - `hub.peer.plugin_tree {hub, source, commit, digest, from}` gives one page of the file list
+      in digest order, from line `from`: `{files: [{path, exec, size, sha256}], from, next, count,
+      size}`. `count` is the number of files, `size` the sum of their sizes; `next` is the `from`
+      of the next page, and null after the last page.
+    - `hub.peer.plugin_bytes {hub, source, commit, digest, offset}` gives `{data, offset, end}`:
+      `data` is base64 of the bytes `[offset, end)` of the files, joined in the list order. The
+      source hub sizes each part: at most 512 KiB encoded, or less when its Rex reply limit is
+      smaller (`peerServeBudget`). `end` = `size` is the last part. The receiver asks again from
+      `end`; it never assumes a part size.
+  - The receiver checks the list before it writes a byte. Each page must answer its `from`, with
+    the `count` and `size` of the first page. The lines must total `count` and `size`. The list
+    must give the pin's digest. Paths must be relative, clean and sorted, with no duplicate and no
+    path under a file. Bounds: 10 000 files and 16 MiB. While it writes, each file must have the
+    size and sha256 of its line, and the bytes must stop at `size`. Then the stage directory must
+    give the pin's digest, and only then is it published. A failed check, a refusal or the 120 s
+    bound of `fetching` discards the stage: the op ends `failed` with the reason, and the
+    installed plugin stays. There is no fallback to GitHub. The next sync tries again (the
+    5-minute rule of "Ops").
+  - Logs. The source hub logs each call: `peer <hub>: plugin_tree <source> <commit> from <n>: <k>
+    files` and `peer <hub>: plugin_bytes <source> <commit> offset <n>: <k> bytes`. The receiver
+    logs each fetch: `plugin op <id>: fetched <name> <commit> from peer <p>: <t> tree calls, <b>
+    byte calls, <n> bytes in <d>s`.
+  - Observed on Rex 0.0.1792158932-g88fd41 (`TestPeerFetchLab`, two lab hubs on one Mac): with a
+    64 KiB source reply limit (`test_reply_limit`), a tree of 575 files and about 5.5 MB took 2
+    tree calls and 117 to 118 byte calls, in 5.3 to 5.4 s. The 120 s bound fits; at 16 MiB the
+    same rate gives about 16 s.
+  - A source cache entry that no longer verifies makes the source hub refuse its whole pin
+    document (`hub.peer.plugins`, "Read"), not only that plugin. So the receiver updates no entry
+    of that peer until the source hub installs the locked commit again, at its next start or
+    reload (observed in the lab: a restart of the source hub).
+  - **Limit.** The receiver proves that the files are the files of the peer's pin (the digest).
+    It does not prove that they are the files of that GitHub commit, because the pin comes from
+    the same peer. With the user's own hubs on one tailnet, this is the trust of the pin itself.
+    Named later step: the source hub keeps a git bundle of each pin, and the receiver fetches the
+    commit from it, so the commit ID proves the files.
 - **Refresh.** A refresh on a receiving hub is overwritten at the next sync: the source hub's pin
   wins (lead-c2sync). So run a refresh (`update` to `"@"`) only on a hub with no `plugins_from`
-  peer.
+  peer. A peer entry refuses every `update` ("Fetch from the peer").
 
 ### Not in v1
 
