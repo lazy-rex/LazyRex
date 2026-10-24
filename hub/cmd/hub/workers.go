@@ -716,7 +716,7 @@ func (h *Hub) spawnAdmitted(s *spawnRow, prof Profile) {
 // start an agent in it.
 func spawnArgv(s *spawnRow, prof Profile, resolved map[string]string) []string {
 	argv := []string{"/usr/bin/env"}
-	for _, k := range agentEnvUnset {
+	for _, k := range agentEnvUnset() {
 		argv = append(argv, "-u", k)
 	}
 	keys := make([]string, 0, len(prof.Env))

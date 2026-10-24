@@ -56,7 +56,7 @@ func runHook(args, self []string) int {
 		hookReport(args[1]) // returns only when it reports nothing
 		return 0
 	}
-	if len(args) != 1 || (args[0] != "claude" && args[0] != "codex") {
+	if len(args) != 1 || harnessOf(args[0]) == nil {
 		return 0
 	}
 	cmd := exec.Command(self[0], append(append([]string(nil), self[1:]...), "-reporter", args[0])...)
@@ -79,10 +79,36 @@ func runHook(args, self []string) int {
 	return 0
 }
 
+// hookEvent reads a hook event of kind: the report source and the conversation. ok is false for an
+// unknown kind, an event that the kind does not report (UserPromptSubmit needs promptReport), or a
+// bad source or conversation.
+func hookEvent(kind string, event map[string]any) (source, conversation string, ok bool) {
+	h := harnessOf(kind)
+	if h == nil {
+		return "", "", false
+	}
+	switch event["hook_event_name"] {
+	case "SessionStart":
+		source, _ = event["source"].(string)
+	case "UserPromptSubmit":
+		if !h.promptReport {
+			return "", "", false
+		}
+		source = "prompt"
+	default:
+		return "", "", false
+	}
+	conversation, _ = event["session_id"].(string)
+	if conversation == "" || strings.ContainsRune(conversation, 0) || !hookSources[source] {
+		return "", "", false
+	}
+	return source, conversation, true
+}
+
 // hookReport is the reporter. On success it does not return: it becomes `rex ... do
 // hub.identity.report`.
 func hookReport(kind string) {
-	if kind != "claude" && kind != "codex" {
+	if harnessOf(kind) == nil {
 		return
 	}
 	data, err := io.ReadAll(io.LimitReader(os.Stdin, hookInputLimit+1))
@@ -93,20 +119,8 @@ func hookReport(kind string) {
 	if json.Unmarshal(data, &event) != nil || event == nil {
 		return
 	}
-	var source string
-	switch event["hook_event_name"] {
-	case "SessionStart":
-		source, _ = event["source"].(string)
-	case "UserPromptSubmit":
-		if kind != "claude" {
-			return
-		}
-		source = "prompt"
-	default:
-		return
-	}
-	conversation, _ := event["session_id"].(string)
-	if conversation == "" || strings.ContainsRune(conversation, 0) || !hookSources[source] {
+	source, conversation, ok := hookEvent(kind, event)
+	if !ok {
 		return
 	}
 	bin := os.Getenv("REX_BIN")

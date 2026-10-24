@@ -71,16 +71,15 @@ type restartToken struct {
 	Refused  string `json:"refused,omitempty"`
 }
 
-var restartKinds = map[string]string{"claude": "Claude", "codex": "Codex"}
-
 // adminRestartForm handles hub.admin.restart.form {kind, ctx} from the hub's palette entry. The
 // admin guard runs before it (main.go). It opens the form in the window of ctx.block_id.
 func (h *Hub) adminRestartForm(ctx context.Context, p perform, args map[string]any) (any, error) {
 	kind, _ := args["kind"].(string)
-	title, ok := restartKinds[kind]
-	if !ok {
-		return nil, bad("kind must be claude or codex")
+	cli := harnessOf(kind)
+	if cli == nil {
+		return nil, bad("kind must be %s", harnessKinds())
 	}
+	title := cli.name
 	rc, _ := args["ctx"].(map[string]any)
 	// As in paletteRun: a config action's ctx.client_id is the client that ran it.
 	if cid, _ := rc["client_id"].(string); cid == "" || cid != p.Requester.ClientID {
@@ -340,7 +339,7 @@ func (h *Hub) restartFormAction(ctx context.Context, viewID, opKey, stored strin
 
 // restartFormRender is the form's tree. It only reads.
 func (h *Hub) restartFormRender(ctx context.Context, f *restartForm) (any, error) {
-	title := "Restart " + restartKinds[f.Kind] + " agents"
+	title := "Restart " + harnessName(f.Kind) + " agents"
 	closeAction := map[string]any{"name": "close", "label": "Close", "enabled": true, "user_only": restartUserOnly}
 	op, err := h.restartOp(ctx, f.Key)
 	if err != nil {

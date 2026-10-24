@@ -213,7 +213,7 @@ func hookFile(f *setupFile, kind, command string) {
 		}
 	}
 	events := []string{"SessionStart"}
-	if kind == "claude" {
+	if h := harnessOf(kind); h != nil && h.promptReport {
 		events = append(events, "UserPromptSubmit")
 	}
 	added := false
