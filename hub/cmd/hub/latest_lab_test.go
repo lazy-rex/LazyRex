@@ -37,68 +37,56 @@ func (s *startLab) entryBySource(src string) map[string]any {
 	return nil
 }
 
-// A hub runs an @latest source at its release tag. A new release, plugin update and
-// hub.plugins.reload give a candidate with the new commit and tag; the instance keeps its run.
-// hub.admin.replace with the old run is candidate_changed; with the new run (source, commit,
-// digest) it replaces the instance, and the entry reports the new tag with no candidate.
+// A hub installs an @latest source at its release tag and runs it there. A new release and the
+// manager's update of the stopped plugin pin the new commit, and the stopped entry
+// expects it. hub.admin.start with the old run is candidate_changed; with the
+// new run (source, commit, digest) it starts the new release, and the entry reports the new tag
+// with no candidate.
 func TestLatestLab(t *testing.T) {
-	s := newStartLab(t)
 	r, _ := latestRepo(t, "gh")
 	r.git("tag", "v1.0.0")
 	c1 := r.git("rev-parse", "HEAD")
 	r.commit(map[string]string{"notes.txt": "tip"}) // the branch tip is not a release
 	const src = "github:lab/gh@latest"
-	s.setConfig("plugins", []any{map[string]any{"source": src}})
-	opts := latestOpts(map[string]*testRepo{"gh": r})
-	if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := readLock(lockPath(s.cfg, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := installLab(t, map[string]*testRepo{"gh": r})
+	s.writeManagedFile(`{"plugins":[{"id":"gh","source":"` + src + `"}]}`)
+
+	s.start() // the hub installs gh at its start
+	s.startRun("gh")
+	lock := readTestLockFile(t, s)
 	if le := lock.Plugins[src]; le.RefKind != "latest" || le.Tag != "v1.0.0" || le.Commit != c1 {
 		t.Fatalf("lock %+v", le)
 	}
 	d1 := lock.Plugins[src].Digest
-
-	s.start()
-	run, start := s.startRun("gh")
 	if e := s.expectEntry("gh"); e["tag"] != "v1.0.0" || e["commit"] != c1 || e["candidate"] != nil {
 		t.Fatalf("the first run: %v", e)
 	}
 
 	c2 := r.commit(map[string]string{"main.lua": fmt.Sprintf(startFixture, "gh") + "-- 1.1\n"})
 	r.git("tag", "-a", "-m", "release", "v1.1.0")
-	var out bytes.Buffer
-	if err := runPluginCmd(context.Background(), "update", s.cfg, nil, opts, &out); err != nil || !strings.Contains(out.String(), "updated "+src) {
-		t.Fatalf("update: %q %v", out.String(), err)
+	s.must("hub.admin.stop", map[string]any{"plugin": "gh"})
+	if op := s.opDone(s.opsAgent("alice"), "up-gh", map[string]any{"op": "update", "entry": "managed:gh", "input": map[string]any{"to": "@"}}); op["phase"] != "done" {
+		t.Fatalf("update: %v", op)
 	}
-	lock, _ = readLock(lockPath(s.cfg, ""))
-	d2 := lock.Plugins[src].Digest
-	s.must("hub.plugins.reload", nil)
+	d2 := readTestLockFile(t, s).Plugins[src].Digest
+	// A stopped entry has no run: expect_run and pinned_commit name the new release.
 	e := s.expectEntry("gh")
-	c, _ := e["candidate"].(map[string]any)
-	if e["tag"] != "v1.0.0" || e["commit"] != c1 || c["tag"] != "v1.1.0" || c["commit"] != c2 {
-		t.Fatalf("after the update and reload: %v", e)
+	x, _ := e["expect_run"].(map[string]any)
+	if _, ok := e["commit"]; ok || x["commit"] != c2 || x["digest"] != d2 || e["pinned_commit"] != c2 {
+		t.Fatalf("after the update: %v", e)
 	}
-	s.same("gh", run, start)
 
-	_, err = s.call("hub.admin.replace", map[string]any{"plugin": "gh", "expect_instance": run.InstanceID,
-		"expect_run": map[string]any{"source": src, "commit": c1, "digest": d1}})
-	s.refusedWith("replace with the old run", err, "candidate_changed", "the candidate is "+src+" at "+c2, "not "+src+" at "+c1)
-	s.same("gh", run, start)
-	res, err := s.call("hub.admin.replace", map[string]any{"plugin": "gh", "expect_instance": run.InstanceID,
-		"expect_run": map[string]any{"source": src, "commit": c2, "digest": d2}})
-	if err != nil {
-		t.Fatalf("replace with the new run: %v", err)
+	_, err := s.call("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": map[string]any{"source": src, "commit": c1, "digest": d1}})
+	s.refusedWith("start with the old run", err, "candidate_changed", "not "+src+" at "+c1)
+	if e := s.expectEntry("gh"); e["desired"] != "stopped" {
+		t.Errorf("after the refused start: desired %v", e["desired"])
 	}
-	id, _ := res["instance_id"].(string)
-	s.registeredAs("gh", id)
+	s.must("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": map[string]any{"source": src, "commit": c2, "digest": d2}})
+	s.wait("gh runs v1.1.0", func() bool { e := s.expectEntry("gh"); return s.status("gh").Registered && e["commit"] == c2 })
 	if e := s.expectEntry("gh"); e["tag"] != "v1.1.0" || e["commit"] != c2 || e["candidate"] != nil {
-		t.Errorf("after the replace: %v", e)
+		t.Errorf("after the start: %v", e)
 	}
-	out.Reset()
+	var out bytes.Buffer
 	if ok, err := runPluginStatus(s.cfg, &out); !ok || err != nil || !strings.Contains(out.String(), src+"\tref latest v1.1.0\tcommit "+c2+"\tcache ok\t") {
 		t.Errorf("status: %v %v\n%s", ok, err, out.String())
 	}

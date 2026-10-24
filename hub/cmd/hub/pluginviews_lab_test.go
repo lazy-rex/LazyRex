@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -226,26 +225,24 @@ func (s *startLab) waitLong(what string, d time.Duration, ok func() bool) {
 
 // The real Plugins… panel of the home plugin, opened from a pane as the Rex palette does, follows a
 // lock change with no action (lead-c8-b2 item 4, positive tracking): a GitHub entry runs commit A;
-// plugin update pins B; after the reload the open list renders again by itself, with the running
-// commit A and "pinned B" (codex-27, plugins-c8b2-source-blockers item 2). Lab only: LAZYREX_LAB=1.
+// the manager's update pins B and replaces the instance; the open list renders again by itself,
+// with the running commit B; after a stop, it shows "pinned B". Lab only: LAZYREX_LAB=1.
 func TestPluginsPanelFollowsLockLab(t *testing.T) {
-	s := newStartLabHome(t, nil)
 	gitTestEnv(t)
 	r := newTestRepo(t)
 	first := r.commit(map[string]string{"lazyrex.json": `{"name":"gh","main":"main.lua"}`, "main.lua": fmt.Sprintf(startFixture, "gh")})
 	const src = "github:lab/r@main"
-	s.setConfig("plugins", []any{map[string]any{"source": s.o.home.dir}, map[string]any{"source": src}})
-	opts := pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
-	if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
-		t.Fatal(err)
-	}
-	s.start()
+	s := newStartLabHome(t, labGitEnv)
+	s.labRepos(map[string]*testRepo{"r": r})
+	s.setConfig("plugins", []any{map[string]any{"source": s.o.home.dir}})
+	s.writeManagedFile(`{"plugins":[{"id":"gh","source":"` + src + `"}]}`)
+	s.start() // the hub installs gh at its start
 	s.startRun("gh")
 	s.registered("lazyrex")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	p := openPluginsPanel(t, s, ctx)
-	detail := func() string { return p.detail("entries", src) }
+	detail := func() string { return p.detail("entries", "managed:gh") }
 	s.wait("the list shows commit A", func() bool { return strings.Contains(detail(), first[:12]) })
 	if d := detail(); strings.Contains(d, "pinned") || !strings.Contains(d, src) {
 		t.Fatalf("before the update: %q", d)
@@ -256,15 +253,16 @@ func TestPluginsPanelFollowsLockLab(t *testing.T) {
 	}
 
 	second := r.commit(map[string]string{"main.lua": fmt.Sprintf(startFixture, "gh") + "-- second\n"})
-	var out bytes.Buffer
-	if err := runPluginCmd(context.Background(), "update", s.cfg, nil, opts, &out); err != nil {
-		t.Fatalf("update: %v %s", err, out.String())
+	if op := s.opDone(s.opsAgent("alice"), "up-gh", map[string]any{"op": "update", "entry": "managed:gh", "input": map[string]any{"to": "@"}}); op["phase"] != "done" {
+		t.Fatalf("update: %v", op)
 	}
-	s.must("hub.plugins.reload", nil)
+	s.wait("the open list shows the running commit B", func() bool { return strings.Contains(detail(), second[:12]) })
+	if d := detail(); strings.Contains(d, first[:12]) || strings.Contains(d, "pinned") {
+		t.Fatalf("the row still shows commit A, or a pin: %q", d)
+	}
+	// A stopped entry has no running commit: the row shows the pin B.
+	s.must("hub.admin.stop", map[string]any{"plugin": "gh"})
 	s.wait("the open list shows the pinned commit B", func() bool { return strings.Contains(detail(), "pinned "+second[:12]) })
-	if d := detail(); !strings.Contains(d, first[:12]) {
-		t.Fatalf("the running commit A is gone from the row: %q", d)
-	}
 	if after, _ := p.renders(); after <= before {
 		t.Fatalf("render attempts %d -> %d: the list did not render again", before, after)
 	}
@@ -283,30 +281,31 @@ func TestOfferConfirmLab(t *testing.T) {
 	r2 := newTestRepo(t)
 	r2.commit(map[string]string{"lazyrex.json": `{"name":"gh2","main":"main.lua"}`, "main.lua": fmt.Sprintf(startFixture, "gh2")})
 	remotes := map[string]*testRepo{"r": r, "r2": r2}
-	opts := pluginCmdOpts{remote: func(owner, repo string) string { return remotes[repo].url() }}
-	a := newStartLab(t)
-	b := newStartLabHome(t, map[string]string{"GIT_CONFIG_GLOBAL": "${LAB}/gitconfig", "GIT_CONFIG_NOSYSTEM": "1"})
-	// b's own fetch reaches the lab repositories through git's url.insteadOf: no network.
-	text := ""
-	for name, repo := range remotes {
-		text += fmt.Sprintf("[url %q]\n\tinsteadOf = https://github.com/lab/%s\n", repo.url(), name)
-	}
-	if err := os.WriteFile(filepath.Join(b.l.dir, "gitconfig"), []byte(text), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// Each hub's own fetch reaches the lab repositories through git's url.insteadOf: no network.
+	a := startLabWith(t, nil, false, labGitEnv)
+	a.labRepos(remotes)
+	b := newStartLabHome(t, labGitEnv)
+	b.labRepos(remotes)
 	aManaged := filepath.Join(a.l.dir, "managed.json")
-	writeA := func(list string) {
+	writeA := func(list string, sources ...string) {
 		t.Helper()
 		if err := os.WriteFile(aManaged, []byte(`{"plugins":[`+list+`]}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := pluginSync(context.Background(), a.cfg, opts); err != nil {
-			t.Fatal(err)
-		}
-		// hub.peer.plugins lists the managed ids of a's loaded entries: a running hub reloads.
+		// hub.peer.plugins lists the managed ids of a's loaded entries: a running hub reloads, and
+		// its reload installs the new sources.
 		if a.hub != "" {
 			a.must("hub.plugins.reload", nil)
 		}
+		a.wait("a installs "+strings.Join(sources, ", "), func() bool {
+			lock, err := readLock(lockPath(a.cfg, ""))
+			for _, src := range sources {
+				if err != nil || lock.Plugins[src] == nil {
+					return false
+				}
+			}
+			return true
+		})
 	}
 	a.setConfig("managed_plugins", aManaged)
 	writeA("")
@@ -328,7 +327,7 @@ func TestOfferConfirmLab(t *testing.T) {
 	before, _ := p.renders()
 
 	// a gets the entry: at b's next sync the open panel shows the offer by itself.
-	writeA(`{"id":"gh","source":"` + src + `"}`)
+	writeA(`{"id":"gh","source":"`+src+`"}`, src)
 	b.waitLong("the open panel shows the offer", 90*time.Second, func() bool { return strings.Contains(p.detail("offered", src), commit[:12]) })
 	if d := p.detail("offered", src); !strings.Contains(d, "Offered by a") || !strings.Contains(d, "pinned by the peer at main") {
 		t.Fatalf("the offer row: %q", d)
@@ -371,7 +370,7 @@ func TestOfferConfirmLab(t *testing.T) {
 	// A second offer, id x. The form shows x; then a renames it y at the same pin. The press of
 	// the form that showed x sends no op.
 	const src2 = "github:lab/r2@main"
-	writeA(`{"id":"gh","source":"` + src + `"},{"id":"x","source":"` + src2 + `"}`)
+	writeA(`{"id":"gh","source":"`+src+`"},{"id":"x","source":"`+src2+`"}`, src, src2)
 	// The confirm form took the panel's slot: open the panel again.
 	p = openPluginsPanel(t, b, ctx)
 	b.waitLong("the offer x", 90*time.Second, func() bool { return p.detail("offered", src2) != "" })
@@ -384,7 +383,7 @@ func TestOfferConfirmLab(t *testing.T) {
 		shown = fx.node("offer/")
 		return shown != nil && strings.Contains(shown.Text, "managed:x")
 	})
-	writeA(`{"id":"gh","source":"` + src + `"},{"id":"y","source":"` + src2 + `"}`)
+	writeA(`{"id":"gh","source":"`+src+`"},{"id":"y","source":"`+src2+`"}`, src, src2)
 	b.waitLong("the offer is y", 90*time.Second, func() bool {
 		var list struct {
 			Offered []peerOffer `json:"offered"`

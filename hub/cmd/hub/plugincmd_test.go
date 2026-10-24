@@ -26,6 +26,8 @@ type cmdEnv struct {
 	repos    map[string]*testRepo // "owner/repo" to the repository
 	opts     pluginCmdOpts
 	cfgState string // the state field of the config, when it differs from state (a relative state)
+	h        *Hub   // the ops test hub of opsHub
+	n        int    // the count of op keys
 }
 
 func newCmdEnv(t *testing.T) *cmdEnv {

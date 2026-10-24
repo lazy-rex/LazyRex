@@ -81,8 +81,9 @@ func TestLatestTagRunAndReload(t *testing.T) {
 	r := env.repo("lazy-rex", "Messaging", "messaging")
 	c1 := r.commit(map[string]string{"main.lua": "1"})
 	r.git("tag", "v1.0.0")
-	cfg := env.config(srcLatest)
-	if _, err := env.run("sync", cfg); err != nil {
+	env.managed("messaging=" + srcLatest)
+	cfg := env.config()
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	db, err := openDB(filepath.Join(t.TempDir(), "hub.db"))
@@ -108,7 +109,7 @@ func TestLatestTagRunAndReload(t *testing.T) {
 
 	c2 := r.commit(map[string]string{"main.lua": "2"})
 	r.git("tag", "v2.0.0")
-	if _, err := env.run("update", cfg); err != nil {
+	if err := env.updateOp(cfg, "messaging"); err != nil {
 		t.Fatal(err)
 	}
 	h.entriesMu.Lock()
@@ -160,17 +161,18 @@ func TestLatestStatusTag(t *testing.T) {
 	rw := env.repo("lazy-rex", "Worktrees", "worktrees")
 	cw := rw.git("rev-parse", "HEAD")
 	srcP, srcW := "github:lazy-rex/Profiles@v0.2.0", "github:lazy-rex/Worktrees@main"
-	cfg := env.config(srcLatest, srcP, srcW)
-	if _, err := env.run("sync", cfg); err != nil {
+	env.managed("messaging="+srcLatest, "profiles="+srcP, "worktrees="+srcW)
+	cfg := env.config()
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
 	if ok, err := runPluginStatus(cfg, &out); !ok || err != nil {
 		t.Fatalf("status: %v %v\n%s", ok, err, out.String())
 	}
-	want := srcLatest + "\tref latest v1.0.0\tcommit " + cm + "\tcache ok\tentry 1\n" +
-		srcP + "\tref v0.2.0\tcommit " + cp + "\tcache ok\tentry 2\n" +
-		srcW + "\tref main\tcommit " + cw + "\tcache ok\tentry 3\n"
+	want := srcLatest + "\tref latest v1.0.0\tcommit " + cm + "\tcache ok\tmanaged:messaging\n" +
+		srcP + "\tref v0.2.0\tcommit " + cp + "\tcache ok\tmanaged:profiles\n" +
+		srcW + "\tref main\tcommit " + cw + "\tcache ok\tmanaged:worktrees\n"
 	if out.String() != want {
 		t.Errorf("status:\n%s\nwant:\n%s", out.String(), want)
 	}

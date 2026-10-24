@@ -5,7 +5,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -137,43 +136,35 @@ func TestManagedMalformed(t *testing.T) {
 	}
 }
 
-// The managed path: the default is <state>/plugins.json, with the hub's meaning of a relative state
-// (the working directory); managed_plugins is relative to the config directory. The working
-// directory and the config directory differ, so the two bases cannot agree by accident.
+// The managed path of the hub's load: the default is <state>/plugins.json, with the hub's meaning of
+// a relative state (the working directory: the path stays relative); managed_plugins is relative
+// to the config directory. The working directory and the config directory differ, so the two
+// bases cannot agree by accident.
 func TestManagedPaths(t *testing.T) {
 	env := newCmdEnv(t)
-	env.repo("lazy-rex", "Profiles", "profiles")
 	cfgDir, run := filepath.Join(env.dir, "cfg"), filepath.Join(env.dir, "run")
 	os.MkdirAll(cfgDir, 0o700)
 	os.MkdirAll(run, 0o700)
-	t.Cleanup(func() { removeTree(filepath.Join(run, "state")) })
 	t.Chdir(run)
 	items, _ := json.Marshal(map[string]any{"plugins": []map[string]any{{"id": "prof", "source": srcP}}})
 	cfg := filepath.Join(cfgDir, "hub.json")
-	for name, c := range map[string]struct{ field, file string }{
-		"default": {"", filepath.Join(run, "state", "plugins.json")},
-		"field":   {"m.json", filepath.Join(cfgDir, "m.json")},
+	for name, c := range map[string]struct{ field, file, path string }{
+		"default": {"", filepath.Join(run, "state", "plugins.json"), filepath.Join("state", "plugins.json")},
+		"field":   {"m.json", filepath.Join(cfgDir, "m.json"), filepath.Join(cfgDir, "m.json")},
 	} {
 		os.MkdirAll(filepath.Dir(c.file), 0o700)
 		os.WriteFile(c.file, items, 0o600)
-		conf := map[string]any{"state": "state", "plugins": []any{}}
+		conf := map[string]any{"server": "unix:///tmp/lrt-x/rex.sock", "state": "state", "plugins": []any{}}
 		if c.field != "" {
 			conf["managed_plugins"] = c.field
 		}
 		b, _ := json.Marshal(conf)
 		os.WriteFile(cfg, b, 0o600)
-		if err := pluginSync(context.Background(), cfg, env.opts); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		l, err := readLock(filepath.Join(cfgDir, "hub.lock.json"))
-		if err != nil || l.Plugins[srcP] == nil {
-			t.Fatalf("%s: %v %+v", name, err, l)
-		}
-		if _, err := os.Stat(filepath.Join(run, "state", "plugins", "github", "lazy-rex", "Profiles")); err != nil {
-			t.Fatalf("%s: the cache is not under the working directory: %v", name, err)
+		l := env.load(cfg)
+		if l.managedPath != c.path || l.managedErr != nil || len(l.entries) != 1 || l.entries[0].Source != srcP {
+			t.Fatalf("%s: %s %v %d", name, l.managedPath, l.managedErr, len(l.entries))
 		}
 		os.Remove(c.file)
-		os.Remove(filepath.Join(cfgDir, "hub.lock.json"))
 	}
 }
 
@@ -218,14 +209,17 @@ func TestManagedStatic(t *testing.T) {
 	}
 }
 
-// The graph covers config and managed entries; texts name a managed entry by its identity.
+// The graph covers config and managed entries; texts name a managed entry by its identity. The
+// install of a managed entry does not check the graph of the other entries: a cycle refuses the
+// entries at resolution.
 func TestManagedGraph(t *testing.T) {
 	env := newCmdEnv(t)
 	env.local("plugins/a", "n")
 	b := filepath.Join(env.dir, env.local("plugins/b", "n"))
 	env.managed("x=" + b)
-	err := env.sync(env.config("plugins/a"))
-	if err == nil || err.Error() != "plugin sync: entries 1 and managed:x have the same name n; the lock is unchanged" {
+	c := env.load(env.config("plugins/a"))
+	resolve(&c)
+	if err := c.entries[0].err; err == nil || err.Error() != "entries 1 and managed:x have the same name n" {
 		t.Fatalf("duplicate: %v", err)
 	}
 	// A managed plugin that depends on a config plugin, and the reverse.
@@ -233,20 +227,37 @@ func TestManagedGraph(t *testing.T) {
 	env.local("plugins/c", "c", "profiles")
 	env.managed("prof=" + srcP)
 	cfg := env.config("plugins/c")
-	if err := env.sync(cfg); err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+	if err := env.install(cfg); err != nil {
+		t.Fatal(err)
+	}
+	c = env.load(cfg)
+	resolve(&c)
+	if err := c.entries[0].err; err == nil || !strings.Contains(err.Error(), "dependency cycle") {
 		t.Fatalf("cycle: %v", err)
 	}
 	env.local("plugins/c", "c")
-	if err := env.sync(cfg); err != nil {
-		t.Fatalf("managed depends on config: %v", err)
+	c = env.load(cfg)
+	resolve(&c)
+	for _, e := range c.entries {
+		if e.err != nil {
+			t.Fatalf("managed depends on config: %v", e.err)
+		}
 	}
 	// A config plugin that depends on a managed plugin.
 	env2 := newCmdEnv(t)
 	env2.repo("lazy-rex", "Profiles", "profiles")
 	env2.local("plugins/d", "d", "profiles")
 	env2.managed("prof=" + srcP)
-	if err := env2.sync(env2.config("plugins/d")); err != nil {
-		t.Fatalf("config depends on managed: %v", err)
+	cfg2 := env2.config("plugins/d")
+	if err := env2.install(cfg2); err != nil {
+		t.Fatal(err)
+	}
+	c = env2.load(cfg2)
+	resolve(&c)
+	for _, e := range c.entries {
+		if e.err != nil {
+			t.Fatalf("config depends on managed: %v", e.err)
+		}
 	}
 }
 

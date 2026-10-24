@@ -29,7 +29,7 @@ func resolve(c *Config) []*configEntry {
 	return resolveEntries(readLockSnapshot(c, c.entries), c.entries, nil)
 }
 
-// A synced GitHub entry resolves from its cache entry: the run dir is the read-only entry (or
+// An installed GitHub entry resolves from its cache entry: the run dir is the read-only entry (or
 // <entry>/<subdir>), the commit is the locked commit, and the graph rules apply to GitHub and local
 // entries alike (section 7).
 func TestResolveGithub(t *testing.T) {
@@ -38,8 +38,9 @@ func TestResolveGithub(t *testing.T) {
 	env.homeRepo()
 	loc := env.local("base", "base")
 	env.local("user", "user", "messaging")
-	cfg := env.config(srcM, srcHome, loc, "user")
-	if err := env.sync(cfg); err != nil {
+	env.managed("messaging="+srcM, "lazyrex="+srcHome)
+	cfg := env.config(loc, "user")
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	c := env.load(cfg)
@@ -56,18 +57,18 @@ func TestResolveGithub(t *testing.T) {
 	if got := strings.Join(names, ","); got != "lazyrex,base,messaging,user" && got != "base,lazyrex,messaging,user" && got != "base,messaging,lazyrex,user" && got != "base,messaging,user,lazyrex" {
 		t.Errorf("order %s: dependencies first", got)
 	}
-	m := c.entries[0].cand
+	m := c.entries[2].cand
 	if want := env.entryDir(srcM); m.Dir != want || m.Commit != r.git("rev-parse", "HEAD") || m.Path != filepath.Join(want, "main.lua") {
 		t.Errorf("messaging run %+v, want dir %s", m, want)
 	}
 	if fi, err := os.Stat(m.Dir); err != nil || fi.Mode().Perm() != 0o555 {
 		t.Errorf("the run dir is not the read-only cache entry: %v %v", fi.Mode(), err)
 	}
-	h := c.entries[1].cand
+	h := c.entries[3].cand
 	if want := filepath.Join(env.entryDir(srcHome), "plugins", "lazyrex"); h.Dir != want || h.Commit != env.lock().Plugins[srcHome].Commit {
 		t.Errorf("home run %+v, want dir %s", h, want)
 	}
-	if l := c.entries[2].cand; l.Commit != "" || l.Dir != filepath.Join(env.dir, "base") {
+	if l := c.entries[0].cand; l.Commit != "" || l.Dir != filepath.Join(env.dir, "base") {
 		t.Errorf("local run %+v", l)
 	}
 }
@@ -79,23 +80,25 @@ func TestResolveLockedDirErrors(t *testing.T) {
 	env.repo("lazy-rex", "Messaging", "messaging")
 	loc := env.local("loc", "loc")
 	env.local("dep", "dep", "messaging")
-	cfg := env.config(srcM, loc, "dep")
+	env.managed("messaging=" + srcM)
+	cfg := env.config(loc, "dep")
 	check := func(what, want string) {
 		t.Helper()
 		c := env.load(cfg)
 		resolve(&c)
-		if c.entries[0].err == nil || c.entries[0].err.Error() != want || c.entries[0].cand != nil {
-			t.Errorf("%s: %v\nwant %s", what, c.entries[0].err, want)
+		l, d, m := c.entries[0], c.entries[1], c.entries[2]
+		if m.err == nil || m.err.Error() != want || m.cand != nil {
+			t.Errorf("%s: %v\nwant %s", what, m.err, want)
 		}
-		if c.entries[1].err != nil || c.entries[1].cand == nil {
-			t.Errorf("%s: the local entry: %v", what, c.entries[1].err)
+		if l.err != nil || l.cand == nil {
+			t.Errorf("%s: the local entry: %v", what, l.err)
 		}
-		if c.entries[2].err == nil || !strings.HasPrefix(c.entries[2].err.Error(), "plugin dep: dependency messaging is ") {
-			t.Errorf("%s: the dependent entry: %v", what, c.entries[2].err)
+		if d.err == nil || !strings.HasPrefix(d.err.Error(), "plugin dep: dependency messaging is ") {
+			t.Errorf("%s: the dependent entry: %v", what, d.err)
 		}
 	}
 	check("not installed", "plugin "+srcM+" is not installed: run lazyrex-hub plugin sync -config "+cfg)
-	if err := env.sync(cfg); err != nil {
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	le := env.lock().Plugins[srcM]
@@ -117,20 +120,21 @@ func TestResolveLockFileErrors(t *testing.T) {
 	env.repo("lazy-rex", "Messaging", "messaging")
 	env.homeRepo()
 	loc := env.local("loc", "loc")
-	cfg := env.config(srcM, loc, srcHome)
+	env.managed("messaging="+srcM, "lazyrex="+srcHome)
+	cfg := env.config(loc)
 	lockFile := filepath.Join(env.dir, "hub.lock.json")
 	check := func(what, text string) {
 		t.Helper()
 		c := env.load(cfg)
 		resolve(&c)
-		for _, i := range []int{0, 2} {
+		for _, i := range []int{1, 2} {
 			e := c.entries[i]
 			if want := "plugin " + e.Source + ": " + text; e.err == nil || e.err.Error() != want {
 				t.Errorf("%s: %v\nwant %s", what, e.err, want)
 			}
 		}
-		if c.entries[1].err != nil || c.entries[1].cand == nil {
-			t.Errorf("%s: the local entry: %v", what, c.entries[1].err)
+		if c.entries[0].err != nil || c.entries[0].cand == nil {
+			t.Errorf("%s: the local entry: %v", what, c.entries[0].err)
 		}
 	}
 	os.WriteFile(lockFile, []byte(`{"version":1,"plugins":{`), 0o600)
@@ -176,8 +180,9 @@ func partBHub(t *testing.T, c Config, db *DB) *Hub {
 func TestResolveLockedFreshAndRetention(t *testing.T) {
 	env := newCmdEnv(t)
 	r := env.repo("lazy-rex", "Messaging", "messaging")
-	cfg := env.config(srcM)
-	if err := env.sync(cfg); err != nil {
+	env.managed("messaging=" + srcM)
+	cfg := env.config()
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	old, oldDir := r.git("rev-parse", "HEAD"), env.entryDir(srcM)
@@ -203,7 +208,7 @@ func TestResolveLockedFreshAndRetention(t *testing.T) {
 	}
 
 	next := r.commit(map[string]string{"main.lua": "return 2\n"})
-	if err := env.update(cfg); err != nil {
+	if err := env.updateOp(cfg, "messaging"); err != nil {
 		t.Fatal(err)
 	}
 	newDir := env.entryDir(srcM)

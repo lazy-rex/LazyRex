@@ -1,13 +1,13 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // v2Fixture is startFixture with one more action, fix.v2: a test sees which code a process runs.
@@ -68,19 +68,18 @@ func TestSelectedRunLocalCrashLab(t *testing.T) {
 	}
 }
 
-// L2 (the P1 plan r6): a GitHub plugin runs commit A. A CLI update locks B. A crash: the respawn
-// runs A, and hub.plugins shows commit A and pinned_commit B. A stop and a start run B.
+// L2 (the P1 plan r6, with the manager): a GitHub plugin runs commit A. The manager's update
+// locks B, and its replace is held (the op-call fault) before the retire. The replace selected B
+// before the hold, so a crash then respawns B: hub.plugins shows commit B and pinned_commit B, in
+// the new cache entry. The op ends, and a stop and a start run B. (A run at A with the lock at B
+// needs a lock writer that selects no run; TestSelectedRunGone and the other unit tests cover it.)
 func TestSelectedRunGitHubCrashLab(t *testing.T) {
-	s := newStartLab(t)
 	gitTestEnv(t)
 	r := newTestRepo(t)
 	a := r.commit(map[string]string{"lazyrex.json": `{"name":"gh","main":"main.lua"}`, "main.lua": cacheFixture, "name.lua": "return 'gh'\n"})
 	const src = "github:lab/gh@main"
-	s.setConfig("plugins", []any{map[string]any{"source": src}})
-	opts := pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
-	if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
-		t.Fatal(err)
-	}
+	s := installLab(t, map[string]*testRepo{"gh": r})
+	s.writeManagedFile(`{"plugins":[{"id":"gh","source":"` + src + `"}]}`)
 	entry := func() map[string]any {
 		t.Helper()
 		b, _ := json.Marshal(s.must("hub.plugins", nil)["entries"])
@@ -95,7 +94,7 @@ func TestSelectedRunGitHubCrashLab(t *testing.T) {
 		return nil
 	}
 
-	s.start()
+	s.start() // the hub installs gh at its start
 	first, _ := s.startRun("gh")
 	e := entry()
 	aDir := e["dir"]
@@ -104,14 +103,23 @@ func TestSelectedRunGitHubCrashLab(t *testing.T) {
 	}
 
 	b := r.commit(map[string]string{"name.lua": "return 'gh' -- b\n"})
-	if err := pluginUpdate(context.Background(), s.cfg, nil, opts); err != nil {
+	s.must("hub.test.fault", map[string]any{"point": "op-call", "mode": "hold-before-retire", "key": "gh", "plugin": "gh", "hold_ms": 15000})
+	alice := s.opsAgent("alice")
+	op, err := s.agentDo(alice, "hub.plugins.op", map[string]any{"key": "up-gh", "op": "update", "entry": "managed:gh", "input": map[string]any{"to": "@"}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	s.wait("the replace is held", func() bool { return len(s.events("fault_held", "gh")) == 1 })
 	s.exit("gh")
 	s.wait("the respawn registers", func() bool { st := s.status("gh"); return st.Registered && st.InstanceID != first.InstanceID })
-	if e := entry(); e["commit"] != a || e["pinned_commit"] != b || e["dir"] != aDir || e["state"] != "running" {
-		t.Errorf("after the crash: %v (want commit %s, pinned_commit %s, dir %v)", e, a, b, aDir)
+	if e := entry(); e["commit"] != b || e["pinned_commit"] != b || e["dir"] == aDir || e["state"] != "running" {
+		t.Errorf("after the crash: %v (want commit %s and pinned_commit %s, not dir %v)", e, b, b, aDir)
 	}
+	s.waitLong("the update ends", 30*time.Second, func() bool {
+		op, err = s.agentDo(alice, "hub.plugins.ops", map[string]any{"op_id": op["op_id"]})
+		return err == nil && opFinal[op["phase"].(string)]
+	})
+	t.Logf("the update: phase %v, result %v, error %v", op["phase"], op["result"], op["error"])
 
 	s.must("hub.admin.stop", map[string]any{"plugin": "gh"})
 	s.must("hub.admin.start", map[string]any{"plugin": "gh"})

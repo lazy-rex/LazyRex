@@ -14,7 +14,19 @@ import (
 func installLab(t *testing.T, repos map[string]*testRepo, offline ...string) *startLab {
 	t.Helper()
 	needLab(t)
-	s := startLabWith(t, nil, false, map[string]string{"GIT_CONFIG_GLOBAL": "${LAB}/gitconfig", "GIT_CONFIG_NOSYSTEM": "1"})
+	s := startLabWith(t, nil, false, labGitEnv)
+	s.labRepos(repos, offline...)
+	return s
+}
+
+// labGitEnv is the lab environment whose git reads the lab's own git config (labRepos).
+var labGitEnv = map[string]string{"GIT_CONFIG_GLOBAL": "${LAB}/gitconfig", "GIT_CONFIG_NOSYSTEM": "1"}
+
+// labRepos writes the git config of a lab started with labGitEnv: github:lab/<name> is the
+// repository repos[name], through url.insteadOf. An offline name points to no repository.
+func (s *startLab) labRepos(repos map[string]*testRepo, offline ...string) {
+	t := s.t
+	t.Helper()
 	text := ""
 	for name, r := range repos {
 		u := r.url()
@@ -26,7 +38,6 @@ func installLab(t *testing.T, repos map[string]*testRepo, offline ...string) *st
 	if err := os.WriteFile(filepath.Join(s.l.dir, "gitconfig"), []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return s
 }
 
 // labPluginRepo is a repository with the start fixture of name at main.

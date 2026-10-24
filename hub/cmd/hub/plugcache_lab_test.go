@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,23 +14,19 @@ import (
 // (observed on a lab server, Rex 0.0.1792158932-g88fd41).
 var cacheFixture = strings.Replace(fmt.Sprintf(startFixture, "gh"), `local name = "gh"`, `local name = require('name')`, 1)
 
-// A hub runs a GitHub plugin from its read-only cache entry (section 12). An update and a reload
-// give a candidate with the new commit; the instance continues on its run commit. A stop and a
-// start run the new commit.
+// A hub runs a GitHub plugin from its read-only cache entry (section 12), which the install at the
+// hub start wrote. The manager's update of the running plugin writes a new cache entry and
+// replaces the instance: the new instance runs the new commit from it. A stop and a start keep it.
 func TestPluginCacheStartLab(t *testing.T) {
 	if !strings.Contains(cacheFixture, "require('name')") {
 		t.Fatal("the fixture does not read its sibling module")
 	}
-	s := newStartLab(t)
 	gitTestEnv(t)
 	r := newTestRepo(t)
 	first := r.commit(map[string]string{"lazyrex.json": `{"name":"gh","main":"main.lua"}`, "main.lua": cacheFixture, "name.lua": "return 'gh'\n"})
 	const src = "github:lab/gh@main"
-	s.setConfig("plugins", []any{map[string]any{"source": src}})
-	opts := pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
-	if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
-		t.Fatal(err)
-	}
+	s := installLab(t, map[string]*testRepo{"gh": r})
+	s.writeManagedFile(`{"plugins":[{"id":"gh","source":"` + src + `"}]}`)
 	cacheDir := func() string {
 		t.Helper()
 		var c Config
@@ -48,10 +43,6 @@ func TestPluginCacheStartLab(t *testing.T) {
 		}
 		return filepath.Join(state, "plugins", filepath.FromSlash(lock.Plugins[src].Dir))
 	}
-	firstDir := cacheDir()
-	if fi, err := os.Stat(firstDir); err != nil || fi.Mode().Perm() != 0o555 {
-		t.Fatalf("the cache entry is not read-only: %v", err)
-	}
 	entry := func() map[string]any {
 		t.Helper()
 		b, _ := json.Marshal(s.must("hub.plugins", nil)["entries"])
@@ -66,36 +57,33 @@ func TestPluginCacheStartLab(t *testing.T) {
 		return nil
 	}
 
-	s.start()
+	s.start() // the hub installs gh at its start
 	old, _ := s.startRun("gh")
+	firstDir := cacheDir()
+	if fi, err := os.Stat(firstDir); err != nil || fi.Mode().Perm() != 0o555 {
+		t.Fatalf("the cache entry is not read-only: %v", err)
+	}
 	if e := entry(); e["commit"] != first || e["dir"] != firstDir || e["candidate"] != nil || e["state"] != "running" {
 		t.Fatalf("the first run: %v", e)
 	}
 
 	second := r.commit(map[string]string{"name.lua": "return 'gh' -- " + "second\n"})
-	if err := pluginUpdate(context.Background(), s.cfg, nil, opts); err != nil {
-		t.Fatal(err)
+	if op := s.opDone(s.opsAgent("alice"), "up-gh", map[string]any{"op": "update", "entry": "managed:gh", "input": map[string]any{"to": "@"}}); op["phase"] != "done" {
+		t.Fatalf("update: %v", op)
 	}
 	secondDir := cacheDir()
-	if e := entry(); e["candidate"] != nil {
-		t.Fatalf("hub.plugins resolved without a trigger: %v", e)
+	if secondDir == firstDir {
+		t.Fatal("the update wrote no new cache entry")
 	}
-	s.must("hub.plugins.reload", nil)
-	e := entry()
-	cand, _ := e["candidate"].(map[string]any)
-	if e["commit"] != first || e["dir"] != firstDir || cand["commit"] != second || cand["dir"] != secondDir || len(cand) != 2 {
-		t.Fatalf("after the update and the reload: %v", e)
-	}
-	if st := s.status("gh"); st.InstanceID != old.InstanceID || st.ChildPID != old.ChildPID || !st.Registered {
-		t.Fatalf("the reload changed the instance: %+v, old %+v", st, old)
+	var mid startStatus
+	s.wait("the update replaces gh", func() bool { mid = s.status("gh"); return mid.Registered && mid.InstanceID != old.InstanceID })
+	if e := entry(); e["commit"] != second || e["dir"] != secondDir || e["candidate"] != nil {
+		t.Fatalf("after the update: %v", e)
 	}
 
 	s.must("hub.admin.stop", map[string]any{"plugin": "gh"})
 	s.must("hub.admin.start", map[string]any{"plugin": "gh"})
-	now, _ := s.startRun("gh")
-	if now.InstanceID == old.InstanceID {
-		t.Fatal("the start did not spawn a new instance")
-	}
+	s.wait("the start spawns a new instance", func() bool { st := s.status("gh"); return st.Registered && st.InstanceID != mid.InstanceID })
 	if e := entry(); e["commit"] != second || e["dir"] != secondDir || e["candidate"] != nil {
 		t.Fatalf("after the start: %v", e)
 	}

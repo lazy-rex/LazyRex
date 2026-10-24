@@ -71,13 +71,14 @@ func (env *cmdEnv) homeRepo() *testRepo {
 	return r
 }
 
-// sync of a subdir source: the lock has the subdir and a whole-commit dir; lockedDir gives
+// The install of a subdir source: the lock has the subdir and a whole-commit dir; lockedDir gives
 // <entry>/<subdir>; the digest covers the whole entry.
 func TestSubdirSync(t *testing.T) {
 	env := newCmdEnv(t)
 	r := env.homeRepo()
-	cfg := env.config(srcHome)
-	if err := env.sync(cfg); err != nil {
+	env.managed("lazyrex=" + srcHome)
+	cfg := env.config()
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	le := env.lock().Plugins[srcHome]
@@ -111,7 +112,8 @@ func TestSubdirTwoKeys(t *testing.T) {
 	env := newCmdEnv(t)
 	env.homeRepo()
 	other := "github:lazy-rex/LazyRex/plugins/other@main"
-	if err := env.sync(env.config(srcHome, other)); err != nil {
+	env.managed("lazyrex="+srcHome, "other="+other)
+	if err := env.install(env.config()); err != nil {
 		t.Fatal(err)
 	}
 	l := env.lock()
@@ -142,14 +144,14 @@ func TestSubdirRefused(t *testing.T) {
 			r.commit(c.files)
 		}
 		src := "github:lazy-rex/LazyRex/" + c.subdir + "@main"
-		err := env.sync(env.config(src))
-		if err == nil || !strings.HasPrefix(err.Error(), "plugin sync: "+src+": ") || !strings.Contains(err.Error(), c.want) ||
-			!strings.HasSuffix(err.Error(), "; the lock is unchanged") {
+		env.managed("x=" + src)
+		err := env.install(env.config())
+		if err == nil || !strings.HasPrefix(err.Error(), "install managed:x: failed: ") || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
 		}
 		if strings.HasSuffix(name, "manifest") || name == "missing" || name == "a file" {
 			head := r.git("rev-parse", "HEAD")
-			if want := "plugin sync: " + src + ": " + c.subdir + " is not a plugin directory at commit " + head + "; the lock is unchanged"; err == nil || err.Error() != want {
+			if want := "install managed:x: failed: fetch " + src + ": " + c.subdir + " is not a plugin directory at commit " + head + "; the lock and the managed file are unchanged"; err == nil || err.Error() != want {
 				t.Errorf("%s: %v, want %q", name, err, want)
 			}
 		}
@@ -164,8 +166,9 @@ func TestSubdirRefused(t *testing.T) {
 func TestSubdirAgreement(t *testing.T) {
 	env := newCmdEnv(t)
 	env.homeRepo()
-	cfg := env.config(srcHome)
-	if err := env.sync(cfg); err != nil {
+	env.managed("lazyrex=" + srcHome)
+	cfg := env.config()
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	l := env.lock()
@@ -220,7 +223,8 @@ func TestSubdirRefWithAt(t *testing.T) {
 	r := env.homeRepo()
 	r.git("branch", "rel@1#x")
 	src := "github:lazy-rex/LazyRex/plugins/lazyrex@rel@1#x"
-	if err := env.sync(env.config(src)); err != nil {
+	env.managed("lazyrex=" + src)
+	if err := env.install(env.config()); err != nil {
 		t.Fatal(err)
 	}
 	if le := env.lock().Plugins[src]; le.Ref != "rel@1#x" || le.RefKind != "branch" || le.Subdir != "plugins/lazyrex" {
@@ -235,8 +239,9 @@ func TestSubdirCannotRead(t *testing.T) {
 	}
 	env := newCmdEnv(t)
 	env.homeRepo()
-	cfg := env.config(srcHome)
-	if err := env.sync(cfg); err != nil {
+	env.managed("lazyrex=" + srcHome)
+	cfg := env.config()
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	entry := env.entryDir(srcHome)

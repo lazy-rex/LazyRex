@@ -188,17 +188,17 @@ func (env *cmdEnv) export(cfg string) (string, error) {
 	return b.String(), err
 }
 
-// export writes the pins of each GitHub entry (config and managed) that passes lockedDir, with the
+// export writes the pins of each managed GitHub entry that passes lockedDir, with the
 // lock's pull identity. A local source and an orphaned lock entry are not exported. A second
 // export gives the same bytes.
 func TestExport(t *testing.T) {
 	env := newCmdEnv(t)
 	env.repo("lazy-rex", "Messaging", "messaging")
 	env.repo("lazy-rex", "Templates", "templates")
-	cfg := env.config(srcM, env.local("loc", "loc"))
 	const srcT = "github:lazy-rex/Templates@main"
-	env.managed("t=" + srcT)
-	if err := env.sync(cfg); err != nil {
+	env.managed("messaging="+srcM, "t="+srcT)
+	cfg := env.config(env.local("loc", "loc"))
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	l := env.lock()
@@ -238,7 +238,8 @@ func TestExport(t *testing.T) {
 func TestExportRefused(t *testing.T) {
 	env := newCmdEnv(t)
 	env.repo("lazy-rex", "Messaging", "messaging")
-	cfg := env.config(srcM, env.local("loc", "loc"))
+	env.managed("messaging=" + srcM)
+	cfg := env.config(env.local("loc", "loc"))
 	lockFile := filepath.Join(env.dir, "hub.lock.json")
 	check := func(what, want string) {
 		t.Helper()
@@ -251,17 +252,18 @@ func TestExportRefused(t *testing.T) {
 		}
 	}
 	check("not installed", "plugin "+srcM+" is not installed: run lazyrex-hub plugin sync -config "+cfg)
-	if err := env.sync(cfg); err != nil {
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
 	le := env.lock().Plugins[srcM]
 	writeInto(env.entryDir(srcM), "main.lua", "changed")
 	check("changed", "plugin messaging: the cache entry for commit "+le.Commit+" changed (digest mismatch): run lazyrex-hub plugin sync -config "+cfg)
-	if err := env.sync(cfg); err != nil {
+	if err := env.install(cfg); err != nil {
 		t.Fatal(err)
 	}
-	env.managed("dup=" + srcM)
-	check("static", "managed:dup: the source "+srcM+" is also in the config")
+	env.config(srcM, "loc")
+	check("static", "managed:messaging: the source "+srcM+" is also in the config")
+	env.config("loc")
 	os.Remove(filepath.Join(env.state, "plugins.json"))
 	os.WriteFile(lockFile, []byte(`{"version":3,"plugins":{}}`), 0o600)
 	check("malformed lock", "the lock file "+lockFile+" is not valid: version 3 is not supported (this hub reads versions 1 and 2); repair the file or restore it from a backup")

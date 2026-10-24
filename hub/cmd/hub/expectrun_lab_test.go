@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -90,7 +89,6 @@ func TestExpectRunLocalLab(t *testing.T) {
 // is candidate_changed, on replace and on a stopped start. The exact run (source, commit, digest)
 // passes on both.
 func TestExpectRunSubdirLab(t *testing.T) {
-	s := newStartLab(t)
 	gitTestEnv(t)
 	r := newTestRepo(t)
 	commit := r.commit(map[string]string{
@@ -98,22 +96,15 @@ func TestExpectRunSubdirLab(t *testing.T) {
 		"two/lazyrex.json": `{"name":"gh","main":"main.lua"}`, "two/main.lua": fmt.Sprintf(startFixture, "gh"),
 	})
 	const src, sibling = "github:lab/r/two@main", "github:lab/r/one@main"
-	s.setConfig("plugins", []any{map[string]any{"source": src}})
-	opts := pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
-	if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
-		t.Fatal(err)
-	}
-	lock, err := readLock(lockPath(s.cfg, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := lock.Plugins[src].Digest
+	s := installLab(t, map[string]*testRepo{"r": r})
+	s.writeManagedFile(`{"plugins":[{"id":"gh","source":"` + src + `"}]}`)
+
+	s.start() // the hub installs gh at its start
+	run, start := s.startRun("gh")
+	digest := readTestLockFile(t, s).Plugins[src].Digest
 	exact := map[string]any{"source": src, "commit": commit, "digest": digest}
 	wrong := map[string]any{"source": sibling, "commit": commit, "digest": digest}
-
-	s.start()
-	run, start := s.startRun("gh")
-	_, err = s.call("hub.admin.replace", map[string]any{"plugin": "gh", "expect_instance": run.InstanceID, "expect_run": wrong})
+	_, err := s.call("hub.admin.replace", map[string]any{"plugin": "gh", "expect_instance": run.InstanceID, "expect_run": wrong})
 	s.refusedWith("replace, the other subdir", err, "candidate_changed", "the candidate is "+src+" at "+commit, "not "+sibling+" at "+commit)
 	s.same("gh", run, start)
 	res, err := s.call("hub.admin.replace", map[string]any{"plugin": "gh", "expect_instance": run.InstanceID, "expect_run": exact})
@@ -235,22 +226,18 @@ func TestExpectRunCrashingStartLab(t *testing.T) {
 
 // The expect_run that hub.plugins gives (lead-c8-p2), passed unchanged to hub.admin.start: a
 // GitHub entry, running (its candidate is the run, so it has no candidate change) and then
-// stopped, starts with it. After a lock update and a reload, the new expect_run names the new
+// stopped, starts with it. After the manager's update, the new expect_run names the new
 // commit, and the old one is candidate_changed. A local entry gives its source only, and starts
 // with it.
 func TestExpectRunFromPluginsLab(t *testing.T) {
 	t.Run("github", func(t *testing.T) {
-		s := newStartLab(t)
 		gitTestEnv(t)
 		r := newTestRepo(t)
 		first := r.commit(map[string]string{"lazyrex.json": `{"name":"gh","main":"main.lua"}`, "main.lua": fmt.Sprintf(startFixture, "gh")})
 		const src = "github:lab/r@main"
-		s.setConfig("plugins", []any{map[string]any{"source": src}})
-		opts := pluginCmdOpts{remote: func(owner, repo string) string { return r.url() }}
-		if err := pluginSync(context.Background(), s.cfg, opts); err != nil {
-			t.Fatal(err)
-		}
-		s.start()
+		s := installLab(t, map[string]*testRepo{"r": r})
+		s.writeManagedFile(`{"plugins":[{"id":"gh","source":"` + src + `"}]}`)
+		s.start() // the hub installs gh at its start
 		run, _ := s.startRun("gh")
 		e := s.expectEntry("gh")
 		x, _ := e["expect_run"].(map[string]any)
@@ -264,12 +251,11 @@ func TestExpectRunFromPluginsLab(t *testing.T) {
 		s.must("hub.admin.start", map[string]any{"plugin": "gh", "expect_run": x})
 		s.wait("gh registers", func() bool { st := s.status("gh"); return st.Registered && st.InstanceID != run.InstanceID })
 
+		// The manager's update writes the new commit, and starts gh at it (gh is running).
 		second := r.commit(map[string]string{"main.lua": fmt.Sprintf(startFixture, "gh") + "-- second\n"})
-		var out bytes.Buffer
-		if err := runPluginCmd(context.Background(), "update", s.cfg, nil, opts, &out); err != nil {
-			t.Fatalf("update: %v %s", err, out.String())
+		if op := s.opDone(s.opsAgent("alice"), "up-gh", map[string]any{"op": "update", "entry": "managed:gh", "input": map[string]any{"to": "@"}}); op["phase"] != "done" {
+			t.Fatalf("update: %v", op)
 		}
-		s.must("hub.plugins.reload", nil)
 		y, _ := s.expectEntry("gh")["expect_run"].(map[string]any)
 		if y["commit"] != second {
 			t.Fatalf("after the update: expect_run %v, want commit %s", y, second)

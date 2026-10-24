@@ -71,7 +71,7 @@ func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]s
 	t.Helper()
 	dir := cacheTemp(t)
 	lock := &pluginLock{Version: 1, Plugins: map[string]*lockEntry{}}
-	var entries []string
+	var entries, managed []string
 	names := make([]string, 0, len(github))
 	for n := range github {
 		names = append(names, n)
@@ -79,8 +79,9 @@ func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]s
 	slices.Sort(names)
 	for _, n := range names {
 		lock.Plugins[p1Source(n)] = p1Publish(t, dir, n, "", n, p1A, github[n])
-		entries = append(entries, `{"source":"`+p1Source(n)+`"}`)
+		managed = append(managed, `{"id":"`+n+`","source":"`+p1Source(n)+`"}`)
 	}
+	writeManaged(t, dir, `{"plugins":[`+strings.Join(managed, ",")+`]}`)
 	for n, m := range local {
 		writePlugin(t, filepath.Join(dir, n), m)
 		entries = append(entries, `{"source":"`+filepath.Join(dir, n)+`"}`)
@@ -122,7 +123,7 @@ func p1Hub(t *testing.T, github map[string]map[string]string, local map[string]s
 	return h, clock
 }
 
-// p1Pin publishes tree for the GitHub plugin name at commit, and makes the lock name it (a CLI
+// p1Pin publishes tree for the GitHub plugin name at commit, and makes the lock name it (an
 // update).
 func p1Pin(t *testing.T, h *Hub, name, commit string, tree map[string]string) {
 	t.Helper()
@@ -639,7 +640,7 @@ func TestLocalSnapshotLateFailure(t *testing.T) {
 }
 
 // hub.plugins: commit is the running commit, and pinned_commit is the current lock's commit (""
-// for a local entry). After a CLI update to B, a crash keeps A running: commit A, pinned_commit B.
+// for a local entry). After an update to B, a crash keeps A running: commit A, pinned_commit B.
 func TestSelectedRunPinnedCommit(t *testing.T) {
 	h, _ := p1Hub(t, map[string]map[string]string{"p": p1Manifest("p")}, map[string]string{"q": `{"name":"q","main":"p.lua"}`})
 	pl := h.plugins["p"]
@@ -653,11 +654,12 @@ func TestSelectedRunPinnedCommit(t *testing.T) {
 	b, _ := json.Marshal(out)
 	var got struct{ Entries []map[string]any }
 	json.Unmarshal(b, &got)
-	if len(got.Entries) != 2 || got.Entries[0]["commit"] != p1A || got.Entries[0]["pinned_commit"] != p1B {
+	// The managed GitHub entry comes after the config entry.
+	if len(got.Entries) != 2 || got.Entries[1]["commit"] != p1A || got.Entries[1]["pinned_commit"] != p1B {
 		t.Fatalf("the GitHub entry: %v", got.Entries)
 	}
-	if v, ok := got.Entries[1]["pinned_commit"]; !ok || v != "" {
-		t.Fatalf("the local entry: %v", got.Entries[1])
+	if v, ok := got.Entries[0]["pinned_commit"]; !ok || v != "" {
+		t.Fatalf("the local entry: %v", got.Entries[0])
 	}
 }
 

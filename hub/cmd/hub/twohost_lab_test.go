@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -151,8 +149,8 @@ const (
 // syncMirror makes the lab's git mirror of lazy-rex/Profiles (coordinator decision
 // coord-rel-cred-mirrors: no GitHub credential in a lab process). The test process clones with
 // its own environment; a lab gitconfig then maps the GitHub URLs of lazy-rex to the mirror, and
-// every other URL to a mirror that does not exist. The hub and this process's plugin sync use
-// that gitconfig, so the hub's own fetch runs, with no network.
+// every other URL to a mirror that does not exist. The hub uses that gitconfig, so the hub's own
+// fetch runs, with no network.
 func (s *startLab) syncMirror() {
 	s.t.Helper()
 	m := filepath.Join(s.l.dir, "mirrors", "lazy-rex")
@@ -183,15 +181,11 @@ func (s *startLab) syncMirror() {
 	}
 	env := []string{"GIT_CONFIG_GLOBAL=" + cfg, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=file"}
 	s.l.env = append(s.l.env, env...)
-	for _, e := range env {
-		k, v, _ := strings.Cut(e, "=")
-		s.t.Setenv(k, v)
-	}
 }
 
 // syncSetup prepares the plugin sync part of TestTwoHostLab (TWOHOST_SYNC=1): a managed entry
-// "prof" of Profiles (a: syncA, b: syncB), installed from the lab mirror with plugin sync before
-// the hub starts. b also gets plugins_from on its peer a. The mirror clone needs access to
+// "prof" of Profiles (a: syncA, b: syncB), installed from the lab mirror by the hub at its
+// start. b also gets plugins_from on its peer a. The mirror clone needs access to
 // github.com with the test process's own git credentials.
 func (s *startLab) syncSetup(role string) {
 	s.t.Helper()
@@ -208,10 +202,9 @@ func (s *startLab) syncSetup(role string) {
 			s.t.Fatal(err)
 		}
 	}
+	// The hub installs it from the lab mirror at its start (the install op; the lab env has the
+	// mirror git config).
 	s.writeManagedFile(`{"plugins":[{"id":"prof","source":"` + syncProfiles + ref + `"}]}`)
-	if err := pluginSync(context.Background(), s.cfg, pluginCmdOpts{}); err != nil {
-		s.t.Fatalf("plugin sync of %s%s: %v", syncProfiles, ref, err)
-	}
 }
 
 // syncCheck is b's part of the plugin sync check: b's managed entry prof runs the commit of a's
