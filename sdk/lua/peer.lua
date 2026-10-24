@@ -174,14 +174,11 @@ return function(k)
   local function upgrade_1()
     db.exec('ALTER TABLE sdk_peer_outbox ADD COLUMN target TEXT')
     db.exec("ALTER TABLE sdk_peer_seen ADD COLUMN from_plugin TEXT NOT NULL DEFAULT ''")
-    -- Pages of 500 rows, so any count fits the replies; a rewritten row leaves the page query.
-    while true do
-      local rows = db.query('SELECT id, from_hub, key FROM sdk_peer_seen WHERE from_plugin = ? ORDER BY id LIMIT 500', '')
-      if #rows == 0 then break end
-      for _, r in ipairs(rows) do
-        db.exec('UPDATE sdk_peer_seen SET id = ?, from_plugin = ? WHERE id = ?', seen_id(r.from_hub, OWN, r.key), OWN, r.id)
-      end
-    end
+    -- One statement builds each ID from the row's own columns: no row comes back to Lua, so no SQL
+    -- reply budget applies (codex-15: one page of 512-byte keys of control characters can be over
+    -- it). This is seen_id in SQL: part() counts bytes, and length() of a BLOB counts bytes.
+    db.exec('UPDATE sdk_peer_seen SET id = length(CAST(from_hub AS BLOB)) || \':\' || from_hub || ? '
+      .. '|| length(CAST(key AS BLOB)) || \':\' || key, from_plugin = ? WHERE from_plugin = ?', part(OWN), OWN, '')
     db.exec('UPDATE sdk_meta SET version = ? WHERE part = ?', VERSION, 'peer')
   end
 
