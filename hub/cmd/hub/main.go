@@ -298,6 +298,7 @@ func loadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
+	refuseConfigGithub(entries)
 	c.managedPath = managedFilePath(c, abs)
 	managed, err := parseManaged(c.managedPath)
 	if err != nil {

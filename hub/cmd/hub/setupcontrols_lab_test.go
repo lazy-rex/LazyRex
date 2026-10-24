@@ -166,7 +166,7 @@ func hubControlsLab(t *testing.T, failPlugins bool) {
 	}
 	// The refused plugin (or, with failPlugins, the unknown line): the Start pane shows it after the
 	// ready, Status shows it after the running line, and the hub runs on.
-	refusal := "plugin " + labRefused + ": refused: plugin " + labRefused + " is not installed: the hub installs it at its next start or reload"
+	refusal := "plugin " + labRefused + ": refused: plugin " + labRefused + " in hub.json: a GitHub plugin goes in the managed file: add it in LazyRex: Plugins…"
 	if failPlugins {
 		refusal = "plugins: unknown: exit status 1: injected-plugin-read-failure"
 	}

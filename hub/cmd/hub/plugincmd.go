@@ -82,6 +82,7 @@ func readPluginCmdConfig(cfgPath string) (*pluginCmdConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", cfgPath, err)
 	}
+	refuseConfigGithub(entries)
 	// A relative state is relative to the working directory, as for the hub. The command makes it
 	// absolute once, because git runs in other directories.
 	state, err := filepath.Abs(c.State)
@@ -232,6 +233,12 @@ func graphSources(cfg *pluginCmdConfig, next *pluginLock) []*sourceEntry {
 			s.Label = e.identity()
 		}
 		src[i] = s
+		// A static refusal, as at the hub's resolution (a config GitHub entry; a managed source that
+		// the config also names).
+		if e.static != nil {
+			s.Err = e.static
+			continue
+		}
 		dir := e.dir
 		if e.github {
 			d, _, err := lockedDir(cfg.state, next, e)

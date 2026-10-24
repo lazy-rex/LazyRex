@@ -370,7 +370,8 @@ func TestSelectedRunSubdir(t *testing.T) {
 		tree = map[string]string{"p/lazyrex.json": tree["lazyrex.json"], "p/main.lua": tree["main.lua"], "lib/x.lua": "return 2\n"}
 		le := p1Publish(t, h.cfg.State, "home", "p", "p", p1A, tree)
 		writeTestLock(t, h, &pluginLock{Version: 1, Plugins: map[string]*lockEntry{src: le}})
-		c, err := writeConfig(t, h.cfg.State, `[{"source":"`+src+`"}]`)
+		writeManaged(t, h.cfg.State, `{"plugins":[{"id":"p","source":"`+src+`"}]}`)
+		c, err := writeConfig(t, h.cfg.State, `[]`)
 		if err != nil {
 			t.Fatal(err)
 		}

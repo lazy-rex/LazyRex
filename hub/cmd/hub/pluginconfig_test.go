@@ -84,7 +84,7 @@ func TestPluginEntriesResolve(t *testing.T) {
 	want := map[int]struct{ name, err string }{
 		1: {"templates", ""},
 		2: {"", "plugin source plugins/empty: no lazyrex.json in " + filepath.Join(dir, "plugins", "empty")},
-		3: {"", "plugin github:lazy-rex/Profiles@main is not installed: the hub installs it at its next start or reload"},
+		3: {"", "plugin github:lazy-rex/Profiles@main in hub.json: a GitHub plugin goes in the managed file: add it in LazyRex: Plugins…"},
 		4: {"worktrees", "plugin worktrees: dependency profiles is not configured"},
 		5: {"messaging", ""},
 		6: {"", "entries 6 and 7 have the same name dup"},

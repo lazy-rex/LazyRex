@@ -1074,7 +1074,7 @@ func (h *Hub) opGraph(lockFile string, list []*configEntry, lock *pluginLock) ma
 	for _, e := range h.entries {
 		if e.managed == "" {
 			c := &configEntry{Source: e.Source, Args: e.Args, WatchRoots: e.WatchRoots, index: e.index, dir: e.dir, github: e.github,
-				owner: e.owner, repo: e.repo, subdir: e.subdir, gitRef: e.gitRef}
+				owner: e.owner, repo: e.repo, subdir: e.subdir, gitRef: e.gitRef, static: e.static}
 			config = append(config, c)
 		}
 	}

@@ -29,9 +29,13 @@ Code:
 
 ```json
 {"source": "<dir>", "args": {}, "watch_roots": []}
-{"source": "github:<owner>/<repo>@<ref>", "args": {}}
-{"source": "github:<owner>/<repo>/<subdir>@<ref>", "args": {}}
 ```
+
+A config entry is a local directory. A GitHub source goes in the managed file (section 13), where
+the plugin manager installs and updates it. A GitHub source in the config is refused at the load,
+as a static refusal of that entry only (the hub starts):
+`plugin <source> in hub.json: a GitHub plugin goes in the managed file: add it in LazyRex:
+Plugins…`. The GitHub source form below is the form of a managed entry.
 
 - `args`: extra `key=value` arguments of `rex do` (`rex.args` in the plugin). Keys match
   `[a-z0-9_]+`; the hub's own keys (`hub_client_id`, `instance_id`, `plugin_session`) are refused.
@@ -41,7 +45,8 @@ Code:
 - `prompts` and `user_messaging`: booleans, false when absent. They grant the agent prompts and
   the user's Messaging identity (docs/hub.md, "Agent prompts and acting as the user"). Only the
   user's config sets them. Two entries with `user_messaging` are a malformed config.
-- A source that starts with `github:` is a GitHub source. Any other source is a local directory.
+- A source that starts with `github:` is a GitHub source (`github:<owner>/<repo>@<ref>` or
+  `github:<owner>/<repo>/<subdir>@<ref>`). Any other source is a local directory.
 - A local path is absolute or relative to the directory of the config file. `~` is refused.
 - `<owner>` matches `[A-Za-z0-9-]+`. `<repo>` matches `[A-Za-z0-9._-]+` and is not `.` or `..`.
 - `<subdir>` is optional: the plugin directory inside the repository, in the form of a Go module
@@ -55,8 +60,8 @@ Code:
   highest release tag (section 5, "@latest").
 - Config field `lock`: the lock file, relative to the config directory. Default: the config file
   name with a final `.json` replaced by `.lock.json` (`hub.json` gives `hub.lock.json`). A name
-  without `.json` gets `.lock.json` appended. The file must exist only when the config has a
-  GitHub source.
+  without `.json` gets `.lock.json` appended. The file must exist only when a managed entry
+  has a GitHub source.
 
 Hub start fails only for a malformed config:
 

@@ -199,7 +199,7 @@ func TestExportRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.config(srcM, "loc")
-	check("static", "managed:messaging: the source "+srcM+" is also in the config")
+	check("static", "plugin "+srcM+" in hub.json: a GitHub plugin goes in the managed file: add it in LazyRex: Plugins…")
 	env.config("loc")
 	os.Remove(filepath.Join(env.state, "plugins.json"))
 	os.WriteFile(lockFile, []byte(`{"version":3,"plugins":{}}`), 0o600)

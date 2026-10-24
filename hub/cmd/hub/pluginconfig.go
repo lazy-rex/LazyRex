@@ -257,6 +257,17 @@ func sameSource(a, b *configEntry) bool {
 	return a.dir == b.dir
 }
 
+// refuseConfigGithub refuses each GitHub entry of the config file (the hub lead, lead-c2c3): a
+// GitHub plugin goes in the managed file, where the plugin manager installs and updates it. The
+// refusal is static: no resolution changes it, and the graph sees it.
+func refuseConfigGithub(entries []*configEntry) {
+	for _, e := range entries {
+		if e.github {
+			e.static = fmt.Errorf("plugin %s in hub.json: a GitHub plugin goes in the managed file: add it in LazyRex: Plugins…", e.Source)
+		}
+	}
+}
+
 // addManaged appends the managed entries to the config entries. A managed entry whose source a
 // config entry also names is refused at each resolution (static); the config entry is checked as
 // usual.

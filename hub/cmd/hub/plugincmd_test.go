@@ -41,3 +41,42 @@ func TestPluginCmdOnlyNew(t *testing.T) {
 		}
 	}
 }
+
+// A GitHub entry of hub.json is refused at the load (the hub lead, lead-c2c3), also when the lock
+// and the cache have it. The graph of the plugin manager's ops sees the refusal as the hub's
+// resolution does: a managed entry that depends on it is refused.
+func TestConfigGithubRefused(t *testing.T) {
+	env := newCmdEnv(t)
+	env.repo("lazy-rex", "Messaging", "messaging")
+	env.managed("messaging=" + srcM)
+	if err := env.install(env.config()); err != nil {
+		t.Fatal(err)
+	}
+	y := filepath.Join(env.dir, env.local("plugins/y", "y", "messaging"))
+	managedFile := env.managed("y=" + y)
+	cfg := env.config(srcM)
+	want := "plugin " + srcM + " in hub.json: a GitHub plugin goes in the managed file: add it in LazyRex: Plugins…"
+	c := env.load(cfg)
+	resolve(&c)
+	if e := c.entries[0]; e.err == nil || e.err.Error() != want || e.cand != nil {
+		t.Errorf("the config entry: %v", e.err)
+	}
+	env.h = nil
+	h := env.opsHub(cfg)
+	h.entriesMu.Lock()
+	h.entries = env.load(cfg).entries // the config entries of cfg: opsHub keeps its own
+	h.entriesMu.Unlock()
+	list, err := parseManaged(managedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusals := h.opGraph(opLockFile(h), list, env.lock())
+	if len(refusals) != 2 || refusals["managed:y"] == nil || !strings.Contains(refusals["managed:y"].Error(), "messaging") {
+		t.Fatalf("the graph refusals: %v", refusals)
+	}
+	for k, err := range refusals {
+		if k != "managed:y" && err.Error() != want {
+			t.Errorf("%s: %v, want %q", k, err, want)
+		}
+	}
+}
