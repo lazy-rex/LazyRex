@@ -10,8 +10,8 @@ Status: early. The design came from a series of spikes; `docs/` keeps their find
 
 - Your agents (Claude Code and Codex) and you message each other in threads. An idle agent gets a
   notice in its pane when a message comes.
-- Agents come back after a restart. **Resume detached agents** continues each conversation in a
-  new pane.
+- Agents that the hub started come back after a restart: **Resume detached agents** continues each
+  conversation in a new pane.
 - Plugins add commands, forms and panels to Rex. Each plugin has its own SQL database.
 - One hub on each machine, and the hubs connect: messages and agents reach across machines.
 - Profiles start agents, shells and tools in a directory, as a tab or a split.
@@ -27,8 +27,8 @@ Palette commands start with **LazyRex:** in the Rex palette.
 | Notices | When a message comes for an agent, the hub writes a notice into the agent's pane after the agent is ready (idle or done). |
 | Agent resume and restart | **Resume detached agents** starts each detached agent that the hub started again, with its conversation, from its profile's `resume` template. **Restart Claude agents…** and **Restart Codex agents…** stop and resume the agents of one kind. |
 | Profiles and workers | **Start Agent…** and **Start Accessory…** (Profiles plugin) start a profile in a directory. **Agents…** lists the agents; **Stop Worker…** stops a worker. A plugin can lock a directory, and the hub then starts no worker in it. |
-| Forms and panels | A palette command opens its form or panel in a pane beside your pane. |
-| Plugins | **Plugins…** adds, updates and removes plugins. The hub installs released versions, and a lock file pins each plugin to a commit. One hub can take its plugins from another hub. |
+| Forms and panels | A palette command opens its form or panel beside the pane that has focus. With two devices on one session, that can be the pane the other device focused last. |
+| Plugins | **Plugins…** adds, updates and removes plugins. The hub installs managed plugins from their GitHub releases, and a lock file pins each one to a commit. A plugin from a local directory runs from a read-only copy of that directory, which the hub makes when it starts the plugin. One hub can take its plugins from another hub. |
 | Launch plugins | Messaging, Profiles, Templates (session templates: **Templates…**, **Start Session…**, **Save as Template…**), Tunnels (**Forward Port…**), Worktrees (**Worktrees…**, **New Worktree…**, **Remove Worktree…**) and Automations (**Automations…**, **New Automation…**). Setup installs all of them except Automations; add Automations in **Plugins…**. |
 | Peer hubs | Each hub names its peers in `hub.json`. A plugin can send a message to a plugin on a peer hub, so threads and agents reach across machines. |
 | Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). The plugin SDK is in `sdk/lua`, and `lazyrex-hub test` runs a plugin's tests on an isolated lab server. |
@@ -42,7 +42,7 @@ Rex does the terminal work. LazyRex uses these Rex features:
 | Sessions, windows (tabs) and blocks (panes), with labels | It opens plugin panes, forms, agent panes and the LazyRex session. A label finds a pane again after a hub restart. |
 | The client API (`rex.control.v1`) | The hub is a Rex client. Agents and palette commands call it with client actions (`client.perform`). |
 | `rex do` (Lua scripts) | Each plugin is a Lua script that Rex runs. It calls the hub through Rex. |
-| Config actions (`rex.action` in the Rex config) | Setup writes the LazyRex palette file. Its actions forward to the hub, and Rex tells the hub which client ran them. |
+| Config actions (`rex.action` in the Rex config) | Setup installs the LazyRex boot entries in the Rex config (`lazyrex_boot.lua`). The hub writes the plugin palette entries (`lazyrex_palette.lua`). These actions forward to the hub, and Rex tells the hub which client ran them. |
 | Program status (OSC 7501, `program_status_changed`) | The hub knows when an agent is idle, working or done, so it writes notices and resume prompts at the right time. The agent hooks give only the conversation identity. |
 | Block events (`child_exited` and others) | The hub sees when a plugin or a worker exits. |
 | Terminal block methods (`write`, `process`, `pwd`, `format`) | The hub writes notices and prompts into panes. It reads a pane's process and directory. Tests read what a pane shows. |
