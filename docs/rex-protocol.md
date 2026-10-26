@@ -115,7 +115,8 @@ variables first.
   record in this run was the root record (no `id`), with `owner {pid, name}`: name `2.1.310` for
   Claude (its versioned binary) and `codex` for Codex.
 - Claude Code 2.1.310: `idle` at its start, before any prompt; then `working` for one turn and
-  `done` at its end. The record stayed `done` until the next turn.
+  `done` at its end. In this run Claude had one turn; its record stayed `done` after it, with no
+  `idle` event.
 - Codex 0.164.0: at its start, `idle`, then `working`, then `idle` again within one second, before
   any prompt. Then `working` for each turn and **`done`** at its end. Codex 0.163.0 had reported
   `idle` at the end of a turn.
@@ -131,7 +132,7 @@ variables first.
   same event name.
 - In this run, Codex 0.164.0 offered `-a` values `on-request` and `never` only; `untrusted` was
   refused.
-- **A Codex 0.164.0 resume does not lose its first prompt** (the hub at ea88dc6e,
+- **A Codex 0.164.0 resume did not lose its first prompt in three runs** (the hub at ea88dc6e,
   `hub.admin.resume` of a Codex agent started by hand). The start states varied: `idle`,
   `working`, `idle` within 0.33 s (run 1); `idle` then `working` 10 ms later (run 3); `working`
   only (run 4). In run 1 the hub wrote `resumePrompt` 0.49 s after the second `idle`, at its 2 s
