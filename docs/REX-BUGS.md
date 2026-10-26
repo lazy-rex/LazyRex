@@ -22,4 +22,3 @@ Workaround: install the Rex `.deb` again (`apt-get install --allow-downgrades`),
 `apt-mark hold rex`. The hold also blocks upgrades to newer Rex builds until it is removed.
 
 Ask: a package name that no distribution uses, or an epoch in the package version.
-

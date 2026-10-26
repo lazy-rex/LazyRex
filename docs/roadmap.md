@@ -70,7 +70,7 @@ Ordered by value to LazyRex.
     keep unresolved intents. Case (lab): after a hub crash during a session-template start, a
     whole tab of shell panes exists, and the hub cannot adopt them. Labels are hints, and macOS
     hides the environment of platform binaries such as `/bin/zsh`, so no process proof exists
-    (`rex-protocol.md`, "A lost new_window answer"). The template run stays pending until the user
+    (`rex-protocol.md`, "A lost new_window answer leaves panes that the hub cannot prove"). The template run stays pending until the user
     dismisses it.
 16. An exit callback for `rex.exec.start` (an `on_exit` option), so that a plugin needs no timer
     to poll `h:running()`.

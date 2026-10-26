@@ -1214,7 +1214,7 @@ finds an unmanaged terminal and a worker with an unknown directory, and creates
 no lock. Run `LAZYREX_LAB=1 go test ./cmd/hub -run 'TestWorktree(RunningViewAction|CwdCheck)Lab'` from
 hub/; each test starts its own lab Rex server.
 
-`plugins/worktrees.lua` exports these agent tools:
+The Worktrees plugin (`worktrees.lua` in its repository) exports these agent tools:
 
 - `worktree_create {repo, branch, base?, key}` creates a linked Git worktree.
 - `worktree_list {repo?}` returns branches, paths, status, and workers with a matching launch directory.
@@ -1678,7 +1678,7 @@ screen is a separate renderer phase.
 
 ### Profiles directory helper
 
-`plugins/profiles_directories.lua` supplies read-only helpers for the Start form.
+The Profiles plugin's `profiles_directories.lua` supplies read-only helpers for the Start form.
 Load it by absolute path. `source_directory(context, profile_cwd)` returns a local
 OSC 7 directory, the profile directory, or nil when the hub must use its default.
 RPC failures stay errors. `list_directory(context, path, prefix)` uses the original
@@ -1690,7 +1690,7 @@ root and Git's worktrees. Bare repository entries are not selectable.
 
 ### Start Agent… and Start Accessory…
 
-`plugins/profiles.lua` declares two palette commands. Each opens a form in the tab's side slot
+The Profiles plugin's `profiles.lua` declares two palette commands. Each opens a form in the tab's side slot
 (`/forms/start-agent`, `/forms/start-accessory`). The form lists the profiles of its kind.
 
 - **Directory.** The default is the source pane's `terminal.pwd`, frozen at the open
@@ -1848,7 +1848,7 @@ unread isolation, and older-history retries. Combined hub and renderer checks re
 
 Decision: "Session templates".
 
-- Plugin `templates` (`plugins/templates.lua`). Palette commands: "Start Session…" (`/forms/start`), "Save as Template…" (`/forms/save`), "Templates…" (panel `/panels/templates`, the landing). The engine `plugins/templates_run.lua` must sit beside it.
+- Plugin `templates` (`templates.lua` in its repository). Palette commands: "Start Session…" (`/forms/start`), "Save as Template…" (`/forms/save`), "Templates…" (panel `/panels/templates`, the landing). The engine `templates_run.lua` must sit beside it.
 - Hub actions: `hub.spawn_window {key, session?, title?, layout}` starts one tab of profiles with one Rex request; `hub.spawn.spec {block_id}` gives the launch spec of a spawned pane. Contract: the header of `hub/cmd/hub/spawnwindow.go`. The spec has `title` (the resolved title, a default when the caller gave none), `requested_title` (the title as the caller gave it; absent when no explicit title is known: none was given, or an old row cannot tell; `title_source` tells which) and `title_source` (`request` when the saved request has a title string, also an empty one; `unknown` for an old or malformed request, which cannot tell). A pane rename after the spawn changes neither.
 - Hub config: add `{"source": "<the Templates directory>"}` to `plugins` (its manifest must set `"events": "all"`). The profiles file needs no change; `shell` is built in.
 
@@ -1856,7 +1856,7 @@ Save refuses an undecided pane; Leave out removes the pane and its split; a pane
 
 ### App switch
 
-A start into a new session switches the app to it (decision: "App switch" in "Session templates"). Hub action: `hub.app.select_session {view_id, session_id, window_id}`, for a plugin's own open form (`hub/cmd/hub/appaction.go`). Plugin: `switch_app` in `plugins/templates.lua`.
+A start into a new session switches the app to it (decision: "App switch" in "Session templates"). Hub action: `hub.app.select_session {view_id, session_id, window_id}`, for a plugin's own open form (`hub/cmd/hub/appaction.go`). Plugin: `switch_app` in the Templates plugin's `templates.lua`.
 
 Tests (`go test ./cmd/hub -run 'AppAction|AppSelect'`): one app, no app, two apps, not focused, an existing-session target, a window of another session, a closed form, another plugin's form, a caller that is not a plugin.
 
@@ -1923,7 +1923,7 @@ Sequence values and cursors are decimal strings.
   - `after` omitted: the stored cursor. `after = "0"`: from the start.
   - `limit` default 100, maximum 500. A page also stops at 256 KiB of encoded rows.
   - A `watch_id` that is not the current watch of `key` is refused (`stale_watch`).
-- `hub.watch.ack {key, watch_id, through}` returns `{cursor}`. See "Acknowledgement".
+- `hub.watch.ack {key, watch_id, through}` returns `{cursor}`. See "Acknowledgement and paging".
 - `hub.watch.remove {key, watch_id}` returns `{removed}`. It deletes the watch, its rows and its
   pending names. Another `watch_id` changes nothing (`removed: false`), so a late remove cannot
   delete a replacement. A missing key succeeds (a retry after a lost reply).
