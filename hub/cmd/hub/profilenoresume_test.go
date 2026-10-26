@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -99,5 +100,32 @@ func TestSetupProfilesResume(t *testing.T) {
 	if !strings.Contains(out.String(), "Warning: "+noResumeText("bare")+".") || strings.Contains(out.String(), "profile good") ||
 		readFile(filepath.Join(dir, "profiles.json")) != noResumeProfiles {
 		t.Fatalf("an existing profiles file:\n%s", out)
+	}
+}
+
+// setup checks the profiles file that the hub reads: the "profiles" of an existing hub.json (codex-28:
+// another file than DIR/profiles.json). It names that file in the warning and leaves it unchanged;
+// DIR/profiles.json is still made as usual. A relative "profiles" is not checked, and setup says so.
+func TestSetupWarnsForConfiguredProfiles(t *testing.T) {
+	e, out := setupTestEnv(t, strings.Repeat("y\n", 12), true)
+	dir := filepath.Join(e.home, ".lazyrex")
+	active := filepath.Join(e.home, "active-profiles.json")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(active, []byte(noResumeProfiles), 0o600)
+	os.WriteFile(filepath.Join(dir, "hub.json"), []byte(`{"server":"`+setupLabServer+`","state":`+strconv.Quote(filepath.Join(dir, "state"))+`,"profiles":`+strconv.Quote(active)+`}`), 0o600)
+	if got := runSetup(e, dir, false); got != 0 {
+		t.Fatalf("exit %d\n%s", got, out)
+	}
+	if !strings.Contains(out.String(), "Warning: "+active+": "+noResumeText("bare")+".") || readFile(active) != noResumeProfiles ||
+		!strings.Contains(readFile(filepath.Join(dir, "profiles.json")), `"resume"`) {
+		t.Fatalf("a configured profiles file:\n%s", out)
+	}
+
+	e, out = setupTestEnv(t, strings.Repeat("y\n", 12), true)
+	dir = filepath.Join(e.home, ".lazyrex")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "hub.json"), []byte(`{"server":"`+setupLabServer+`","state":`+strconv.Quote(filepath.Join(dir, "state"))+`,"profiles":"rel/profiles.json"}`), 0o600)
+	if got := runSetup(e, dir, false); got != 0 || !strings.Contains(out.String(), "hub.json names the relative profiles file rel/profiles.json: setup does not check it.") {
+		t.Fatalf("a relative profiles file: exit %d\n%s", got, out)
 	}
 }

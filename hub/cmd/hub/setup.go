@@ -353,6 +353,40 @@ type hubControls struct {
 	err    string
 }
 
+// setupProfileWarnings adds a note to prof for each agent profile without resume in the profiles
+// file of the hub: the "profiles" of an existing hub.json, or prof itself when hub.json names none.
+// A relative "profiles" is relative to the hub's working directory, which setup cannot tell (as a
+// relative state), so setup says that it does not check it. A missing file has no profiles.
+func setupProfileWarnings(hub, prof *setupFile) {
+	path, label := prof.path, ""
+	if hub.exists {
+		var c struct {
+			Profiles string `json:"profiles"`
+		}
+		if json.Unmarshal(hub.old, &c) == nil && c.Profiles != "" {
+			if !filepath.IsAbs(c.Profiles) {
+				prof.notes = append(prof.notes, "hub.json names the relative profiles file "+c.Profiles+": setup does not check it.")
+				return
+			}
+			path = filepath.Clean(c.Profiles)
+		}
+	}
+	if path != prof.path {
+		label = path + ": "
+	}
+	if path == prof.path && (!prof.exists || prof.block != "") {
+		return
+	}
+	byID, order, err := (&Hub{cfg: Config{Profiles: path}}).loadProfiles()
+	if err != nil {
+		prof.notes = append(prof.notes, "Warning: "+label+"the hub cannot read it: "+err.Error())
+		return
+	}
+	for _, id := range profilesWithoutResume(byID, order) {
+		prof.notes = append(prof.notes, "Warning: "+label+noResumeText(id)+".")
+	}
+}
+
 // setupAutostartConfig refuses an autostart that cannot start the hub (the coordinator, 2026-10-24:
 // an old hub.json with "session" made each autostart exit 2, and setup had reported success). The
 // autostart runs lazyrex-hub autostart -config <hub.json>, so an existing hub.json must pass the
@@ -617,16 +651,9 @@ func runSetup(e setupEnv, dir string, print bool) int {
 		createOnly(prof, b)
 	}
 	// An existing profiles file stays as it is; setup warns about each agent profile without a
-	// resume template (reportNoResume).
-	if prof.exists && prof.block == "" {
-		if byID, order, err := (&Hub{cfg: Config{Profiles: prof.path}}).loadProfiles(); err != nil {
-			prof.notes = append(prof.notes, "Warning: the hub cannot read it: "+err.Error())
-		} else {
-			for _, id := range profilesWithoutResume(byID, order) {
-				prof.notes = append(prof.notes, "Warning: "+noResumeText(id)+".")
-			}
-		}
-	}
+	// resume template (reportNoResume). It checks the file that the hub reads: the profiles of an
+	// existing hub.json (codex-28: it can name another file), or DIR/profiles.json.
+	setupProfileWarnings(hub, prof)
 	files = append(files, prof)
 
 	// The Rex config: the boot palette file beside it, and the lines that load the boot file and the
