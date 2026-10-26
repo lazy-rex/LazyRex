@@ -822,6 +822,10 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 		h.sql.touch(pl.Name, p.Requester.ClientID) // any hub call keeps an open SQL transaction of the instance
 	}
 	result, err := h.dispatchFaulted(ctx, p)
+	var then func()
+	if tr, ok := result.(thenResult); ok {
+		result, then = tr.result, tr.then
+	}
 	reply := map[string]any{"call_id": p.CallID}
 	if err != nil {
 		var se *storeError
@@ -839,6 +843,18 @@ func (h *Hub) answer(ctx context.Context, p perform) {
 	}
 	h.calls.record(p.Action, p.Requester.ClientID, p.Requester.Principal.PID, err, replyErr, time.Since(t0)) // calllog.go
 	h.afterReply(p.Action, err, replyErr)
+	if then != nil {
+		then()
+	}
+}
+
+// thenResult is a handler result whose then runs after the reply was sent, also when the reply
+// failed. Work that ends the caller (it closes the caller's pane) goes in then, so the caller gets
+// its answer first. The work must be durable before the handler returns: a hub stop between the
+// reply and then must leave a state that a later pass finishes.
+type thenResult struct {
+	result any
+	then   func()
 }
 
 // afterReply runs what an answered call starts after its reply: hub.admin.shutdown stops the hub,

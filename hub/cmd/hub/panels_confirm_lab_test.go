@@ -46,6 +46,10 @@ func choose(h *Hub, client, view, att, repl, choice string) (map[string]any, err
 	var p perform
 	p.Requester.ClientID = client
 	out, err := h.releaseConfirm(context.Background(), p, map[string]any{"view_id": view, "attachment": att, "replacement_id": repl, "choice": choice})
+	if tr, ok := out.(thenResult); ok { // as answer does: the reply, then the work after it
+		out = tr.result
+		tr.then()
+	}
 	m, _ := out.(map[string]any)
 	return m, err
 }

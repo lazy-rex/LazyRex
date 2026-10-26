@@ -1798,6 +1798,7 @@ Lifecycle invariants:
 
 The panel renderer freezes input before it answers `view.release`.
 Unsaved input shows **Keep editing** and **Discard and replace**.
+The choice is `hub.view.release_confirm`. For discard, the hub records the row as opening and replies first; then it opens the new pane and closes the old one, which is the caller's pane. A hub stop between the reply and the advance leaves the row opening, and the slot sweep finishes it.
 An unresolved mutation or draft conflict disables discard.
 A completed source action releases automatically only when all input is safe.
 Input typed after submission still needs confirmation.

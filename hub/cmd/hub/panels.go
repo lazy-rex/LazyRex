@@ -790,10 +790,19 @@ func (h *Hub) releaseConfirm(ctx context.Context, p perform, args map[string]any
 	if err := h.setSlotState(ctx, r, "opening"); err != nil {
 		return nil, err
 	}
-	if _, err := h.advanceSlot(ctx, r); err != nil {
-		log.Printf("slot %s: %v", r.ID, err) // the row's state says what happened
-	}
-	return answer(), nil
+	// The advance closes the caller's pane, so it runs after the reply (thenResult). The row is
+	// durably opening: slotSweep finishes it if the hub stops first.
+	return thenResult{result: answer(), then: func() {
+		lock.Lock()
+		defer lock.Unlock()
+		r, err := h.slotRow(ctx, h.db, id)
+		if err != nil || r == nil || r.State != "opening" {
+			return // another pass moved it
+		}
+		if _, err := h.advanceSlot(ctx, r); err != nil {
+			log.Printf("slot %s: %v", r.ID, err) // the row's state says what happened
+		}
+	}}, nil
 }
 
 // slotAttachState is the replacement an attaching renderer must follow: {replacement_id, state,
