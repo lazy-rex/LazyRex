@@ -12,8 +12,8 @@ import (
 )
 
 // TestHomeRouteRefusedLab: the home plugin refuses a route it does not know. No path opens such a
-// view, so the test makes one: a form of the home plugin at route "/" in the LazyRex session,
-// whose pane request had an unknown outcome when the hub stopped. At start the hub adopts it, and
+// view, so the test makes one while the hub is stopped: an open form of the home plugin at route
+// "/" in the LazyRex session, with its pane and process. The started hub keeps it (formsSweep), and
 // the renderer gets the hub's error tree. The hub log names the plugin's reason.
 // Lab only: LAZYREX_LAB=1.
 func TestHomeRouteRefusedLab(t *testing.T) {
@@ -92,13 +92,23 @@ func TestHomeRouteRefusedLab(t *testing.T) {
 	if len(w.Blocks) != 1 {
 		t.Fatalf("new window: %d blocks", len(w.Blocks))
 	}
+	// The renderer may attach only from the view's recorded process (hub.view.attach).
+	var proc struct {
+		Child struct {
+			PID int `json:"pid"`
+		} `json:"child"`
+	}
+	if err := l.r.BlockCall(ctx, "com.superlogical.terminal.process", sess, w.Blocks[0], nil, &proc); err != nil || proc.Child.PID == 0 {
+		t.Fatalf("the form pane's process: %+v %v", proc, err)
+	}
 	fc, _ := json.Marshal(formContext{SessionID: sess, WindowID: w.Window})
 	db, err := openDB(filepath.Join(state, "hub.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state)
-		VALUES (?, 'lazyrex', ?, '/', 'sending', ?, ?, 'never')`, id, formTab, string(fc), sess); err != nil {
+	if _, err := db.Exec(`INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, window_id, block_id, child_pid, child_start, attach_state)
+		VALUES (?, 'lazyrex', ?, '/', 'open', ?, ?, ?, ?, ?, ?, 'never')`, id, formTab, string(fc), sess, w.Window, w.Blocks[0],
+		proc.Child.PID, startTime(proc.Child.PID)); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
