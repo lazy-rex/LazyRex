@@ -53,13 +53,14 @@ depends on, with the Rex build of each observation, is in `docs/rex-protocol.md`
 ## Calls and identity
 
 - Every call to the hub goes through Rex as a client action (`client.perform`). Rex tells the hub
-  which client called. For a call from a process in a pane (an agent, a plugin), the hub walks the
-  caller's process ancestry to the pane's process (`docs/hub.md`, "Bindings").
+  which client called. An agent's call carries its process: the hub walks the caller's process
+  ancestry to the agent's pane (`docs/hub.md`, "Bindings"). A plugin proves its pane process
+  once, when it registers; after that, the hub knows its calls by its registered Rex client.
 - Palette commands are config actions in the Rex config: setup installs the boot file
   `lazyrex_boot.lua`, and the hub writes the palette file `lazyrex_palette.lua`. An action forwards
   to the hub with `client.perform`, and Rex attests the client that ran it.
 - This is attribution, not isolation. All agents run as the same OS user, and a process of that
-  user can open its own Rex connection.
+  user can open its own Rex connection (`docs/hub.md`, "Bindings").
 
 ## Messaging and notices
 
@@ -86,8 +87,8 @@ its plugins from one peer. See `docs/hub.md`, "Peer hubs (federation v1, 2026-10
 
 ## Limits
 
-- Rex has no API to restore a whole layout at once, no operation keys on create calls, and no
-  caller identity on block methods. The hub works around each one (`docs/roadmap.md`, "Requests
-  for superlogical"; `docs/REX-BUGS.md`).
+- Rex cannot put an existing block into a new layout in one call, has no operation keys on create
+  calls, and gives no caller identity on block methods. The hub works around each one
+  (`docs/roadmap.md`, "Requests for superlogical"; `docs/REX-BUGS.md`).
 - The hub's event log is a record, not a replay log. The hub recovers from `hub.db` and from Rex
   state, not from the log.

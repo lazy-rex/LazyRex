@@ -23,12 +23,3 @@ Workaround: install the Rex `.deb` again (`apt-get install --allow-downgrades`),
 
 Ask: a package name that no distribution uses, or an epoch in the package version.
 
-## `rex send-key` sends a capital letter as lowercase
-
-Observed 2026-10-17 in a lab, Rex 0.0.1792158932-g88fd41. Inferred from the form screen.
-
-- `rex send-key M` typed `m` into a text field of a LazyRex form.
-
-Workaround: the tests type lowercase text.
-
-Ask: `send-key` sends the key that it names, with its case.

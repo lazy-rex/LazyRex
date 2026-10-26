@@ -1137,6 +1137,15 @@ The Rex app lists `pane.insert_path` ("Insert Path…") and `pane.go_to_director
 - In `rex do` Lua, `rex.call('client.perform', …)` returns no result and an error as text when the performer replies with `client.reply {error = {code, message}}`. Recorded: `stream response "control-159" failed: not_focused: refused by the mock (status=500 code=not_focused)`. The error is not a table, so `err.code` is nil. The code is the `code=` field at the end of the text. `plugins/templates.lua` reads it there. Inferred: the other plugins that test `type(err) == 'table'` lose the code in the same way.
 - A control client that sends `hello` with `client = {kind = "app", name, label}` over the Unix socket shows `info.kind: "app"` in `client.list`. After `session.attach`, `session_ids` contains that session. It can declare `session.select` with `client.keymap` and gets `client.perform` requests for it. `tests/templates-lab.mjs` uses such a client as the fake app. It does not show that the real app switches: that check needs the real app.
 
+## Letter keys in `send-key`
+
+Documented in the Rex CLI guide (`rex skill show`, Rex 0.0.1792787366-g623b2d): `send-key` letter
+key names are case-insensitive. `G` types `g`, and `shift+g` types `G`.
+
+- Observed 2026-10-17 in a lab, Rex 0.0.1792158932-g88fd41: `rex send-key M` typed `m` into a text
+  field of a LazyRex form. This matches the documented behavior.
+- To type a capital letter, send `shift+m`, or use `rex send` with the text.
+
 ## Inline output, alt screen, resize and keys (thread-view probes)
 
 These facts support the thread view (hub lead's thread contract v1.1, points H and K). They are

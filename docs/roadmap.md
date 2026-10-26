@@ -113,7 +113,7 @@ One item each: what, and why it waits.
   logs it). The next start, reload or hub restart retries the reconciliation: it adopts a live
   child of the first case by its instance argv. It does not resolve a first-case child that
   exited: the intent does not record the block ID, and `findInstanceBlock` matches only a live
-  child, so the intent stays unresolved. Waits: the fix (D-a: a `starting` state
+  child, so the intent stays unresolved. Waits: the fix (a `starting` state
   with a backoff timer, which must also attribute that exited child to its block) is larger than the
   change that bounded the plugin child read.
 - `hub.agents` `session_id` does not follow a pane move: only an identity report writes
