@@ -22,7 +22,7 @@ Palette commands start with **LazyRex:** in the Rex palette.
 
 | Feature | What works today |
 | --- | --- |
-| Agent identity | The agent's hook reports its conversation to the hub, and the hub binds it to the agent's pane. The hub finds the calling agent from the caller's process tree, so an agent's calls carry its own identity. |
+| Agent identity | The agent's hook reports its conversation to the hub, and the hub binds it to the agent's pane. The hub finds the calling agent from the caller's process tree, so an agent's calls carry its own identity. This is attribution, not isolation ([docs/hub.md, "Bindings"](docs/hub.md#bindings)). |
 | Messaging | Direct threads, replies and group threads, with drafts and unread state. The **Team** thread opens at the hub's start. Commands: **New Thread…**, **Threads…**, **Thread Settings…** (Messaging plugin). |
 | Notices | When a message comes for an agent, the hub writes a notice into the agent's pane after the agent is ready (idle or done). |
 | Agent resume and restart | **Resume detached agents** starts each detached agent that the hub started again, with its conversation, from its profile's `resume` template. **Restart Claude agents…** and **Restart Codex agents…** stop and resume the agents of one kind. |
