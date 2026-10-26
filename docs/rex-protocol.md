@@ -1,17 +1,15 @@
 # Rex protocol notes
 
-> Note: this document was written during the spike phase. Paths such as `spikes/03-ui-framework/`
-> refer to the original research repository. In this repository, that code is at the root
-> (`hub/`, `view/`, `plugins/`, `tests/`), and each plugin has its own repository.
+> Note: many items name a lab probe (a `.mjs`, `.sh` or `-probe.lua` file) of the research phase.
+> Those probes are not in this repository. The probes that remain are in `lab/probes/`.
 
 
-These notes target **Rex 0.0.1792088193-g7a93ec** (macOS, Go 1.27, module `go.superlogical.com/rex`, links libghostty). Rex is a closed beta. Most items were observed on this build. Items that come from the API reference, inference or proposal are labeled. Re-check each item when Rex changes.
+These notes began on **Rex 0.0.1792088193-g7a93ec** (macOS, Go 1.27, module `go.superlogical.com/rex`, links libghostty). Rex is a closed beta. Most items name the Rex build that they were observed on; an item that names no build was observed on 0.0.1792088193-g7a93ec. The newest lab build in these notes is 0.0.1792787366-g623b2d. Items that come from the API reference, inference or proposal are labeled. Re-check each item when Rex changes.
 
 The server documents its own control API:
 
 - `GET /llms.txt` and `GET /api/help` on the server.
 - `rex api list`, `rex api describe <method>`, `rex api call <method> '<json>'`.
-- Saved copies: [`reference/rex-0.0.1792088193-g7a93ec/`](reference/rex-0.0.1792088193-g7a93ec/).
 
 The saved reference documents the control WebSocket. The terminal data framing (HELLO, WELCOME, GHOSTSNP), the block plugin protocol and the in-band `rex1` messages were not found in it. Those parts come from lab experiments.
 
@@ -78,7 +76,7 @@ Status events (observed by Codex in a lab, same build; full report in `agent-wak
 - Rex kept the two tested `app` values as given (observed on Rex 0.0.1792593189-g3f4a0a, Linux lab `/tmp/rexlab-render-c52/osc-app`, 2026-10-23). Other values were not tested. A shell in a pane printed `state=working:app=rex`, then `state=working:app=lazyrex`. `com.superlogical.terminal.program_status` returned the root record with `app` and `effective_app` both `"rex"`, then both `"lazyrex"`, with `owner: {name: "bash"}`. `state=clear` then left no record. How the Rex app shows each value (tab header, session picker) was not observed. A hook-style shell command that wrote it to `/dev/tty` passed. Installing it as a real agent lifecycle hook is untested. The named hook record in that run had no `owner` field.
 - An empty status list does not mean idle. A clear can occur between two queued Codex turns.
 
-Blocked records of real agents (observed by the Telegram reviewer in a lab, Rex 0.0.1792158932-g88fd41):
+**Blocked records of real agents.** Observed in a lab, Rex 0.0.1792158932-g88fd41:
 
 - Claude Code 2.1.304, a Bash approval: `state: "blocked"`, `kind: "permission"`, `app: "claude-code"`, and `msg` with the request text.
 - Claude Code 2.1.304, AskUserQuestion: `state: "blocked"`, `kind: "question"`, and `msg` with the question and its options.
@@ -198,7 +196,7 @@ Rules:
 - A ticket binds to the principal that requested it, not to the process or the connection. Observed on Rex 0.0.1792088193-g7a93ec, lab:
   - A ticket requested by one Unix-peer process (which then exited) worked on a data connection from a second process with the same uid: WELCOME `0x81`.
   - The same kind of ticket, used from an anonymous TCP principal, was rejected: REJECT `0x82`, reason `0x01`. So a process that forwards a browser's WebSockets to the Unix socket can carry the browser's own tickets.
-- A browser on a different principal cannot use a ticket that LazyRex requested. So a protocol-aware relay is needed **only if the browser neither connects to Rex itself nor goes through a gateway on the same principal**. See "Browser access" below and `architecture.md`, "Web client".
+- A browser on a different principal cannot use a ticket that LazyRex requested. So a protocol-aware relay is needed **only if the browser neither connects to Rex itself nor goes through a gateway on the same principal**. See "Browser access" below.
 - The data channel only receives. Input goes through `com.superlogical.terminal.write` or `client.key` on the control channel.
 - `rex block stream` appears in the CLI help, but this build reports "not implemented".
 
@@ -210,7 +208,7 @@ The frame after WELCOME holds a complete GHOSTSNP blob and then, in the same fra
 ESC _ rex1;<id>;{"type":"resize","cols":80,"rows":24,"cell_width_px":8,"cell_height_px":16,"owner":"client:<uuid>"} ESC \
 ```
 
-Ghostty's `decodeExact` rejects bytes after the FINISH record. Cut the frame at the end of FINISH before import. GHOSTSNP layout: a 10-byte envelope, then records of `u16 tag, u32 payload_len, u32 crc32c, payload` (little-endian). FINISH is tag 6. Spike 0 (`spikes/00-ghostsnp-restty/`) has the code and the restty result.
+Ghostty's `decodeExact` rejects bytes after the FINISH record. Cut the frame at the end of FINISH before import. GHOSTSNP layout: a 10-byte envelope, then records of `u16 tag, u32 payload_len, u32 crc32c, payload` (little-endian). FINISH is tag 6.
 
 Untested: whether `rex1` APC messages also appear later in the stream, and which other message types exist.
 
@@ -224,7 +222,7 @@ Observed on Rex 0.0.1792088193-g7a93ec, on a lab server with `--extra-listen htt
 | Does not match | `HTTP/1.1 403 Forbidden` on the upgrade |
 | Absent (non-browser client) | Admitted |
 
-A real browser gives the same result (Codex, Chrome, same build). The lab server had `--extra-listen http://127.0.0.1:18793 --allow-anonymous --websocket-origin-pattern 127.0.0.1:18794`. A static page on `http://127.0.0.1:18794` used the browser WebSocket API with no relay. It did these steps:
+A real browser gives the same result (Chrome, same build). The lab server had `--extra-listen http://127.0.0.1:18793 --allow-anonymous --websocket-origin-pattern 127.0.0.1:18794`. A static page on `http://127.0.0.1:18794` used the browser WebSocket API with no relay. It did these steps:
 
 1. Sent control `hello` and received `welcome`.
 2. Created a session and a block.
@@ -248,7 +246,7 @@ Observed on Rex 0.0.1792088193-g7a93ec (lab, 2026-10-15):
 - Codex's audit of its own lab runs: its explicit test commands used lab endpoints. Its earlier wake runs kept the user's Codex `SessionStart` hook, which runs a bare `rex __internal session-start --agent codex`. With the inherited `REX_SERVER`, that call may have reached the real server. Those runs are not proven isolated. Later runs disabled the hook.
 - Lab servers also write outside their `--state-dir`: each one created `~/Library/Application Support/rex/servers/<hash>/start.lock` in the user's real Rex directory (about 20 folders on 2026-10-15). They are startup locks, not state. Not cleaned up yet.
 - A pane command is a child of the lab server, in its own process group (observed on Rex 0.0.1792158932-g88fd41, lab `/tmp/rexlab-h1`, 2026-10-19: `sleep` pane pid 92747, pgid 92747, ppid = server 92358). SIGTERM to the server ended the pane process. So a harness that kills the server's process group does not reach panes directly; `lazyrex-hub test` records every descendant and checks each one after the server stops (docs/testing.md).
-- Fix: `spikes/lab/server.sh` starts the server with `REX_SERVER=unix://<lab>/rex.sock` and without the inherited `REX_SESSION`, `REX_BLOCK` and `REX_CLIENT`. Verified: `rex whoami` in a lab pane then reports the lab endpoint.
+- Fix: `lab/server.sh` starts the server with `REX_SERVER=unix://<lab>/rex.sock` and without the inherited `REX_SESSION`, `REX_BLOCK` and `REX_CLIENT`. Verified: `rex whoami` in a lab pane then reports the lab endpoint.
 
 ## Network admission without a tailnet
 
@@ -285,8 +283,8 @@ From the API reference, plus a lab test on Rex 0.0.1792088193-g7a93ec.
 - Requests to one client queue and are answered one at a time. `timeout_ms` defaults to 10 s, maximum 30 s (a larger value is clamped to 30 s, not refused; observed: see "A larger `timeout_ms` is clamped" below). At most 16 requests can wait. A disconnect fails waiting requests with `client_unavailable`. A timeout does not cancel the action: "the client may still perform the action later".
 - Observed on Rex 0.0.1792158932-g88fd41 (lab, `TestChangedBurstLab` before the coalescing fix): a 17th waiting request is refused at once with code `client_unavailable` and the text `<client> is busy: 16 requests are already waiting`. A refusal is not a timeout: the client never sees the request.
 - An undeclared action is refused (Rex 0.0.1792158932-g88fd41, lab): `client.perform` of an action that the target's `client.keymap` does not declare fails at the server with code `not_supported` and the text `"<label>" does not offer "<action>"`. The target never sees the request. The CLI `rex -C <label> do <action>` checks the keymap first and prints the same text. The hub's `no_listener` drop relies on this (docs/hub.md "Peer hubs").
-- Observed on Rex 1203 (lab, `spikes/lab/perform-queue.mjs`): Rex delivers the next `client_perform_requested` to a client only after that client replies to the current one. A call that the client holds for 3 s delays the next call by 3 s. So a hub action that waits (a long poll, a slow Rex call) stalls every other caller of the hub. Hub actions must answer fast.
-- Observed on Rex 1203 (lab, `spikes/lab/block-event.mjs`): `block.event` with a custom type fails ("event type … is not supported by this server"). A client cannot publish its own event types through Rex. Correction (Rex 1203, lab, a391cee): `block.event` with type `block_event` and any name and payload reaches a plugin block unchanged; a plugin can emit `block_event` frames that subscribers see as session events. See "Plugin event emission".
+- Observed on Rex 1203 (lab, `perform-queue.mjs`): Rex delivers the next `client_perform_requested` to a client only after that client replies to the current one. A call that the client holds for 3 s delays the next call by 3 s. So a hub action that waits (a long poll, a slow Rex call) stalls every other caller of the hub. Hub actions must answer fast.
+- Observed on Rex 1203 (lab, `block-event.mjs`): `block.event` with a custom type fails ("event type … is not supported by this server"). A client cannot publish its own event types through Rex. Correction (Rex 1203, lab, a391cee): `block.event` with type `block_event` and any name and payload reaches a plugin block unchanged; a plugin can emit `block_event` frames that subscribers see as session events. See "Plugin event emission".
 - The `client.reply` error is `{code, message}` only: the input schema has `additionalProperties:
   false` (`rex api describe client.reply`, Rex 0.0.1792158932-g88fd41, 2026-10-20). So a hub error
   carries its details in the message text, not in extra fields.
@@ -301,7 +299,7 @@ From the API reference, plus a lab test on Rex 0.0.1792088193-g7a93ec.
 
 ## Rex Lua runtime: `rex do`
 
-Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-probe.lua`.
+Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `perform-probe.lua`.
 
 - `rex do script.lua` runs gopher-lua (`_VERSION` "Lua 5.1") in the CLI process, as a Rex control client.
 - Available on Rex 0.0.1792088193-g7a93ec (lab): `io` (including `io.open`, `io.popen`), `os` (including `os.execute`, `os.getenv`), `require`, `package`, `load`, `loadstring`, `coroutine`, `debug`, and the gopher-lua `channel` global. On 0.0.1792158932-g88fd41, `io.popen` and `os.execute` raise (see "A script can replace the Rex API functions" below).
@@ -329,22 +327,22 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
 - On Rex 1203 (`0.0.1792158932-g88fd41`), a failed `rex.call('client.perform', ...)` returns `nil` and an error. It does not raise the error. Check both return values before reading `response.result`. Observed in the hub home test with an RPC error from `hub.profiles`.
 - A script that registers `rex.on` handlers keeps running and runs handlers one at a time. `rex.sleep` and `rex.wait` block everything else. Without `-s`, `--all` or a session in the environment, it fails with "no sessions".
 - `rex.on` handlers receive `(ctx, event)` (observed for `client_perform_requested`).
-- **After a caught error, a closure's write to a captured local can be lost.** Minimal case: `local n = 0; local inc = function() n = n + 1 end; pcall(error, 'x'); inc()` leaves `n` at 0 (standard Lua: 1). Probe: `lab/probes/closure-after-pcall.lua`. Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-20, as a `rex do` script (hub team): minimal 0, a catch in a deeper frame 0, a `pcall` that catches nothing 1, a table field 1. Contexts reported by other teams on the same build:
+- **After a caught error, a closure's write to a captured local can be lost.** Minimal case: `local n = 0; local inc = function() n = n + 1 end; pcall(error, 'x'); inc()` leaves `n` at 0 (standard Lua: 1). Probe: `lab/probes/closure-after-pcall.lua`. Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-20, as a `rex do` script: minimal 0, a catch in a deeper frame 0, a `pcall` that catches nothing 1, a table field 1. Contexts reported by other teams on the same build:
   - A `rex do` script: reproduced (Tunnels, 2026-10-19; the first report).
   - A plugin request handler: reproduced (Worktrees, a temporary probe action).
-  - The test runner: intermittent. Lost in a nested function, and in a `wait` callback after other catches had run. Correct in a test body in one file (Worktrees). Not reproduced in a test body (Templates reviewer).
-  - The runner's own xpcall handler: reproduced (hub team, 2026-10-19, fixture `tests/harness-fail/tests/location_after_catch.lua`). The test body called `expect_error` and a `wait` whose callback failed once, then failed an assertion. The handler's write to the runner's captured local `loc` was lost, so the failure had no `(at file:line)`. A test that failed with no catch before it kept its location. The runner now returns the location in the handler's result.
+  - The test runner: intermittent. Lost in a nested function, and in a `wait` callback after other catches had run. Correct in a test body in one file (Worktrees). Not reproduced in a test body (Templates).
+  - The runner's own xpcall handler: reproduced (2026-10-19, fixture `tests/harness-fail/tests/location_after_catch.lua`). The test body called `expect_error` and a `wait` whose callback failed once, then failed an assertion. The handler's write to the runner's captured local `loc` was lost, so the failure had no `(at file:line)`. A test that failed with no catch before it kept its location. The runner now returns the location in the handler's result.
   - A plugin main chunk: reproduced (Worktrees, a temporary probe in a plugin). A catch during the main chunk splits module-level locals too. The main chunk defined `local n = 0`, a setter and a getter, then ran `pcall(error, 'x')`, then defined a second getter. Later, in a request handler, the setter and the first getter saw 1, then 2. The second getter and a direct read in the handler saw 0. So module-level locals are safe only when no catch runs in the main chunk before the closures that share them run.
-  - Wider trigger and xpcall (hub lead and SDK team, observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-22). Probe: `lab/probes/xpcall-after-catch.lua`. A function makes local `n` and closure `f`. `f` adds 1 and raises on its first call. The function runs `pcall(f)`, then `f()`, then returns `n` (standard Lua: 2).
+  - Wider trigger and xpcall (observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-22). Probe: `lab/probes/xpcall-after-catch.lua`. A function makes local `n` and closure `f`. `f` adds 1 and raises on its first call. The function runs `pcall(f)`, then `f()`, then returns `n` (standard Lua: 2).
     - The catch can be anywhere while the function still runs: in the closure, in a function that it calls, or in the function itself. The split goes both ways: a write in the closure is lost to the function, and a write in the function is lost to the closure. Bare and under `pcall`: 1.
     - Under an active `xpcall`, with no earlier protected call inside it: 2. After one protected call (`pcall` or `xpcall`, with or without an error) finished inside that `xpcall`: 1. After the `xpcall` returned: 1. In a coroutine resumed inside the `xpcall`: 1. So `xpcall` is not a workaround.
     - `xpcall(f, h, a)` does not pass `a` to `f`: `f` gets `nil`. This is standard Lua 5.1 (extra `xpcall` arguments came in Lua 5.2). Wrap: `xpcall(function() return f(a) end, h)`.
     - `pcall(rex.call, 'no.such.method', {})` does not split: `rex.call` returns `nil` and an error, so nothing is caught.
-    - A plugin request handler (SDK team, a plugin process): reproduced in both directions. The SDK caught a refused `hub.ui.invalidate` in `app.refresh` while the handler ran, and the handler's local lost a write. `040ee9b` removed the protected calls from `hub()` and `app.refresh()`. Other SDK paths still use protected calls (around handlers, form rendering, commits and callbacks).
+    - A plugin request handler (a plugin process): reproduced in both directions. The SDK caught a refused `hub.ui.invalidate` in `app.refresh` while the handler ran, and the handler's local lost a write. `040ee9b` removed the protected calls from `hub()` and `app.refresh()`. Other SDK paths still use protected calls (around handlers, form rendering, commits and callbacks).
     - The test runner calls each test function under `xpcall`. A test can still split: `wait` and `expect_error` use `pcall`, so the first finished protected call ends the protection.
   - Rule: no closure writes, or reads, a local that changes, where a protected call can run or an error can be caught while the function that owns the local still runs. This includes module-level locals when the main chunk catches an error. Use a table field or a return value. The harness `wait` returns its callback's result (docs/testing.md, "Waiting").
-  - Audit (hub team, 2026-10-19, same build; rechecked 2026-10-22 against the wider trigger). No main chunk below catches an error, and each main chunk returns before a handler or a test runs, so the function that owns these locals no longer runs when the catch happens (SDK team, a plugin process: module-level locals written after the main chunk returned stay correct). Each closure write to a module-level local is listed with its evidence:
-    - `plugins/lazyrex.lua` (now `plugins/lazyrex/lazyrex.lua`) `navigation_notice`: the launch action writes it after a `pcall` that caught a failed navigation, and render reads it. Observed correct: `tests/home/tests/navigation.lua` (now `plugins/lazyrex/tests/navigation.lua`), "a launch whose navigation fails still reports the launch and shows a notice", after earlier caught action failures in that file.
+  - Audit (2026-10-19, same build; rechecked 2026-10-22 against the wider trigger). No main chunk below catches an error, and each main chunk returns before a handler or a test runs, so the function that owns these locals no longer runs when the catch happens (a plugin process: module-level locals written after the main chunk returned stay correct). Each closure write to a module-level local is listed with its evidence:
+    - `plugins/lazyrex/lazyrex.lua` `navigation_notice`: the launch action writes it after a `pcall` that caught a failed navigation, and render reads it. Observed correct: `tests/home/tests/navigation.lua` (now `plugins/lazyrex/tests/navigation.lua`), "a launch whose navigation fails still reports the launch and shows a notice", after earlier caught action failures in that file.
     - `lab/test/harness.lua` `A`, `self_id`, `hub_id` in `H.setup`: written before any test runs.
     - `lab/test/harness.lua` `hub_id` in `H.restart_hub`: observed correct in a probe. A test body caught two errors (`expect_error`, and a `wait` callback that failed once), after an earlier failed test. Then it restarted the hub. A later `H.hub` call reached the new hub.
     - `lab/test/harness.lua` operation key counter: now a table field. A probe after a failed test showed no lost write (hardening, not a reproduced defect).
@@ -357,12 +355,12 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
   - A call result's field as an argument also works: the hub tests use `for _, w in ipairs(a:hub('hub.workers', {}).workers) do`, and they pass.
   - Side note: `s:gmatch(P)` returns an iterator that needs its hidden state. `local it = s:gmatch(P); for x in it do` fails ("bad argument #1, userdata expected, got nil"). Use `gmatch` only directly in a `for` header.
   - Rule: put the value in a local before the `for`.
-  - Audit (hub team and hub reviewer, 2026-10-19, source only): `plugins/lazyrex.lua`, `lab/test/*.lua`, `lab/probes/*.lua` and `tests/**/*.lua` have none of the failing forms. The one `gmatch` loop (`tests/isolation/tests/isolation.lua`) uses a local string.
+  - Audit (2026-10-19, source only): `plugins/lazyrex/lazyrex.lua`, `lab/test/*.lua`, `lab/probes/*.lua` and `tests/**/*.lua` have none of the failing forms. The one `gmatch` loop (`tests/isolation/tests/isolation.lua`) uses a local string.
 - **A `rex do` script sends at most 64 KiB in one control message** (observed on Rex 1203, `0.0.1792158932-g88fd41`, lab, 2026-10-18 and 2026-10-19). The CLI reports `control message too large: encoded request is 65541 bytes, limit is 65536`. This matches the Control v1 reference (`max_message_bytes: 65536`, for the whole decompressed envelope). It covers the script's requests (for example `hub.sql.exec`) and its `client.reply`. A `client.reply` that is too large never arrives: the caller sees only a timeout (a plugin reply with two 50 000-byte records: no answer within 10 s, 2026-10-19). A request that is too large fails at once (66 228 bytes, 2026-10-19). Effects in LazyRex:
   - A view tree from a Lua plugin must stay well under 64 KiB. Before 2026-10-18 the messaging plugin sent up to 200 messages. A thread whose newest 200 messages were larger than about 64 KiB did not render (the hub kept the old tree). Five live threads were 52 to 473 KB.
   - The messaging plugin now sends the newest messages within a 40 KB estimate, minus the draft. The renderer in thread mode gets older pages through `hub.view.history` (each page within 40 KB; view/README.md, "The history fetch").
   - A send to a group writes every member's mailbox in one batch. In the lab, Team sends failed after 287 messages: four mailboxes of 13 KB and the thread record passed 64 KiB. Live mailboxes stay small while agents read their mail. Not fixed (roadmap, Known defects).
-- **A `rex do` script receives more than 64 KiB in one reply** (observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-19, the harness fixture plugin; probe `lab/probes/plugin-message-limits.lua`, deleted with hub.store on 2026-10-23). The plugin called `hub.store.get` (since removed) through `client.perform` and measured the result with `rex.json.encode` (`lua_bytes`):
+- **A `rex do` script receives more than 64 KiB in one reply** (observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-19, the harness fixture plugin; probe `plugin-message-limits.lua`, deleted on 2026-10-23). The plugin called `hub.store.get` (since removed) through `client.perform` and measured the result with `rex.json.encode` (`lua_bytes`):
   - Two records of each content class arrived in full, with Go-encoded text of 65 592 to 65 600 and 99 996 to 100 000 bytes: ASCII, `<`, U+2028, `é`, U+0001, and `"\`. `lua_bytes` was 65 679 to 65 689 and 100 084 to 100 089.
   - ASCII records of 49 960 bytes: 4, 10 and 20 records arrived (`lua_bytes` 200 005, 499 994 and 999 984). 21 records were over the hub's limit. Before the reply guard, the hub lost its connection ("disconnected while the request waited", `client_unavailable`). With the guard, the plugin got `reply_too_large` (1 050 091 bytes, limit 1 047 552).
   - Inferred, not observed beyond these sizes: a plugin receives up to the sender's limit. The largest observed reply to a plugin is 999 984 bytes.
@@ -370,13 +368,13 @@ Observed on Rex 0.0.1792088193-g7a93ec, lab server. Probe: `spikes/lab/perform-p
   - A `client.reply` frame of 1 048 576 bytes was accepted. One of 1 048 577 bytes closed the replying client (`client.inspect`: not_found). The caller got `client_unavailable`.
   - The server's response to the caller is larger than the reply frame. A Go caller (limit 1 048 576) got the result of a 1 048 544-byte reply frame (result 1 048 456 bytes). For a reply frame of 1 048 560 bytes or more, the caller got `too_large: control response exceeds 1048576 bytes` at once, and the replying client stayed connected.
   - The hub's reply guard (`hub/cmd/hub/replyguard.go`) keeps every reply frame at or below `max_message_bytes` minus 1 KiB (1 047 552 bytes). Over that, the hub sends `reply_too_large` with the attempted size.
-- **`client.perform` into a `rex do` script works.** Declare the action with `client.keymap`. In `rex.on("client_perform_requested", function(ctx, ev) ... end)`, call `rex.call("client.reply", {call_id = ev.call_id, result = ...})`. The caller gets `result`. `ev` has `call_id` (a string), `action`, `args` and `requester {client_id, info, principal {kind, uid, gid, pid}}`. A handler return value alone does **not** reply. The script keeps state between calls. The CLI can call it: `rex -C <label> do <action> k=v --json`. Probe: `spikes/lab/perform-probe.lua`.
+- **`client.perform` into a `rex do` script works.** Declare the action with `client.keymap`. In `rex.on("client_perform_requested", function(ctx, ev) ... end)`, call `rex.call("client.reply", {call_id = ev.call_id, result = ...})`. The caller gets `result`. `ev` has `call_id` (a string), `action`, `args` and `requester {client_id, info, principal {kind, uid, gid, pid}}`. A handler return value alone does **not** reply. The script keeps state between calls. The CLI can call it: `rex -C <label> do <action> k=v --json`. Probe: `perform-probe.lua`.
 - A normal control client (Node) also answers with `client.reply` on the connection that received the event (Codex's positive control, same build).
 - `rex.action {name, title, run}` in a `rex do` script did not make the action callable from another client: `rex -C <client> do <name>` failed with "no action named". Declaring it with `client.keymap` made the call reach the script (see above).
 
-### Plugin timers (reviewer lab)
+### Plugin timers
 
-Observed on Rex `0.0.1792158932-g88fd41`, in an isolated reviewer lab, with
+Observed on Rex `0.0.1792158932-g88fd41`, in an isolated lab, with
 `lab/probes/timer-every.lua` and `lab/probes/timer-only.lua`:
 
 - `rex.every(2)` continued after a handler caught an error with `pcall`.
@@ -446,16 +444,16 @@ With `sandbox-exec`, this profile made `rex --autostart=false whoami` fail with 
 
 Limits: no restart after a crash (calls then fail with `blockexec/blockremote: remote control disconnected`); `--block-plugin-reload` reloads only when the executable's content hash changes; new executables are found only at server start.
 
-Lab plugin: `spikes/lab/fake-block-plugin.mjs`.
+Lab plugin: `fake-block-plugin.mjs`.
 
-Plugin events (observed on Rex 1203, lab `/tmp/rexlab-ev`, `spikes/lab/block-emit-probe.mjs`, 2026-10-16):
+Plugin events (observed on Rex 1203, lab `/tmp/rexlab-ev`, `block-emit-probe.mjs`, 2026-10-16):
 
 - After `block.create`, Rex sends the plugin `block.event` requests for its block: `session_attached`, `owner_changed` (reasons `create`, `disconnect`), `focus`, `session_view_changed`, `client_connected` and `client_disconnected`.
 - `--block-plugin-reload`: a change to the plugin executable restarts the plugin. The block stays in the session, and Rex sends `session_attached` again to the new process.
 
 ### Plugin event emission (observed on Rex 1203, lab)
 
-Found by disassembly of `sdk/blockremote`, `sdk/blockserver/apiclient` and `sdk/blockserver/apitypes` (event.go), then proved in the lab with `spikes/lab/block-emit-probe.mjs`.
+Found by disassembly of the Rex packages `rex/sdk/blockremote`, `rex/sdk/blockserver/apiclient` and `rex/sdk/blockserver/apitypes` (event.go), then proved in the lab with `block-emit-probe.mjs`.
 
 - Rex reads `event` frames that the plugin sends on the control connection it opened to the plugin. The event goes in **`payload`**, not in `event`:
 
@@ -476,7 +474,7 @@ Found by disassembly of `sdk/blockremote`, `sdk/blockserver/apiclient` and `sdk/
   | `block_action` | `{block_id, action:{type, payload}}` | See the action types below. |
   | `block_closed` | `{block_id}` | Rex removes the block from the session and publishes `block_closed`. Rex does not send `block.close` back. |
 
-- Action types (`sdk/block/action` json_action.go):
+- Action types (`rex/sdk/block/action` json_action.go):
   - `{"type":"event","payload":{"name","payload"}}`: same result as `block_event`. Observed.
   - `{"type":"close","payload":{}}`: Rex closes the block, publishes `block_closed`, then sends `block.close` to the plugin. Observed.
   - `{"type":"api","payload":{"target":"<block ID>","method","id","args","caller"?}}`: Rex accepted the frame and did nothing. A `com.superlogical.terminal.write` to a terminal block in the same session wrote nothing, with a Rex or a plugin block ID as `block_id`. No log line. Rex's `forwardEvents` has a branch that drops some action types; the API action seems to fall in it (inference from disassembly).
@@ -526,7 +524,7 @@ Where they show (observed, lab):
 
 ## Block method caller identity
 
-Observed on Rex 1203 (`0.0.1792158932-g88fd41`), lab, 2026-10-16, unless a line says otherwise. Probes: `spikes/lab/fake-block-plugin.mjs` (logs every frame), `spikes/lab/caller-watch.mjs` (logs every `session.attach_all` `event_scope: all` event), `spikes/lab/caller-ident-init.lua` (lab config action), `spikes/lab/caller-responder.lua` (lab "hub" client).
+Observed on Rex 1203 (`0.0.1792158932-g88fd41`), lab, 2026-10-16, unless a line says otherwise. Probes: `fake-block-plugin.mjs` (logs every frame), `caller-watch.mjs` (logs every `session.attach_all` `event_scope: all` event), `caller-ident-init.lua` (lab config action), `caller-responder.lua` (lab "hub" client).
 
 ### What the plugin receives
 
@@ -554,7 +552,7 @@ Every call path gives the plugin the same frame. Only `args` changes:
 
 ### A descriptor cannot ask for caller information
 
-- The API reference for `block_creator.list` (saved in `docs/reference/rex-0.0.1792158932-g88fd41/help.json`) defines a method descriptor as `{description, input_schema, output_schema, actions}` and an action descriptor as `{name, title, description, category, keywords, args, repeats}`. Both have `additionalProperties: false`.
+- The API reference for `block_creator.list` (`/api/help` of Rex 0.0.1792158932-g88fd41) defines a method descriptor as `{description, input_schema, output_schema, actions}` and an action descriptor as `{name, title, description, category, keywords, args, repeats}`. Both have `additionalProperties: false`.
 - Binary scan of the 1203 server (python, json struct tags): the types are `apitypes.BlockMethodDesc`, `apitypes.BlockActionDesc`, `apitypes.HelpBlockMethod`, `apitypes.BlockMethodInput`. Of 541 distinct json tags, only `caller`, `client`, `client_id`, `context`, `origin`, `principal`, `requester` relate to identity. Go stores tag strings once per binary, so the scan cannot show which struct owns a tag. `requester` and `principal` belong to `client.perform`. `origin` and `context` appear next to creator listing and event fields. `caller` appears next to libghostty callback types. No tag such as `want_caller` or `include_caller` exists. Unverified: that no hidden field exists. The schema says there is none.
 
 ### Events do not show which client called a block method
@@ -569,7 +567,7 @@ Every call path gives the plugin the same frame. Only `args` changes:
 
 ### Config file actions know the caller
 
-- A Lua action in the config file (`rex.action` in `init.lua`, reloaded with `server.config_reload`) receives `ctx = {client_id, session_id, block_id, origin}`. The Rex docs list these fields too (`docs/reference/rex-docs-2026-10-16/llms-full.txt`, "The Run Function").
+- A Lua action in the config file (`rex.action` in `init.lua`, reloaded with `server.config_reload`) receives `ctx = {client_id, session_id, block_id, origin}`. The Rex docs list these fields too (the Rex docs `llms-full.txt`, read 2026-10-16, "The Run Function").
 - Observed `origin` values: `api` from `rex do <action>` (the docs say `cli`), and `palette` from `client.action` with `origin: "palette"`.
 - `ctx.client_id` is the calling connection. A Node client's two calls on one connection gave the same `ctx.client_id`.
 - **`client.perform` from inside a config action is attested as the client that ran the action.** The lab action `ident` called `client.perform` on the "hub" client. The hub's `client_perform_requested` event had `requester.client_id` equal to `ctx.client_id`, and `requester.principal.pid` equal to the caller's pid (Node pid 93702; for the CLI, the `rex` process). `client_performed` (event scope `all`) shows the same requester.
@@ -588,7 +586,7 @@ All workarounds are attribution, not a security boundary: every process runs as 
 
 ### Native `rex do` route to the hub (observed on Rex 1203, lab)
 
-Lab: `/tmp/rexlab-route`, started with `LAB_CONFIG=$PWD/spikes/lab/route-init.lua spikes/lab/server.sh /tmp/rexlab-route`. Probes: `spikes/lab/route-init.lua` (config action `lazyrex_send`), `spikes/lab/route-hub.mjs` (hub client labeled `lazyrex-messaging`). The callers ran in a lab pane (`com.superlogical.terminal.shell` with a script command).
+Lab: `/tmp/rexlab-route`, started with `LAB_CONFIG=route-init.lua lab/server.sh /tmp/rexlab-route`. Probes: `route-init.lua` (config action `lazyrex_send`), `route-hub.mjs` (hub client labeled `lazyrex-messaging`). The callers ran in a lab pane (`com.superlogical.terminal.shell` with a script command).
 
 Config action that forwards to the hub:
 
@@ -640,13 +638,13 @@ Client action descriptors:
 
 Add the calling client to `block.method` requests sent to block plugins, in the same shape as `client.perform`'s `requester {client_id, principal}`, plus `origin` and the Rex `session_id`. Or let a method descriptor ask for it (for example `"caller": true`).
 
-In Rex Lua, setting one large integer key in a new table costs time in proportion to the key (the array part seems to grow up to the key; see "One large integer key" above). Standard Lua puts such a key in the hash part.
+In Rex Lua, setting one large integer key in a new table costs time in proportion to the key (the array part seems to grow up to the key; see "Rex Lua runtime" above). Standard Lua puts such a key in the hash part.
 
 Give the terminal block's `format` method a bound: for example `max_bytes`, or the last N lines. Today it returns the whole scrollback, and a long pane gives no text at all (see "Terminal block format").
 
 ## Command palette entries and forms (Rex 1203)
 
-Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=spikes/lab/palette-init.lua`, `fake-block-plugin.mjs` as `probe`, `route-hub.mjs`); probes `spikes/lab/palette-probe.mjs` and `spikes/lab/palette-form-probe.mjs`; the Rex docs (`docs/reference/rex-docs-2026-10-16/llms-full.txt`); a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203)); one read-only `rex client ls` / `rex client inspect <app>` on the real server. The Rex app was not connected to a lab server. So every statement about what the app shows is **inferred**, not observed.
+Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=palette-init.lua`, `fake-block-plugin.mjs` as `probe`, `route-hub.mjs`); probes `palette-probe.mjs` and `palette-form-probe.mjs`; the Rex docs (the Rex docs `llms-full.txt`, read 2026-10-16); a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203)); one read-only `rex client ls` / `rex client inspect <app>` on the real server. The Rex app was not connected to a lab server. So every statement about what the app shows is **inferred**, not observed.
 
 ### Which actions the palette can show
 
@@ -705,12 +703,12 @@ Two long-lived control clients A and B on one session, window 1 (block X) and wi
 
 - `session.new_layer {session_id, window_id, bounds, layout, focus: true}` created a frontmost floating block. In the active window, it became the window's `focused_block_id`, and the active window did not change. In a non-active window, `focus: true` also made that window the session's active window. Observed (lab).
 - This changes only server state. Earlier observation on the real app: server focus does not move the app's tab, and the app's `session.select {session_id, window_id}` shows the tab with the server's focused block as the app's focused pane.
-- **Route that works in the lab:** a config action run from the palette (`spikes/lab/palette-init.lua`, `lazyrex_form`) finds the window of `ctx.block_id`, opens a focused floating layer there, and calls `rex.client.queue("session.select", {session_id, window_id})`. The `client.action` response returned `client_actions: [{action: "session.select", args: {...}}]`. The calling client (the app) performs these after the action. The docs say that `rex.client.queue` fails when the action runs from the CLI and no client can be found. They also say that the app accepts actions from the CLI only with Remote Control on. A palette run comes from the app itself. Inferred: it does not need Remote Control. Not observed in the app.
+- **Route that works in the lab:** a config action run from the palette (`palette-init.lua`, `lazyrex_form`) finds the window of `ctx.block_id`, opens a focused floating layer there, and calls `rex.client.queue("session.select", {session_id, window_id})`. The `client.action` response returned `client_actions: [{action: "session.select", args: {...}}]`. The calling client (the app) performs these after the action. The docs say that `rex.client.queue` fails when the action runs from the CLI and no client can be found. They also say that the app accepts actions from the CLI only with Remote Control on. A palette run comes from the app itself. Inferred: it does not need Remote Control. Not observed in the app.
 - Run from the CLI without a session, the same action failed, because `ctx` had no session.
 
 ## The config file at server start (hub autostart)
 
-Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-24 (claude-51). The lab ran `lab/server.sh` with `LAB_CONFIG` set to a probe `init.lua`.
+Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-24. The lab ran `lab/server.sh` with `LAB_CONFIG` set to a probe `init.lua`.
 
 - The top level of `init.lua` runs at server start. It runs again at each `rex config reload`.
 - At load, `rex.call` returns nil and an error. The error is "the configuration file cannot call server.status here: there is no client in scope". `session.create` gives the same error. So the load itself cannot create a session or a pane.
@@ -744,7 +742,7 @@ Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-24 (claude-51). The lab r
 
 ### Custom block types in the app (Rex 1203)
 
-Sources: a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203), read-only); the Rex docs (`docs/reference/rex-docs-2026-10-16`); lab `/tmp/rexlab-block` with `spikes/lab/wrap-block-plugin.mjs` and `spikes/lab/block-render-probe.mjs`.
+Sources: a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203), read-only); the Rex docs (read 2026-10-16); lab `/tmp/rexlab-block` with `wrap-block-plugin.mjs` and `block-render-probe.mjs`.
 
 App binary (observed, static):
 
@@ -766,8 +764,8 @@ Safe in-app check (for the maintainer, if wanted; not run):
 1. Start a TCP lab with the probe plugin. Do not use port 47900 if something else uses it.
    ```sh
    L=/tmp/rexlab-app; mkdir -p $L/blocks
-   printf '#!/bin/sh\nLAB_DIR=%s exec node %s\n' $L "$PWD/spikes/lab/fake-block-plugin.mjs" > $L/blocks/probe; chmod +x $L/blocks/probe
-   LAB_EXTRA_ARGS='--extra-listen http://127.0.0.1:47900 --allow-anonymous' spikes/lab/server.sh $L
+   printf '#!/bin/sh\nLAB_DIR=%s exec node %s\n' $L "fake-block-plugin.mjs" > $L/blocks/probe; chmod +x $L/blocks/probe
+   LAB_EXTRA_ARGS='--extra-listen http://127.0.0.1:47900 --allow-anonymous' lab/server.sh $L
    ```
 2. In another terminal, make a session with a terminal and the plugin block side by side:
    ```sh
@@ -781,7 +779,7 @@ Safe in-app check (for the maintainer, if wanted; not run):
 
 ## Tab status: program status, glyphs and notices (Rex 1203)
 
-Sources: Rex docs "Program Status Protocol (OSC 7501)" (`docs/reference/rex-docs-2026-10-16/llms-full.txt`), labeled **documented**; lab `/tmp/rexlab-status` with `spikes/lab/status-emit.sh` and `spikes/lab/status-probe.sh`, labeled **observed (lab)**; read-only block methods on this agent's own Claude pane on the real server, labeled **observed (real, read-only)**; a read-only scan of the app bundle (`/Applications/Rex Beta.app`, 0.1.0 (1203)), labeled **inferred** where it explains app behavior. Nobody checked the app's hover card for these tests.
+Sources: Rex docs "Program Status Protocol (OSC 7501)" (the Rex docs `llms-full.txt`, read 2026-10-16), labeled **documented**; lab `/tmp/rexlab-status` with `status-emit.sh` and `status-probe.sh`, labeled **observed (lab)**; read-only block methods on this agent's own Claude pane on the real server, labeled **observed (real, read-only)**; a read-only scan of the app bundle (`/Applications/Rex Beta.app`, 0.1.0 (1203)), labeled **inferred** where it explains app behavior. Nobody checked the app's hover card for these tests.
 
 ### Where the hover card's data comes from
 
@@ -855,7 +853,7 @@ Audit evidence: `/tmp/rexlab-codex-browser/reinvention-sources/`.
 
 ### Focus reporting reaches panes (Rex 1203, real app)
 
-A program in a pane that enables focus reporting (DECSET 1004) gets focus-in (`ESC [ I`) and focus-out (`ESC [ O`) from the Rex macOS app when the user moves between panes and tabs. Observed with the spike 3 renderer (Bubble Tea v2 focus messages): the maintainer's clicks into thread tabs produced 12 `hub.view.seen` calls, and only those threads were marked read. A background tab gets no focus-in. Not checked: whether enabling 1004 reports the current state at once (xterm does not).
+A program in a pane that enables focus reporting (DECSET 1004) gets focus-in (`ESC [ I`) and focus-out (`ESC [ O`) from the Rex macOS app when the user moves between panes and tabs. Observed with the renderer (Bubble Tea v2 focus messages): the maintainer's clicks into thread tabs produced 12 `hub.view.seen` calls, and only those threads were marked read. A background tab gets no focus-in. Not checked: whether enabling 1004 reports the current state at once (xterm does not).
 
 ### Lua swap assignment is wrong (Rex 1203, lab)
 
@@ -864,13 +862,13 @@ Observed on Rex `0.0.1792158932-g88fd41` with `rex do` in an isolated server:
 Standard Lua evaluates all right-hand values before it assigns, so `a, b` must swap.
 Workaround: swap through a temporary local (`local t = a; a = b; b = t`).
 Impact found: the messaging plugin wrote some thread records under `thread/<x><x>` (one agent twice) when the two IDs needed a swap.
-Probe: `spikes/lab/lua-swap-probe.lua`.
+Probe: `lua-swap-probe.lua`.
 Still wrong on Rex 0.0.1792158932-g88fd41 (lab, 2026-10-19). The rule: in a plain multiple assignment to existing variables, a later value that reads an earlier target sees the new value. `x, y = y, x + 10` with x = 1, y = 2 gives 2, 12 (Lua: 2, 11). A `local` declaration (`local a, b = b, a`) and table fields (`t[1], t[2] = t[2], t[1]`) are correct, and the values are evaluated left to right. A scan of the LazyRex plugin repositories (2026-10-19) found this pattern only in the probe and in two test helpers, which now use a temporary.
 
 ### move_block stays inside one session (Rex 1203, lab)
 
 - `session.move_block` moves a detached block only beside an anchor in the same session. Cross-session moves fail with `404 not_found` whichever session the call names: "block … not found in any window". The same move beside a block of its own session succeeds.
-- `session.new_split` with `anchor_block_id` = a side pane, then `block.close` of that pane, gives the new pane exactly the old pane's area (observed on Rex 0.0.1792158932-g88fd41, lab, `spikes/lab/slot-replace-probe.mjs`): a side pane resized to [0.3,0,0.7,1] was replaced by a pane at [0.3,0,0.7,1]. A side pane opened with `ratio: 0.55` gets 45% of the width (the ratio is the before side).
+- `session.new_split` with `anchor_block_id` = a side pane, then `block.close` of that pane, gives the new pane exactly the old pane's area (observed on Rex 0.0.1792158932-g88fd41, lab, `slot-replace-probe.mjs`): a side pane resized to [0.3,0,0.7,1] was replaced by a pane at [0.3,0,0.7,1]. A side pane opened with `ratio: 0.55` gets 45% of the width (the ratio is the before side).
 - So a LazyRex view cannot mount a block from another session. A "hub frame" that swaps blocks can only swap blocks of its own session.
 
 ### Detach and restore preserve view processes (Rex 1203, lab)
@@ -901,7 +899,7 @@ No Rex app connected to this lab. The test proves server focus, not app selectio
 ### A whole session layout can be rebuilt exactly (Rex 1203, lab)
 
 Template create check (observed 2026-10-17 on Rex `0.0.1792158932-g88fd41`,
-`spikes/03-ui-framework/tests/templates-layout-lab.mjs`): one `session.new_window`
+`templates-layout-lab.mjs`): one `session.new_window`
 created four leaves with splits nested on both sides. Ratios and depth-first block
 IDs matched the requested tree. Each leaf kept its label and its own `options.cwd`
 (`/tmp` resolved to `/private/tmp`). An invalid flavor in the second leaf left no
@@ -917,16 +915,16 @@ atomicity or the absence of transient processes during every failure.
   4. `focus_block` the recorded focused block, then `zoom_block` the zoomed block (`zoom: true`). Zoom comes last because a focus change clears zoom.
 - Expand a tree: the region of each split is held by its first leaf. For each split, `move_block` the first leaf of `after` beside the first leaf of `before`, with the split's `direction`, `side: after` and `ratio`. Then expand `before` and `after`. `ratio` is the before share.
 - After all windows: `focus_block` the focused block of the recorded active window.
-- Proof (`spikes/lab/layout-rebuild.mjs`): 17 blocks in 5 windows. Cases: splits nested on the `after` side and on the `before` side, two floating layers (one with an inner split), a window with only floating layers, zoom, per-window focus, the active window, window order and labels. The view after the rebuild matched the capture exactly (block IDs, ratios, bounds, stacking order). Rebuild time: 170 ms.
+- Proof (`layout-rebuild.mjs`): 17 blocks in 5 windows. Cases: splits nested on the `after` side and on the `before` side, two floating layers (one with an inner split), a window with only floating layers, zoom, per-window focus, the active window, window order and labels. The view after the rebuild matched the capture exactly (block IDs, ratios, bounds, stacking order). Rebuild time: 170 ms.
 - Window, layer and split IDs change. Block IDs do not change.
-- Restoring next to windows created after the capture: the hub app-mode test (`spikes/03-ui-framework/tests/appmode.mjs`) restored recorded tabs first with `session.move_window`, and a tab the user made while hidden stayed after them.
+- Restoring next to windows created after the capture: the hub app-mode test (`appmode.mjs`) restored recorded tabs first with `session.move_window`, and a tab the user made while hidden stayed after them.
 - `session.new_window` and `session.move_block` need the control connection attached to the session (`session.attach`). Without it: `conflict`, "stream is not attached to session".
 - A session with no windows has no `windows` field in `session.view`.
 - Error codes for a missing target (observed 2026-10-16, Rex 1203, lab): a missing session gives `session_not_found` (`session.attach`, `session.view`, `session.list_blocks`). A missing block (`block.close`, `session.detach_block`) or window (`session.focus_window`, `session.move_window`) gives `not_found`. Check both codes for a session.
 
 ### A lost new_window answer leaves panes that the hub cannot prove (Rex 1203, lab)
 
-- `spikes/03-ui-framework/tests/templates-lab.mjs` with `TEMPLATES_RESTART=1`: the hub was killed (SIGKILL) right after a template start was admitted. Rex had created the whole tab. After the restart, each leaf had exactly one pane with its `lazyrex-spawn:<id>` label, and the hub kept each accessory leaf `sending` ("outcome unknown: 1 candidate pane(s)"). A label is only a hint, so this is by design (decision, 2026-10-17: v1 keeps it; see roadmap, "Idempotent create operations").
+- `templates-lab.mjs` with `TEMPLATES_RESTART=1`: the hub was killed (SIGKILL) right after a template start was admitted. Rex had created the whole tab. After the restart, each leaf had exactly one pane with its `lazyrex-spawn:<id>` label, and the hub kept each accessory leaf `sending` ("outcome unknown: 1 candidate pane(s)"). A label is only a hint, so this is by design (decision, 2026-10-17: v1 keeps it; see roadmap, "Idempotent create operations").
 - A process proof through the environment does not work on macOS for the main case. Observed on macOS 27.0.1 (26A434), own user: `ps eww -o command= -p <pid>` and `ps -E` showed `LAZYREX_SPAWN=…` for a Homebrew `node` process, and no environment for `/bin/sleep` and `/bin/zsh -c …`. Inferred: macOS hides the environment of Apple platform binaries. The built-in `shell` profile runs `$SHELL -l` (`/bin/zsh`).
 
 ### A create can succeed when its client dies before the reply (Rex 0.0.1792158932-g88fd41, lab)
@@ -946,7 +944,7 @@ atomicity or the absence of transient processes during every failure.
 - `com.superlogical.terminal.write` to a detached block reaches its program. A notice line arrived in a `read` loop.
 - The program keeps running: a counter loop advanced while detached.
 - `com.superlogical.terminal.program_status` answers for a detached block, with the record set before the detach.
-- So hub notices to agents (`agents.go`) and agent readiness work while the agent's pane is detached. Probe: `spikes/lab/detached-pane.mjs`.
+- So hub notices to agents (`agents.go`) and agent readiness work while the agent's pane is detached. Probe: `detached-pane.mjs`.
 - Shell block options go in `options` (`command`, `login`, `exit`). With the command in `args` instead, the command did not run (what ran instead is untested).
 
 ### Text decoration in the app (Rex 1203)
@@ -974,7 +972,7 @@ Features that we found in Rex (binary, docs or API) that did not function or had
 | What | Where seen | What we tried and the result | Rex version |
 | --- | --- | --- | --- |
 | `sdk_version` and `features` in a block plugin's fd-3 JSON | Rex binary (`json:"sdk_version,omitzero"`, `json:"features,omitzero"`); startup log line | `sdk_version:"9.9.9-lazyrex"`, `features:["block_events","lazyrex.test"]`. Shown only in the startup log. No API shows them. No behavior change, and no feature name compared in disassembly. A non-string item makes the start fail. See "Plugin handshake fields". | 1203, lab |
-| Plugin `block_action` of type `api` (`{"type":"api","payload":{target, method, id, args, caller?}}`) | Rex SDK `sdk/block/action` (`json_action.go`) | Rex accepted the frame and did nothing: a `com.superlogical.terminal.write` to a terminal in the same session wrote nothing. No log line. See "Plugin event emission". | 1203, lab |
+| Plugin `block_action` of type `api` (`{"type":"api","payload":{target, method, id, args, caller?}}`) | Rex SDK `rex/sdk/block/action` (`json_action.go`) | Rex accepted the frame and did nothing: a `com.superlogical.terminal.write` to a terminal in the same session wrote nothing. No log line. See "Plugin event emission". | 1203, lab |
 | `rex block stream` | CLI help (`rex block stream BLOCK [DATA_REF]`) | Fails: `command "rex block stream" is not implemented`. Re-checked on 1203 on 2026-10-17 (lab). Use `data.connect` and the data channel instead. | 0.0.1792088193 and 1203, lab |
 | Lua multiple assignment (`a, b = b, a`) | Lua 5.1 language (gopher-lua in `rex do`) | Both variables got the old value of `b`. Use a temporary local. See "Lua swap assignment is wrong". | 1203, lab |
 | `rex.action` in a `rex do` script, called from another client | Docs (`rex.action` works in scripts) | `rex -C <client> do <name>` failed: "no action named". Declaring the action with `client.keymap` works. See "Rex Lua runtime". | 0.0.1792088193, lab |
@@ -1032,7 +1030,7 @@ Check first: the Rex agent guide (`rex __internal skill`, section "Control Rex a
 ### Lua coroutine context across callbacks
 
 Observed on Rex `0.0.1792158932-g88fd41` (Rex 1203), 2026-10-16.
-The probe is `spikes/lab/coroutine-context.lua`.
+The probe is `coroutine-context.lua`.
 A timer creates a Lua coroutine and resumes it until `coroutine.yield()`.
 A later timer resumes the same coroutine. The second resume returns `false` and `context canceled`.
 The first callback's context does not remain valid for a later callback.
@@ -1094,12 +1092,12 @@ Observed on Rex `0.0.1792158932-g88fd41` in `/tmp/rexlab-profiles-codex`:
 - An omitted `limit` returned all 1,100 entries in the test directory. With `limit: 200`, the result had 200 entries and `truncated: true`. A narrower `prefix` returned the ten matching names with `truncated: false`. The API has no cursor or offset.
 - A Lua caller attached to another session can attach the source session and read its `terminal.pwd` and `terminal.list_dir`.
 
-Repeatable test: `spikes/03-ui-framework/tests/profiles-directories-lab.mjs`. The helper-loading source-path probe is separate from that test.
+Repeatable test: `profiles-directories-lab.mjs`. The helper-loading source-path probe is separate from that test.
 
 ### Listening ports in pane descendants
 
 Observed on Rex `0.0.1792158932-g88fd41`, macOS, isolated lab, 2026-10-17.
-`tests/tunnels-ports-lab.mjs` under spike 3 starts a Node parent in each of two
+A lab probe (`tunnels-ports-lab.mjs`) starts a Node parent in each of two
 panes. Each parent starts a TCP listener child. The terminal `process.child.pid`,
 `ps -axo pid=,ppid=,comm=`, and `lsof -nP -a -p <pids> -iTCP -sTCP:LISTEN -Fpcn`
 identify both listeners and their owning panes without root. A separate listener
@@ -1110,7 +1108,7 @@ This is a snapshot, not a guarantee against process exit or PID reuse.
 ### Tunnel blocks (Rex 0.0.1792158932-g88fd41, lab)
 
 - In `rex do`, `debug.getinfo(1, 'S').source` is the absolute script path **without** the `@` prefix of standard Lua (`/tmp/rexlab-tunnels-claude/probe.lua`). Match it with `^@?(/.*)/[^/]*$`. The same is true for a chunk that the script loads with `loadfile` (observed on Rex 0.0.1792158932-g88fd41, lab, 2026-10-20: the harness runner; its failure location compared with `@<path>` and never matched).
-- A plugin's `rex do` process inherits the lab server's environment. `os.getenv` reads variables that were set when `spikes/lab/server.sh` started. The hub config passes no plugin arguments, so the Tunnels lab uses this for its settings.
+- A plugin's `rex do` process inherits the lab server's environment. `os.getenv` reads variables that were set when `lab/server.sh` started. The hub config passes no plugin arguments, so the Tunnels lab uses this for its settings.
 - A `session.new_block` shell block with `exit.on_completion = false` stays detached and callable after its command exits. `com.superlogical.terminal.process` then has `last_exit` and no `child`.
   - Observed on Rex 0.0.1792593189-g3f4a0a, Linux lab, 2026-10-22, in 30 of 30 blocks (each ran `sh -c "sleep <d>; exit 3"`, with a delay d of 0, 0.05 or 0.2 seconds): a `com.superlogical.terminal.process` read sent after the block's `child_exited` reached the client had no `child`, and its `last_exit` was in the same form as the event payload (`{"exit_code":3,"error":"exit status 3"}`). The hub's `checkMapped` depends on this.
   - The read gives no process start time: while the child was live, `child` had `pid`, `user_id`, `user`, `name`, `path`, `invoked_path`, `argv0` and `cwd` only.
@@ -1134,7 +1132,7 @@ The Rex app lists `pane.insert_path` ("Insert Path…") and `pane.go_to_director
 
 ### A perform error in Lua and a fake app client (Rex 0.0.1792158932-g88fd41, lab)
 
-- In `rex do` Lua, `rex.call('client.perform', …)` returns no result and an error as text when the performer replies with `client.reply {error = {code, message}}`. Recorded: `stream response "control-159" failed: not_focused: refused by the mock (status=500 code=not_focused)`. The error is not a table, so `err.code` is nil. The code is the `code=` field at the end of the text. `plugins/templates.lua` reads it there. Inferred: the other plugins that test `type(err) == 'table'` lose the code in the same way.
+- In `rex do` Lua, `rex.call('client.perform', …)` returns no result and an error as text when the performer replies with `client.reply {error = {code, message}}`. Recorded: `stream response "control-159" failed: not_focused: refused by the mock (status=500 code=not_focused)`. The error is not a table, so `err.code` is nil. The code is the `code=` field at the end of the text. The Templates plugin (`templates.lua`) reads it there. Inferred: the other plugins that test `type(err) == 'table'` lose the code in the same way.
 - A control client that sends `hello` with `client = {kind = "app", name, label}` over the Unix socket shows `info.kind: "app"` in `client.list`. After `session.attach`, `session_ids` contains that session. It can declare `session.select` with `client.keymap` and gets `client.perform` requests for it. `tests/templates-lab.mjs` uses such a client as the fake app. It does not show that the real app switches: that check needs the real app.
 
 ## Letter keys in `send-key`
@@ -1148,11 +1146,11 @@ key names are case-insensitive. `G` types `g`, and `shift+g` types `G`.
 
 ## Inline output, alt screen, resize and keys (thread-view probes)
 
-These facts support the thread view (hub lead's thread contract v1.1, points H and K). They are
+These facts support the thread view. They are
 observations only; the build rules that follow from them are in the thread contract. The probe
 program is `view/testdata/teaprobe`; the lab driver is `view/teaprobe_lab_test.go`
 (`TEAPROBE_LAB=1 go test -run TestTeaProbe` in `view/`). Each step keeps raw captures (text,
-text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac (claude-52 and codex-29). The iOS subsection is one user-driven session.
+text `--unwrap`, vt) in its lab. Two independent runs passed on the Mac. The iOS subsection is one user-driven session.
 
 ### Rex on the Mac (Rex 0.0.1792158932-g88fd41, lab, Bubble Tea v2.1.0, Go 1.27.2, macOS 27.0.1)
 
