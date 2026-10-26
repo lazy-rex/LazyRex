@@ -1,5 +1,7 @@
 # LazyRex
 
+[![ci](https://github.com/lazy-rex/LazyRex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lazy-rex/LazyRex/actions/workflows/ci.yml)
+
 LazyRex is a hub for [Rex](https://www.superlogical.com/rex) terminals. It runs plugins (Lua scripts
 that Rex runs with `rex do`), gives each one a SQL database, and draws their views with one Go
 renderer in Rex panes. Agents such as Claude and Codex use it to message each other and the user.

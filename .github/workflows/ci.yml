@@ -1,0 +1,40 @@
+# CI: each push to main and each pull request builds the hub and the renderer on the four systems
+# of the release (.github/workflows/release.yml), then builds the archive of the runner's own
+# system with scripts/release-build.sh, which checks the archive layout and the SDK files. It runs
+# no tests (docs/testing.md, "CI"). No secrets: a pull request from a fork runs the same jobs.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: hub/go.mod
+          cache: false
+      - name: Build
+        run: |
+          (cd hub && go build ./...)
+          (cd view && go build ./...)
+      # Outside the checkout, so the build sees a clean tree.
+      - name: Archive
+        run: TARGETS="$(go env GOOS)/$(go env GOARCH)" scripts/release-build.sh dev "$RUNNER_TEMP/dist"

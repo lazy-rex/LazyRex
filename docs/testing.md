@@ -665,7 +665,7 @@ lab server too. Named exceptions, each with its own variable:
 | `RESIZE_BURST_LAB=1` (with `LAZYREX_LAB=1`) | `go test -count=1 -v -run 'TestLiveRegionResizeBurstLab$' .` | The no-wait resize burst, a known limit (view/README.md); off in the main lab. |
 | `TEAPROBE_LAB=1` | `go test -count=1 -v -run 'TestTeaProbe' .` | The Bubble Tea and Rex facts (docs/rex-protocol.md), a diagnostic: it records, and fails only when the lab fails. Not a `*Lab` test. |
 | `VIEW_TEA_TRACE=1` (with `LAZYREX_LAB=1`) | | A trace: each view process logs its renderer writes to `<lab>/tea-<pid>.log`. |
-| `MESSAGING_DIR`, `TWOHOST_*` | | Inputs of `TestPeerMessagingLab` and `TestTwoHostLab`, not gates. |
+| `MESSAGING_DIR`, `TWOHOST_*` | | Inputs of `TestPeerMessagingLab`, `TestReleaseArchiveMessagingLab` and `TestTwoHostLab`, not gates. |
 
 The main lab is the full lab that runs on hub main after each push. It runs `LAZYREX_LAB=1 go test
 ./cmd/hub` in `hub/`, then `LAZYREX_LAB=1 go test . -count=1 -v -run 'Lab$'` in `view/` (the thread-view
@@ -681,3 +681,7 @@ each main lab log name the tip and the envs.
   The cleanup stops the server and ends the lab dir with `endGoLab`.
 - Each test gets a new server. An in-process hub claims state for the whole server (the UI
   session, the hub's client name), so a shared server would make a result depend on test order.
+
+## CI
+
+CI builds the hub and the renderer on each platform; it runs no tests.
