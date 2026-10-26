@@ -1696,10 +1696,44 @@ func (h *Hub) checkProfiles() {
 	first := h.profileStamp == "" && !h.profileChecked
 	h.profileStamp, h.profileChecked = now, true
 	h.mu.Unlock()
+	if changed {
+		h.reportNoResume()
+	}
 	if changed && !first {
 		h.ev.emit("profiles_changed", nil)
 		go h.changed("profiles")
 	}
+}
+
+// reportNoResume logs a warning and emits profile_without_resume for each agent profile without a
+// resume template, at the start (the baseline check) and at each profile change (the hub lead's
+// lead-restore1 item 1): a resume or a restart of its agents fails, and before this only a restore
+// showed it. Not an error: a profile may have no resume on purpose. An invalid file reports nothing
+// here; a spawn reports it.
+func (h *Hub) reportNoResume() {
+	byID, order, err := h.loadProfiles()
+	if err != nil {
+		return
+	}
+	for _, id := range profilesWithoutResume(byID, order) {
+		log.Printf("warning: %s", noResumeText(id))
+		h.ev.emit("profile_without_resume", map[string]any{"profile": id})
+	}
+}
+
+// profilesWithoutResume lists the agent profiles without a resume template, in profile order.
+func profilesWithoutResume(byID map[string]Profile, order []string) []string {
+	var out []string
+	for _, id := range order {
+		if p := byID[id]; p.Kind == "agent" && len(p.Resume) == 0 {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func noResumeText(id string) string {
+	return fmt.Sprintf(`profile %s has no "resume": a resume or a restart of its agents fails`, id)
 }
 
 func createdAt(v string) time.Time {

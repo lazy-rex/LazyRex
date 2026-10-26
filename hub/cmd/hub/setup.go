@@ -616,6 +616,17 @@ func runSetup(e setupEnv, dir string, print bool) int {
 	} else {
 		createOnly(prof, b)
 	}
+	// An existing profiles file stays as it is; setup warns about each agent profile without a
+	// resume template (reportNoResume).
+	if prof.exists && prof.block == "" {
+		if byID, order, err := (&Hub{cfg: Config{Profiles: prof.path}}).loadProfiles(); err != nil {
+			prof.notes = append(prof.notes, "Warning: the hub cannot read it: "+err.Error())
+		} else {
+			for _, id := range profilesWithoutResume(byID, order) {
+				prof.notes = append(prof.notes, "Warning: "+noResumeText(id)+".")
+			}
+		}
+	}
 	files = append(files, prof)
 
 	// The Rex config: the boot palette file beside it, and the lines that load the boot file and the

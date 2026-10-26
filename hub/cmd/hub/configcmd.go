@@ -39,6 +39,14 @@ func configCmdMain(argv []string, stdout, stderr io.Writer) int {
 	if c.managedErr != nil {
 		fmt.Fprintf(stderr, "warning: %v\n", c.managedErr)
 	}
+	// The profile check of the hub's start (reportNoResume), as a warning.
+	if byID, order, err := (&Hub{cfg: c}).loadProfiles(); err != nil {
+		fmt.Fprintf(stderr, "warning: profiles: %v\n", err)
+	} else {
+		for _, id := range profilesWithoutResume(byID, order) {
+			fmt.Fprintf(stderr, "warning: %s\n", noResumeText(id))
+		}
+	}
 	var lines [][]string
 	lines = append(lines, []string{"server", c.Server}, []string{"state", state})
 	if c.View != "" {
