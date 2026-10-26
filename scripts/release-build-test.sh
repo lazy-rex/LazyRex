@@ -40,6 +40,27 @@ for v in dev v0.1.0 v10.20.30 v1.2.3-rc.4; do
 	fi
 done
 
+# check-action-pins.sh: a full SHA with its version comment passes; a tag, a short SHA, a SHA
+# without the comment, a branch, and a directory without actions fail.
+pin=actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+pins() {
+	rm -rf "$tmp/wf"
+	mkdir "$tmp/wf"
+	printf 'jobs:\n%s\n' "$1" >"$tmp/wf/a.yml"
+	"$here/check-action-pins.sh" "$tmp/wf" >/dev/null
+}
+pins "      - uses: $pin # v7.0.1" || {
+	echo "FAIL: a pinned action was refused"
+	fails=$((fails + 1))
+}
+for l in "      - uses: actions/checkout@v7" "      - uses: actions/checkout@3d3c42e5 # v7.0.1" \
+	"      - uses: $pin" "    uses: org/repo/.github/workflows/x.yml@main" "name: x"; do
+	if pins "$l"; then
+		echo "FAIL: check-action-pins.sh passed '$l'"
+		fails=$((fails + 1))
+	fi
+done
+
 if [ $fails -ne 0 ]; then
 	echo "release-build-test: $fails failed"
 	exit 1

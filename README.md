@@ -59,25 +59,29 @@ You need Rex, with its server running. Rex is in beta, and access comes from
 [Superlogical](https://www.superlogical.com/rex). LazyRex runs on macOS and Linux, arm64 and amd64.
 
 - git. Setup reads the plugin tags, and the hub fetches the plugins at its first start.
+- curl, to download the release.
 - The Claude Code or Codex CLI, for agents: installed, and run once (logged in) before Start Agent.
   A CLI that was never run stops in its own first-run screens, and the agent waits there.
-- Access to the [lazy-rex](https://github.com/lazy-rex) repositories on GitHub. The repositories are
-  private for now, so the download uses the [GitHub CLI](https://cli.github.com) (`gh auth login`),
-  and git must authenticate to github.com (`gh auth setup-git`).
 
 Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
 `~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view` and the plugin SDK in `sdk/lua`. Download the
 latest release, check it, then unpack it. Paste the whole block: it stops at the first failure.
+To install another release, set `LAZYREX_VERSION` (for example `LAZYREX_VERSION=v0.5.0-rc.1`)
+before the block.
 
 ```sh
 (
   set -eu
-  version=$(gh release view --repo lazy-rex/LazyRex --json tagName --jq .tagName)
+  base=https://github.com/lazy-rex/LazyRex/releases
+  version=${LAZYREX_VERSION:-$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$base/latest")}
+  version=${version##*/}
+  case $version in v[0-9]*) ;; *) echo "no LazyRex release found" >&2; exit 1 ;; esac
   os=$(uname -s | tr A-Z a-z)
   arch=$(uname -m); case $arch in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
   archive=lazyrex-$version-$os-$arch.tar.gz
   dir=$(mktemp -d); cd "$dir"
-  gh release download "$version" --repo lazy-rex/LazyRex --pattern "$archive" --pattern SHA256SUMS
+  curl -fsSLO "$base/download/$version/$archive"
+  curl -fsSLO "$base/download/$version/SHA256SUMS"
   grep " $archive\$" SHA256SUMS > check
   if command -v shasum > /dev/null; then shasum -a 256 -c check; else sha256sum -c check; fi
   mkdir -p ~/.lazyrex
@@ -232,8 +236,8 @@ instead.)
 `dev.sh` builds the hub and the renderer, watches the sources, and reloads what changed.
 
 `dev.sh` starts a hub from a source checkout (the live hubs use it). It needs a POSIX shell and Go.
-It is not a requirement of LazyRex: install, setup and start need only Rex, git, an agent CLI and, while the repositories are
-private, the GitHub CLI. A build from source also needs Go.
+It is not a requirement of LazyRex: install, setup and start need only Rex, git, curl and an agent
+CLI. A build from source also needs Go.
 
 ### Tests
 
