@@ -20,7 +20,7 @@ Palette commands start with **LazyRex:** in the Rex palette.
 | Views in Rex panes | Tabs, forms and panels, drawn by one renderer (`lazyrex-view`) in Rex panes. A palette command opens its form or panel beside the pane that has focus. With two devices on one session, that can be the pane the other device focused last. |
 | Palette commands | A plugin declares its commands, and the hub writes them into the Rex palette. |
 | Manage plugins | **Plugins…** adds, updates and removes plugins. By default, the hub installs managed plugins from their GitHub releases, and a lock file pins each GitHub source to a commit. A plugin from a local directory runs from a read-only copy of that directory, which the hub makes when it starts the plugin. |
-| Supervision and recovery | Each plugin runs in its own Rex pane. When a plugin exits by itself, the hub starts it again after a delay (1 s, doubled each time, at most 60 s). When you close a plugin pane, the plugin stays stopped. A hub restart keeps the terminals: the hub finds its panes again by their labels. |
+| Supervision and recovery | Each plugin runs in its own Rex pane. When a plugin exits by itself, the hub starts it again after a delay (1 s, doubled each time, at most 60 s). After a plugin ran 60 s or more, the delay starts at 1 s again. When you close a plugin pane, the plugin stays stopped. A hub restart keeps the terminals: the hub finds its panes again by their labels. |
 | Federation | Each hub names its peers in `hub.json`. A plugin can send a message to a plugin on a peer hub. A hub can take its plugins from a peer. |
 | Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). |
 
@@ -38,8 +38,8 @@ panes. The plugins below use them.
 
 ## Plugins
 
-These plugins are built on LazyRex. Each one has its own repository. Setup installs five of them,
-all but Automations; add Automations in **Plugins…**.
+These plugins are built on LazyRex. Each one has its own repository. Setup adds five of them to the
+managed plugin file, all but Automations; add Automations in **Plugins…**.
 
 | Plugin | What it does |
 | --- | --- |
@@ -112,7 +112,7 @@ before the block.
 )
 ```
 
-The last line prints the version, for example `v0.4.1 (commit 25f8c7d…)`. A failed download, a
+The last line prints the version, for example `v0.5.0 (commit e4b74e5…)`. A failed download, a
 missing checksum line or a failed check stops the block before it unpacks anything. These steps are
 for a first installation; they do not stop or restart a running hub.
 
