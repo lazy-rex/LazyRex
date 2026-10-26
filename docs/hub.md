@@ -4,7 +4,7 @@ This document describes the hub (`lazyrex-hub`), the renderer (`lazyrex-view`), 
 and contracts between them, plugins, and Rex. `docs/architecture.md` gives the overview. The Rex
 behavior that the hub depends on is in `docs/rex-protocol.md`.
 
-Every pane runs at a route. The hub keeps the LazyRex session's tabs equal to the declared set, and
+Each renderer pane runs at a route. The hub keeps the LazyRex session's tabs equal to the declared set, and
 navigation moves every connected Rex app.
 
 Tests run only on a lab Rex server (`lab/server.sh`). The hub and the renderer refuse the user's
@@ -1140,9 +1140,9 @@ Tests: `TestCallLogKeepsEveryLineButFastRoutineReads` (the 250 ms boundary inclu
 
 ## One LazyRex session
 
-Every plugin's tabs open in one Rex session, the LazyRex session, labeled `lazyrex`. The hub owns
+Every plugin's tabs open in one Rex session, the LazyRex session, labeled `LazyRex`. The hub owns
 the session by its row in `ui_sessions` (key `*`), not by its label. More than one session labeled
-`lazyrex` is a refusal.
+`LazyRex` is a refusal.
 
 - `hub.ui.navigate {plugin, tab}` records the target tab (`ui_state` key `nav`) before any layout
   change, then the worker reconciles. The nav intent goes only after Rex confirms the focus.
@@ -1638,12 +1638,10 @@ no view opened (`TestInvalidHomeGoesToTheAppSession`).
 
 The session list follows `home_redirects` when the hub recreates a missing home session.
 
-## One-tab migration: renderer and plugins
+## Tab status: renderer and plugins
 
-The hub places plugin tabs without an explicit home in the LazyRex session.
-App mode is removed: the hub restores nothing (see "One LazyRex session"). The hub
-releases an old app session that holds user panes. Existing home sessions,
-closed-tab revisions, and drafts must survive migration and restart.
+The hub places plugin tabs without an explicit home in the LazyRex session (see "One LazyRex
+session"). Home sessions, closed-tab revisions, and drafts must survive a hub restart.
 
 The renderer reads only `snapshot.status`.
 The hub lifts a plugin's `tree.status` into that field when present. Otherwise,
@@ -2528,9 +2526,8 @@ hub). The code is in `hub/cmd/hub/peersync.go`.
   every minute; after a failure because the source hub's `lazyrex-hub` label is ambiguous (its hub
   restarted, "Transport"), again in 2 s. The source hub checks only that `hub` names a configured peer (else `unknown_hub`).
   This is a name check, not authentication ("Trust limit"): any client that reaches the source
-  hub's Rex server can name a peer and read the reply. Pins are not secret, so v1 accepts this
- . The reply is
-  `{pins, managed}`: `pins` is the pin document of the lock (`pluginExport`, plugin-sources.md,
+  hub's Rex server can name a peer and read the reply. Pins are not secret, so v1 accepts this.
+  The reply is `{pins, managed}`: `pins` is the pin document of the lock (`pluginExport`, plugin-sources.md,
   section 6a), and `managed` is `[{id, source}]` of the source hub's managed GitHub entries. A failed
   export (another lock writer holds the flocks, or an entry that does not verify) is `refused`,
   and the receiver tries again at the next sync. The pin document has no `hub` field: a receiver
