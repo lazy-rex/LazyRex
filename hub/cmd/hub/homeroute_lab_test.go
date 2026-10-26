@@ -74,7 +74,7 @@ func TestHomeRouteRefusedLab(t *testing.T) {
 	l.restarts++
 	os.Rename(filepath.Join(l.dir, "hub.log"), filepath.Join(l.dir, "hub.1.log"))
 
-	// The form: a test renderer at "/" in a pane with the form's label, and its 'sending' row.
+	// The form: a test renderer at "/" in a pane with the form's label, and its 'open' row.
 	const id = "home-form"
 	var w struct {
 		Window string   `json:"window_id"`
