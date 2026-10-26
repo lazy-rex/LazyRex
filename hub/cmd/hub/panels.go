@@ -126,12 +126,10 @@ func (h *Hub) slotRow(ctx context.Context, q querier, id string) (*slotRow, erro
 }
 
 // slotOccupant is the open (or opening) side view of a window, if any. New views of unresolved
-// replacements do not count: they are not known to exist. The panel of a tab of its own does not
-// count either (formContext.OwnTab): it stays when its tab's slot changes.
+// replacements do not count: they are not known to exist.
 func (h *Hub) slotOccupant(ctx context.Context, window string) (id, block, raw string, err error) {
 	err = h.db.QueryRowContext(ctx, `SELECT view_id, block_id, context FROM views
 		WHERE tab = ? AND status = 'open' AND json_extract(context, '$.window_id') = ?
-		AND NOT (COALESCE(json_extract(context, '$.own_tab'), 0) = 1 AND COALESCE(json_extract(context, '$.panel'), 0) = 1)
 		ORDER BY rowid DESC LIMIT 1`, formTab, window).Scan(&id, &block, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", "", nil
@@ -221,14 +219,6 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 	if req.ExpectOld != "" && old != "" && old != req.ExpectOld {
 		// The form that ran the action is gone and another view holds the slot: leave it.
 		return nil, refuse("conflict", "the side panel of this tab holds another view")
-	}
-	// The root role of a tab of its own goes to the view that replaces the root (a form that
-	// becomes a panel, form -> form -> panel), never to a view that opens beside a root panel.
-	req.Ctx.OwnTab = false
-	if old != "" {
-		var prev formContext
-		json.Unmarshal([]byte(raw), &prev)
-		req.Ctx.OwnTab = prev.OwnTab
 	}
 	if old != "" && !req.Ctx.Panel {
 		// A form replaces a panel: the form's end opens the panel again. A form that replaces a

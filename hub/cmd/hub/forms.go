@@ -83,11 +83,6 @@ type formContext struct {
 	// UnderBlock (ui_slot "layer") is the window's focused tiled block before the slot's first
 	// layer opened; a replacement keeps it. A closed form's return takes the focus only from it.
 	UnderBlock string `json:"under_block_id,omitempty"`
-	// OwnTab marks the root view of a tab of its own: the first view (openFormTab), or a view
-	// that replaced the root (newSlotRow). A root panel is not its tab's slot occupant
-	// (slotOccupant): a form that it opens goes beside it, so the tab never ends with a form whose
-	// close would remove it.
-	OwnTab bool `json:"own_tab,omitempty"`
 }
 
 func formsStart(ctx context.Context, db *DB) error {
@@ -550,32 +545,15 @@ func (h *Hub) paletteCtxEvent(ctx context.Context, kind string, p perform, rc ma
 	h.ev.emit("palette_ctx", fields)
 }
 
-// paletteOpen opens the form or panel of a palette run, and names in select the tab that the
-// palette Lua selects on the calling client only (rex.client.queue).
-//   - One app shows the session: the side slot of the window of fc.SourceBlock (ctx.block_id), with
-//     focus. A view there is replaced (panels.go).
-//   - More than one: Rex gives a run without block_id the session's last focus, which can be
-//     another device's (docs/rex-protocol.md, "Palette runs with two clients"). So the form opens
-//     in a tab of its own, without focus and without a source; the other device keeps its tab.
+// paletteOpen opens the form or panel of a palette run in the side slot of the window of
+// fc.SourceBlock (ctx.block_id), with focus; a view there is replaced (panels.go). It names in select
+// the tab that the palette Lua selects on the calling client only (rex.client.queue). With two apps
+// too (the user, 2026-10-26): Rex sends no device pane, and ctx.block_id is the session's last
+// focused block (docs/hub.md, "Palette runs with two devices").
 //
 // withSource takes the source view and its cwd from fc.SourceBlock (a plugin command).
 func (h *Hub) paletteOpen(ctx context.Context, plugin, route, title string, fc formContext, withSource bool) (map[string]any, error) {
-	apps, err := h.sessionApps(ctx, fc.SessionID)
-	if err != nil {
-		return nil, err
-	}
 	block := fc.SourceBlock
-	if len(apps) > 1 {
-		fc.SourceBlock = ""
-		out, err := h.openFormTab(ctx, plugin, route, title, fc)
-		if err != nil {
-			return nil, err
-		}
-		if w, _ := out["window_id"].(string); w != "" {
-			out["select"] = map[string]any{"session_id": fc.SessionID, "window_id": w}
-		}
-		return out, nil
-	}
 	window, err := h.formWindow(ctx, fc.SessionID, block)
 	if err != nil {
 		return nil, err
@@ -602,60 +580,6 @@ func (h *Hub) paletteOpen(ctx context.Context, plugin, route, title string, fc f
 	}
 	out["select"] = map[string]any{"session_id": fc.SessionID, "window_id": window}
 	return out, nil
-}
-
-// openFormTab opens plugin's route as a form in a new tab of its own, without focus. It answers
-// {status, view_id, window_id}: opened, or opening when Rex's answer was lost (formsSweep then
-// finds the pane by its label, and adoptForm reads its window).
-func (h *Hub) openFormTab(ctx context.Context, plugin, route, title string, fc formContext) (map[string]any, error) {
-	if h.cfg.View == "" {
-		return nil, errors.New("no renderer: set \"view\" in the hub config")
-	}
-	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": fc.SessionID, "event_scope": "session"}, nil); err != nil {
-		return nil, bad("session %s: %v", fc.SessionID, err)
-	}
-	if title == "" {
-		title = h.commandTitle(ctx, plugin, route)
-	}
-	v := &view{ID: randomID("view-form-"), Plugin: plugin, Tab: formTab, Route: route}
-	fc.OwnTab = true
-	b, _ := json.Marshal(fc)
-	if _, err := h.db.ExecContext(ctx, `INSERT INTO views (view_id, plugin, tab, route, status, context, session_id, attach_state) VALUES (?, ?, ?, ?, 'sending', ?, ?, 'never')`,
-		v.ID, plugin, formTab, route, string(b), fc.SessionID); err != nil {
-		return nil, err
-	}
-	req := map[string]any{"session_id": fc.SessionID, "window_label": title, "focus": false,
-		"layout": map[string]any{"block": map[string]any{
-			"flavor": "com.superlogical.terminal.shell",
-			"label":  "lazyrex-form:" + v.ID,
-			"options": map[string]any{
-				"command": h.viewCommand(v.ID, plugin, route),
-				"login":   false,
-				"exit":    map[string]any{"on_completion": true},
-			},
-		}}}
-	var out struct {
-		WindowID string   `json:"window_id"`
-		BlockIDs []string `json:"block_ids"`
-	}
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err := viewNewWindow(h, cctx, req, &out)
-	cancel()
-	if err != nil {
-		var re *rex.RexError
-		if errors.As(err, &re) && re.Code != "disconnected" && !transient(err) {
-			h.closeViewRow(ctx, v.ID, "abandoned") // Rex answered: nothing was created
-			return nil, err
-		}
-		return map[string]any{"status": "opening", "view_id": v.ID}, nil
-	}
-	if len(out.BlockIDs) != 1 {
-		return nil, fmt.Errorf("form tab %s: %d blocks", v.ID, len(out.BlockIDs))
-	}
-	if err := h.adoptForm(ctx, v, fc, out.BlockIDs[0]); err != nil {
-		return map[string]any{"status": "opening", "view_id": v.ID}, nil // the pane exists; the sweep adopts it
-	}
-	return map[string]any{"status": "opened", "view_id": v.ID, "window_id": out.WindowID}, nil
 }
 
 // formWindow checks that sess exists and returns the window of block, or the active window when
@@ -751,18 +675,6 @@ func (h *Hub) refocusForm(sess, window, block, anchor string) {
 }
 
 func (h *Hub) adoptForm(ctx context.Context, v *view, fc formContext, block string) error {
-	if fc.WindowID == "" {
-		// A form in a tab of its own (openFormTab): Rex made the window with the pane.
-		w, err := h.formWindow(ctx, fc.SessionID, block)
-		if err != nil {
-			return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
-		}
-		fc.WindowID = w
-		b, _ := json.Marshal(fc)
-		if _, err := h.db.ExecContext(ctx, `UPDATE views SET context = ? WHERE view_id = ?`, string(b), v.ID); err != nil {
-			return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
-		}
-	}
 	if err := h.adoptView(ctx, v, fc.SessionID, rexBlock{BlockID: block, WindowID: fc.WindowID}); err != nil {
 		return fmt.Errorf("adopt form %s: %v: %w", v.ID, err, errUnknown)
 	}
@@ -1064,7 +976,7 @@ func (h *Hub) applyEffects(ctx context.Context, plugin, key, viewID string, resu
 // childContext is the context of a form or panel that a view's action opens from fc.
 func childContext(fc formContext, panel bool) formContext {
 	sc := fc
-	sc.Panel, sc.Return = panel, nil // newSlotRow sets OwnTab
+	sc.Panel, sc.Return = panel, nil
 	return sc
 }
 
@@ -1083,9 +995,9 @@ func (h *Hub) notifyView(plugin, viewID string) {
 	h.kickViews(plugin, 0)
 }
 
-// formsSweep runs at start. A form whose pane request had an unknown outcome is looked up by
-// its label: found, it is adopted; proved absent, it is abandoned. A form whose pane closed while
-// the hub was down is closed. Effects that a crash cut off run again from view_ops (runOps).
+// formsSweep runs at start. A form whose pane closed while the hub was down is closed (looked up by
+// its label). Every form opens in a side slot (slotSweep); a row that is still sending outside a
+// slot is abandoned. Effects that a crash cut off run again from view_ops (runOps).
 func (h *Hub) formsSweep(ctx context.Context) {
 	rows, err := h.db.QueryContext(ctx, `SELECT view_id, plugin, route, status, session_id, block_id, context FROM views WHERE tab = ? AND status != 'closed'`, formTab)
 	if err != nil {
@@ -1108,16 +1020,12 @@ func (h *Hub) formsSweep(ctx context.Context) {
 		if f.sess == "" {
 			f.sess = fc.SessionID
 		}
-		block, found, err := h.findFormBlock(ctx, f.sess, f.id)
+		_, found, err := h.findFormBlock(ctx, f.sess, f.id)
 		if err != nil {
 			continue // incomplete inventory: keep the row as it is
 		}
 		switch {
-		case found && f.status == "sending":
-			if err := h.adoptForm(ctx, &view{ID: f.id, Plugin: f.plugin, Tab: formTab, Route: f.route}, fc, block); err != nil {
-				log.Printf("form sweep %s: %v", f.id, err)
-			}
-		case found:
+		case found && f.status != "sending":
 		case f.status == "sending":
 			h.closeViewRow(ctx, f.id, "abandoned")
 		default:

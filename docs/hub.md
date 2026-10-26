@@ -1442,21 +1442,18 @@ its layer goes with it.
 The key goes away when the user decides. Tests: `TestUISlotConfig`, `TestSlotPaneLayer`,
 `TestSlotLayerLab` (`LAZYREX_LAB=1`).
 
-Two devices on one session (the user, 2026-10-23). A palette run without `block_id` carries the
-session's last focus, which can be the other device's (docs/rex-protocol.md, "Palette runs with
-two clients"). So when more than one connected app shows the session, a palette run (a plugin
-command or a restart form) opens its form or panel in a new tab of its own, without focus, with no
-source view, and without the delayed refocus. `select` names that tab, and the palette Lua selects
-it on the calling client only; the other device keeps its tab. With one app, the run opens the side
-slot of the window of `ctx.block_id`, as before. The root view of a tab of its own (`own_tab` in
-its form context) is the tab's first view, or the view that replaced the root (a form that becomes
-a panel, form to form to panel). A root panel is not its tab's slot occupant: a form or panel that
-it opens goes beside it, and the panel stays. So the tab never ends with a child form whose close
-(Escape) would remove the tab and the panel with it. Tests: `TestPaletteTwoAppsOwnTabLab`, `TestOwnTabPanelKeepsItsTabLab`.
-Limits: a form that a view opens goes to the side slot of the source view's tab, the tab that the
-tapping device shows, with focus. No Rex signal tells which device tapped, so `hub.view.app_action`
-still refuses with `ambiguous_app`. A lost answer to the new tab's `session.new_window` leaves the
-form `sending` until the next hub start (`formsSweep` finds it by its label).
+Palette runs with two devices (the user, 2026-10-26; it replaces the rule of 2026-10-23, "a tab of
+its own" when more than one app shows the session). A palette run (a plugin command or a restart
+form) opens its form or panel in the side slot of the window of `ctx.block_id`, with any number of
+apps. A run without `ctx.block_id` uses the session's active window; a `ctx.block_id` that is not
+in the session is an error. Test: `TestPaletteTwoAppsSideSlotLab`.
+Limits: Rex sends no device pane. `ctx.block_id` is the session's last focused block
+(docs/rex-protocol.md, "Palette runs with two clients"). All 5 `palette_ctx` events recorded by
+2026-10-26 (iOS and Mac, 2 apps) had `in_block_id` equal to `server_focused_block_id`. So the pane
+is usually the one that the calling device just focused. If the other device focused last, the
+form opens beside that device's pane. A form that a view opens goes to the side slot of the source
+view's tab. No Rex signal tells which device tapped, so `hub.view.app_action` still refuses with
+`ambiguous_app`.
 To learn what the real app sends (the user, 2026-10-23: the side panel belongs in the pane that the
 calling device views), each palette run (a plugin command or a restart form) records the debug
 event `palette_ctx`. Its `in_*` fields are the run's incoming ctx (`in_client_id`, `in_session_id`,
