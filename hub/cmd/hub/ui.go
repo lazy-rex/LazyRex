@@ -1,11 +1,10 @@
 package main
 
-// UI framework, hub side (../../README.md and docs/architecture.md, "UI framework"):
+// UI framework, hub side (docs/hub.md, "One LazyRex session" and "Renderer contract"):
 // the LazyRex session, declared tabs, views, the reconciler, renderer check-in, and navigation.
 //
 // Every plugin's tabs are mounted in the one LazyRex session. The hub owns a session by its record
-// in ui_sessions, never by its label. App mode and per-plugin app sessions are removed
-// (docs/hub.md, "Removed: app mode").
+// in ui_sessions, never by its label (docs/hub.md, "One LazyRex session").
 //
 // Rex delivers requests to the hub one at a time (at most 16 waiting), so handlers here only
 // record intent and return. One worker does the Rex work for the whole session, serially.

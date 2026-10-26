@@ -44,7 +44,7 @@ type pluginRun struct {
 	// WatchRoots are the directories whose subtrees the plugin may watch (hub.watch, docs/hub.md
 	// "File watches"). Absolute paths. Empty: every hub.watch.ensure is refused.
 	WatchRoots []string `json:"watch_roots,omitempty"`
-	// Prompts and UserMessaging are the grants of the Telegram hub support (docs/hub.md, "Agent
+	// Prompts and UserMessaging are the grants of the phone bridge support (docs/hub.md, "Agent
 	// prompts and acting as the user"). Only the user's config entry sets them; the manifest has no
 	// such fields. A grant check reads the run of the registered instance.
 	Prompts       bool `json:"prompts,omitempty"`

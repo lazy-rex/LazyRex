@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS view_ops (plugin TEXT NOT NULL, user TEXT NOT NULL, o
   PRIMARY KEY (plugin, user, op_key));
 `
 
-// The renderer's user. Spike 3 has one user.
+// The renderer's user. The hub has one user.
 const viewUser = "user"
 
 type snapshot struct {
