@@ -654,9 +654,7 @@ A Go lab test of the hub (`hub/cmd/hub/*_lab_test.go`) starts its own lab Rex se
 reads a socket from an env var.
 
 One gate, `LAZYREX_LAB=1`, runs every lab test of the hub (`needLab`, `rexlab_test.go`) and of the view
-(`needLab`, `view/chunk_lab_test.go`). Without it they skip. It replaces the old gates
-`HARNESS_LAB`, `SHUTDOWN_LAB`, `PALETTE_LAB`, `SETUP_LAB`, `HUBCTL_LAB`, `MODE_LAB`, `CHUNK_LAB`
-and `HUBUNAVAIL_LAB`: a run with only an old name skips the labs. Commands: `LAZYREX_LAB=1 go test
+(`needLab`, `view/chunk_lab_test.go`). Without it they skip. Commands: `LAZYREX_LAB=1 go test
 ./cmd/hub` in `hub/`, and `LAZYREX_LAB=1 go test -count=1 -v -run 'Lab$' .` in `view/`.
 
 The thread view's lab tests (`view/*_lab_test.go`) build the view and the hub and start their own

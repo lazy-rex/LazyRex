@@ -124,7 +124,7 @@ A latest entry also has `tag`:
   "dir": "github/<owner>/<repo>/<commit>.<token>"}}}
 ```
 
-- `version` is always 2 (the hub lead, lead-b5): the hub writes version 2, also for a lock with no
+- `version` is always 2: the hub writes version 2, also for a lock with no
   latest entry, and reads only version 2. Another version, also 1: `version N is not supported
   (this hub reads version 2)`. A hub that finds a version 1 lock refuses every GitHub entry with
   the lock text of section 11; move the file aside, and the hub installs each managed entry again.

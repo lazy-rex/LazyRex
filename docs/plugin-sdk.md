@@ -99,11 +99,10 @@ can be a number or a string: the SDK sends it as a string (`tostring`), so a tes
     SQLite keeps `PRAGMA user_version` as a 32-bit signed integer (a larger value is kept as 0;
     observed with the sqlite3 CLI 3.54.0). Otherwise the plugin fails at load.
 
-  **Collapsing.** A plugin may collapse its steps to a base at any time: live runs main, and data
-  loss is accepted (the coordinator, 2026-10-23). A database below the base refuses to start, as
-  above; delete it or keep the steps. The commit that collapses the steps has a test that compares the
-  schema from the base with the schema from the old steps 1 to N (`sqlite_master`: type, name and
-  the normalized SQL). The reviewer sees it pass with the old steps, before they go.
+  **Collapsing.** A plugin may collapse its steps to a base at any time. A database below the
+  base then refuses to start, as above: delete it, and its data is lost, or keep the steps.
+  The commit that collapses the steps has a test that compares the schema from the base with
+  the schema from the old steps 1 to N (`sqlite_master`: type, name and the normalized SQL). The test passes with the old steps before they are removed.
 
 - **Agent parity.** Each thing that the user can do, an agent can do too. An item with `on_select`
   names the agent action that does the same in `tool` (here `todo.toggle`); both call one function.
@@ -440,7 +439,7 @@ or `failed` with `code` and `message`).
   body text, the hub and the key as Rex encodes them (the hub and the key twice), the target
   plugin twice when `opts.plugin` names another plugin, plus 1024 bytes, at most 65536. Rex
   encodes a string as Go does, so this second rule is the tighter one: for a Lua plugin, the SDK
-  limit is the real limit (hub lead, lead-fedsize2). The hub can still answer `too_large` at the
+  limit is the real limit. The hub can still answer `too_large` at the
   drain when the envelope does not fit one pull reply; that is final.
 
 After the commit, and after the reply to the caller, the SDK drains the outbox:
@@ -526,7 +525,7 @@ of an old envelope stays a no-op; a queued row goes to this plugin.
 
 The SDK keeps every seen row: a seen row is the proof that the listener committed, and the hub
 can give the original envelope again after any delay (a receiver that committed, lost its reply
-and stayed away). So the once-only rule has no time window (hub lead, lead-sdkfed8). Known limit:
+and stayed away). So the once-only rule has no time window. Known limit:
 `sdk_peer_seen` grows by one small row per received message, as the hub's peer outbox does
 (docs/hub.md "Peer hubs").
 

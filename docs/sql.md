@@ -1,11 +1,11 @@
 # Plugin SQL databases: reference (hub.sql)
 
-Status: **built on branches hub/sql-r2, hub/sql-next and hub/sql-lab, lab only** (2026-10-22). Not on main, not live.
+Status: **built, on main** (2026-10-22).
 Plugin authors read plugin-sdk.md (the SDK, `require('lazyrex')`); this page is the hub contract
-under the SDK. Labels: "built" (code and a test on this branch), "observed" (with the version),
+under the SDK. Labels: "built" (code and a test on main), "observed" (with the version),
 "not yet".
 
-User decisions (2026-10-21): each plugin gets its own SQLite database, run by the hub, through hub
+Design (2026-10-21): each plugin gets its own SQLite database, run by the hub, through hub
 actions; the plugin-facing interface is the Plugin SDK, extremely simple; the machinery stays in the
 hub.
 
@@ -151,7 +151,7 @@ authorized at CREATE.
   it, saves the joined value, and keeps the set for the reply stub with the same id.
 - The hub keeps a reply 7 days and the plugin's last 10 000 keys; the eviction runs in the commit.
 - The SDK decides what to save: never a `running` reply. A plugin that needs a permanent replay keeps
-  its own table with `store = false` (coordinator decision).
+  its own table with `store = false`.
 
 ## 9. Render refresh
 
