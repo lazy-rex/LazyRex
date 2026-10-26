@@ -5,11 +5,6 @@
 - **`lazyrex-hub test` from a curl install.** A curl install can run `lazyrex-hub test` without a
   LazyRex checkout (the archive ships the test runner and the home plugin). The first planned item
   after the launch.
-- **The live hub runs under the restart wrapper.** The live hub runs `lazyrex-hub -restart` from
-  the user's install layout, as users run it, with the rotated log. The new interface is
-  `hub.admin.restart` and `lazyrex-hub restart` (child exit 4, then the wrapper runs its own
-  binary again with the lock held). Target: before the
-  public candidate.
 - **Live feed.** A LazyRex surface (its place is not chosen yet) shows recent and running plugin operations (from `view_ops` and
   the hub's records) with their state, and a Retry for failures. Running work may also report
   through Rex's Program Status Protocol, so that the app shows it in tab headers and in the
@@ -95,8 +90,6 @@ Ordered by value to LazyRex.
 
 ## Known defects
 
-- **Lab: `rex send-key` sends a capital letter as lowercase (Rex 0.0.1792158932-g88fd41, 2026-10-17,
-  inferred from the form screen).** `send-key M` typed `m` in a form text field. Tests type lowercase text.
 - **Renderer: text without key events does not reach the thread composer (lab, Rex 1203, 2026-10-17,
   cause unknown).** `rex send -b <thread view> <text>` did not change the composer; `rex send-key`
   letters did. Pasted text may be dropped. Independent reproduction remains unverified.
@@ -106,13 +99,13 @@ Ordered by value to LazyRex.
 
 ## Cleanup and test debt
 
-One line per item: what, its owner, and why it waits.
+One item each: what, and why it waits.
 
 - `viewnotify.go`: remove the nil `ctx` fallback to `context.Background()`, and give each test hub a
-  `ctx` (`newViewSvc()` then `h.vs.ctx`). Owner: Hub Features. Waits: it was outside the
+  `ctx` (`newViewSvc()` then `h.vs.ctx`). Waits: it was outside the
   constructor change's scope; it is a test-only guard with no production effect.
 - Narrow `changed(name)` for a view with no `deps.changes` and a tracked read set to the names it
-  read (today every changed name marks such a view). Owner: Hub Features. Waits: an inventory of
+  read (today every changed name marks such a view). Waits: an inventory of
   plugin views that read hub data outside covered calls.
 - A plugin spawn whose outcome stays unknown reports `running` and has no timer owner. Two cases:
   the child read after `createBlock` fails or times out (the intent stays `sending`), and the block
@@ -120,18 +113,17 @@ One line per item: what, its owner, and why it waits.
   logs it). The next start, reload or hub restart retries the reconciliation: it adopts a live
   child of the first case by its instance argv. It does not resolve a first-case child that
   exited: the intent does not record the block ID, and `findInstanceBlock` matches only a live
-  child, so the intent stays unresolved. Owner: Hub Fixes. Waits: the fix (D-a: a `starting` state
-  with a backoff timer, which must also attribute that exited child to its block) passes the
-  lostexit series' line budget (lead-lostexit-r3).
+  child, so the intent stays unresolved. Waits: the fix (D-a: a `starting` state
+  with a backoff timer, which must also attribute that exited child to its block) is larger than the
+  change that bounded the plugin child read.
 - `hub.agents` `session_id` does not follow a pane move: only an identity report writes
   `identity_panes.session_id` (identity.go), so a moved agent pane shows its old session until its
-  next report. Owner: Hub Features. Waits: a Rex fact: does Rex send an event when a block moves to
+  next report. Waits: a Rex fact: does Rex send an event when a block moves to
   another session?
 - Rex calls on the hub run context with no bound: `identityReport`'s `paneOfHint` and `paneName`
-  (and any other found by a grep for `rex.Call`/`BlockCall` on `h.ctx`). Owner: Hub Fixes. Waits:
-  one audit for all; the lostexit series (900e3f0c, `pluginChildRead`) bounds only the plugin
-  child read.
+  (and any other found by a grep for `rex.Call`/`BlockCall` on `h.ctx`). Waits:
+  one audit for all; 900e3f0c (`pluginChildRead`) bounds only the plugin child read.
 - A lab fault after a `hub.sql` commit and before its reply (exit or pause), as `store-commit` was
   for `hub.store.batch` before the hub.store removal. Today no lab test ends the hub between a SQL
-  commit and its reply. Owner: Hub Fixes. Waits: no test in this repository used `store-commit`,
+  commit and its reply. Waits: no test in this repository used `store-commit`,
   so the removal does not add the SQL point; a plugin test that needs it asks for it.
