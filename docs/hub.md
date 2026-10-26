@@ -1140,9 +1140,9 @@ Tests: `TestCallLogKeepsEveryLineButFastRoutineReads` (the 250 ms boundary inclu
 
 ## One LazyRex session
 
-Every plugin's tabs open in one Rex session, the LazyRex session, labeled `LazyRex`. The hub owns
-the session by its row in `ui_sessions` (key `*`), not by its label. More than one session labeled
-`LazyRex` is a refusal.
+Plugin tabs without an explicit home open in one Rex session, the LazyRex session, labeled
+`LazyRex`. The hub owns the session by its row in `ui_sessions` (key `*`), not by its label.
+More than one session labeled `LazyRex` is a refusal.
 
 - `hub.ui.navigate {plugin, tab}` records the target tab (`ui_state` key `nav`) before any layout
   change, then the worker reconciles. The nav intent goes only after Rex confirms the focus.
