@@ -804,14 +804,14 @@ func (h *Hub) restoreView(ctx context.Context, sess string, v *view, title strin
 	return nil
 }
 
-// closeBlock closes a block the hub owns. A block that is already gone counts as closed.
+// closeBlock closes a block the hub owns. A block that is already gone, also with its session,
+// counts as closed.
 func (h *Hub) closeBlock(ctx context.Context, sess, block string) error {
 	h.mu.Lock()
 	h.selfClosed[block] = true
 	h.mu.Unlock()
 	err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": sess, "block_id": block}, nil)
-	var re *rex.RexError
-	if err != nil && errors.As(err, &re) && re.Code == "not_found" {
+	if sessionGone(err) {
 		return nil
 	}
 	return err
