@@ -453,7 +453,7 @@ Plugin events (observed on Rex 1203, lab `/tmp/rexlab-ev`, `block-emit-probe.mjs
 
 ### Plugin event emission (observed on Rex 1203, lab)
 
-Found by disassembly of the Rex packages `rex/sdk/blockremote`, `rex/sdk/blockserver/apiclient` and `rex/sdk/blockserver/apitypes` (event.go), then proved in the lab with `block-emit-probe.mjs`.
+Probe: `block-emit-probe.mjs`.
 
 - Rex reads `event` frames that the plugin sends on the control connection it opened to the plugin. The event goes in **`payload`**, not in `event`:
 
@@ -466,7 +466,7 @@ Found by disassembly of the Rex packages `rex/sdk/blockremote`, `rex/sdk/blockse
 - Rex publishes it to the session like a terminal event. Observed in `rex events -s <session> --json`:
   `{"type":"session_event","payload":{"session_id":…,"event":{"type":"block_event","payload":{"block_id":"<Rex block ID>","creator_name":"dev.lazyrex.probe","name":"lr_B","payload":{"v":"B"}}}}}`. Rex sets `creator_name` itself. The plugin cannot set it.
 - `name` and `payload` are free. No feature flag and no `sdk_version` is necessary.
-- Rex decodes three event types from a plugin (`blockserver/apitypes` event.go). Other types become `UnknownEvent` and Rex drops them:
+- Three event types from a plugin have an effect:
 
   | `type` | `payload` | Observed effect |
   |---|---|---|
@@ -474,35 +474,34 @@ Found by disassembly of the Rex packages `rex/sdk/blockremote`, `rex/sdk/blockse
   | `block_action` | `{block_id, action:{type, payload}}` | See the action types below. |
   | `block_closed` | `{block_id}` | Rex removes the block from the session and publishes `block_closed`. Rex does not send `block.close` back. |
 
-- Action types (`rex/sdk/block/action` json_action.go):
+- Action types:
   - `{"type":"event","payload":{"name","payload"}}`: same result as `block_event`. Observed.
   - `{"type":"close","payload":{}}`: Rex closes the block, publishes `block_closed`, then sends `block.close` to the plugin. Observed.
-  - `{"type":"api","payload":{"target":"<block ID>","method","id","args","caller"?}}`: Rex accepted the frame and did nothing. A `com.superlogical.terminal.write` to a terminal block in the same session wrote nothing, with a Rex or a plugin block ID as `block_id`. No log line. Rex's `forwardEvents` has a branch that drops some action types; the API action seems to fall in it (inference from disassembly).
+  - `{"type":"api","payload":{"target":"<block ID>","method","id","args","caller"?}}`: Rex accepted the frame and did nothing. A `com.superlogical.terminal.write` to a terminal block in the same session wrote nothing, with a Rex or a plugin block ID as `block_id`. No log line.
 - **A malformed frame kills the plugin.** `{"type":"event","event":{…}}` (no `payload`) made Rex close the connection (`control event payload is required`, WebSocket close "malformed control envelope"). Rex does not reconnect. Every later call fails with `blockremote: remote control disconnected` until a reload or server restart.
 
 ### Plugin handshake fields (observed on Rex 1203, lab)
 
 - `sdk_version` (string) and `features` (array of strings) in the fd-3 JSON appear only in the startup log line `block plugin ready … sdk_version="" features=[]`. The reload log line does not show them.
 - No API shows them: `server.status`, `server.version`, `server.whoami`, `block_creator.list` and `rex api list` did not contain them with `sdk_version:"9.9.9-lazyrex"`, `features:["block_events","lazyrex.test"]`.
-- Rex accepts any strings. Disassembly of `blockexec`, `blockremote` and `internal/blockplugin` found no comparison against a feature name. Event emission works with `features: []`. So no recognized value is known, and no behavior change was found.
+- Rex accepts any strings. Event emission works with `features: []`. No recognized value is known, and no behavior change was found.
 - A non-string item in `features` (an object) makes the start fail. During `--block-plugin-reload`, Rex then retries about every second, with `reloading block plugin failed` and no reason in the log.
 - The `welcome` that the plugin sends is not checked beyond `type`: the probe's welcome has no `client` field.
 
 ### Creator-level methods (observed on Rex 1203, lab)
 
-- None. The server has only the block method path (`blockMethodHandler`, `decodeBlockMethodBlockID`). Rex sends a plugin only `block_creator.list`, `block.create`, `block.method`, `block.event` and `block.close`.
+- None seen. The lab plugin logs every frame, and Rex sent it only `block_creator.list`, `block.create`, `block.method`, `block.event` and `block.close`.
 - `dev.lazyrex.probe.echo` without `block_id` resolves to the session's focused block. With a terminal focused: `method not found: "echo"`. Without `session_id`: `session_not_found`.
 - So a plugin needs a block instance. A detached block costs no layout space: `session.new_block {session_id, flavor, label}`. Rex sends `block.create` without `options` when the caller gives none.
 - `--block-plugin-reload` starts the new process, then sends `block.create` again for each existing block. The plugin may return the same block ID.
 
 ### What a plugin can declare (Rex 1203)
 
-From struct tags in the binary and the embedded `block_creator.list` example:
+From the API reference for `block_creator.list` (`/api/help` of Rex 0.0.1792158932-g88fd41):
 
-- Creator: `name`, `title`, `description`, `flavors`, `api.methods`.
-- Flavor: `name`, `flavor` (full name), `title`, `description` (required), `options_schema`.
-- Method (`BlockMethodDesc`): `description`, `input_schema`, `output_schema`, `actions`.
-- Action (`BlockActionDesc`): `name`, `title`, `description`, `category`, `keywords`, `args`, `repeats`.
+- Method: `description`, `input_schema`, `output_schema`, `actions`.
+- Action: `name`, `title`, `description`, `category`, `keywords`, `args`, `repeats`.
+- A flavor needs a `description` (observed, lab; see "Block plugins").
 
 Where they show (observed, lab):
 
@@ -517,10 +516,6 @@ Where they show (observed, lab):
 - Rex accepts only event types it knows. `lazyrex.custom` fails: `event type "lazyrex.custom" is not supported by this server`.
 - `block_event` is a known type. So a client can send `{"type":"block_event","payload":{"block_id","name":"ext","payload":{…}}}`, and the plugin receives it unchanged. This is a free-form client-to-plugin channel. Rex does not publish it to the session stream.
 - `focus` and `key` also arrive. Rex fills missing `key` fields (`mods`, `text`, `action:"press"`, …).
-
-### Default plugin directories (Rex 1203, from disassembly, unverified)
-
-`blockplugin.DefaultDirs` joins `rex/blocks` to two base directories (probably the user config directories). `serve.go` calls it. The exact paths and whether `--block-dir` replaces them are not tested.
 
 ## Block method caller identity
 
@@ -553,7 +548,6 @@ Every call path gives the plugin the same frame. Only `args` changes:
 ### A descriptor cannot ask for caller information
 
 - The API reference for `block_creator.list` (`/api/help` of Rex 0.0.1792158932-g88fd41) defines a method descriptor as `{description, input_schema, output_schema, actions}` and an action descriptor as `{name, title, description, category, keywords, args, repeats}`. Both have `additionalProperties: false`.
-- Binary scan of the 1203 server (python, json struct tags): the types are `apitypes.BlockMethodDesc`, `apitypes.BlockActionDesc`, `apitypes.HelpBlockMethod`, `apitypes.BlockMethodInput`. Of 541 distinct json tags, only `caller`, `client`, `client_id`, `context`, `origin`, `principal`, `requester` relate to identity. Go stores tag strings once per binary, so the scan cannot show which struct owns a tag. `requester` and `principal` belong to `client.perform`. `origin` and `context` appear next to creator listing and event fields. `caller` appears next to libghostty callback types. No tag such as `want_caller` or `include_caller` exists. Unverified: that no hidden field exists. The schema says there is none.
 
 ### Events do not show which client called a block method
 
@@ -644,13 +638,13 @@ Give the terminal block's `format` method a bound: for example `max_bytes`, or t
 
 ## Command palette entries and forms (Rex 1203)
 
-Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=palette-init.lua`, `fake-block-plugin.mjs` as `probe`, `route-hub.mjs`); probes `palette-probe.mjs` and `palette-form-probe.mjs`; the Rex docs (the Rex docs `llms-full.txt`, read 2026-10-16); a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203)); one read-only `rex client ls` / `rex client inspect <app>` on the real server. The Rex app was not connected to a lab server. So every statement about what the app shows is **inferred**, not observed.
+Sources: lab `/tmp/rexlab-palette` (`LAB_CONFIG=palette-init.lua`, `fake-block-plugin.mjs` as `probe`, `route-hub.mjs`); probes `palette-probe.mjs` and `palette-form-probe.mjs`; the Rex docs (the Rex docs `llms-full.txt`, read 2026-10-16); one read-only `rex client ls` / `rex client inspect <app>` on the real server. The Rex app was not connected to a lab server. So every statement about what the app shows is **inferred**, not observed.
 
 ### Which actions the palette can show
 
 - Config actions (`rex.action` in `init.lua`): **documented** ("From the command palette. Search for the action's title"). `title`, `description`, `category` and `keywords` are palette fields.
 - `client.keymap` returns the actions the server offers to a client. In the lab, an app-like client (hello `kind: "app"`, `session.bootstrap`, then `client.keymap {}`) got `kind: "lua"` (the config actions) and `kind: "block"` (terminal block actions and the plugin's `dev.lazyrex.probe.echo`). It did **not** get the `kind: "client"` actions of other clients (the lab hub's `lazyrex.send`). Observed.
-- Inferred: the app's palette is its own actions plus this keymap list. So another client's client actions do not appear. The app binary cannot confirm this either way: Swift stores strings of 15 bytes or fewer inline in code, so method names such as `client.keymap` or `client.perform` do not appear as strings. Check by hand: open the palette in the app and search for an action that the official hub declares.
+- Inferred: the app's palette is its own actions plus this keymap list. So another client's client actions do not appear. Check by hand: open the palette in the app and search for an action that the official hub declares.
 - Block plugin actions: a block action runs on the focused block and fails with `conflict` when that block is of another type (`client.action` reference). So a plugin action is useful only when the plugin's block has focus. It cannot be a global palette entry.
 
 ### LazyRex palette file (observed on Rex 1203, lab)
@@ -733,7 +727,7 @@ Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-24. The lab ran `lab/serv
 
 ## The macOS app
 
-- It shows terminal blocks only. Other blocks show "Unsupported block". There is no WebView, so LazyRex cannot draw custom UI in the app. Evidence: see "Custom block types in the app" below. The app string and the server behavior are observed. The app's drawing of a plugin block has not been seen on screen.
+- It draws terminal blocks. A plugin block has no data provider (observed, lab; see "Custom block types in the app" below), so LazyRex draws its UI in terminal panes. The app's view of a plugin block has not been seen on screen.
 - It connects to one host at a time (`client.host.switch`).
 - Terminal features (the maintainer, 2026-10-16): Rex passes through everything Ghostty supports, including mouse reporting. So TUIs can rely on mouse input without a Rex test. By the same rule, the kitty graphics protocol should work (not tested).
 - Other clients can drive its view through its actions, when Remote Control is on. See "Driving the Rex app".
@@ -742,19 +736,12 @@ Observed on Rex `0.0.1792158932-g88fd41`, lab, 2026-10-24. The lab ran `lab/serv
 
 ### Custom block types in the app (Rex 1203)
 
-Sources: a string scan of `/Applications/Rex Beta.app/Contents/MacOS/Rex` (app 0.1.0 (1203), read-only); the Rex docs (read 2026-10-16); lab `/tmp/rexlab-block` with `wrap-block-plugin.mjs` and `block-render-probe.mjs`.
-
-App binary (observed, static):
-
-- The app has one block configuration file, `RexMacOS/BlockUI.Configuration+Terminal.swift`. The other `BlockUI` files are terminal files (`TerminalContentView`, `TerminalFileHandoff`, `TerminalRendererResources`, `TerminalSearchHighlights`, `TerminalSearchModel`, `TerminalSurfaceSupport`) and `BlockUI.ContentView.swift`.
-- Next to `BlockUI.ContentView.swift`, the app has three fallback texts: "The content environment does not provide the capabilities required by this block.", "Renderer Unavailable" and "Unsupported block", with the symbol `questionmark.square.dashed`.
-- The only data protocol in the app is `rex.data.terminal.v1` (next to `com.superlogical.terminal` and `com.superlogical.terminal.shell`). The binary has no `WKWebView` or `WebView` string.
-- Inferred: the app chooses a renderer by block type, and it has a renderer only for `com.superlogical.terminal`. A plugin block gets the "Unsupported block" view. Not seen on screen.
+Sources: the Rex docs (read 2026-10-16); lab `/tmp/rexlab-block` with `wrap-block-plugin.mjs` and `block-render-probe.mjs`.
 
 Server (observed, lab):
 
 - `session.describe_block` for a plugin block gives `api.methods` only. A terminal block gives `api.events` and `api.methods`.
-- `data.connect` for a plugin block fails: `not_found`, "block data provider not found", with and without `subprotocol: "rex.data.terminal.v1"`. The same call for a terminal block returns a ticket. The server's plugin code (`blockremote`) has methods, events, an emitter and close, but no data or stream symbols. So a plugin cannot serve the terminal data protocol, and the app has nothing to draw.
+- `data.connect` for a plugin block fails: `not_found`, "block data provider not found", with and without `subprotocol: "rex.data.terminal.v1"`. The same call for a terminal block returns a ticket. So a plugin block serves no terminal data that the app could draw.
 - A terminal action on a plugin block fails: `conflict`, "action "com.superlogical.terminal.write" is for com.superlogical.terminal blocks, but block … is a dev.lazyrex.probe block".
 - **A plugin cannot wrap a terminal.** `wrap-block-plugin.mjs` returned the Rex ID of a live terminal block from `block.create`. Rex created a new block with its own Rex ID and `creator_name: "dev.lazyrex.probe"`. It had only the plugin's methods, no data provider, and `write` failed with `method_not_found`. `block.method echo` on it reached the plugin with the terminal's ID as `block_id`. So Rex treats the ID that `block.create` returns as an opaque handle for the plugin.
 - A plugin can create a terminal block as a normal client (`session.new_block`, from its own control connection). That terminal is a separate `com.superlogical.terminal` block. Its palette actions are the terminal's, not the plugin's. Not tested, because it is ordinary client behavior.
@@ -779,13 +766,13 @@ Safe in-app check (for the maintainer, if wanted; not run):
 
 ## Tab status: program status, glyphs and notices (Rex 1203)
 
-Sources: Rex docs "Program Status Protocol (OSC 7501)" (the Rex docs `llms-full.txt`, read 2026-10-16), labeled **documented**; lab `/tmp/rexlab-status` with `status-emit.sh` and `status-probe.sh`, labeled **observed (lab)**; read-only block methods on this agent's own Claude pane on the real server, labeled **observed (real, read-only)**; a read-only scan of the app bundle (`/Applications/Rex Beta.app`, 0.1.0 (1203)), labeled **inferred** where it explains app behavior. Nobody checked the app's hover card for these tests.
+Sources: Rex docs "Program Status Protocol (OSC 7501)" (the Rex docs `llms-full.txt`, read 2026-10-16), labeled **documented**; lab `/tmp/rexlab-status` with `status-emit.sh` and `status-probe.sh`, labeled **observed (lab)**; read-only block methods on this agent's own Claude pane on the real server, labeled **observed (real, read-only)**. Nobody checked the app's hover card for these tests.
 
 ### Where the hover card's data comes from
 
 | Card element | Most likely source | Label |
 | --- | --- | --- |
-| Program icon | The status record's `app` / `effective_app`, or the foreground program, matched against a fixed table in the app | inferred |
+| Program icon | The foreground program's process name (the Rex team, 2026-10-18; see "Icons and glyphs") | relayed, not checked |
 | Tab name | The window label | inferred |
 | Status glyph (spinner, symbols) | The record's `state` (and `kind` for `blocked`). The docs say: "Tab headers for unfocused tabs show an in-progress spinner and a variety symbols for blocked states." | documented |
 | Task title | The terminal title (OSC 0/2). The real Claude pane had title "Block.method caller identity" and a record without `title` or `msg`. | observed (real, read-only); the mapping is inferred |
@@ -803,10 +790,8 @@ The real Claude pane (Claude Code 2.1.302) reported one root record: `{"state":"
 
 ### Icons and glyphs
 
-- The app bundle has a fixed asset catalog, `SuperBlockIcons.bundle`, with 96 `block-glyph-*` icons: for example `claude`, `codex`, `gemini`, `cursor`, `git`, `gitchanges`, `docker`, `neovim`, `vim`, `python`, `rust`, `go`, `node`, `bun`, `terraform`, `rex`, `terminal`, `log`, `sleep` and `placeholder`. Observed (static).
-- The app code has a table of short keys with display names (`claude` → "Claude", `codex` → "Codex", `opencode` → "OpenCode", "Neovim", "Git Changes", …). Observed (static). Inferred: the app picks a glyph from this table by the record's `app` or by the foreground program. There is no entry for `lazyrex`.
-- **No protocol field sets an icon or a glyph image.** OSC 7501 has no icon key, and the docs say the protocol "leaves presentation to the terminal". A program can choose only an `app` value. Inferred: an `app` that is in the table (for example `rex`) borrows that glyph, and an unknown `app` shows a generic glyph. Not checked in the app.
-- From the Rex team (the maintainer relayed it, 2026-10-18; not checked in the app): the app picks the glyph from the program's process name today. Ways to get a glyph: name the binary after a table key (for example `gitchanges`), run it as `exec -a gitchanges ./program`, wrap it in a parent process with that name, or set `process.title` in Node. The Rex team calls this provisional ("a bit wacky"), because programs are distributed, wrapped and packaged in many ways. They plan a formal protocol for it. The same Rex team member previews glyphs with a small tool that copies a binary that waits on stdin to a file named after the key, runs it, then deletes it. The asset catalog (`assetutil --info` on `SuperBlockIcons_SuperBlockIcons.bundle/Contents/Resources/Assets.car`, Rex Beta 0.1.0 (1203)) holds 96 `block-glyph-*` names, for example `git`, `gitchanges`, `jj`, `log`, `inspector`, `terminal`, `rex`, `tailscale`, `cloudflare`, `sleep`. Unknown: whether the matching key is always the glyph name (a process `nvim` may map to `neovim`).
+- **No protocol field sets an icon or a glyph image.** OSC 7501 has no icon key, and the docs say the protocol "leaves presentation to the terminal". A program can choose only an `app` value. Which glyph an `app` value gives is not documented and not checked in the app.
+- From the Rex team (the maintainer relayed it, 2026-10-18; not checked in the app): the app picks the glyph from the program's process name today. Ways to get a glyph: name the binary after a table key (for example `gitchanges`), run it as `exec -a gitchanges ./program`, wrap it in a parent process with that name, or set `process.title` in Node. The Rex team calls this provisional ("a bit wacky"), because programs are distributed, wrapped and packaged in many ways. They plan a formal protocol for it. The same Rex team member previews glyphs with a small tool that copies a binary that waits on stdin to a file named after the key, runs it, then deletes it. The set of keys is not documented.
 
 ### Other signals (observed, lab)
 
@@ -825,7 +810,7 @@ How the app shows `progress_report`, `desktop_notification` and `bell` was not c
 ### Proposal for LazyRex tabs (proposed)
 
 - The renderer of a tab is a terminal program, so it reports status with OSC 7501 on its own pane. No new Rex feature is needed.
-- The hub lets a plugin set per tab: `status {state, kind?, progress?, title?, msg?}`, and `title` (the tab's terminal title, OSC 2). The renderer writes the root record with `app=lazyrex` (or a borrowed glyph key, after an in-app check) and repeats every key in every report.
+- The hub lets a plugin set per tab: `status {state, kind?, progress?, title?, msg?}`, and `title` (the tab's terminal title, OSC 2). The renderer writes the root record with a fixed `app` value (it writes `app=rex`; see roadmap.md, "Requests for superlogical", item 18) and repeats every key in every report.
 - A view with several items (for example a thread list) can use child records, `id=thread/<id>`, with `title` and `msg` per item. The docs say a terminal "MAY use it for grouping". How the app shows child records is unknown.
 - Map hub states to protocol states: unread or ready result → `done`; waiting for the user (a form, a question) → `blocked` with `kind=question`; agent at work → `working`; failed → `error`; nothing pending → `idle` or `clear`.
 - Do not offer a plugin an icon field. The app has no way to take one. Offer `app` only as a fixed LazyRex value.
@@ -967,12 +952,12 @@ Evidence: `/tmp/rexlab-codex-rework/recovery-tVAYVz/`.
 
 ## Seen but not working
 
-Features that we found in Rex (binary, docs or API) that did not function or had no effect in our tests. Each entry: what, where seen, what we tried, Rex version.
+Features that we found in Rex (docs, API or logs) that did not function or had no effect in our tests. Each entry: what, where seen, what we tried, Rex version.
 
 | What | Where seen | What we tried and the result | Rex version |
 | --- | --- | --- | --- |
-| `sdk_version` and `features` in a block plugin's fd-3 JSON | Rex binary (`json:"sdk_version,omitzero"`, `json:"features,omitzero"`); startup log line | `sdk_version:"9.9.9-lazyrex"`, `features:["block_events","lazyrex.test"]`. Shown only in the startup log. No API shows them. No behavior change, and no feature name compared in disassembly. A non-string item makes the start fail. See "Plugin handshake fields". | 1203, lab |
-| Plugin `block_action` of type `api` (`{"type":"api","payload":{target, method, id, args, caller?}}`) | Rex SDK `rex/sdk/block/action` (`json_action.go`) | Rex accepted the frame and did nothing: a `com.superlogical.terminal.write` to a terminal in the same session wrote nothing. No log line. See "Plugin event emission". | 1203, lab |
+| `sdk_version` and `features` in a block plugin's fd-3 JSON | Startup log line | `sdk_version:"9.9.9-lazyrex"`, `features:["block_events","lazyrex.test"]`. Shown only in the startup log. No API shows them. No behavior change. A non-string item makes the start fail. See "Plugin handshake fields". | 1203, lab |
+| Plugin `block_action` of type `api` (`{"type":"api","payload":{target, method, id, args, caller?}}`) | Lab probe (`block-emit-probe.mjs`) | Rex accepted the frame and did nothing: a `com.superlogical.terminal.write` to a terminal in the same session wrote nothing. No log line. See "Plugin event emission". | 1203, lab |
 | `rex block stream` | CLI help (`rex block stream BLOCK [DATA_REF]`) | Fails: `command "rex block stream" is not implemented`. Re-checked on 1203 on 2026-10-17 (lab). Use `data.connect` and the data channel instead. | 0.0.1792088193 and 1203, lab |
 | Lua multiple assignment (`a, b = b, a`) | Lua 5.1 language (gopher-lua in `rex do`) | Both variables got the old value of `b`. Use a temporary local. See "Lua swap assignment is wrong". | 1203, lab |
 | `rex.action` in a `rex do` script, called from another client | Docs (`rex.action` works in scripts) | `rex -C <client> do <name>` failed: "no action named". Declaring the action with `client.keymap` works. See "Rex Lua runtime". | 0.0.1792088193, lab |

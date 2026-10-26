@@ -75,6 +75,9 @@ Ordered by value to LazyRex.
 16. An exit callback for `rex.exec.start` (an `on_exit` option), so that a plugin needs no timer
     to poll `h:running()`.
 17. Move a block to another session. `move_block` and `move_window` stay inside one session.
+18. A documented tab glyph for a program: an OSC 7501 key, or a documented list of the `app` and
+    process-name keys that the app maps to glyphs. The renderer reports `app=rex` (view/status.go),
+    and which glyph that gives is not documented.
 
 ## Open questions
 
