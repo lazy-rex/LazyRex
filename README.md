@@ -83,13 +83,25 @@ You need Rex, with its server running. Rex is in beta, and access comes from
 - For agents only: the Claude Code or Codex CLI, installed and run once (logged in) before Start
   Agent. A CLI that was never run stops in its own first-run screens, and the agent waits there.
 
-Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
-`~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view`, the plugin SDK (the top-level `.lua` files of `sdk/lua`), and
-`doc/LICENSE`.
-Download the latest release, check it, then unpack it. Paste the whole block: it stops at the
-first failure.
-To install another release, set `LAZYREX_VERSION` (for example `LAZYREX_VERSION=v0.5.0-rc.1`)
-before the block.
+Install and set up with one line:
+
+```sh
+curl -fsSL https://github.com/lazy-rex/LazyRex/releases/latest/download/install.sh | sh
+```
+
+The script downloads the archive for your system, checks it against the release's `SHA256SUMS`,
+and unpacks it into `~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view`, the plugin SDK (the
+top-level `.lua` files of `sdk/lua`), and `doc/LICENSE`. Then it runs setup (next section). A failed
+download or a failed check stops the script before it unpacks anything. It does not stop or restart
+a running hub.
+
+- Read it first: `curl -fsSLO https://github.com/lazy-rex/LazyRex/releases/latest/download/install.sh`,
+  then `sh install.sh`.
+- Another release: `curl ... | LAZYREX_VERSION=v0.5.0 sh`.
+- No setup: `curl ... | LAZYREX_SETUP=0 sh`.
+
+<details>
+<summary>Install without the script</summary>
 
 ```sh
 (
@@ -112,11 +124,13 @@ before the block.
 )
 ```
 
-The last line prints the version, for example `v0.5.0 (commit e4b74e5…)`. A failed download, a
-missing checksum line or a failed check stops the block before it unpacks anything. These steps are
-for a first installation; they do not stop or restart a running hub.
+Then run `~/.lazyrex/bin/lazyrex-hub setup`.
+
+</details>
 
 ## Set up
+
+The install script runs setup. To run it again:
 
 ```sh
 ~/.lazyrex/bin/lazyrex-hub setup

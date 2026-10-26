@@ -31,6 +31,7 @@ jobs:
           (cd hub && go vet ./...)
           (cd view && go vet ./...)
           scripts/release-build-test.sh
+          scripts/install-test.sh
       # Outside the checkout, so the build of each target sees a clean tree.
       - name: Build
         run: scripts/release-build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/dist"
@@ -53,6 +54,10 @@ jobs:
               go version -m "$b" | grep -qx "	build	vcs.modified=false"
             done
           done
+      # The install script of this tag goes beside the archives (not in SHA256SUMS: a user runs it
+      # before any check). The README installs with releases/latest/download/install.sh.
+      - name: Install script
+        run: cp scripts/install.sh "$RUNNER_TEMP/dist/install.sh"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -95,6 +100,19 @@ jobs:
           tar -xzf "$archive" -C "$d"
           test "$("$d"/bin/lazyrex-hub version)" = "$GITHUB_REF_NAME (commit $COMMIT)"
           test "$("$d"/bin/lazyrex-view -version)" = "$GITHUB_REF_NAME"
+      # The install script installs this archive into an empty HOME, from a file:// copy of the
+      # release layout.
+      - name: Install
+        env:
+          COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -eu
+          rel=$(mktemp -d)
+          mkdir -p "$rel/download/$GITHUB_REF_NAME"
+          cp dist/lazyrex-"$GITHUB_REF_NAME"-*.tar.gz dist/SHA256SUMS "$rel/download/$GITHUB_REF_NAME/"
+          home=$(mktemp -d)
+          HOME=$home LAZYREX_BASE=file://$rel LAZYREX_VERSION=$GITHUB_REF_NAME LAZYREX_SETUP=0 sh dist/install.sh
+          test "$("$home"/.lazyrex/bin/lazyrex-hub version)" = "$GITHUB_REF_NAME (commit $COMMIT)"
 
   release:
     needs: smoke
@@ -112,5 +130,5 @@ jobs:
         run: |
           pre=
           case $GITHUB_REF_NAME in *-rc.*) pre=--prerelease ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/lazyrex-"$GITHUB_REF_NAME"-*.tar.gz dist/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist/lazyrex-"$GITHUB_REF_NAME"-*.tar.gz dist/SHA256SUMS dist/install.sh \
             --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --notes "LazyRex $GITHUB_REF_NAME" $pre
