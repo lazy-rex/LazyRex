@@ -75,6 +75,33 @@ type slotState struct {
 	watch  map[string]bool          // tab rows with a timer (reopen.go watchTabRow)
 	tries  map[string]int           // tab row -> failed old-pane closes (reopen.go closeRetry)
 	noting map[string]chan struct{} // block -> a label read of a new block (reopen.go tabReplCreated)
+	// replying holds the rows with a release_confirm reply in flight. No path advances, supersedes
+	// or sweeps such a row: the advance closes the caller's pane, so it waits for the reply attempt
+	// (releaseConfirm). Memory only: a hub restart empties it, and the restart sweep advances the
+	// row, which is durably opening.
+	replying map[string]bool
+}
+
+// setReplying adds (on) or removes the release_confirm gate of row id. The caller holds the row's
+// window lock.
+func (h *Hub) setReplying(id string, on bool) {
+	h.slots.mu.Lock()
+	defer h.slots.mu.Unlock()
+	if h.slots.replying == nil {
+		h.slots.replying = map[string]bool{}
+	}
+	if on {
+		h.slots.replying[id] = true
+	} else {
+		delete(h.slots.replying, id)
+	}
+}
+
+// replyingTo reports whether row id waits for its release_confirm reply.
+func (h *Hub) replyingTo(id string) bool {
+	h.slots.mu.Lock()
+	defer h.slots.mu.Unlock()
+	return h.slots.replying[id]
 }
 
 func (h *Hub) windowLock(window string) *sync.Mutex {
@@ -200,6 +227,12 @@ func (h *Hub) newSlotRow(ctx context.Context, req slotRequest) (*slotRow, error)
 		prevIDs = append(prevIDs, id)
 	}
 	prevRows.Close()
+	for _, id := range prevIDs {
+		if h.replyingTo(id) {
+			// A user's Discard is being answered; the row advances right after the reply.
+			return nil, refuse("conflict", "the side panel of this tab is changing: try again")
+		}
+	}
 	for _, id := range prevIDs {
 		r, err := h.slotRow(ctx, h.db, id)
 		if err != nil || r == nil {
@@ -429,6 +462,9 @@ func (h *Hub) resumeOldSync(ctx context.Context, r *slotRow) {
 func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, error) {
 	answer := func(status string) map[string]any {
 		return map[string]any{"status": status, "view_id": r.New, "replacement_id": r.ID}
+	}
+	if h.replyingTo(r.ID) {
+		return answer("opening"), nil // the release_confirm reply goes first; its callback advances the row
 	}
 	switch r.State {
 	case "confirming", "releasing":
@@ -790,11 +826,14 @@ func (h *Hub) releaseConfirm(ctx context.Context, p perform, args map[string]any
 	if err := h.setSlotState(ctx, r, "opening"); err != nil {
 		return nil, err
 	}
-	// The advance closes the caller's pane, so it runs after the reply (thenResult). The row is
-	// durably opening: slotSweep finishes it if the hub stops first.
+	// The advance closes the caller's pane, so it runs after the reply (thenResult). Until then the
+	// gate keeps every other path off the row (advanceSlot, slotSweep, openSlot). The row is
+	// durably opening: after a hub stop, the gate is gone and the restart sweep finishes it.
+	h.setReplying(id, true)
 	return thenResult{result: answer(), then: func() {
 		lock.Lock()
 		defer lock.Unlock()
+		h.setReplying(id, false) // also after a failed reply: the caller reads the row's state on its reattach
 		r, err := h.slotRow(ctx, h.db, id)
 		if err != nil || r == nil || r.State != "opening" {
 			return // another pass moved it
