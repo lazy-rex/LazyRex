@@ -105,6 +105,42 @@ Observed on Rex 0.0.1792158932-g88fd41 (lab `/tmp/rexlab-hub-claude`, 2026-10-20
   the connection had created but not attached (observed on Rex 0.0.1792158932-g88fd41, Go lab test
   `TestPluginStartUnresolvedIntentLab`, 2026-10-20).
 
+### Program status on Rex 0.0.1792787366-g623b2d (lab, 2026-10-25)
+
+Lab `/tmp/rexlab-c51-pal`. Claude Code 2.1.310 and Codex CLI 0.164.0 ran in lab panes with this
+machine's own CLI configuration. Each pane's command removed the parent agent's `CLAUDE*`
+variables first.
+
+- `block call <block> program_status` (the short name) returns `{records:[…]}`, as before. Every
+  record in this run was the root record (no `id`), with `owner {pid, name}`: name `2.1.310` for
+  Claude (its versioned binary) and `codex` for Codex.
+- Claude Code 2.1.310: `idle` at its start, before any prompt; then `working` for one turn and
+  `done` at its end. The record stayed `done` until the next turn.
+- Codex 0.164.0: at its start, `idle`, then `working`, then `idle` again within one second, before
+  any prompt. Then `working` for each turn and **`done`** at its end. Codex 0.163.0 had reported
+  `idle` at the end of a turn.
+- `blocked` was **not reached** for either CLI. Claude in manual mode ran `touch` with no
+  permission prompt, because this machine's allow rules cover it. Codex with
+  `-a on-request -s read-only` failed the write in the sandbox. It then ran the same command with
+  escalated permissions without a prompt. The `blocked` records above (Rex
+  0.0.1792158932-g88fd41) remain the latest observation.
+- **Events reach a client without polling.** `rex events --all --json` received every change as
+  `{"type":"session_event","payload":{"session_id":…,"event":{"type":"block_event","payload":{"block_id":…,"creator_name":"com.superlogical.terminal","name":"program_status_changed","payload":{"id":"","record":{…},"reason":"report"}}}}}`.
+  It got 15 events for 15 changes in 3 panes. That client never attached the session. The hub's
+  own path (session attach with `event_scope: session`, `blockEvent` in `main.go`) handles the
+  same event name.
+- In this run, Codex 0.164.0 offered `-a` values `on-request` and `never` only; `untrusted` was
+  refused.
+- **A Codex 0.164.0 resume does not lose its first prompt** (the hub at ea88dc6e,
+  `hub.admin.resume` of a Codex agent started by hand). The start states varied: `idle`,
+  `working`, `idle` within 0.33 s (run 1); `idle` then `working` 10 ms later (run 3); `working`
+  only (run 4). In run 1 the hub wrote `resumePrompt` 0.49 s after the second `idle`, at its 2 s
+  look. Runs 3 and 4 wrote the same bracketed paste and `\r` (as `writeNotice` does) 59–61 ms
+  after the pane's first status, during the start `working`. Run 2 wrote late because of a fault
+  in the lab script, and is not counted. In each counted run Codex took the prompt:
+  `working`, then `done`, and its answer on the screen. The hub keeps its rule: the first `idle`
+  or `done` of the launched program.
+
 ### The pane's process: executable and exec path
 
 Observed on Rex 0.0.1792158932-g88fd41 (macOS lab `/tmp/rexlab-hubrun-claude` and the Linux lab
