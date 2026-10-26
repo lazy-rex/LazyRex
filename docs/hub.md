@@ -321,7 +321,7 @@ A later tree does not change the mode. A new renderer process (a reload) decides
 
 The root may also have an optional `status`: `{state, kind, msg}`.
 `state` is `idle`, `working`, `done`, `blocked`, or `error`. `kind` (`permission`, `question`, or `auth`) applies only to `blocked`. `msg` is one line of plain text.
-The renderer reports the status to Rex with the Program Status Protocol (OSC 7501, `app=rex`; view/status.go). Rex shows it on the tab header when the tab is not focused, and in the session picker (Rex docs; not yet observed).
+The renderer reports the status to Rex with the Program Status Protocol (OSC 7501, `app=lazyrex`; view/status.go). Rex shows it on the tab header when the tab is not focused, and in the session picker (Rex docs; not yet observed).
 The renderer reports on its first snapshot and then only when the status changes. A missing status or an unknown state clears the record. A closed view clears it; a reload keeps it.
 The plugin chooses the text and the state. For example, a thread with unread messages for the user has `{state = "done", msg = "3 unread from Codex"}`.
 
@@ -1646,7 +1646,7 @@ session"). Home sessions, closed-tab revisions, and drafts must survive a hub re
 The renderer reads only `snapshot.status`.
 The hub lifts a plugin's `tree.status` into that field when present. Otherwise,
 the hub uses the status from `hub.ui.tabs`. The renderer sends OSC 7501 with
-`app=rex`. Each report includes all applicable fields. An absent status clears
+`app=lazyrex`. Each report includes all applicable fields. An absent status clears
 the record. OSC 2 continues to use the view title.
 
 Messages declares `done` with an unread count for inbox and thread tabs. Open

@@ -28,7 +28,7 @@ func statusSequence(s *Status) string {
 	default:
 		return statusClear
 	}
-	seq := "\x1b]7501;state=" + s.State + ":app=rex"
+	seq := "\x1b]7501;state=" + s.State + ":app=lazyrex"
 	if s.State == "blocked" {
 		switch s.Kind {
 		case "permission", "question", "auth":

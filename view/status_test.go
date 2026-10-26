@@ -17,7 +17,7 @@ func TestStatusSequence(t *testing.T) {
 		t.Fatalf("unknown state: %q", got)
 	}
 	got := statusSequence(&Status{State: "done", Msg: "3 unread\nfrom Codex"})
-	want := "\x1b]7501;state=done:app=rex:msg=" + base64.StdEncoding.EncodeToString([]byte("3 unread from Codex")) + "\x1b\\"
+	want := "\x1b]7501;state=done:app=lazyrex:msg=" + base64.StdEncoding.EncodeToString([]byte("3 unread from Codex")) + "\x1b\\"
 	if got != want {
 		t.Fatalf("done: %q, want %q", got, want)
 	}

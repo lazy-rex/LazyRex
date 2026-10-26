@@ -76,7 +76,7 @@ Ordered by value to LazyRex.
     to poll `h:running()`.
 17. Move a block to another session. `move_block` and `move_window` stay inside one session.
 18. A documented tab glyph for a program: an OSC 7501 key, or a documented list of the `app` and
-    process-name keys that the app maps to glyphs. The renderer reports `app=rex` (view/status.go),
+    process-name keys that the app maps to glyphs. The renderer reports `app=lazyrex` (view/status.go),
     and which glyph that gives is not documented.
 
 ## Open questions
