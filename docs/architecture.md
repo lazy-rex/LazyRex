@@ -73,12 +73,14 @@ text into the agent's pane when the agent's program status is ready (idle or don
 - The hub records an intent before each Rex call that creates a pane, and it labels the pane. After
   a restart it finds its panes again by label and checks the process before it adopts one. A
   label is a hint, not proof (`docs/hub.md`, "Reconciler and view behavior").
-- An agent whose process ended is detached. **Resume detached agents** starts it again from its
-  profile's `resume` template (`docs/hub.md`, "Agent resume").
+- An agent whose process ended is detached. **Resume detached agents** starts an agent that the hub
+  started again, from its profile's `resume` template. An agent that the user started by hand
+  needs a working directory to resume (`docs/hub.md`, "Agent resume").
 
 ## Peer hubs
 
-Each hub can name peers in `hub.json`. A hub pulls envelopes from its peers with the rex CLI
+Each hub can name peers in `hub.json`. A hub pulls envelopes (messages that plugins address to a
+plugin on another hub) from its peers with the rex CLI
 (`rex -S <peer server> -C <peer hub> do hub.peer.pull`); it never pushes data. A hub can also take
 its plugins from one peer. See `docs/hub.md`, "Peer hubs (federation v1, 2026-10-23)".
 
@@ -86,6 +88,6 @@ its plugins from one peer. See `docs/hub.md`, "Peer hubs (federation v1, 2026-10
 
 - Rex has no API to restore a whole layout at once, no operation keys on create calls, and no
   caller identity on block methods. The hub works around each one (`docs/roadmap.md`, "Requests
-  for superlogical").
+  for superlogical"; `docs/REX-BUGS.md`).
 - The hub's event log is a record, not a replay log. The hub recovers from `hub.db` and from Rex
   state, not from the log.
