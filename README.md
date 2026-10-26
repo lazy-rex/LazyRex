@@ -64,8 +64,9 @@ You need Rex, with its server running. Rex is in beta, and access comes from
   A CLI that was never run stops in its own first-run screens, and the agent waits there.
 
 Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
-`~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view` and the plugin SDK in `sdk/lua`. Download the
-latest release, check it, then unpack it. Paste the whole block: it stops at the first failure.
+`~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view`, the plugin SDK in `sdk/lua`, and `doc/LICENSE`.
+Download the latest release, check it, then unpack it. Paste the whole block: it stops at the
+first failure.
 To install another release, set `LAZYREX_VERSION` (for example `LAZYREX_VERSION=v0.5.0-rc.1`)
 before the block.
 

@@ -6,6 +6,7 @@
 # An archive unpacks into ~/.lazyrex:
 #   bin/lazyrex-hub, bin/lazyrex-view   setup needs both in one directory
 #   sdk/lua/boot.lua, sdk/lua/lazyrex.lua   the plugin SDK; the hub finds sdk/lua above its binary
+#   doc/LICENSE   the MIT license (not at the root: the root is the user's ~/.lazyrex)
 #
 # The builds keep the Go VCS stamp (vcs.revision, vcs.modified): go version -m shows it.
 # A version other than "dev" needs a clean checkout. TARGETS (os/arch, separated by
@@ -46,7 +47,7 @@ for target in $targets; do
 	arch=${target#*/}
 	name=lazyrex-$version-$os-$arch
 	dir=$stage/$name
-	mkdir -p "$dir/bin" "$dir/sdk/lua"
+	mkdir -p "$dir/bin" "$dir/sdk/lua" "$dir/doc"
 	for mod in hub:./cmd/hub:lazyrex-hub view:.:lazyrex-view; do
 		src=${mod%%:*}
 		rest=${mod#*:}
@@ -56,10 +57,11 @@ for target in $targets; do
 			-ldflags "-X main.version=$version" -o "$dir/bin/$bin" "$pkg")
 	done
 	cp "$root/sdk/lua/boot.lua" "$root/sdk/lua/lazyrex.lua" "$dir/sdk/lua/"
+	cp "$root/LICENSE" "$dir/doc/LICENSE"
 	# COPYFILE_DISABLE: macOS tar adds AppleDouble (._*) entries for extended attributes otherwise.
-	COPYFILE_DISABLE=1 tar -C "$dir" -czf "$stage/archives/$name.tar.gz" bin sdk
+	COPYFILE_DISABLE=1 tar -C "$dir" -czf "$stage/archives/$name.tar.gz" bin doc sdk
 	files=$(tar -tzf "$stage/archives/$name.tar.gz" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')
-	if [ "$files" != "bin/lazyrex-hub bin/lazyrex-view sdk/lua/boot.lua sdk/lua/lazyrex.lua " ]; then
+	if [ "$files" != "bin/lazyrex-hub bin/lazyrex-view doc/LICENSE sdk/lua/boot.lua sdk/lua/lazyrex.lua " ]; then
 		echo "release-build: $name.tar.gz holds $files" >&2
 		exit 1
 	fi
