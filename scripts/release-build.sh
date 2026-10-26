@@ -5,7 +5,8 @@
 # One archive per target: lazyrex-<version>-<os>-<arch>.tar.gz, and SHA256SUMS for all of them.
 # An archive unpacks into ~/.lazyrex:
 #   bin/lazyrex-hub, bin/lazyrex-view   setup needs both in one directory
-#   sdk/lua/boot.lua, sdk/lua/lazyrex.lua   the plugin SDK; the hub finds sdk/lua above its binary
+#   sdk/lua/*.lua   the plugin SDK: every top-level .lua file of sdk/lua (not examples/ or tests/);
+#                   the hub finds sdk/lua above its binary
 #   doc/LICENSE   the MIT license (not at the root: the root is the user's ~/.lazyrex)
 #
 # The builds keep the Go VCS stamp (vcs.revision, vcs.modified): go version -m shows it.
@@ -36,6 +37,30 @@ if [ "$version" != dev ] && [ -n "$(git -C "$root" status --porcelain)" ]; then
 fi
 targets=${TARGETS:-darwin/arm64 darwin/amd64 linux/arm64 linux/amd64}
 
+# The SDK files: a rule, not a list, so a new SDK file ships with no edit here. want is the file
+# list that each archive must hold (tar -t, sorted).
+sdk=
+for f in "$root"/sdk/lua/*.lua; do
+	sdk="$sdk ${f##*/}"
+done
+want=$({
+	printf '%s\n' bin/lazyrex-hub bin/lazyrex-view doc/LICENSE
+	for f in $sdk; do
+		echo "sdk/lua/$f"
+	done
+} | LC_ALL=C sort | tr '\n' ' ')
+
+# Each file that the SDK loads by name must be in the archive: a missing one fails the plugin at its
+# start. The names: '/x.lua' after an SDK directory, and every literal require('x') (the SDK requires
+# only its own modules; boot.lua puts sdk/lua on package.path).
+sdk_loads() {
+	for f in $sdk; do
+		grep -oE "['\"]/[A-Za-z0-9_]+\\.lua['\"]" "$root/sdk/lua/$f" | tr -d "'\"/"
+		grep -oE "require ?\\(? ?['\"][A-Za-z0-9_]+['\"]" "$root/sdk/lua/$f" |
+			sed "s/^[^'\"]*['\"]\\([A-Za-z0-9_]*\\)['\"]\$/\\1.lua/"
+	done | LC_ALL=C sort -u
+}
+
 # Everything is built outside the checkout first: an archive in an out-dir inside the checkout
 # would be an untracked file, and the next build would be stamped vcs.modified=true.
 stage=$(mktemp -d)
@@ -56,12 +81,20 @@ for target in $targets; do
 		(cd "$root/$src" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
 			-ldflags "-X main.version=$version" -o "$dir/bin/$bin" "$pkg")
 	done
-	cp "$root/sdk/lua/boot.lua" "$root/sdk/lua/lazyrex.lua" "$dir/sdk/lua/"
+	for f in $sdk; do
+		cp "$root/sdk/lua/$f" "$dir/sdk/lua/"
+	done
+	for f in $(sdk_loads); do
+		if [ ! -e "$dir/sdk/lua/$f" ]; then
+			echo "release-build: the SDK loads sdk/lua/$f, and $name does not hold it" >&2
+			exit 1
+		fi
+	done
 	cp "$root/LICENSE" "$dir/doc/LICENSE"
 	# COPYFILE_DISABLE: macOS tar adds AppleDouble (._*) entries for extended attributes otherwise.
 	COPYFILE_DISABLE=1 tar -C "$dir" -czf "$stage/archives/$name.tar.gz" bin doc sdk
 	files=$(tar -tzf "$stage/archives/$name.tar.gz" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')
-	if [ "$files" != "bin/lazyrex-hub bin/lazyrex-view doc/LICENSE sdk/lua/boot.lua sdk/lua/lazyrex.lua " ]; then
+	if [ "$files" != "$want" ]; then
 		echo "release-build: $name.tar.gz holds $files" >&2
 		exit 1
 	fi

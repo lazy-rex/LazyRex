@@ -2,6 +2,9 @@
 
 ## Planned
 
+- **`lazyrex-hub test` from a curl install.** A curl install can run `lazyrex-hub test` without a
+  LazyRex checkout (the archive ships the test runner and the home plugin). The first planned item
+  after the launch.
 - **The live hub runs under the restart wrapper.** The live hub runs `lazyrex-hub -restart` from
   the user's install layout, as users run it, with the rotated log. The new interface is
   `hub.admin.restart` and `lazyrex-hub restart` (child exit 4, then the wrapper runs its own

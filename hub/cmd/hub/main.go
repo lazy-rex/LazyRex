@@ -38,7 +38,7 @@ type Config struct {
 	// no palette entries.
 	PaletteLua string `json:"palette_lua"`
 	Real       bool   `json:"-"` // set from -real-server; renderers get -real-server too
-	// SDK is the directory of the plugin SDK (sdk/lua: boot.lua and lazyrex.lua), set from -sdk. Empty: a
+	// SDK is the directory of the plugin SDK (sdk/lua: its top-level .lua files), set from -sdk. Empty: a
 	// plugin that declares sdk in its manifest cannot start.
 	SDK  string `json:"-"`
 	Test bool   `json:"-"` // set from -test (testmode.go)

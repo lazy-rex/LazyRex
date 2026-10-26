@@ -214,7 +214,8 @@ end)
 
 Run `lazyrex-hub test` in the plugin directory (`-file todo.lua` runs one file, `-run <pattern>`
 some tests, `-lazyrex <dir>` names the LazyRex checkout when it is not `../LazyRex`). It starts its
-own lab; it never touches your terminals.
+own lab; it never touches your terminals. `lazyrex-hub test` needs a LazyRex checkout (`-lazyrex`
+or `LAZYREX_DIR`): the release archive does not hold the test runner.
 
 - **One lab per file.** Each `tests/*.lua` file gets a new lab and hub. The tests in one file share
   it and run in order, so a later test sees the rows of an earlier one.

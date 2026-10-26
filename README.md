@@ -31,7 +31,7 @@ Palette commands start with **LazyRex:** in the Rex palette.
 | Plugins | **Plugins…** adds, updates and removes plugins. By default, the hub installs managed plugins from their GitHub releases, and a lock file pins each GitHub source to a commit. A plugin from a local directory runs from a read-only copy of that directory, which the hub makes when it starts the plugin. One hub can take its plugins from another hub. |
 | Launch plugins | Messaging, Profiles, Templates (session templates: **Templates…**, **Start Session…**, **Save as Template…**), Tunnels (**Forward Port…**), Worktrees (**Worktrees…**, **New Worktree…**, **Remove Worktree…**) and Automations (**Automations…**, **New Automation…**). Setup installs all of them except Automations; add Automations in **Plugins…**. |
 | Peer hubs | Each hub names its peers in `hub.json`. A plugin can send a message to a plugin on a peer hub, so threads and agents reach across machines. |
-| Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). The plugin SDK is in `sdk/lua`, and `lazyrex-hub test` runs a plugin's tests on an isolated lab server. |
+| Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). The plugin SDK is in `sdk/lua`, and `lazyrex-hub test` runs a plugin's tests on an isolated lab server; it needs a LazyRex checkout (`-lazyrex` or `LAZYREX_DIR`). |
 
 ## How LazyRex uses Rex
 
@@ -64,7 +64,8 @@ You need Rex, with its server running. Rex is in beta, and access comes from
   A CLI that was never run stops in its own first-run screens, and the agent waits there.
 
 Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
-`~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view`, the plugin SDK in `sdk/lua`, and `doc/LICENSE`.
+`~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view`, the plugin SDK (the top-level `.lua` files of `sdk/lua`), and
+`doc/LICENSE`.
 Download the latest release, check it, then unpack it. Paste the whole block: it stops at the
 first failure.
 To install another release, set `LAZYREX_VERSION` (for example `LAZYREX_VERSION=v0.5.0-rc.1`)
@@ -243,7 +244,8 @@ CLI. A build from source also needs Go.
 ### Tests
 
 Plugin tests are Lua files that run against the real hub on an isolated lab server:
-`lazyrex-hub test` in the plugin repository (see [docs/testing.md](docs/testing.md)).
+`lazyrex-hub test` in the plugin repository (see [docs/testing.md](docs/testing.md)). It needs a
+LazyRex checkout (`-lazyrex` or `LAZYREX_DIR`).
 
 - `cd hub && go test ./...` and `cd view && go test ./...`
 - The lab tests start their own lab servers (`LAZYREX_LAB=1`; the exceptions are in

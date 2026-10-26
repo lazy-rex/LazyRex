@@ -66,6 +66,40 @@ for l in "      - uses: actions/checkout@v7" "      - uses: actions/checkout@3d3
 	fi
 done
 
+# The SDK rule and the closure guard, in a fake checkout: a stub go writes each -o file. Every
+# top-level sdk/lua/*.lua ships (not tests/); a name that the SDK loads and the archive lacks
+# stops the build.
+fake() {
+	rm -rf "$tmp/root" "$tmp/fout"
+	mkdir -p "$tmp/root/scripts" "$tmp/root/hub" "$tmp/root/view" "$tmp/root/sdk/lua/tests" "$tmp/fstub"
+	cp "$here/release-build.sh" "$tmp/root/scripts/"
+	echo license >"$tmp/root/LICENSE"
+	echo "dofile(SDK_DIR .. '/testing.lua')" >"$tmp/root/sdk/lua/boot.lua"
+	printf '%s\n' "$1" >"$tmp/root/sdk/lua/lazyrex.lua"
+	echo "-- testing" >"$tmp/root/sdk/lua/testing.lua"
+	echo "-- a test" >"$tmp/root/sdk/lua/tests/t.lua"
+	printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && : >"$2"; shift; done\n' >"$tmp/fstub/go"
+	chmod +x "$tmp/fstub/go"
+	TARGETS=linux/amd64 PATH=$tmp/fstub:$PATH "$tmp/root/scripts/release-build.sh" dev "$tmp/fout" >"$tmp/fake.log" 2>&1
+}
+fake "local x = loadfile(SDK_DIR .. \"/testing.lua\") require('boot') require \"testing\""
+code=$?
+got=$(tar -tzf "$tmp/fout/lazyrex-dev-linux-amd64.tar.gz" 2>/dev/null | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')
+if [ $code -ne 0 ] || [ "$got" != "bin/lazyrex-hub bin/lazyrex-view doc/LICENSE sdk/lua/boot.lua sdk/lua/lazyrex.lua sdk/lua/testing.lua " ]; then
+	echo "FAIL: the SDK rule: exit $code, archive: $got"
+	cat "$tmp/fake.log"
+	fails=$((fails + 1))
+fi
+for load in "loadfile(SDK_DIR .. '/missing.lua')" "require('missing')" 'require "missing"'; do
+	fake "$load"
+	code=$?
+	if [ $code -ne 1 ] || ! grep -q 'the SDK loads sdk/lua/missing.lua, and lazyrex-dev-linux-amd64 does not hold it' "$tmp/fake.log"; then
+		echo "FAIL: the closure guard, $load: exit $code"
+		cat "$tmp/fake.log"
+		fails=$((fails + 1))
+	fi
+done
+
 if [ $fails -ne 0 ]; then
 	echo "release-build-test: $fails failed"
 	exit 1

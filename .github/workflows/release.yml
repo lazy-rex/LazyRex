@@ -40,10 +40,12 @@ jobs:
         run: |
           commit=$(git rev-parse HEAD)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          # The archive list: the binaries, the license and every top-level .lua file of sdk/lua.
+          want=$( (printf '%s\n' bin/lazyrex-hub bin/lazyrex-view doc/LICENSE; for f in sdk/lua/*.lua; do echo "$f"; done) | LC_ALL=C sort | tr '\n' ' ')
           cd "$RUNNER_TEMP/dist"
           sha256sum -c SHA256SUMS
           for a in lazyrex-"$GITHUB_REF_NAME"-*.tar.gz; do
-            test "$(tar -tzf "$a" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')" = "bin/lazyrex-hub bin/lazyrex-view doc/LICENSE sdk/lua/boot.lua sdk/lua/lazyrex.lua "
+            test "$(tar -tzf "$a" | grep -v '/$' | LC_ALL=C sort | tr '\n' ' ')" = "$want"
             d=$(mktemp -d)
             tar -xzf "$a" -C "$d"
             for b in "$d"/bin/*; do
