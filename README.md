@@ -22,7 +22,7 @@ Palette commands start with **LazyRex:** in the Rex palette.
 
 | Feature | What works today |
 | --- | --- |
-| Agent identity | The agent's hook reports its conversation to the hub, and the hub binds it to the agent's pane. The hub checks the caller's processes, so an agent cannot act as another agent. |
+| Agent identity | The agent's hook reports its conversation to the hub, and the hub binds it to the agent's pane. The hub finds the calling agent from the caller's process tree, so an agent's calls carry its own identity. |
 | Messaging | Direct threads, replies and group threads, with drafts and unread state. The **Team** thread opens at the hub's start. Commands: **New Thread…**, **Threads…**, **Thread Settings…** (Messaging plugin). |
 | Notices | When a message comes for an agent, the hub writes a notice into the agent's pane after the agent is ready (idle or done). |
 | Agent resume and restart | **Resume detached agents** starts each detached agent that the hub started again, with its conversation, from its profile's `resume` template. **Restart Claude agents…** and **Restart Codex agents…** stop and resume the agents of one kind. |
@@ -30,7 +30,7 @@ Palette commands start with **LazyRex:** in the Rex palette.
 | Forms and panels | A palette command opens its form or panel in a pane beside your pane. |
 | Plugins | **Plugins…** adds, updates and removes plugins. The hub installs released versions, and a lock file pins each plugin to a commit. One hub can take its plugins from another hub. |
 | Launch plugins | Messaging, Profiles, Templates (session templates: **Templates…**, **Start Session…**, **Save as Template…**), Tunnels (**Forward Port…**), Worktrees (**Worktrees…**, **New Worktree…**, **Remove Worktree…**) and Automations (**Automations…**, **New Automation…**). Setup installs all of them except Automations; add Automations in **Plugins…**. |
-| Peer hubs | Each hub names its peers in `hub.json`. Plugins send envelopes to a peer hub, so messages and agents reach across machines. |
+| Peer hubs | Each hub names its peers in `hub.json`. A plugin can send a message to a plugin on a peer hub, so threads and agents reach across machines. |
 | Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). The plugin SDK is in `sdk/lua`, and `lazyrex-hub test` runs a plugin's tests on an isolated lab server. |
 
 ## How LazyRex uses Rex
