@@ -90,7 +90,7 @@ if [ $code -ne 0 ] || [ "$got" != "bin/lazyrex-hub bin/lazyrex-view doc/LICENSE 
 	cat "$tmp/fake.log"
 	fails=$((fails + 1))
 fi
-for load in "loadfile(SDK_DIR .. '/missing.lua')" "require('missing')" 'require "missing"'; do
+for load in "loadfile(SDK_DIR .. '/missing.lua')" "require('missing')" 'require "missing"' "require  ('missing')" "require	( 'missing' )"; do
 	fake "$load"
 	code=$?
 	if [ $code -ne 1 ] || ! grep -q 'the SDK loads sdk/lua/missing.lua, and lazyrex-dev-linux-amd64 does not hold it' "$tmp/fake.log"; then

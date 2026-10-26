@@ -56,7 +56,7 @@ want=$({
 sdk_loads() {
 	for f in $sdk; do
 		grep -oE "['\"]/[A-Za-z0-9_]+\\.lua['\"]" "$root/sdk/lua/$f" | tr -d "'\"/"
-		grep -oE "require ?\\(? ?['\"][A-Za-z0-9_]+['\"]" "$root/sdk/lua/$f" |
+		grep -oE "require[[:space:]]*\\(?[[:space:]]*['\"][A-Za-z0-9_]+['\"]" "$root/sdk/lua/$f" |
 			sed "s/^[^'\"]*['\"]\\([A-Za-z0-9_]*\\)['\"]\$/\\1.lua/"
 	done | LC_ALL=C sort -u
 }
