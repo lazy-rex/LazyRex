@@ -1,9 +1,11 @@
 # Architecture
 
-Rex runs every process and draws every terminal. LazyRex is a Rex client: the hub. It adds agent
-identity, messaging, plugins with their own databases, views in Rex panes, and links between hubs on
-other machines. The details of each part are in `docs/hub.md`. The Rex behavior that LazyRex
-depends on, with the Rex build of each observation, is in `docs/rex-protocol.md`.
+Rex runs every process and draws every terminal. LazyRex is a Rex client: the hub. LazyRex is an
+application layer for plugins: the hub runs Lua plugins, gives each one its own database, draws
+their views in Rex panes, and connects hubs on other machines (federation). It also gives plugins
+agent identity and notices. Messaging and the other default plugins are plugins on this layer.
+The details of each part are in `docs/hub.md`. The Rex behavior that LazyRex depends
+on, with the Rex build of each observation, is in `docs/rex-protocol.md`.
 
 ## Who owns what
 

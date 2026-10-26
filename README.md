@@ -2,38 +2,56 @@
 
 [![ci](https://github.com/lazy-rex/LazyRex/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lazy-rex/LazyRex/actions/workflows/ci.yml)
 
-LazyRex is a hub for [Rex](https://www.superlogical.com/rex) terminals. It runs plugins (Lua scripts
-that Rex runs with `rex do`), gives each one a SQL database, and draws their views with one Go
-renderer in Rex panes. Agents such as Claude and Codex use it to message each other and the user.
+LazyRex is an application layer for [Rex](https://www.superlogical.com/rex) terminals. It lets you
+build, install and manage plugins, and it connects hubs on different machines (federation). A
+plugin is a Lua script that Rex runs with `rex do`. The hub (`lazyrex-hub`) runs the plugins, and
+one Go renderer draws their views in Rex panes.
 
-Status: early. The design came from a series of spikes; `docs/` keeps their findings.
+Status: early.
 
-## What LazyRex adds to Rex
-
-- Your agents (Claude Code and Codex) and you message each other in threads. An idle agent gets a
-  notice in its pane when a message comes.
-- Agents that the hub started come back after a restart: **Resume detached agents** continues each
-  conversation in a new pane.
-- Plugins add commands, forms and panels to Rex. Each plugin has its own SQL database.
-- One hub on each machine, and the hubs connect: messages and agents reach across machines.
-- Profiles start agents, shells and tools in a directory, as a tab or a split.
-
-## Features
+## What LazyRex gives you
 
 Palette commands start with **LazyRex:** in the Rex palette.
 
 | Feature | What works today |
 | --- | --- |
+| Build plugins | A plugin is a Lua script with a manifest (`lazyrex.json`). The plugin SDK (`sdk/lua`, `require('lazyrex')`) gives a plugin its actions, views and database ([docs/plugin-sdk.md](docs/plugin-sdk.md)). `lazyrex-hub plugin new <name>` writes a new plugin with a test. `lazyrex-hub test` runs a plugin's tests on an isolated lab server; it needs a LazyRex checkout (`-lazyrex` or `LAZYREX_DIR`). |
+| A database for each plugin | Each plugin has its own SQLite database, which the hub runs ([docs/sql.md](docs/sql.md)). |
+| Views in Rex panes | Tabs, forms and panels, drawn by one renderer (`lazyrex-view`) in Rex panes. A palette command opens its form or panel beside the pane that has focus. With two devices on one session, that can be the pane the other device focused last. |
+| Palette commands | A plugin declares its commands, and the hub writes them into the Rex palette. |
+| Manage plugins | **Plugins…** adds, updates and removes plugins. By default, the hub installs managed plugins from their GitHub releases, and a lock file pins each GitHub source to a commit. A plugin from a local directory runs from a read-only copy of that directory, which the hub makes when it starts the plugin. |
+| Supervision and recovery | Each plugin runs in its own Rex pane. When a plugin exits by itself, the hub starts it again after a delay (1 s, doubled each time, at most 60 s). When you close a plugin pane, the plugin stays stopped. A hub restart keeps the terminals: the hub finds its panes again by their labels. |
+| Federation | Each hub names its peers in `hub.json`. A plugin can send a message to a plugin on a peer hub. A hub can take its plugins from a peer. |
+| Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). |
+
+## Platform services for plugins
+
+The hub also gives plugins services for the agent CLIs (Claude Code and Codex) that run in Rex
+panes. The plugins below use them.
+
+| Service | What works today |
+| --- | --- |
 | Agent identity | The agent's hook reports its conversation to the hub, and the hub binds it to the agent's pane. The hub finds the calling agent from the caller's process tree, so an agent's calls carry its own identity. This is attribution, not isolation ([docs/hub.md, "Bindings"](docs/hub.md#bindings)). |
-| Messaging | Direct threads, replies and group threads, with drafts and unread state. The **Team** thread opens at the hub's start. Commands: **New Thread…**, **Threads…**, **Thread Settings…** (Messaging plugin). |
-| Notices | When a message comes for an agent, the hub writes a notice into the agent's pane after the agent is ready (idle or done). |
+| Notices | A plugin can wake an agent: the hub writes the plugin's notice into the agent's pane after the agent is ready (idle or done). |
 | Agent resume and restart | **Resume detached agents** starts each detached agent that the hub started again, with its conversation, from its profile's `resume` template. **Restart Claude agents…** and **Restart Codex agents…** stop and resume the agents of one kind. |
-| Profiles and workers | **Start Agent…** and **Start Accessory…** (Profiles plugin) start a profile in a directory. **Agents…** lists the agents; **Stop Worker…** stops a worker. A plugin can lock a directory, and the hub then starts no worker in it. |
-| Forms and panels | A palette command opens its form or panel beside the pane that has focus. With two devices on one session, that can be the pane the other device focused last. |
-| Plugins | **Plugins…** adds, updates and removes plugins. By default, the hub installs managed plugins from their GitHub releases, and a lock file pins each GitHub source to a commit. A plugin from a local directory runs from a read-only copy of that directory, which the hub makes when it starts the plugin. One hub can take its plugins from another hub. |
-| Launch plugins | Messaging, Profiles, Templates (session templates: **Templates…**, **Start Session…**, **Save as Template…**), Tunnels (**Forward Port…**), Worktrees (**Worktrees…**, **New Worktree…**, **Remove Worktree…**) and Automations (**Automations…**, **New Automation…**). Setup installs all of them except Automations; add Automations in **Plugins…**. |
-| Peer hubs | Each hub names its peers in `hub.json`. A plugin can send a message to a plugin on a peer hub, so threads and agents reach across machines. |
-| Tools | `lazyrex-hub setup`, `status`, `config` and `autostart` (start the hub with the Rex server). The plugin SDK is in `sdk/lua`, and `lazyrex-hub test` runs a plugin's tests on an isolated lab server; it needs a LazyRex checkout (`-lazyrex` or `LAZYREX_DIR`). |
+| Workers and directory locks | A plugin can start agents, shells and tools (workers) in a directory, as a tab or a split, and stop them. A plugin can lock a directory, and the hub then starts no worker in it. |
+
+## Plugins
+
+These plugins are built on LazyRex. Each one has its own repository. Setup installs five of them,
+all but Automations; add Automations in **Plugins…**.
+
+| Plugin | What it does |
+| --- | --- |
+| [Messaging](https://github.com/lazy-rex/Messaging) | Threads between you and your agents: direct threads, replies and group threads, with drafts and unread state. The **Team** thread opens at the hub's start. **New Thread…**, **Threads…**, **Thread Settings…**. |
+| [Profiles](https://github.com/lazy-rex/Profiles) | Starts a profile (an agent, a shell or a tool) in a directory, as a tab or a split: **Start Agent…**, **Start Accessory…**. |
+| [Templates](https://github.com/lazy-rex/Templates) | Session templates: **Templates…**, **Start Session…**, **Save as Template…**. |
+| [Tunnels](https://github.com/lazy-rex/Tunnels) | Port forwards: **Forward Port…**. |
+| [Worktrees](https://github.com/lazy-rex/Worktrees) | Git worktrees: **Worktrees…**, **New Worktree…**, **Remove Worktree…**. |
+| [Automations](https://github.com/lazy-rex/Automations) | **Automations…**, **New Automation…**. |
+
+The home plugin of this repository (`plugins/lazyrex`) has **Plugins…**, **Agents…** (the agents,
+workers and accessories) and **Stop Worker…**.
 
 ## How LazyRex uses Rex
 
@@ -62,8 +80,8 @@ You need Rex, with its server running. Rex is in beta, and access comes from
 
 - git. Setup reads the plugin tags, and the hub fetches the plugins at its first start.
 - curl, to download the release.
-- The Claude Code or Codex CLI, for agents: installed, and run once (logged in) before Start Agent.
-  A CLI that was never run stops in its own first-run screens, and the agent waits there.
+- For agents only: the Claude Code or Codex CLI, installed and run once (logged in) before Start
+  Agent. A CLI that was never run stops in its own first-run screens, and the agent waits there.
 
 Each release has one archive for each system, and `SHA256SUMS`. The archive unpacks into
 `~/.lazyrex`: `bin/lazyrex-hub`, `bin/lazyrex-view`, the plugin SDK (the top-level `.lua` files of `sdk/lua`), and
@@ -137,10 +155,9 @@ setting ahead of time. `lazyrex-hub status` shows what the hub last saw the app 
 ## Start
 
 In the Rex palette, run **LazyRex: Start Hub**. A pane opens, and the hub runs in it. Closing the
-pane stops the hub. **LazyRex: Hub Status** and **LazyRex: Stop Hub** are beside it. With the default
-plugins, the hub also opens one tab at its start: the Messaging thread of the **Team** group (its
-messages over a composer). The other LazyRex commands, such as **Agents…** and **Stop Worker…**,
-are in the palette.
+pane stops the hub. **LazyRex: Hub Status** and **LazyRex: Stop Hub** are beside it. The commands of
+the plugins, such as **Plugins…**, are in the palette. With the default plugins, the Messaging plugin
+opens one tab at the hub's start: the thread of the **Team** group (its messages over a composer).
 
 Start Hub runs this command, which you can also run in a terminal:
 
@@ -151,11 +168,13 @@ Start Hub runs this command, which you can also run in a terminal:
 `-real-server` is for your own Rex server, the one that setup found. It must match the server in
 `hub.json`: leave it out when `hub.json` names a lab server.
 
-## First agent
+## Next steps
 
-- **LazyRex: Start Agent…** opens a form that lists your agent profiles. Choose one and a
-  directory; the agent starts in a new pane.
-- **LazyRex: New Thread…** and **LazyRex: Threads…** open the messages between you and your agents.
+- **LazyRex: Plugins…** lists the plugins. It adds, updates and removes them.
+- `lazyrex-hub plugin new <name>` writes a new plugin with a test. The SDK is in
+  [docs/plugin-sdk.md](docs/plugin-sdk.md).
+- With the Profiles plugin, **LazyRex: Start Agent…** opens a form that lists your agent profiles.
+  Choose one and a directory; the agent starts in a new pane.
 
 ## When something is wrong
 
@@ -188,7 +207,8 @@ The rest of this README is for work on LazyRex itself.
 Each plugin has its own repository in [lazy-rex](https://github.com/lazy-rex):
 [Messaging](https://github.com/lazy-rex/Messaging), [Profiles](https://github.com/lazy-rex/Profiles),
 [Templates](https://github.com/lazy-rex/Templates), [Tunnels](https://github.com/lazy-rex/Tunnels),
-[Worktrees](https://github.com/lazy-rex/Worktrees).
+[Worktrees](https://github.com/lazy-rex/Worktrees),
+[Automations](https://github.com/lazy-rex/Automations).
 
 Check them out next to this repository. Plugin tests use `../LazyRex` for the client library and
 the lab harness:
@@ -240,8 +260,8 @@ instead.)
 `dev.sh` builds the hub and the renderer, watches the sources, and reloads what changed.
 
 `dev.sh` starts a hub from a source checkout (the live hubs use it). It needs a POSIX shell and Go.
-It is not a requirement of LazyRex: install, setup and start need only Rex, git, curl and an agent
-CLI. A build from source also needs Go.
+It is not a requirement of LazyRex: install, setup and start need only Rex, git and curl (and an
+agent CLI for agents). A build from source also needs Go.
 
 ### Tests
 
