@@ -68,7 +68,9 @@ sha > /dev/null || die "the checksum of $archive does not match SHA256SUMS"
 
 mkdir -p "$dest"
 tar -xzf "$archive" -C "$dest"
-say "installed $("$dest/bin/lazyrex-hub" version) in $dest"
+installed=$("$dest/bin/lazyrex-hub" version) || die "the installed lazyrex-hub does not run: $dest/bin/lazyrex-hub version failed"
+[ -n "$installed" ] || die "the installed lazyrex-hub printed no version"
+say "installed $installed in $dest"
 
 command -v git > /dev/null || say "warning: git is not installed; setup and the hub need it"
 command -v rex > /dev/null || say "warning: rex is not on PATH; LazyRex needs Rex with its server running"

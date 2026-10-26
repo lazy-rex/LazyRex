@@ -110,9 +110,9 @@ jobs:
           rel=$(mktemp -d)
           mkdir -p "$rel/download/$GITHUB_REF_NAME"
           cp dist/lazyrex-"$GITHUB_REF_NAME"-*.tar.gz dist/SHA256SUMS "$rel/download/$GITHUB_REF_NAME/"
-          home=$(mktemp -d)
-          HOME=$home LAZYREX_BASE=file://$rel LAZYREX_VERSION=$GITHUB_REF_NAME LAZYREX_SETUP=0 sh dist/install.sh
-          test "$("$home"/.lazyrex/bin/lazyrex-hub version)" = "$GITHUB_REF_NAME (commit $COMMIT)"
+          install_home=$(mktemp -d)
+          HOME=$install_home LAZYREX_BASE=file://$rel LAZYREX_VERSION=$GITHUB_REF_NAME LAZYREX_SETUP=0 sh dist/install.sh
+          test "$("$install_home"/.lazyrex/bin/lazyrex-hub version)" = "$GITHUB_REF_NAME (commit $COMMIT)"
 
   release:
     needs: smoke

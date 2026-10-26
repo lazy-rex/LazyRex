@@ -55,7 +55,10 @@ nothing() {
 }
 
 cp "$tmp/rel/download/$v/SHA256SUMS" "$tmp/good"
-sed 's/^./0/' "$tmp/good" > "$tmp/rel/download/$v/SHA256SUMS"
+# A digest that differs from the real one: all zeros, or all ones if the real one is all zeros.
+bad=0000000000000000000000000000000000000000000000000000000000000000
+[ "$(cut -d' ' -f1 "$tmp/good")" != "$bad" ] || bad=1111111111111111111111111111111111111111111111111111111111111111
+echo "$bad  $archive" > "$tmp/rel/download/$v/SHA256SUMS"
 run "$tmp/h2"
 nothing "bad checksum" "$tmp/h2"
 grep -q "does not match" "$tmp/out" || fail "bad checksum: wrong message: $(cat "$tmp/out")"
@@ -75,6 +78,19 @@ for bad in dev 1.2.3 "v1.2.3/x" "../v1.2.3" "v1 2"; do
 	nothing "version '$bad'" "$tmp/h5"
 	grep -q "is not a LazyRex version" "$tmp/out" || fail "version '$bad': wrong message: $(cat "$tmp/out")"
 done
+
+# A hub that does not run (it exits 23): the script fails and does not report an install.
+b=v9.8.6
+barchive=lazyrex-$b-$os-$arch.tar.gz
+mkdir -p "$tmp/rel/download/$b"
+printf '#!/bin/sh\nexit 23\n' > "$tmp/pkg/bin/lazyrex-hub"
+(cd "$tmp/pkg" && tar -czf "$tmp/rel/download/$b/$barchive" bin sdk doc)
+(cd "$tmp/rel/download/$b" && sum "$barchive" > SHA256SUMS)
+run "$tmp/h6" LAZYREX_VERSION=$b
+code=$?
+[ $code -ne 0 ] || fail "broken hub: exit 0: $(cat "$tmp/out")"
+grep -q "^lazyrex: installed " "$tmp/out" && fail "broken hub: reported an install: $(cat "$tmp/out")"
+grep -q "does not run" "$tmp/out" || fail "broken hub: wrong message: $(cat "$tmp/out")"
 
 if [ $fails -ne 0 ]; then
 	echo "install-test: $fails failed"
