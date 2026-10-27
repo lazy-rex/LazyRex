@@ -255,3 +255,54 @@ func TestPaneCloseSkipsABlockThatAnotherViewOwns(t *testing.T) {
 		t.Fatalf("a pane that no other view owns stayed open: %v", m)
 	}
 }
+
+// The startup formsSweep keeps a view whose pane still has the old view's label: an in-place
+// transfer committed, and the hub stopped before the rename (codex-28's case). The row's recorded
+// block counts when it exists and its child is the row's recorded process, alive. A missing
+// block, another child or a dead process close the row as gone; an unread child keeps the row.
+func TestFormsSweepFindsATransferBeforeTheRename(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, block string
+		child       func(pid int) (any, string)
+		dead        bool
+		want        string
+	}{
+		{"recorded block, recorded child", "b1", func(pid int) (any, string) { return map[string]any{"child": map[string]any{"pid": pid}}, "" }, false, "open"},
+		{"block gone", "b2", func(pid int) (any, string) { return map[string]any{"child": map[string]any{"pid": pid}}, "" }, false, "closed"},
+		{"another child", "b1", func(pid int) (any, string) { return map[string]any{"child": map[string]any{"pid": pid + 1}}, "" }, false, "closed"},
+		{"no child", "b1", func(int) (any, string) { return map[string]any{"child": nil}, "" }, false, "closed"},
+		{"dead process", "b1", func(pid int) (any, string) { return map[string]any{"child": map[string]any{"pid": pid}}, "" }, true, "closed"},
+		{"unread child", "b1", func(int) (any, string) { return nil, "disconnected" }, false, "open"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var pid int
+			h, _, pid, start := inPlaceHub(t, func(method string, _ json.RawMessage) (any, string) {
+				switch method {
+				case "session.list_blocks":
+					return map[string]any{"blocks": []any{map[string]any{"block_id": "b1", "label": "lazyrex-form:A"}}}, ""
+				case "com.superlogical.terminal.process":
+					return c.child(pid)
+				}
+				return nil, ""
+			})
+			if c.dead {
+				start = "not-" + start
+			}
+			addView(t, h, "A", "closed", "replaced", c.block, pid, start)
+			addView(t, h, "B", "open", "", c.block, pid, start)
+			if _, err := h.db.Exec(`INSERT INTO ui_replacements (repl_id, session_id, window_id, old_view, new_view, plugin, route, context, state, next_title, created)
+				VALUES ('R', 's', 'w', 'A', 'B', 'p', '/forms/B', '{"window_id":"w"}', 'becoming', '', '')`); err != nil {
+				t.Fatal(err)
+			}
+			h.formsSweep(ctx)
+			var status string
+			if err := h.db.QueryRow(`SELECT status FROM views WHERE view_id = 'B'`).Scan(&status); err != nil {
+				t.Fatal(err)
+			}
+			if status != c.want {
+				t.Fatalf("B is %q after the startup sweep, want %q", status, c.want)
+			}
+		})
+	}
+}

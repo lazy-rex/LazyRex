@@ -1643,6 +1643,7 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 			if !alive(pid, start) || !descendsFrom(p.Requester.Principal.PID, pid) {
 				return nil, bad("caller is not in the pane of view %q", id)
 			}
+			h.ev.emit("view_attach_replaced", map[string]any{"plugin": plugin, "view_id": id, "current_view_id": cur})
 			return map[string]any{"status": "replaced", "current_view_id": cur, "plugin": plugin, "route": route}, nil
 		}
 	}

@@ -192,6 +192,15 @@ func (h *Hub) becomeWorker(id, window string, wake chan struct{}) {
 	lock := h.windowLock(window)
 	labeled := false
 	for n := 0; ; n++ {
+		if !labeled {
+			if r, err := h.slotRow(ctx, h.db, id); err == nil && r != nil {
+				if f := h.takeFault(func(f *testFault) bool {
+					return f.Point == "view-label" && f.Plugin == r.Plugin && (f.Key == "" || f.Key == r.Route)
+				}); f != nil {
+					h.waitRelease(f) // before the rename, outside the window lock: a test can stop the hub here
+				}
+			}
+		}
 		lock.Lock()
 		r, err := h.slotRow(ctx, h.db, id)
 		if err != nil || r == nil || r.State != "becoming" {

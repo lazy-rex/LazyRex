@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,33 +191,43 @@ func TestFormInPlaceLostBecomeLab(t *testing.T) {
 	}
 }
 
-// TestFormInPlaceHubRestartLab: the hub stops (SIGKILL) while a transfer is becoming: the
-// view.become request is held (the test fault view-become hold), so the renderer still runs form
-// a. The restarted hub finishes the row: the renderer's attach of a gets the current view b
-// (replaced), or the new hub's worker asks it; b runs in the same pane and process, labeled for
-// b, the only open form. Lab only: LAZYREX_LAB=1.
+// TestFormInPlaceHubRestartLab: the hub stops (SIGKILL) while a transfer is becoming, at two
+// places. view-become: the view.become request is held, so the renderer still runs form a in a
+// pane labeled for b. view-label: the rename is held, so the pane still has the label of form a;
+// the restarted hub finds b by its row's block and process (forms.go findFormBlock), not by the
+// label. Each time the restarted hub finishes the row: the renderer's attach of a gets the
+// current view b (replaced), or the new hub's worker asks it; b runs in the same pane and
+// process, labeled for b, the only open form. Lab only: LAZYREX_LAB=1.
 func TestFormInPlaceHubRestartLab(t *testing.T) {
-	l := newChunkLab(t, "inplace", "view/testdata/inplace")
-	pane := l.open("lazyrex_inplace_a")
-	l.waitFor("form a", 30*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-A") })
-	pid := l.paneChild(pane)
-	before := len(l.blockLabels())
-	var armed map[string]any
-	l.hubTest("hub.test.fault", map[string]any{"point": "view-become", "mode": "hold", "key": "/forms/inplace/b", "hold_ms": float64(30000)}, &armed)
-	l.key(pane, "enter")
-	l.waitFor("a becoming row", 20*time.Second, func() bool { return l.eventCount("slot_state", "state", "becoming") == 1 })
-	l.hub.Process.Kill()
-	l.hub.Wait()
-	l.startHub()
-	l.waitFor("form b in the same pane", 60*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-B") })
-	id := l.onlyForm("/forms/inplace/b", pane)
-	l.waitFor("the replacement of form b done", 60*time.Second, func() bool { return l.slotDone(id) })
-	labels := l.blockLabels()
-	if len(labels) != before || labels[pane] != "lazyrex-form:"+id {
-		t.Fatalf("blocks %v, want %d with the pane labeled for %s", labels, before, id)
-	}
-	if got := l.paneChild(pane); got != pid {
-		t.Fatalf("pid %d, want %d", got, pid)
+	for _, point := range []string{"view-become", "view-label"} {
+		t.Run(point, func(t *testing.T) {
+			l := newChunkLab(t, "inplace", "view/testdata/inplace")
+			pane := l.open("lazyrex_inplace_a")
+			l.waitFor("form a", 30*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-A") })
+			a := l.onlyForm("/forms/inplace/a", pane)
+			pid := l.paneChild(pane)
+			before := len(l.blockLabels())
+			var armed map[string]any
+			l.hubTest("hub.test.fault", map[string]any{"point": point, "mode": "hold", "key": "/forms/inplace/b", "hold_ms": float64(30000)}, &armed)
+			l.key(pane, "enter")
+			l.waitFor("a becoming row", 20*time.Second, func() bool { return l.eventCount("slot_state", "state", "becoming") == 1 })
+			l.hub.Process.Kill()
+			l.hub.Wait()
+			if got := l.blockLabels()[pane]; point == "view-label" && got != "lazyrex-form:"+a {
+				t.Fatalf("the pane label is %q after the kill, want the old view's lazyrex-form:%s", got, a)
+			}
+			l.startHub()
+			l.waitFor("form b in the same pane", 60*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-B") })
+			id := l.onlyForm("/forms/inplace/b", pane)
+			l.waitFor("the replacement of form b done", 60*time.Second, func() bool { return l.slotDone(id) })
+			labels := l.blockLabels()
+			if len(labels) != before || labels[pane] != "lazyrex-form:"+id {
+				t.Fatalf("blocks %v, want %d with the pane labeled for %s", labels, before, id)
+			}
+			if got := l.paneChild(pane); got != pid {
+				t.Fatalf("pid %d, want %d", got, pid)
+			}
+		})
 	}
 }
 
@@ -279,5 +291,51 @@ func TestFormReturnInPlaceLab(t *testing.T) {
 		if got := l.paneChild(pane); got != pid {
 			t.Fatalf("%s: pid %d, want %d", step.route, got, pid)
 		}
+	}
+}
+
+// TestFormInPlaceOldArgvLab: a -> b in place, then the hub stops (SIGKILL) while b -> c is
+// becoming (view.become held), so the renderer still runs with the argv of form b, an old argv:
+// the views a and b are closed (replaced), c is open. The restarted hub finishes the row: the
+// renderer's attach of b gets the current view c (status replaced, the event
+// view_attach_replaced), or the new hub's worker asks it to become c. Either way it lands on c:
+// the same pane and process, the argv names c and no older form, c is the only open form. Lab
+// only: LAZYREX_LAB=1.
+func TestFormInPlaceOldArgvLab(t *testing.T) {
+	l := newChunkLab(t, "inplace", "view/testdata/inplace")
+	pane := l.open("lazyrex_inplace_a")
+	l.waitFor("form a", 30*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-A") })
+	pid := l.paneChild(pane)
+	a := l.onlyForm("/forms/inplace/a", pane)
+	l.key(pane, "enter")
+	l.waitFor("form b in the same pane", 20*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-B") })
+	b := l.onlyForm("/forms/inplace/b", pane)
+	l.waitFor("the replacement of form b done", 20*time.Second, func() bool { return l.slotDone(b) })
+	argv := func() string {
+		out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+		if err != nil {
+			t.Fatalf("ps %d: %v", pid, err)
+		}
+		return string(out)
+	}
+	var armed map[string]any
+	l.hubTest("hub.test.fault", map[string]any{"point": "view-become", "mode": "hold", "key": "/forms/inplace/c", "hold_ms": float64(30000)}, &armed)
+	l.key(pane, "enter")
+	l.waitFor("the becoming row of form c", 20*time.Second, func() bool { return l.eventCount("slot_state", "state", "becoming") == 2 })
+	l.hub.Process.Kill()
+	l.hub.Wait()
+	if got := argv(); !strings.Contains(got, b) || !strings.Contains(got, "/forms/inplace/b") {
+		t.Fatalf("after the kill the renderer argv is %q, want form b (%s)", got, b)
+	}
+	l.startHub()
+	l.waitFor("form c in the same pane", 60*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-FORM-C") })
+	c := l.onlyForm("/forms/inplace/c", pane)
+	l.waitFor("the replacement of form c done", 60*time.Second, func() bool { return l.slotDone(c) })
+	t.Logf("attach answers replaced: %d, view.become results after the restart: %q", l.eventCount("view_attach_replaced", "current_view_id", c), l.becomeErrors(c))
+	if got := l.paneChild(pane); got != pid {
+		t.Fatalf("pid %d, want %d", got, pid)
+	}
+	if got := argv(); !strings.Contains(got, c) || !strings.Contains(got, "/forms/inplace/c") || strings.Contains(got, a) || strings.Contains(got, b) {
+		t.Fatalf("the renderer argv is %q, want form c (%s) only", got, c)
 	}
 }

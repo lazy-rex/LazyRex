@@ -682,8 +682,11 @@ func (h *Hub) adoptForm(ctx context.Context, v *view, fc formContext, block stri
 	return nil
 }
 
-// findFormBlock finds the pane of form id in sess by its unique label. An error means the
-// inventory is incomplete: found=false then proves nothing.
+// findFormBlock finds the pane of form id in sess by its unique label, or by its row's recorded
+// block. The label is only a locator: an in-place transfer (inplace.go) gives the row the old
+// view's block before the hub renames the pane, so a crash in between leaves the old label. The
+// recorded block counts when it exists and its child is the row's recorded process, alive (the
+// attach proof). An error means the inventory is incomplete: found=false then proves nothing.
 func (h *Hub) findFormBlock(ctx context.Context, sess, id string) (string, bool, error) {
 	if err := h.rex.Call(ctx, "session.attach", map[string]any{"session_id": sess, "event_scope": "session"}, nil); err != nil {
 		if sessionGone(err) {
@@ -703,7 +706,27 @@ func (h *Hub) findFormBlock(ctx context.Context, sess, id string) (string, bool,
 			return b.BlockID, true, nil
 		}
 	}
-	return "", false, nil
+	var block, start string
+	var pid int
+	if h.db.QueryRowContext(ctx, `SELECT block_id, child_pid, child_start FROM views WHERE view_id = ? AND status != 'closed'`, id).
+		Scan(&block, &pid, &start) != nil || block == "" || !alive(pid, start) {
+		return "", false, nil
+	}
+	if _, ok := blocks[block]; !ok {
+		return "", false, nil
+	}
+	child, err := h.childIn(ctx, sess, block)
+	if err != nil {
+		var re *rex.RexError
+		if sessionGone(err) || (errors.As(err, &re) && re.Code == "not_found") {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if child != pid {
+		return "", false, nil
+	}
+	return block, true, nil
 }
 
 // closeForm closes a form's pane. The hub marks its own close, so the event is not the user's.
