@@ -1798,7 +1798,7 @@ Lifecycle invariants:
 
 The panel renderer freezes input before it answers `view.release`.
 Unsaved input shows **Keep editing** and **Discard and replace**.
-The choice is `hub.view.release_confirm`. For discard, the hub records the row as opening and replies first; then it opens the new pane and closes the old one, which is the caller's pane. Until the reply attempt ends, no other path advances the row, and a newer open in that tab is refused (an in-memory gate). A hub stop between the reply and the advance leaves the row opening, and the restart sweep finishes it.
+The choice is `hub.view.release_confirm`. For discard, the hub records the row as opening and replies first; then it advances the row. A new pane in the fallback (see "In-place replacement") closes the old pane, which is the caller's pane. Until the reply attempt ends, no other path advances the row, and a newer open in that tab is refused (an in-memory gate). A hub stop between the reply and the advance leaves the row opening, and the restart sweep finishes it.
 An unresolved mutation or draft conflict disables discard.
 A completed source action releases automatically only when all input is safe.
 Input typed after submission still needs confirmation.
@@ -1810,6 +1810,20 @@ A view that no renderer ever attached holds no input. A replacement claims it wi
 - A renderer that attaches after the claim gets the replacement in its attach reply and freezes.
   It then reads `hub.view.replacement` once.
 - A view that attached before and has no renderer now is a conflict: "try again in a moment".
+
+#### In-place replacement
+
+A replacement in the side slot of a window keeps the old pane and its renderer process. The pane is not closed and no pane is created (inplace.go). Closing the pane that the Rex app had focused raced the app's own key and focus requests, and the app showed "block ... not found in any window" (live Mac hub, Rex 0.0.1792787366-g623b2d, 2026-10-26).
+
+- The decision point is the only fallback point. It runs under the window lock, before anything about the new view is durable. The transfer happens in place only if the old view is open, attached and has a live block, and `client.inspect` of its renderer (1 s timeout) lists `view.become`. Otherwise the hub opens a new pane as before. A tab row (reopen.go) and a closed form's return (the form's pane is gone) always open a new pane.
+- The transfer is one transaction. The new view row takes the old row's block and child process. The old row closes with `closed_by = 'replaced'`, with no pane close. The replacement row goes to `becoming`. A `becoming` row whose new view is the old view is done: the newer transfer took its block. `form_closed` (why `replaced`) and `form_opened` follow the commit, as before.
+- In `becoming` the hub owes two things. It does them in a worker, outside the window lock, with a backoff of 1 s, doubled, at most 60 s; an attach of the new view wakes it:
+  - the pane label `lazyrex-form:<new>` (`session.set_block_label`);
+  - `view.become {view_id, attachment, next_view_id, next_plugin, next_route, replacement_id}` to the old renderer. `view_id` and `attachment` are the old pair.
+- The row is done when the label is set and the new view attached from inside the block. The attach is the proof, not the reply: a lost reply changes nothing. The row ends `late_closed` when the new view is no longer open (its pane closed), or when its renderer process is gone while the pane stays (a held pane; the new view closes with by `exit`). Each step reads the row again under the window lock, so a worker whose row ended renames nothing and sends nothing.
+- The renderer checks `view.become` in this order: the requester is the hub; a replay of the request that it accepted answers `ok` and changes nothing; another request after that is refused (`conflict`); the request names its current view and attachment. It answers an accepted request at once, before the switch: the hub has one request queue, so the renderer must not wait on the hub inside a request from it. Then it ends its program and executes itself again with the next view's argv. The pid and the process start time stay, so the hub's pane proof holds, and no state of the old view survives.
+- `hub.view.attach` of a view that a transfer replaced answers `{status: "replaced", current_view_id, plugin, route}`, with the block's current open row (A -> B -> C gives C), when the caller runs in that row's process. It makes no attachment. The renderer then executes itself as that view. A caller outside the pane gets the pane refusal. A normal attach answers `status: "attached"`.
+- One open view row owns a block. A pane close for a view row (closeForm, closeView, closeMoved, closeTabView) skips a block that another open row owns.
   A row from an older database is `unknown` and counts as attached before.
 - The claim belongs to the view, not to one replacement. A replacement that ends undoes the claim
   only when no replacement of that view is still active. While one is active, the claim stays,

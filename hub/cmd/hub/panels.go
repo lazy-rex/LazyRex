@@ -80,6 +80,7 @@ type slotState struct {
 	// (releaseConfirm). Memory only: a hub restart empties it, and the restart sweep advances the
 	// row, which is durably opening.
 	replying map[string]bool
+	becoming map[string]chan struct{} // becoming row -> the wake channel of its worker (inplace.go)
 }
 
 // setReplying adds (on) or removes the release_confirm gate of row id. The caller holds the row's
@@ -485,13 +486,24 @@ func (h *Hub) advanceSlot(ctx context.Context, r *slotRow) (map[string]any, erro
 		return nil, refuse("conflict", "the side panel changed while this one opened")
 	case "skipped":
 		return nil, refuse("conflict", "the panel did not open again: the focus is not where the form opened")
-	case "done":
-		return answer("opened"), nil
+	case "done", "becoming":
+		return answer("opened"), nil // becoming: the new view runs in the old pane (inplace.go)
 	case "opening":
 		var status string
 		err := h.db.QueryRowContext(ctx, `SELECT status FROM views WHERE view_id = ?`, r.New).Scan(&status)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			// The decision point: in place when the old renderer can become the new view, else a
+			// new pane. Nothing about the new view is durable yet.
+			if h.inPlaceOK(ctx, r) {
+				if err := h.transferInPlace(ctx, r); err == nil {
+					return answer("opened"), nil
+				} else if !errors.Is(err, errSlotMoved) {
+					return nil, err
+				}
+				h.db.QueryRowContext(ctx, `SELECT state FROM ui_replacements WHERE repl_id = ?`, r.ID).Scan(&r.State)
+				return h.advanceSlot(ctx, r) // the row or the old view moved meanwhile
+			}
 			if err := h.spawnSlot(ctx, r); err != nil {
 				return nil, err
 			}
@@ -733,6 +745,19 @@ func (h *Hub) resolveSlotPane(ctx context.Context, r *slotRow) bool {
 
 // slotSweep moves unresolved rows on. It runs at start and on layout changes of their sessions.
 func (h *Hub) slotSweep(ctx context.Context) {
+	// A becoming row owes its label and its attach proof; its worker runs once per hub process.
+	if rows, err := h.db.QueryContext(ctx, `SELECT repl_id, window_id FROM ui_replacements WHERE state = 'becoming'`); err == nil {
+		var ids, wins []string
+		for rows.Next() {
+			var id, win string
+			rows.Scan(&id, &win)
+			ids, wins = append(ids, id), append(wins, win)
+		}
+		rows.Close()
+		for i := range ids {
+			h.startBecome(ids[i], wins[i])
+		}
+	}
 	rows, err := h.db.QueryContext(ctx, `SELECT repl_id, window_id FROM ui_replacements WHERE state IN ('opening', 'closing', 'superseded', 'user_closed', 'expired')`)
 	if err != nil {
 		return

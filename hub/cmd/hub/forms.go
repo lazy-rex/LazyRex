@@ -714,7 +714,7 @@ func (h *Hub) closeForm(ctx context.Context, id, why string) error {
 		Scan(&sess, &block); err != nil {
 		return nil
 	}
-	if block != "" {
+	if block != "" && !h.blockOwnedByOther(ctx, block, id) { // another view runs in the pane now (inplace.go)
 		h.mu.Lock()
 		h.selfClosed[block] = true
 		h.mu.Unlock()

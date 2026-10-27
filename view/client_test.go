@@ -56,6 +56,8 @@ type protocolFixture struct {
 	// confirms: the args of each hub.view.release_confirm call; the answer is the replacement
 	// opening (a discard) or cancelled (a keep).
 	confirms []map[string]any
+	// attachReplaced: the answer to every hub.view.attach in place of an attachment (become_test.go).
+	attachReplaced map[string]any
 }
 
 // changed sends view.changed for the current attachment, as the hub does after a change.
@@ -153,6 +155,8 @@ func (f *protocolFixture) serve(w http.ResponseWriter, r *http.Request) {
 				f.attaches++
 				if f.firstNotReady && f.attaches == 1 {
 					problem = &wireError{Code: "refused", Message: "not_ready: the pane is opening"}
+				} else if f.attachReplaced != nil {
+					result = f.attachReplaced // an in-place replacement gave the pane to another view
 				} else {
 					if f.resumeBeforeAttach != "" {
 						// The hub's cancel sends view.resume before the renderer has the attach reply.

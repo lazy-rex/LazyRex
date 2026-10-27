@@ -86,6 +86,19 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if code == 0 && model.becomeTo != nil && ctx.Err() == nil {
+		// The same process (pid and start time) runs the next view, so the hub's pane proof holds.
+		// The argv is the hub's (viewCommand), with the next view's ID, plugin and route.
+		args := []string{os.Args[0], "-view-id", model.becomeTo.ViewID, "-server", *server}
+		if *real {
+			args = append(args, "-real-server")
+		}
+		args = append(args, model.becomeTo.Plugin, model.becomeTo.Route)
+		if err := syscall.Exec(executable, args, os.Environ()); err != nil {
+			fmt.Fprintln(os.Stderr, "Cannot open the next view:", err)
+			os.Exit(1)
+		}
+	}
 	if code != 0 {
 		os.Exit(code)
 	}
@@ -96,7 +109,7 @@ func main() {
 // with nothing more written: stderr is the same pane. Otherwise a closed view clears its status
 // (a reload keeps it: the new renderer reports again), and a Run error is status 1.
 func afterRun(m *model, out *paneOut, runErr error, cancelled bool) int {
-	if !out.Failed() && !m.reloadReady && m.programStatus != "" && m.programStatus != statusClear {
+	if !out.Failed() && !m.reloadReady && m.becomeTo == nil && m.programStatus != "" && m.programStatus != statusClear {
 		out.WriteString(statusClear)
 	}
 	if out.Failed() {

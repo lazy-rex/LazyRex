@@ -946,11 +946,13 @@ var viewNewWindow = func(h *Hub, ctx context.Context, req map[string]any, out an
 // closeView closes the view's tab. The hub marks its own closes, so the close event is not
 // taken as the user's.
 func (h *Hub) closeView(ctx context.Context, v *view, why string) {
-	h.mu.Lock()
-	h.selfClosed[v.Block] = true
-	h.mu.Unlock()
-	if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": v.Session, "block_id": v.Block}, nil); err != nil {
-		log.Printf("ui: close %s: %v", v.ID, err)
+	if !h.blockOwnedByOther(ctx, v.Block, v.ID) {
+		h.mu.Lock()
+		h.selfClosed[v.Block] = true
+		h.mu.Unlock()
+		if err := h.rex.Call(ctx, "block.close", map[string]any{"session_id": v.Session, "block_id": v.Block}, nil); err != nil {
+			log.Printf("ui: close %s: %v", v.ID, err)
+		}
 	}
 	h.closeViewRow(ctx, v.ID, "hub")
 	h.ev.emit("view_closed", map[string]any{"plugin": v.Plugin, "view_id": v.ID, "tab": v.Tab, "by": "hub", "why": why})
@@ -961,7 +963,7 @@ func (h *Hub) closeView(ctx context.Context, v *view, why string) {
 // tab opens no second view and a later pass tries again (codex-25's review of the view.retire
 // removal). A pane that is already gone counts as closed (closeBlock).
 func (h *Hub) closeMoved(ctx context.Context, v *view) bool {
-	if v.Block != "" {
+	if v.Block != "" && !h.blockOwnedByOther(ctx, v.Block, v.ID) {
 		if err := h.closeBlock(ctx, v.Session, v.Block); err != nil {
 			log.Printf("ui: close moved %s: %v", v.ID, err)
 			return false
@@ -1634,6 +1636,16 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 	var v view
 	err := h.db.QueryRowContext(ctx, `SELECT plugin, route, status, child_pid, child_start FROM views WHERE view_id = ?`, id).
 		Scan(&v.Plugin, &v.Route, &v.Status, &v.ChildPID, &v.ChildStart)
+	if err == nil && v.Status == "closed" {
+		// A view that an in-place transfer replaced: the caller, if it runs in the block's current
+		// process, is told the current view, and attaches to that one (inplace.go). No attachment.
+		if cur, plugin, route, pid, start, ok := h.currentOfBlock(ctx, id); ok {
+			if !alive(pid, start) || !descendsFrom(p.Requester.Principal.PID, pid) {
+				return nil, bad("caller is not in the pane of view %q", id)
+			}
+			return map[string]any{"status": "replaced", "current_view_id": cur, "plugin": plugin, "route": route}, nil
+		}
+	}
 	if err != nil || v.Status == "closed" || v.Status == "exited" {
 		return nil, bad("unknown or closed view %q", id)
 	}
@@ -1656,7 +1668,8 @@ func (h *Hub) viewAttach(ctx context.Context, p perform, args map[string]any) (a
 	}
 	h.ev.emit("view_attached", map[string]any{"view_id": id, "client_id": p.Requester.ClientID})
 	h.markView(v.Plugin, id, causeAttach) // render the first snapshot for this attachment
-	out := map[string]any{"view_id": id, "plugin": v.Plugin, "route": v.Route, "user": viewUser,
+	h.wakeBecome(ctx, id)                 // the attach is the proof of an in-place transfer
+	out := map[string]any{"status": "attached", "view_id": id, "plugin": v.Plugin, "route": v.Route, "user": viewUser,
 		"hub_generation": revString(h.generation), "attachment": attachment}
 	// A renderer that waits on a side-slot replacement (frozen or prompting) names it; the
 	// durable row's state is the answer (panels.go).

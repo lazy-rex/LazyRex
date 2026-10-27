@@ -296,6 +296,8 @@ From the API reference, plus a lab test on Rex 0.0.1792088193-g7a93ec.
   `\195` arrived as `ef bf bd`. No error. So a body that an agent or a plugin sends through Rex is
   valid UTF-8 when it arrives, and its original bytes are lost.
 - `rex -C <label> do <action> k=v` calls `client.perform` from the CLI. `client.set_label` sets `info.label` in `rex client ls` (the top-level `label` stays null).
+- `client.inspect {client_id}` returns one connected client's details with the actions that it offers: `{client, actions: [{name, kind, …}]}` (observed on Rex 0.0.1792787366-g623b2d, macOS lab, 2026-10-26: a probe client that declared two actions listed both). An unknown client ID fails with code `not_found` ("client … not found"). The hub reads it to check that a renderer offers `view.become` (docs/hub.md, "In-place replacement").
+- `session.set_block_label {session_id, block_id, label}` sets a block's label; an empty label restores a default made from the block's ID (`rex api describe`, Rex 0.0.1792787366-g623b2d). Observed on that build (macOS lab, 2026-10-26): `rex block rename` changed a lab block's label, and `block ls` showed the new label. The hub renames a form pane with it after an in-place transfer.
 - So Rex can carry hub RPC itself: an agent or a plugin calls the hub's actions, and Rex tells the hub who called. **Not yet tested from a control client that can reply** (a Node or Go client). See the next section for the Lua result.
 
 ## Rex Lua runtime: `rex do`

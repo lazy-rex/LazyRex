@@ -38,6 +38,11 @@ package main
 //     route, "" = any). hold: the worker waits after the plugin answered view.render, before it
 //     uses the result, until hub.test.fault_release (at most 30 s, or hold_ms ms). The worker is
 //     not the request queue, so the release can arrive.
+//   - view-become: the view.become request of an in-place replacement (inplace.go becomeWorker;
+//     key = the new view's route, "" = any; plugin = the replacement's plugin). drop: the request
+//     is not sent and reports a lost answer. lose-reply: the request goes to the renderer, then
+//     its answer is lost. hold: the worker waits before the request, outside the window lock,
+//     until hub.test.fault_release (at most 30 s, or hold_ms ms): a test can stop the hub there.
 //   - op-call: the stop handler of a manager stop op (plugins.go; key = the plugin name, "" = any).
 //     hold-after-sent waits after the attempt's sent_at commit, before the first effect, until
 //     hub.test.fault_release (at most 30 s, or hold_ms ms, 1 to 60000). fault_state reports held
@@ -75,7 +80,7 @@ type testFault struct {
 var testFaultModes = map[string][]string{"spawn-create": {"lose-answer", "drop", "refuse", "fail-sending"}, "action": {"fail", "lose-reply", "gate"},
 	"watch-nudge": {"drop"}, "status-read": {"fail", "hold"}, "start-admission": {"hold-before", "hold-after"},
 	"plugin-create": {"refuse", "lose-answer", "hold-send", "hold-map"}, "resume-prompt": {"hold", "lose-answer"},
-	"prompt-answer": {"close", "refuse", "lose-reply"}, "view-render": {"hold"}, "op-call": {"hold-after-sent", "hold-before-retire"}}
+	"prompt-answer": {"close", "refuse", "lose-reply"}, "view-render": {"hold"}, "view-become": {"drop", "lose-reply", "hold"}, "op-call": {"hold-after-sent", "hold-before-retire"}}
 
 // testFaultFields are the fields that each point accepts (plugin is the harness's own field).
 var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op", "plugin"},
@@ -87,6 +92,7 @@ var testFaultFields = map[string][]string{"spawn-create": {"point", "mode", "op"
 	"prompt-answer":   {"point", "mode", "when", "fail_code", "plugin", "nth"},
 	"resume-prompt":   {"point", "mode", "key", "plugin", "nth", "hold_ms"},
 	"view-render":     {"point", "mode", "key", "plugin", "nth", "hold_ms"},
+	"view-become":     {"point", "mode", "key", "plugin", "nth", "hold_ms"},
 	"op-call":         {"point", "mode", "key", "plugin", "hold_ms"}}
 
 // faultableAction reports a hub action that a plugin can call: not a hub.test.* control.
@@ -122,7 +128,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		}
 	}
 	if modes, ok := testFaultModes[f.Point]; !ok || !contains(modes, f.Mode) {
-		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send, hold-map), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer), view-render (hold) or op-call (hold-after-sent, hold-before-retire)")
+		return nil, bad("invalid: point must be spawn-create (lose-answer, drop, refuse, fail-sending), action (fail, lose-reply, gate), watch-nudge (drop), status-read (fail, hold), start-admission (hold-before, hold-after), plugin-create (refuse, lose-answer, hold-send, hold-map), prompt-answer (close, refuse, lose-reply), resume-prompt (hold, lose-answer), view-render (hold), view-become (drop, lose-reply, hold) or op-call (hold-after-sent, hold-before-retire)")
 	}
 	if f.Point == "op-call" && f.HoldMS > 60000 {
 		return nil, bad("invalid: hold_ms of op-call must be 1 to 60000")
@@ -151,7 +157,7 @@ func (h *Hub) testFaultArm(args map[string]any, plugin string) (any, error) {
 		if f.FailCode != "" && f.Mode != "refuse" {
 			return nil, bad("invalid: fail_code needs mode refuse")
 		}
-	case "view-render":
+	case "view-render", "view-become":
 		f.Key, _ = args["key"].(string)
 		f.Plugin = plugin
 	case "action":

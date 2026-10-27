@@ -64,7 +64,21 @@ type viewClient struct {
 	seenOK    bool
 	outFailed func() bool
 	gen       uint64
+	// became is the view.become that this process accepted: a replay of it answers ok and changes
+	// nothing; any other view.become is refused.
+	became *becomeRecord
 }
+
+// becomeRecord is an accepted view.become: the replacement, the pair it replaced, the next view.
+type becomeRecord struct{ repl, oldView, oldAttachment, next string }
+
+// becomeRequested asks the model to end this process so that main re-executes the renderer as
+// the view ViewID (plugin, route) in the same pane and process: an in-place replacement, or an
+// attach that the hub answered with the block's current view.
+type becomeRequested struct{ ViewID, Plugin, Route string }
+
+// errBecame ends the connection loop: the process re-executes as another view.
+var errBecame = errors.New("this pane shows another view now")
 
 const (
 	seenClosed = iota
@@ -216,9 +230,17 @@ func (v *viewClient) event(raw json.RawMessage) {
 				Revision      string `json:"revision"`
 				ReplacementID string `json:"replacement_id"`
 				NextTitle     string `json:"next_title"`
+				NextViewID    string `json:"next_view_id"`
+				NextPlugin    string `json:"next_plugin"`
+				NextRoute     string `json:"next_route"`
 			} `json:"args"`
 		}
 		if json.Unmarshal(ev.Payload, &p) != nil {
+			return
+		}
+		if p.Action == "view.become" {
+			a := p.Args
+			v.becomeCall(p.CallID, p.Requester.ClientID, becomeRecord{repl: a.ReplacementID, oldView: a.ViewID, oldAttachment: a.Attachment, next: a.NextViewID}, a.NextPlugin, a.NextRoute)
 			return
 		}
 		v.mu.Lock()
@@ -296,6 +318,49 @@ func (v *viewClient) event(raw json.RawMessage) {
 	}
 }
 
+// becomeCall answers view.become (an in-place replacement, hub inplace.go). The checks run in this
+// order: the requester is the hub; a replay of the accepted request answers ok and changes
+// nothing; a second, different request is refused; the request names this view and attachment.
+// An accepted request answers at once, before the switch: the hub has one request queue, so the
+// renderer must not wait on the hub inside a request from it. The attach of the next view is the
+// proof that the hub waits for.
+func (v *viewClient) becomeCall(callID, requester string, rec becomeRecord, plugin, route string) {
+	v.mu.Lock()
+	w := v.w
+	accept := false
+	var refusal *wireError
+	switch {
+	case requester == "" || requester != v.hub:
+		refusal = &wireError{Code: "refused", Message: "view.become comes only from the hub"}
+	case v.became != nil && *v.became == rec:
+		// A replay: the answer was lost. The switch is under way.
+	case v.became != nil:
+		refusal = &wireError{Code: "conflict", Message: "this renderer already becomes another view"}
+	case rec.oldView != v.ViewID || rec.oldAttachment != v.attachment || rec.next == "" || plugin == "" || route == "":
+		refusal = &wireError{Code: "refused", Message: "The notification does not match the current view attachment"}
+	default:
+		v.became, accept = &rec, true
+	}
+	v.mu.Unlock()
+	if w == nil {
+		return
+	}
+	reply := map[string]any{"call_id": callID}
+	if refusal != nil {
+		reply["error"] = refusal
+	} else {
+		reply["result"] = map[string]any{"status": "ok"}
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = w.call(ctx, "client.reply", reply, nil)
+		if accept {
+			v.emit(becomeRequested{ViewID: rec.next, Plugin: plugin, Route: route})
+		}
+	}()
+}
+
 func (v *viewClient) call(ctx context.Context, action string, args map[string]any, out any) error {
 	v.mu.Lock()
 	w, hub, attachment := v.w, v.hub, v.attachment
@@ -332,7 +397,7 @@ func (v *viewClient) connect(ctx context.Context) error {
 		v.mu.Lock()
 		v.w = w
 		v.mu.Unlock()
-		if err = w.call(ctx, "client.keymap", map[string]any{"actions": []any{map[string]any{"name": "view.changed", "kind": "client", "title": "Refresh view"}, map[string]any{"name": "view.reload", "kind": "client", "title": "Reload renderer"}, map[string]any{"name": "view.release", "kind": "client", "title": "Replace panel"}, map[string]any{"name": "view.resume", "kind": "client", "title": "Resume panel"}}}, nil); err != nil {
+		if err = w.call(ctx, "client.keymap", map[string]any{"actions": []any{map[string]any{"name": "view.changed", "kind": "client", "title": "Refresh view"}, map[string]any{"name": "view.reload", "kind": "client", "title": "Reload renderer"}, map[string]any{"name": "view.release", "kind": "client", "title": "Replace panel"}, map[string]any{"name": "view.resume", "kind": "client", "title": "Resume panel"}, map[string]any{"name": "view.become", "kind": "client", "title": "Become the next view"}}}, nil); err != nil {
 			w.conn.CloseNow()
 			return err
 		}
@@ -346,12 +411,14 @@ func (v *viewClient) connect(ctx context.Context) error {
 		return err
 	}
 	var attached struct {
-		ViewID      string            `json:"view_id"`
-		Plugin      string            `json:"plugin"`
-		Route       string            `json:"route"`
-		Attachment  string            `json:"attachment"`
-		Generation  string            `json:"hub_generation"`
-		Replacement *replacementState `json:"replacement"`
+		Status        string            `json:"status"`
+		CurrentViewID string            `json:"current_view_id"`
+		ViewID        string            `json:"view_id"`
+		Plugin        string            `json:"plugin"`
+		Route         string            `json:"route"`
+		Attachment    string            `json:"attachment"`
+		Generation    string            `json:"hub_generation"`
+		Replacement   *replacementState `json:"replacement"`
 	}
 	v.mu.Lock()
 	replacementID := v.replacementID
@@ -380,6 +447,15 @@ func (v *viewClient) connect(ctx context.Context) error {
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
+	}
+	if attached.Status == "replaced" {
+		// An in-place replacement gave this pane to a newer view (a lost view.become, or a reload
+		// with an older argv): become it. No attachment was made.
+		if attached.CurrentViewID == "" || attached.Plugin == "" || attached.Route == "" {
+			return fmt.Errorf("The hub named no current view for this pane")
+		}
+		v.emit(becomeRequested{ViewID: attached.CurrentViewID, Plugin: attached.Plugin, Route: attached.Route})
+		return errBecame
 	}
 	if attached.ViewID != v.ViewID || attached.Plugin != v.Plugin || attached.Route != v.Route || attached.Attachment == "" {
 		return fmt.Errorf("The hub attachment does not match the requested route")
@@ -524,6 +600,9 @@ func (v *viewClient) run(ctx context.Context) {
 			err := v.connect(setup)
 			cancel()
 			if err != nil {
+				if errors.Is(err, errBecame) {
+					return // the model ends the process; main re-executes it as the current view
+				}
 				var refused *attachRefused
 				if errors.As(err, &refused) {
 					v.emit(connectionMsg{Text: paneSafe("Cannot attach this view: " + err.Error())})

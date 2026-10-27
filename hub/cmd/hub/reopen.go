@@ -485,7 +485,7 @@ func (h *Hub) closeTabView(ctx context.Context, r *slotRow, id, why string) erro
 	if err := h.db.QueryRowContext(ctx, `SELECT session_id, block_id, status, tab FROM views WHERE view_id = ?`, id).Scan(&sess, &block, &status, &tabKey); err != nil || status == "closed" {
 		return nil
 	}
-	if block != "" {
+	if block != "" && !h.blockOwnedByOther(ctx, block, id) {
 		if err := h.closeBlock(ctx, sess, block); err != nil && !sessionGone(err) {
 			return fmt.Errorf("close %s: %w", id, err)
 		}

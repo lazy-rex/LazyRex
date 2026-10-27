@@ -75,6 +75,7 @@ type model struct {
 	selectText                             bool
 	operations                             map[string]bool
 	reloadPending, reloadReady             bool
+	becomeTo                               *becomeRequested // set: main re-executes as this view
 	closePending, closeRunning, closeReady bool
 	dark                                   bool
 	themeReady                             bool
@@ -701,6 +702,13 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reloadRequested:
 		m.reloadPending = true
 		return m, nil
+	case becomeRequested:
+		// The old view was released (or discarded) before the hub asked: nothing of it is kept.
+		// main re-executes the renderer as the next view, so no state of this view survives.
+		if m.becomeTo == nil {
+			m.becomeTo = &msg
+		}
+		return m, m.quit()
 	case tea.BackgroundColorMsg:
 		m.setDark(msg.IsDark())
 		m.themeReady = true
