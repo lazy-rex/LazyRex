@@ -254,3 +254,30 @@ func (l *chunkLab) hubEvents() []map[string]any {
 	}
 	return out
 }
+
+// TestFormReturnInPlaceLab: a panel opens a form, and the form chain ends with Finish
+// ({close_form}). The form ended while its pane was live, so the panel that it replaced returns
+// in place too: panel -> a -> b -> c -> panel, all in one pane and one renderer process, each step
+// a done in-place replacement. Lab only: LAZYREX_LAB=1.
+func TestFormReturnInPlaceLab(t *testing.T) {
+	l := newChunkLab(t, "inplace", "view/testdata/inplace")
+	pane := l.open("lazyrex_inplace_p")
+	l.waitFor("the panel", 30*time.Second, func() bool { return strings.Contains(l.screen(pane), "LAB-PANEL") })
+	pid := l.paneChild(pane)
+	before := len(l.blockLabels())
+	for _, step := range []struct{ text, route string }{
+		{"LAB-FORM-A", "/forms/inplace/a"}, {"LAB-FORM-B", "/forms/inplace/b"}, {"LAB-FORM-C", "/forms/inplace/c"}, {"LAB-PANEL", "/panels/inplace"},
+	} {
+		l.key(pane, "enter")
+		l.waitFor(step.route+" in the same pane", 20*time.Second, func() bool { return strings.Contains(l.screen(pane), step.text) })
+		id := l.onlyForm(step.route, pane)
+		l.waitFor("the replacement to "+step.route+" done", 20*time.Second, func() bool { return l.slotDone(id) })
+		labels := l.blockLabels()
+		if len(labels) != before || labels[pane] != "lazyrex-form:"+id {
+			t.Fatalf("%s: blocks %v, want %d with the pane labeled for %s", step.route, labels, before, id)
+		}
+		if got := l.paneChild(pane); got != pid {
+			t.Fatalf("%s: pid %d, want %d", step.route, got, pid)
+		}
+	}
+}
